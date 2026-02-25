@@ -3,7 +3,7 @@
   if (node && !node.value) node.value = new Date().toISOString().slice(0, 10);
 }
 
-['startDate', 'departDate', 'returnDate'].forEach(setToday);
+['startDate', 'departDate', 'returnDate', 'checkIn'].forEach(setToday);
 
 const AIRPORTS = [
   { code: 'ICN', nameKo: '인천국제공항', cityKo: '인천', country: 'KR' },
@@ -62,6 +62,14 @@ let cityCatalog = [];
 let flightResults = [];
 let visibleFlightCount = 0;
 let flightSortMode = 'recommended';
+let selectedFlightId = '';
+let selectedFlight = null;
+let stayResults = [];
+let staySortMode = 'balanced';
+let selectedDestinations = [];
+let latestDestList = [];
+let selectedStayId = '';
+let selectedStay = null;
 
 function parseCsv(text) {
   return String(text || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -166,8 +174,10 @@ async function initCityOptions() {
   const options = cities.map((c) => `<option value="${c.key}">${c.label} (${c.airport})</option>`).join('');
   el('city').innerHTML = options;
   el('foodCity').innerHTML = options;
+  el('stayCity').innerHTML = options;
   el('city').value = 'tokyo';
   el('foodCity').value = 'tokyo';
+  el('stayCity').value = 'tokyo';
 }
 
 function addDays(dateText, offset) {
@@ -177,6 +187,21 @@ function addDays(dateText, offset) {
   return d.toISOString().slice(0, 10);
 }
 
+function ensureCheckOutDate() {
+  const inDate = el('checkIn').value;
+  if (!inDate) return;
+  const outDate = el('checkOut').value;
+  if (!outDate) {
+    el('checkOut').value = addDays(inDate, 2);
+    return;
+  }
+  const inTime = new Date(inDate).getTime();
+  const outTime = new Date(outDate).getTime();
+  if (Number.isFinite(inTime) && Number.isFinite(outTime) && outTime <= inTime) {
+    el('checkOut').value = addDays(inDate, 2);
+  }
+}
+
 function renderCards(targetId, items, mode) {
   const target = el(targetId);
   if (!items || items.length === 0) {
@@ -184,14 +209,24 @@ function renderCards(targetId, items, mode) {
     return;
   }
 
-  target.innerHTML = items.map((x) => {
+  if (mode === 'dest') {
+    latestDestList = items;
+  }
+
+  target.innerHTML = items.map((x, index) => {
     if (mode === 'dest') {
-      return `<article class="card">
+      const isSelected = selectedDestinations.some((d) => d.name === x.name && d.area === x.area);
+      const selectedClass = isSelected ? ' selected' : '';
+      const label = isSelected ? '선택 취소' : 'AI 일정에 포함';
+      return `<article class="card${selectedClass}">
         <h4>${x.name}</h4>
         <div class="meta">${x.city || '-'} · ${x.category} · ${x.area}</div>
         <div class="meta">추천시간 ${x.bestTime} / 체류 ${x.stayMin}분</div>
         <div class="meta">AI 점수 ${x.aiScore}</div>
-        <div class="link-row"><a href="${x.mapUrl}" target="_blank" rel="noreferrer">Google Maps</a></div>
+        <div class="link-row">
+          <button type="button" class="stay-select-btn dest-select-btn" data-dest-index="${index}">${label}</button>
+          <a href="${x.mapUrl}" target="_blank" rel="noreferrer">Google Maps</a>
+        </div>
       </article>`;
     }
 
@@ -217,11 +252,25 @@ function flightCardTemplate(x) {
   const routeTo = x.tripType === 'roundtrip' ? first.to : last.to;
   const route = `${first.from}(${airportCityByCode(first.from)}) - ${routeTo}(${airportCityByCode(routeTo)})`;
   const dateRange = first.date === last.date ? first.date : `${first.date} ~ ${last.date}`;
-  const legRows = x.legs
-    .map((l) => `<div class="flight-leg-row">${l.departureTime} ${l.from}(${airportCityByCode(l.from)}) ~ ${l.to}(${airportCityByCode(l.to)}) ${l.airline}</div>`)
-    .join('');
+  const legRows = x.legs.flatMap((l) => {
+    if (Array.isArray(l.segments) && l.segments.length > 0) {
+      return l.segments.map((s) => {
+        const parts = [
+          `${s.departureTime} → ${s.arrivalTime}`,
+          `${s.from}(${airportCityByCode(s.from)}) ~ ${s.to}(${airportCityByCode(s.to)})`,
+          s.flightNumber || '',
+          s.cabinLabel || '',
+          s.baggageLabel || ''
+        ].filter(Boolean);
+        return `<div class="flight-leg-row"><span class="airline-badge" title="${s.airline || ''}">${s.airlineCode || ''}</span>${parts.join(' · ')}</div>`;
+      });
+    }
+    return [`<div class="flight-leg-row"><span class="airline-badge" title="${l.airline || ''}">${l.airlineCode || ''}</span>${l.departureTime} → ${l.arrivalTime} ${l.from}(${airportCityByCode(l.from)}) ~ ${l.to}(${airportCityByCode(l.to)}) ${l.airline}</div>`];
+  }).join('');
+  const selectedClass = x._id && x._id === selectedFlightId ? ' selected' : '';
+  const selectedLabel = x._id && x._id === selectedFlightId ? '선택됨 (AI 일정 반영)' : 'AI 일정에 포함';
 
-  return `<article class="card flight-card">
+  return `<article class="card flight-card${selectedClass}">
     <div class="flight-top">
       <div class="flight-route">${route}</div>
       <div class="flight-price">${x.totalPriceKRW.toLocaleString()}원</div>
@@ -233,11 +282,18 @@ function flightCardTemplate(x) {
       <span class="chip">총 ${x.totalDurationMin}분</span>
       <span class="chip">경유 ${x.totalStops}회</span>
     </div>
-    <div class="link-row"><a href="${x.legs[0].deeplink}" target="_blank" rel="noreferrer">플랫폼 이동</a></div>
+    <div class="flight-sub">항공사: ${(x.airlines || []).join(', ') || 'N/A'}</div>
+    ${x.priceBreakdown ? `<div class="flight-sub">요금: 기본 ${x.priceBreakdown.baseKRW.toLocaleString()}원 · 세금 ${x.priceBreakdown.taxesKRW.toLocaleString()}원 · 수수료 ${x.priceBreakdown.feesKRW.toLocaleString()}원</div>` : ''}
+    <div class="link-row">
+      <button type="button" class="stay-select-btn flight-select-btn" data-flight-id="${x._id || ''}">${selectedLabel}</button>
+      <a href="${x.deeplinkSkyscanner || x.deeplink || (x.legs[0] && x.legs[0].deeplink) || '#'}" target="_blank" rel="noreferrer">스카이스캐너</a>
+      <a href="${x.deeplinkKayak || x.deeplink || (x.legs[0] && x.legs[0].deeplink) || '#'}" target="_blank" rel="noreferrer">카약</a>
+    </div>
   </article>`;
 }
 
 function renderFlightCards(reset = false) {
+  refreshFlightSelection();
   if (reset) {
     visibleFlightCount = getFlightCardsPerRow();
   }
@@ -258,7 +314,23 @@ function renderFlightCards(reset = false) {
 }
 
 function renderItinerary(data) {
-  const lines = [data.summary, ''];
+  const aiSources = new Set(['openai_itinerary_v1', 'gemini_itinerary_v1']);
+  const sourceTag = aiSources.has(data.itinerarySource) ? 'AI 일정(모델 기반)' : '일정(규칙 기반)';
+  const labelNode = el('planSourceLabel');
+  if (labelNode) {
+    labelNode.textContent = sourceTag;
+  }
+  const noteNode = el('planSourceNote');
+  if (noteNode) {
+    if (data.aiNote) {
+      noteNode.textContent = data.aiNote;
+      noteNode.classList.add('warn');
+    } else {
+      noteNode.textContent = '';
+      noteNode.classList.remove('warn');
+    }
+  }
+  const lines = [data.summary, '', ''];
   for (const day of data.itinerary) {
     lines.push(`Day ${day.day} (${day.date})`);
     for (const block of day.blocks) lines.push(`- ${block}`);
@@ -267,6 +339,209 @@ function renderItinerary(data) {
   lines.push('Tips');
   for (const t of data.tips) lines.push(`- ${t}`);
   el('planResult').textContent = lines.join('\n');
+  renderPlanExtras();
+}
+
+function describeFlightSummary(flight) {
+  if (!flight || !Array.isArray(flight.legs) || flight.legs.length === 0) return '';
+  const first = flight.legs[0];
+  const last = flight.legs[flight.legs.length - 1];
+  const route = `${first.from || ''}→${last?.to || first.to || ''}`;
+  const dateRange = flight.tripType === 'roundtrip' && last?.date
+    ? `${first.date || ''} ~ ${last.date}`
+    : first.date || '';
+  const provider = flight.provider ? `${flight.provider} ` : '';
+  return `${provider}${route} (${dateRange})`;
+}
+
+function describeStaySummary(stay) {
+  if (!stay) return '';
+  const dates = stay.checkIn && stay.checkOut ? `${stay.checkIn} ~ ${stay.checkOut}` : stay.checkIn || stay.checkOut || '';
+  const total = stay.totalPriceKRW ? `${stay.totalPriceKRW.toLocaleString()}원` : '';
+  return `${stay.name} (${stay.area}) ${dates} · 총 ${total}`;
+}
+
+function selectionFlightCard(flight) {
+  if (!flight) return '';
+  const first = flight.legs?.[0];
+  const last = flight.legs?.[flight.legs.length - 1];
+  const route = `${first?.from || '출발 미정'} → ${last?.to || first?.to || '도착 미정'}`;
+  const dateRange = first?.date === last?.date ? first?.date : `${first?.date || ''} ~ ${last?.date || ''}`;
+  const price = flight.totalPriceKRW ? `${flight.totalPriceKRW.toLocaleString()}원` : '요금 미확인';
+  const duration = flight.totalDurationMin ? `${flight.totalDurationMin}분` : '시간 미등록';
+  const stops = flight.totalStops != null ? `${flight.totalStops}회 경유` : '경유 정보 없음';
+  const airlines = (flight.airlines || []).join(', ') || (flight.provider || '항공사 정보 없음');
+  return `
+    <article class="selection-card">
+      <div class="selection-card-title">선택 항공권</div>
+      <div class="selection-card-body">
+        <strong>${route}</strong>
+        <span class="selection-card-date">${dateRange}</span>
+        <span>${price} · ${duration}</span>
+        <span>${stops}</span>
+        <span>항공사: ${airlines}</span>
+      </div>
+    </article>`;
+}
+
+function selectionStayCard(stay) {
+  if (!stay) return '';
+  const dates = stay.checkIn && stay.checkOut ? `${stay.checkIn} ~ ${stay.checkOut}` : stay.checkIn || stay.checkOut || '';
+  const total = stay.totalPriceKRW ? `${stay.totalPriceKRW.toLocaleString()}원` : '가격 정보 없음';
+  const perNight = stay.pricePerNightKRW ? `${stay.pricePerNightKRW.toLocaleString()}원/박` : '';
+  const provider = stay.provider || '숙소 제공사 없음';
+  const amenities = (stay.amenities || []).slice(0, 3).join(', ');
+  return `
+    <article class="selection-card">
+      <div class="selection-card-title">선택 숙소</div>
+      <div class="selection-card-body">
+        <strong>${stay.name}</strong>
+        <span>${stay.area} · ${provider}</span>
+        <span>${dates}</span>
+        <span>${perNight} · 총 ${total}</span>
+        ${amenities ? `<span>편의시설: ${amenities}</span>` : ''}
+      </div>
+    </article>`;
+}
+
+function renderPlanExtras() {
+  renderPlanSelectionCards();
+}
+
+function renderPlanSelectionCards() {
+  const container = el('planSelectionCards');
+  if (!container) return;
+  const cards = [];
+  if (selectedFlight) cards.push(selectionFlightCard(selectedFlight));
+  if (selectedStay) cards.push(selectionStayCard(selectedStay));
+  if (selectedDestinations.length > 0) {
+    cards.push(selectionDestCard());
+  }
+  container.innerHTML = cards.join('') || '<div class="selection-card">선택된 항공권/숙소가 없습니다.</div>';
+}
+
+function toggleDestinationSelection(index) {
+  const dest = latestDestList[index];
+  if (!dest) return;
+  const exists = selectedDestinations.find((d) => d.name === dest.name && d.area === dest.area);
+  if (exists) {
+    selectedDestinations = selectedDestinations.filter((d) => !(d.name === dest.name && d.area === dest.area));
+  } else {
+    selectedDestinations = [...selectedDestinations, dest];
+  }
+  renderCards('destCards', latestDestList, 'dest');
+  renderPlanSelectionCards();
+}
+
+function selectionDestCard() {
+  if (selectedDestinations.length === 0) return '';
+  const lines = selectedDestinations.map((dest) => `${dest.name} (${dest.area || dest.city || '-'})`).join(', ');
+  return `
+    <article class="selection-card">
+      <div class="selection-card-title">AI 일정 우선 여행지</div>
+      <div class="selection-card-body">
+        <strong>선택 목록</strong>
+        <span>${lines}</span>
+        <span>AI 일정에 포함된 순서로 반영됩니다.</span>
+      </div>
+    </article>`;
+}
+
+function stayPayloadFromSelection() {
+  if (!selectedStay) return null;
+  const {
+    name,
+    provider,
+    area,
+    checkIn,
+    checkOut,
+    rooms,
+    guests,
+    pricePerNightKRW,
+    totalPriceKRW,
+    amenities
+  } = selectedStay;
+  return { name, provider, area, checkIn, checkOut, rooms, guests, pricePerNightKRW, totalPriceKRW, amenities };
+}
+
+function normalizeDestinationForPlan(dest) {
+  if (!dest) return null;
+  return {
+    name: dest.name || '추천 여행지',
+    city: dest.city || el('city').options[el('city').selectedIndex]?.text || '',
+    area: dest.area || '',
+    category: dest.category || '추천',
+    bestTime: dest.bestTime || '09:00-17:00',
+    stayMin: Number(dest.stayMin || 90)
+  };
+}
+
+function buildPlanPayload(extra = {}) {
+  const payload = {
+    city: el('city').value,
+    theme: el('theme').value,
+    startDate: el('startDate').value,
+    days: Number(el('days').value),
+    pace: 'normal',
+    budget: el('budget').value,
+    useAi: true,
+    ...extra
+  };
+  const stayInfo = stayPayloadFromSelection();
+  if (stayInfo && !payload.stay) payload.stay = stayInfo;
+  if (selectedFlight && !payload.flight) payload.flight = buildFlightPayload(selectedFlight);
+  if (selectedDestinations.length > 0 && !payload._picks) {
+    payload._picks = selectedDestinations.map(normalizeDestinationForPlan).filter(Boolean);
+  }
+  return payload;
+}
+
+function buildFlightPayload(flight) {
+  if (!flight) return null;
+  return {
+    tripType: flight.tripType,
+    legs: (flight.legs || []).map((l) => ({
+      from: l.from,
+      to: l.to,
+      date: l.date,
+      departureTime: l.departureTime,
+      arrivalTime: l.arrivalTime
+    }))
+  };
+}
+
+async function runPlan(extra = {}, syncAux = false) {
+  const payload = buildPlanPayload(extra);
+  const data = await postJson('/api/travel-plan', payload);
+  renderCards('destCards', data.recommendations, 'dest');
+  renderItinerary({
+    summary: data.summary,
+    itinerary: data.itinerary,
+    tips: data.tips,
+    itinerarySource: data.itinerarySource
+  });
+
+  if (!syncAux) return;
+
+  // 통합 생성 시 항공/맛집도 동일 조건으로 자동 갱신
+  const selectedCity = cityCatalog.find((c) => c.key === el('city').value);
+  const startDate = el('startDate').value || new Date().toISOString().slice(0, 10);
+  const days = Math.max(1, Number(el('days').value) || 1);
+  const returnDate = addDays(startDate, Math.max(0, days - 1));
+
+  if (selectedCity?.airport) {
+    el('to').value = formatAirportDisplay(selectedCity.airport);
+  }
+  if (!el('from').value) {
+    el('from').value = formatAirportDisplay('ICN');
+  }
+  el('departDate').value = startDate;
+  el('returnDate').value = returnDate;
+  setTripTab(days > 1 ? 'roundtrip' : 'oneway');
+
+  el('foodCity').value = el('city').value;
+  el('btnFlights').click();
+  el('btnFood').click();
 }
 
 function segmentRowTemplate(index, from = '', to = '', date = '') {
@@ -344,6 +619,133 @@ function renderFlightFilterChecks(options) {
   el('airlineChecks').innerHTML = (options?.airlines || []).map((name) => `<label class="check-item"><input type="checkbox" class="airline-check" value="${name}" />${name}</label>`).join('');
 }
 
+function renderStayFilterChecks(options) {
+  el('stayProviderChecks').innerHTML = (options?.providers || []).map((name) => `<label class="check-item"><input type="checkbox" class="stay-provider-check" value="${name}" />${name}</label>`).join('');
+  el('stayAmenityChecks').innerHTML = (options?.amenities || []).map((name) => `<label class="check-item"><input type="checkbox" class="stay-amenity-check" value="${name}" />${name}</label>`).join('');
+}
+
+function refreshStaySelection() {
+  if (!selectedStayId) {
+    selectedStay = null;
+    return;
+  }
+  const match = stayResults.find((x) => x.id === selectedStayId);
+  if (!match) {
+    selectedStayId = '';
+    selectedStay = null;
+  } else {
+    selectedStay = match;
+  }
+}
+
+function selectStayById(id) {
+  if (!id) {
+    selectedStayId = '';
+    selectedStay = null;
+  } else {
+    const target = stayResults.find((x) => x.id === id);
+    if (target) {
+      selectedStayId = id;
+      selectedStay = target;
+    } else {
+      selectedStayId = '';
+      selectedStay = null;
+    }
+  }
+  renderStayCards();
+  renderPlanExtras();
+}
+
+function refreshFlightSelection() {
+  if (!selectedFlightId) {
+    selectedFlight = null;
+    return;
+  }
+  const match = flightResults.find((x) => x._id === selectedFlightId);
+  selectedFlight = match || null;
+}
+
+function resetFlightSelectionDisplay() {
+  selectedFlightId = '';
+  selectedFlight = null;
+  renderFlightCards(false);
+}
+
+async function clearFlightSelection() {
+  resetFlightSelectionDisplay();
+  try {
+    await runPlan({}, false);
+  } catch (err) {
+    if (el('planResult')) el('planResult').textContent = `오류: ${err.message}`;
+  }
+}
+
+async function selectFlightById(id) {
+  if (selectedFlightId === id) {
+    await clearFlightSelection();
+    return;
+  }
+  const target = flightResults.find((x) => x._id === id);
+  if (!target) return;
+  selectedFlightId = id;
+  selectedFlight = target;
+  renderFlightCards(false);
+  try {
+    await runPlan({ flight: buildFlightPayload(target) }, false);
+  } catch (err) {
+    if (el('planResult')) el('planResult').textContent = `오류: ${err.message}`;
+  }
+}
+
+function stayCardTemplate(x) {
+  const priceNight = `${x.pricePerNightKRW.toLocaleString()}원/박`;
+  const totalPrice = `${x.totalPriceKRW.toLocaleString()}원`;
+  const meta = `${x.typeLabel} · 평점 ${x.rating} · ${x.area}`;
+  const amenityChips = (x.amenities || []).slice(0, 4).map((a) => `<span class="chip">${a}</span>`).join('');
+  const offerLine = x.offerId ? `오퍼 ${x.offerId}` : '';
+  const roomLine = x.roomType ? `객실 ${x.roomType}` : '';
+  const boardLine = x.boardType ? `식사 ${x.boardType}` : '';
+  const cancelLine = x.cancellation ? `취소 ${x.cancellation}` : '';
+  const detailLine = [offerLine, roomLine, boardLine, cancelLine].filter(Boolean).join(' · ');
+  const priceLine = x.priceBreakdown
+    ? `요금: 기본 ${x.priceBreakdown.baseKRW.toLocaleString()}원 · 세금 ${x.priceBreakdown.taxesKRW.toLocaleString()}원 · 수수료 ${x.priceBreakdown.feesKRW.toLocaleString()}원`
+    : '';
+  const selectedClass = x.id === selectedStayId ? ' selected' : '';
+  return `<article class="card stay-card${selectedClass}" data-stay-id="${x.id}">
+    <div class="stay-top">
+      <div>
+        <div class="stay-name">${x.name}</div>
+        <div class="stay-meta">${meta}</div>
+      </div>
+      <div class="stay-price">
+        <div class="stay-night">${priceNight}</div>
+        <div class="stay-total">총 ${totalPrice}</div>
+      </div>
+    </div>
+    <div class="stay-meta-row">${x.provider} · ${x.checkIn} ~ ${x.checkOut}</div>
+    <div class="stay-meta-row">객실 ${x.rooms} · 인원 ${x.guests}</div>
+    ${detailLine ? `<div class="stay-meta-row">${detailLine}</div>` : ''}
+    ${priceLine ? `<div class="stay-meta-row">${priceLine}</div>` : ''}
+    <div class="stay-meta-row stay-amenities">${amenityChips}</div>
+    <div class="link-row">
+      <button type="button" class="stay-select-btn" data-stay-id="${x.id}">
+        ${x.id === selectedStayId ? '선택됨 (AI 일정 반영)' : 'AI 일정에 포함'}
+      </button>
+      <a href="${x.deeplink}" target="_blank" rel="noreferrer">예약 페이지</a>
+    </div>
+  </article>`;
+}
+
+function renderStayCards() {
+  refreshStaySelection();
+  const sorted = [...stayResults].sort((a, b) => {
+    if (staySortMode === 'price') return a.totalPriceKRW - b.totalPriceKRW;
+    if (staySortMode === 'rating') return b.rating - a.rating;
+    return b.aiScore - a.aiScore;
+  });
+  el('stayCards').innerHTML = sorted.length > 0 ? sorted.map(stayCardTemplate).join('') : '<div class="card">결과 없음</div>';
+}
+
 let currentTripType = 'oneway';
 
 function setTripTab(type) {
@@ -393,36 +795,14 @@ document.addEventListener('click', (event) => {
 
 el('btnPlan').addEventListener('click', async () => {
   try {
-    const data = await postJson('/api/travel-plan', {
-      city: el('city').value,
-      theme: el('theme').value,
-      startDate: el('startDate').value,
-      days: Number(el('days').value),
-      pace: 'normal',
-      budget: el('budget').value
-    });
-    renderCards('destCards', data.recommendations, 'dest');
-    renderItinerary({ summary: data.summary, itinerary: data.itinerary, tips: data.tips });
-
-    // 통합 생성 시 항공/맛집도 동일 조건으로 자동 갱신
-    const selectedCity = cityCatalog.find((c) => c.key === el('city').value);
-    const startDate = el('startDate').value || new Date().toISOString().slice(0, 10);
-    const days = Math.max(1, Number(el('days').value) || 1);
-    const returnDate = addDays(startDate, Math.max(0, days - 1));
-
-    if (selectedCity?.airport) {
-      el('to').value = formatAirportDisplay(selectedCity.airport);
-    }
-    if (!el('from').value) {
-      el('from').value = formatAirportDisplay('ICN');
-    }
-    el('departDate').value = startDate;
-    el('returnDate').value = returnDate;
-    setTripTab(days > 1 ? 'roundtrip' : 'oneway');
-
-    el('foodCity').value = el('city').value;
-    el('btnFlights').click();
-    el('btnFood').click();
+    resetFlightSelectionDisplay();
+    selectStayById('');
+    await runPlan({}, true);
+    const stayStart = el('startDate').value || new Date().toISOString().slice(0, 10);
+    el('stayCity').value = el('city').value;
+    el('checkIn').value = stayStart;
+    el('checkOut').value = addDays(stayStart, Math.max(1, Number(el('days').value) || 2));
+    el('btnStays').click();
   } catch (err) {
     el('planResult').textContent = `오류: ${err.message}`;
   }
@@ -457,9 +837,21 @@ el('btnFlights').addEventListener('click', async () => {
     };
 
     const data = await postJson('/api/flights', payload);
-    flightResults = data.flights || [];
+    const stamp = Date.now();
+    flightResults = (data.flights || []).map((f, i) => ({ ...f, _id: `f${stamp}-${i}` }));
+    selectedFlightId = null;
     renderFlightCards(true);
     renderFlightFilterChecks(data.filterOptions);
+    const sourceNote = el('flightSourceNote');
+    if (sourceNote) {
+      if (data.source === 'mock') {
+        sourceNote.textContent = data.note || '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
+        sourceNote.classList.add('warn');
+      } else {
+        sourceNote.textContent = `데이터 소스: ${data.source}`;
+        sourceNote.classList.remove('warn');
+      }
+    }
   } catch (err) {
     el('flightCards').innerHTML = `<div class="card">오류: ${err.message}</div>`;
     el('btnFlightMore')?.classList.add('hidden');
@@ -481,6 +873,34 @@ document.querySelectorAll('#flightSortTabs .sort-tab').forEach((btn) => {
   });
 });
 
+el('flightCards').addEventListener('click', async (event) => {
+  const btn = event.target.closest('.flight-select-btn');
+  if (!btn) return;
+  event.preventDefault();
+  const flightId = btn.dataset.flightId;
+  if (!flightId) return;
+  await selectFlightById(flightId);
+});
+
+el('destCards')?.addEventListener('click', (event) => {
+  const btn = event.target.closest('.dest-select-btn');
+  if (!btn) return;
+  const index = Number(btn.dataset.destIndex);
+  if (Number.isNaN(index)) return;
+  toggleDestinationSelection(index);
+});
+
+const planRefreshButton = el('btnPlanRefresh');
+if (planRefreshButton) {
+  planRefreshButton.addEventListener('click', async () => {
+    try {
+      await runPlan({}, false);
+    } catch (err) {
+      el('planResult').textContent = `오류: ${err.message}`;
+    }
+  });
+}
+
 el('btnFood').addEventListener('click', async () => {
   try {
     const city = encodeURIComponent(el('foodCity').value);
@@ -494,8 +914,61 @@ el('btnFood').addEventListener('click', async () => {
   }
 });
 
+el('btnStays').addEventListener('click', async () => {
+  try {
+    ensureCheckOutDate();
+    staySortMode = el('stayPreference').value || 'balanced';
+    const payload = {
+      city: el('stayCity').value,
+      checkIn: el('checkIn').value,
+      checkOut: el('checkOut').value,
+      guests: Number(el('stayGuests').value || 2),
+      rooms: Number(el('stayRooms').value || 1),
+      preference: staySortMode,
+      filters: {
+        minPrice: Number(el('stayPriceMin').value || 0),
+        maxPrice: Number(el('stayPriceMax').value || 9999999),
+        minRating: Number(el('stayRatingMin').value || 0),
+        stayType: el('stayType').value,
+        providers: getCheckedValues('.stay-provider-check'),
+        amenities: getCheckedValues('.stay-amenity-check')
+      }
+    };
+
+    const data = await postJson('/api/stays', payload);
+    stayResults = data.stays || [];
+    renderStayCards();
+    renderStayFilterChecks(data.filterOptions);
+    const sourceNote = el('staySourceNote');
+    if (sourceNote) {
+      if (data.source === 'mock') {
+        sourceNote.textContent = data.note || '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
+        sourceNote.classList.add('warn');
+      } else {
+        sourceNote.textContent = `데이터 소스: ${data.source}`;
+        sourceNote.classList.remove('warn');
+      }
+    }
+  } catch (err) {
+    el('stayCards').innerHTML = `<div class="card">오류: ${err.message}</div>`;
+  }
+});
+
+el('stayCards').addEventListener('click', (event) => {
+  const btn = event.target.closest('.stay-select-btn');
+  if (!btn) return;
+  selectStayById(btn.dataset.stayId);
+});
+
+el('checkIn').addEventListener('change', ensureCheckOutDate);
+el('stayPreference').addEventListener('change', () => {
+  staySortMode = el('stayPreference').value || 'balanced';
+  renderStayCards();
+});
+
 el('city').addEventListener('change', () => {
   el('foodCity').value = el('city').value;
+  el('stayCity').value = el('city').value;
   if (currentTripType === 'multicity') resetSegments();
 });
 
@@ -504,7 +977,9 @@ el('city').addEventListener('change', () => {
   el('from').value = formatAirportDisplay(resolveAirportCode(el('from').value));
   setTripTab('oneway');
   resetSegments();
+  ensureCheckOutDate();
   el('btnPlan').click();
   el('btnFlights').click();
   el('btnFood').click();
+  el('btnStays').click();
 })();
