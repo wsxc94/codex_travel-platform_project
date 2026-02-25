@@ -4,6 +4,28 @@ const path = require('path');
 const { URL } = require('url');
 const { randomUUID } = require('crypto');
 
+function loadEnvFile() {
+  const envPath = path.join(__dirname, '.env');
+  if (!fs.existsSync(envPath)) return;
+  const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const idx = line.indexOf('=');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    let value = line.slice(idx + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+loadEnvFile();
+
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
@@ -669,10 +691,34 @@ function rankFlights(payload) {
     .sort((a, b) => b.aiScore - a.aiScore);
 }
 
-async function fetchPlacesWithGoogle(query, lat, lng) {
+function normalizePriceLevel(level) {
+  if (level === null || level === undefined) return null;
+  if (typeof level === 'number' && Number.isFinite(level)) {
+    const rounded = Math.round(level);
+    return Math.min(4, Math.max(1, rounded));
+  }
+  const map = {
+    PRICE_LEVEL_UNSPECIFIED: null,
+    PRICE_LEVEL_FREE: 1,
+    PRICE_LEVEL_INEXPENSIVE: 1,
+    PRICE_LEVEL_MODERATE: 2,
+    PRICE_LEVEL_EXPENSIVE: 3,
+    PRICE_LEVEL_VERY_EXPENSIVE: 4
+  };
+  return Object.prototype.hasOwnProperty.call(map, level) ? map[level] : null;
+}
+
+function scoreFoodFit(score, priceLevel, budget) {
+  const baseScore = Number.isFinite(score) ? score : 3.6;
+  const price = Number.isFinite(priceLevel) ? priceLevel : (budget === 'low' ? 2 : budget === 'high' ? 4 : 3);
+  return Math.round((baseScore * 20) + (budget === 'low' ? (5 - price) * 4 : budget === 'high' ? price * 3 : 10));
+}
+
+async function fetchPlacesWithGoogle(query, lat, lng, genre, budget) {
   const endpoint = 'https://places.googleapis.com/v1/places:searchText';
+  const cleanGenre = String(genre || '').trim();
   const body = {
-    textQuery: `${query} 일본 맛집`,
+    textQuery: cleanGenre ? `${query} ${cleanGenre} 맛집` : `${query} 일본 맛집`,
     maxResultCount: 8,
     languageCode: 'ko',
     regionCode: 'JP'
@@ -692,7 +738,7 @@ async function fetchPlacesWithGoogle(query, lat, lng) {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.googleMapsUri'
+      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.googleMapsUri,places.priceLevel'
     },
     body: JSON.stringify(body)
   });
@@ -700,15 +746,21 @@ async function fetchPlacesWithGoogle(query, lat, lng) {
   if (!response.ok) throw new Error(`Google Places API error: ${response.status}`);
 
   const data = await response.json();
-  return (data.places || []).map((p) => ({
-    name: p.displayName?.text || '이름 없음',
-    area: '현지',
-    genre: '일식',
-    score: p.rating || null,
-    address: p.formattedAddress || '주소 없음',
-    mapUrl: p.googleMapsUri || null,
-    tabelogUrl: 'https://tabelog.com/en/'
-  }));
+  return (data.places || []).map((p) => {
+    const priceLevel = normalizePriceLevel(p.priceLevel);
+    const score = Number.isFinite(p.rating) ? p.rating : null;
+    return {
+      name: p.displayName?.text || '이름 없음',
+      area: '현지',
+      genre: cleanGenre || '일식',
+      score,
+      priceLevel,
+      aiFit: scoreFoodFit(score, priceLevel, budget || 'mid'),
+      address: p.formattedAddress || '주소 없음',
+      mapUrl: p.googleMapsUri || null,
+      tabelogUrl: 'https://tabelog.com/en/'
+    };
+  });
 }
 
 function tabelogStyleFoods(payload) {
@@ -826,7 +878,13 @@ async function handleApi(req, res, parsedUrl) {
 
       if (GOOGLE_MAPS_API_KEY) {
         try {
-          const places = await fetchPlacesWithGoogle(CITY_DATA[cityKeyByInput(payload.city)].label, parsedUrl.searchParams.get('lat'), parsedUrl.searchParams.get('lng'));
+          const places = await fetchPlacesWithGoogle(
+            CITY_DATA[cityKeyByInput(payload.city)].label,
+            parsedUrl.searchParams.get('lat'),
+            parsedUrl.searchParams.get('lng'),
+            payload.genre,
+            payload.budget
+          );
           return sendJson(res, 200, { source: 'google_places_plus_tabelog_link', city: payload.city, list: places });
         } catch (err) {
           const fallback = tabelogStyleFoods(payload);
