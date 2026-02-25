@@ -101,6 +101,7 @@ body {
 .tabs {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
   margin-bottom: 10px;
 }
 
@@ -135,6 +136,8 @@ input,
 select,
 button {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border-radius: 10px;
   border: 1px solid #c4b59f;
   padding: 10px;
@@ -142,11 +145,28 @@ button {
   background: #fff;
 }
 
+input[type='date'] {
+  appearance: auto;
+  -webkit-appearance: auto;
+  text-align: left;
+  padding-right: 38px;
+}
+
+input[type='date']::-webkit-date-and-time-value {
+  text-align: left;
+}
+
+input[type='date']::-webkit-calendar-picker-indicator {
+  opacity: 1;
+  cursor: pointer;
+}
+
 .form-item {
   display: grid;
   gap: 6px;
   font-size: 0.86rem;
   color: var(--muted);
+  min-width: 0;
 }
 
 .form-item > span {
@@ -470,6 +490,12 @@ button:hover {
 @media (max-width: 640px) {
   .top {
     position: static;
+  }
+
+  .tab {
+    flex: 1 1 calc(33.333% - 6px);
+    min-width: 0;
+    text-align: center;
   }
 
   .fields.two,
