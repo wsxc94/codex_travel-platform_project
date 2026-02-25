@@ -12,9 +12,8 @@
     <header class="top">
       <div>
         <h1>JapanTravel Suite</h1>
-        <p>트리플 스타일 여행지 추천 + Kayak/Skyscanner 스타일 항공권 + Tabelog 스타일 맛집</p>
+        <p>AI기반 여행지,항공권,맛집 추천</p>
       </div>
-      <div class="badge">Prototype</div>
     </header>
 
     <main class="layout">
@@ -53,15 +52,40 @@
             <h3>추천 여행지</h3>
             <div id="destCards" class="cards"></div>
           </div>
-          <div>
-            <h3>AI 일정</h3>
-            <pre id="planResult" class="result"></pre>
+        <div>
+          <h3>AI 일정</h3>
+          <div id="planSourceLabel" class="source-note"></div>
+          <div id="planSourceNote" class="source-note warn"></div>
+          <div class="plan-controls">
+            <button id="btnPlanRefresh" type="button" class="ghost-btn">AI 일정 새로고침</button>
+            <div class="plan-control-copy">선택된 항공·숙소를 유지하고 싶다면 버튼으로 AI 일정만 다시 요청하세요.</div>
           </div>
+          <div id="planSelectionCards" class="selection-card-grid"></div>
+          <pre id="planResult" class="result"></pre>
+        </div>
         </div>
       </section>
 
       <section class="panel">
+        <h2>맛집 탐색</h2>
+        <div class="fields three">
+          <label class="form-item"><span>도시</span>
+            <select id="foodCity"></select>
+          </label>
+          <label class="form-item"><span>장르</span><input id="foodGenre" placeholder="장르 (예: 라멘)" /></label>
+          <label class="form-item"><span>예산</span><select id="foodBudget">
+              <option value="low">가성비</option>
+              <option value="mid" selected>중간</option>
+              <option value="high">고급</option>
+            </select></label>
+          <button id="btnFood">맛집 검색</button>
+        </div>
+        <div id="foodCards" class="cards"></div>
+      </section>
+
+      <section class="panel">
         <h2>항공권 탐색</h2>
+        <p class="note">실시간 데이터가 아닌 참고용 데이터 입니다.</p>
         <div class="tabs" id="tripTabs">
           <button type="button" class="tab active" data-trip="oneway">편도</button>
           <button type="button" class="tab" data-trip="roundtrip">왕복</button>
@@ -125,6 +149,7 @@
           <button type="button" class="sort-tab" data-sort="price">최저가순</button>
           <button type="button" class="sort-tab" data-sort="duration">최단시간순</button>
         </div>
+        <div id="flightSourceNote" class="source-note"></div>
         <div id="flightCards" class="cards"></div>
         <div class="more-wrap">
           <button id="btnFlightMore" type="button" class="more-btn hidden">더보기</button>
@@ -132,20 +157,50 @@
       </section>
 
       <section class="panel">
-        <h2>맛집 탐색</h2>
+        <h2>숙소 탐색</h2>
+        <p class="note">실시간 데이터가 아닌 참고용 데이터 입니다.</p>
         <div class="fields three">
           <label class="form-item"><span>도시</span>
-            <select id="foodCity"></select>
+            <select id="stayCity"></select>
           </label>
-          <label class="form-item"><span>장르</span><input id="foodGenre" placeholder="장르 (예: 라멘)" /></label>
-          <label class="form-item"><span>예산</span><select id="foodBudget">
-              <option value="low">가성비</option>
-              <option value="mid" selected>중간</option>
-              <option value="high">고급</option>
+          <label class="form-item"><span>체크인</span><input id="checkIn" type="date" /></label>
+          <label class="form-item"><span>체크아웃</span><input id="checkOut" type="date" /></label>
+          <label class="form-item"><span>인원</span><input id="stayGuests" type="number" min="1" max="8" value="2" /></label>
+          <label class="form-item"><span>객실 수</span><input id="stayRooms" type="number" min="1" max="5" value="1" /></label>
+          <label class="form-item"><span>정렬</span><select id="stayPreference">
+              <option value="balanced" selected>추천순</option>
+              <option value="price">최저가순</option>
+              <option value="rating">평점순</option>
             </select></label>
-          <button id="btnFood">맛집 검색</button>
+          <button id="btnStays">숙소 검색</button>
         </div>
-        <div id="foodCards" class="cards"></div>
+        <details class="filter-tab">
+          <summary>필터 탭</summary>
+          <div class="fields three filter-grid">
+            <label class="form-item"><span>최소 가격(원)</span><input id="stayPriceMin" type="number" min="0" step="10000" value="60000" /></label>
+            <label class="form-item"><span>최대 가격(원)</span><input id="stayPriceMax" type="number" min="0" step="10000" value="450000" /></label>
+            <label class="form-item"><span>최소 평점</span><input id="stayRatingMin" type="number" min="0" max="10" step="0.1" value="7.5" /></label>
+            <label class="form-item"><span>숙소 타입</span><select id="stayType">
+                <option value="" selected>전체</option>
+                <option value="hotel">호텔</option>
+                <option value="ryokan">료칸</option>
+                <option value="apartment">레지던스</option>
+                <option value="guesthouse">게스트하우스</option>
+              </select></label>
+          </div>
+          <div class="checks">
+            <div>
+              <strong>예약사 체크</strong>
+              <div id="stayProviderChecks" class="check-list"></div>
+            </div>
+            <div>
+              <strong>부대시설</strong>
+              <div id="stayAmenityChecks" class="check-list"></div>
+            </div>
+          </div>
+        </details>
+        <div id="staySourceNote" class="source-note"></div>
+        <div id="stayCards" class="cards"></div>
       </section>
 
     </main>

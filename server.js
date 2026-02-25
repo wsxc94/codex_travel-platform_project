@@ -31,6 +31,26 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
 const SUPABASE_URL = process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const AMADEUS_API_KEY = process.env.AMADEUS_API_KEY || '';
+const AMADEUS_API_SECRET = process.env.AMADEUS_API_SECRET || '';
+const AMADEUS_ENV = (process.env.AMADEUS_ENV || 'test').toLowerCase();
+const FX_USD_KRW = Number(process.env.FX_USD_KRW || 1350);
+let fxUsdKrw = FX_USD_KRW;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_API_MODEL = process.env.GEMINI_API_MODEL || 'gemini-2.5-pro';
+const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
+const USE_GEMINI = Boolean(GEMINI_API_KEY);
+
+const AI_SYSTEM_MESSAGE = [
+  'You are a travel itinerary planner.',
+  'Return only JSON that matches the provided schema.',
+  'Use the provided picks and foods; avoid inventing places not in input.',
+  'Respect flight timing if provided (arrival and departure).',
+  'If stay details are supplied, mention the picked property and honor its check-in/out window when planning the first and last days.',
+  'Schedule blocks in local time with start/end like "09:00".'
+].join(' ');
 
 const CITY_DATA = {
   tokyo: {
@@ -470,11 +490,32 @@ function createItinerary(payload) {
   const key = cityKeyByInput(payload.city);
   const city = CITY_DATA[key] || CITY_DATA.tokyo;
   const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
-  const startDate = payload.startDate || new Date().toISOString().slice(0, 10);
+  const flight = payload.flight || null;
+  const flightLegs = Array.isArray(flight?.legs) ? flight.legs : [];
+  const outbound = flightLegs[0];
+  const inbound = flightLegs.length > 1 ? flightLegs[flightLegs.length - 1] : null;
+  const flightStartDate = outbound?.date;
+  const startDate = flightStartDate || payload.startDate || new Date().toISOString().slice(0, 10);
   const theme = payload.theme || 'mixed';
   const picks = Array.isArray(payload._picks) && payload._picks.length > 0
     ? payload._picks
     : city.highlights.map((p) => ({ ...p, city: city.label, mapUrl: mapUrl(`${p.name} ${city.label}`), aiScore: 65 }));
+
+  const formatMinutes = (value) => {
+    const safe = Math.max(0, Math.min(1439, Math.round(Number(value) || 0)));
+    const h = String(Math.floor(safe / 60)).padStart(2, '0');
+    const m = String(safe % 60).padStart(2, '0');
+    return `${h}:${m}`;
+  };
+
+  const formatRange = (range) => `${formatMinutes(range[0])}-${formatMinutes(range[1])}`;
+
+  const clampRange = (range, minStart, maxEnd) => {
+    const start = Math.max(range[0], minStart);
+    const end = Math.min(range[1], maxEnd);
+    if (end - start < 30) return null;
+    return [start, end];
+  };
 
   const startHour = (timeRange) => {
     const m = /^(\d{1,2}):/.exec(String(timeRange || ''));
@@ -486,33 +527,350 @@ function createItinerary(payload) {
   const fallbackPool = picks;
   const foods = city.foods || [];
 
+  const baseRanges = {
+    morning: [8 * 60 + 30, 11 * 60 + 30],
+    afternoon: [13 * 60, 17 * 60],
+    evening: [18 * 60, 20 * 60]
+  };
+
+  const day1MinStart = outbound?.arrivalTime ? toMinutes(outbound.arrivalTime) + 90 : null;
+  const lastDayMaxEnd = inbound?.departureTime ? toMinutes(inbound.departureTime) - 120 : null;
+
   const itinerary = [];
   for (let i = 0; i < days; i += 1) {
     const a = (morningPool[i % Math.max(1, morningPool.length)]) || fallbackPool[(i * 2) % fallbackPool.length];
     const b = (afternoonPool[i % Math.max(1, afternoonPool.length)]) || fallbackPool[(i * 2 + 1) % fallbackPool.length];
     const dinner = foods[i % Math.max(1, foods.length)];
+    const minStart = (i === 0 && Number.isFinite(day1MinStart)) ? day1MinStart : 0;
+    const maxEnd = (i === days - 1 && Number.isFinite(lastDayMaxEnd)) ? lastDayMaxEnd : (24 * 60);
+    const blocks = [];
+    const morningRange = clampRange(baseRanges.morning, minStart, maxEnd);
+    if (morningRange) blocks.push(`오전(${formatRange(morningRange)}): ${a.name} (${a.bestTime})`);
+    const afternoonRange = clampRange(baseRanges.afternoon, minStart, maxEnd);
+    if (afternoonRange) blocks.push(`오후(${formatRange(afternoonRange)}): ${b.name} (${b.bestTime})`);
+    const dinnerText = dinner ? `${dinner.name} (${dinner.genre})` : `${city.areas[i % city.areas.length]} 로컬 미식 동선`;
+    const eveningRange = clampRange(baseRanges.evening, minStart, maxEnd);
+    if (eveningRange) blocks.push(`저녁(${formatRange(eveningRange)}): ${dinnerText}`);
+
+    if (blocks.length === 0) {
+      if (i === 0 && Number.isFinite(day1MinStart)) {
+        const start = Math.max(day1MinStart, 18 * 60);
+        const end = Math.min(20 * 60 + 30, maxEnd);
+        if (end > start) {
+          blocks.push(`저녁(${formatRange([start, end])}): ${dinnerText}`);
+        } else {
+          blocks.push('도착 후 이동/체크인 및 휴식');
+        }
+      } else if (i === days - 1 && Number.isFinite(lastDayMaxEnd)) {
+        const end = Math.min(lastDayMaxEnd, 11 * 60);
+        if (end > (8 * 60)) {
+          blocks.push(`오전(${formatRange([8 * 60 + 30, end])}): 체크아웃 & 공항 이동`);
+        } else {
+          blocks.push('출국 준비 및 공항 이동');
+        }
+      } else {
+        blocks.push('자유 일정');
+      }
+    }
+
     itinerary.push({
       day: i + 1,
       date: getDateOffset(startDate, i),
-      blocks: [
-        `오전(08:30-11:30): ${a.name} (${a.bestTime})`,
-        `오후(13:00-17:00): ${b.name} (${b.bestTime})`,
-        `저녁(18:00-20:00): ${dinner ? `${dinner.name} (${dinner.genre})` : `${city.areas[i % city.areas.length]} 로컬 미식 동선`}`
-      ]
+      blocks
     });
+  }
+
+  const tips = [
+    '첫날은 공항-도심 이동 시간을 최소 2시간 확보',
+    '핫플은 오픈 직후 또는 20시 이후 방문 추천',
+    '하루 도보 18,000보 이상이면 다음날 오전 일정 완화 권장'
+  ];
+
+  if (outbound?.arrivalTime) {
+    tips.unshift(`도착 ${outbound.arrivalTime} + 이동시간 90분 기준으로 첫날 일정 시작`);
+  }
+  if (inbound?.departureTime) {
+    tips.unshift(`출국 ${inbound.departureTime} 2시간 전 공항 도착 기준으로 마지막날 조정`);
   }
 
   return {
     source: 'ai_planner_v1',
     city: city.label,
     theme,
-    summary: `${city.label} ${days}일 맞춤 일정`,
+    summary: `${city.label} ${days}일 맞춤 일정${flightLegs.length ? ' (항공권 시간 반영)' : ''}`,
     itinerary,
-    tips: [
-      '첫날은 공항-도심 이동 시간을 최소 2시간 확보',
-      '핫플은 오픈 직후 또는 20시 이후 방문 추천',
-      '하루 도보 18,000보 이상이면 다음날 오전 일정 완화 권장'
-    ]
+    tips
+  };
+}
+
+function buildAiContext(payload, picks, city) {
+  const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
+  const startDate = payload.startDate || new Date().toISOString().slice(0, 10);
+  return {
+    city: city.label,
+    theme: payload.theme || 'mixed',
+    budget: payload.budget || 'mid',
+    pace: payload.pace || 'normal',
+    days,
+    startDate,
+    picks: (picks || []).slice(0, 12).map((p) => ({
+      name: p.name,
+      area: p.area,
+      category: p.category,
+      bestTime: p.bestTime,
+      stayMin: p.stayMin
+    })),
+    foods: (city.foods || []).slice(0, 8).map((f) => ({
+      name: f.name,
+      area: f.area,
+      genre: f.genre
+    })),
+    flight: payload.flight || null,
+    stay: payload.stay || null
+  };
+}
+
+function parseJsonFromText(text) {
+  if (!text) return null;
+  const trimmed = String(text).trim();
+  const startIndex = trimmed.indexOf('{');
+  const endIndex = trimmed.lastIndexOf('}');
+  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) return null;
+  const candidate = trimmed.slice(startIndex, endIndex + 1);
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSelectedDestination(pick, cityLabel) {
+  if (!pick) return null;
+  const name = String(pick.name || pick.label || '').trim();
+  if (!name) return null;
+  return {
+    name,
+    city: pick.city || cityLabel,
+    area: pick.area || pick.city || cityLabel,
+    category: pick.category || '추천 여행지',
+    bestTime: pick.bestTime || '09:00-17:00',
+    stayMin: Math.max(30, Number(pick.stayMin) || 90),
+    aiScore: 99
+  };
+}
+
+function mergeSelectedDestinations(userPicks, basePicks, cityLabel) {
+  const normalized = (Array.isArray(userPicks) ? userPicks : [])
+    .map((pick) => normalizeSelectedDestination(pick, cityLabel))
+    .filter(Boolean);
+  if (!normalized.length) return basePicks;
+  const seen = new Set();
+  const merged = [];
+  normalized.forEach((pick) => {
+    if (!seen.has(pick.name)) {
+      seen.add(pick.name);
+      merged.push(pick);
+    }
+  });
+  for (const pick of basePicks) {
+    if (seen.has(pick.name)) continue;
+    seen.add(pick.name);
+    merged.push(pick);
+  }
+  const limit = basePicks.length || merged.length;
+  return merged.slice(0, limit || merged.length);
+}
+
+function extractOpenAiText(data) {
+  if (!data) return '';
+  if (typeof data.output_text === 'string') return data.output_text;
+  const outputs = Array.isArray(data.output) ? data.output : [];
+  const texts = [];
+  outputs.forEach((item) => {
+    if (item.type === 'output_text' && item.text) texts.push(item.text);
+    const content = Array.isArray(item.content) ? item.content : [];
+    content.forEach((c) => {
+      if (c.type === 'output_text' && c.text) texts.push(c.text);
+      if (c.type === 'text' && c.text) texts.push(c.text);
+    });
+  });
+  return texts.join('\n').trim();
+}
+
+async function createItineraryWithOpenAI(payload, picks) {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
+  const key = cityKeyByInput(payload.city);
+  const city = CITY_DATA[key] || CITY_DATA.tokyo;
+  const ctx = buildAiContext(payload, picks, city);
+
+  const schema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      summary: { type: 'string' },
+      itinerary: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            day: { type: 'integer' },
+            date: { type: 'string' },
+            blocks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  start: { type: 'string' },
+                  end: { type: 'string' },
+                  title: { type: 'string' },
+                  location: { type: 'string' },
+                  tags: { type: 'array', items: { type: 'string' } }
+                },
+                required: ['start', 'end', 'title']
+              }
+            }
+          },
+          required: ['day', 'date', 'blocks']
+        }
+      },
+      tips: { type: 'array', items: { type: 'string' } }
+    },
+    required: ['summary', 'itinerary', 'tips']
+  };
+
+  const system = AI_SYSTEM_MESSAGE;
+
+  const body = {
+    model: OPENAI_MODEL,
+    input: [
+      {
+        role: 'system',
+        content: [{ type: 'input_text', text: system }]
+      },
+      {
+        role: 'user',
+        content: [{ type: 'input_text', text: JSON.stringify(ctx) }]
+      }
+    ],
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'itinerary',
+        schema,
+        strict: true
+      }
+    }
+  };
+
+  let json = null;
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const res = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      lastError = new Error(`OpenAI error: ${res.status}`);
+      continue;
+    }
+    const data = await res.json();
+    const text = extractOpenAiText(data);
+    const parsed = parseJsonFromText(text);
+    if (parsed) {
+      json = parsed;
+      lastError = null;
+      break;
+    }
+    lastError = new Error('OpenAI returned unexpected format');
+  }
+  if (!json) throw lastError || new Error('OpenAI parse error');
+
+  const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
+  if (!Array.isArray(json.itinerary) || json.itinerary.length === 0) {
+    throw new Error('OpenAI returned empty itinerary');
+  }
+  const normalized = json.itinerary.slice(0, days).map((d, idx) => ({
+    day: Number(d.day || (idx + 1)),
+    date: d.date || getDateOffset(payload.startDate || new Date().toISOString().slice(0, 10), idx),
+    blocks: Array.isArray(d.blocks) ? d.blocks : []
+  }));
+
+  return {
+    source: 'openai_itinerary_v1',
+    city: city.label,
+    theme: payload.theme || 'mixed',
+    summary: json.summary || `${city.label} ${days}일 AI 일정`,
+    itinerary: normalized,
+    tips: Array.isArray(json.tips) ? json.tips : []
+  };
+}
+
+async function createItineraryWithGemini(payload, picks) {
+  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is missing');
+  const key = cityKeyByInput(payload.city);
+  const city = CITY_DATA[key] || CITY_DATA.tokyo;
+  const ctx = buildAiContext(payload, picks, city);
+  const prompt = `${AI_SYSTEM_MESSAGE}\nContext:\n${JSON.stringify(ctx, null, 2)}\nRespond with only JSON that matches the schema.`;
+
+  const body = {
+    prompt: { text: prompt },
+    temperature: 0.28,
+    maxOutputTokens: 900,
+    topP: 0.9,
+    candidateCount: 1
+  };
+
+  const url = `${GEMINI_ENDPOINT}/${GEMINI_API_MODEL}:generateText`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${GEMINI_API_KEY}`
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Gemini error ${res.status}: ${text}`);
+  }
+  const data = await res.json();
+  const candidate = Array.isArray(data?.candidates) ? data.candidates[0] : null;
+  let text = '';
+  if (candidate?.output) {
+    text = candidate.output;
+  } else if (Array.isArray(candidate?.content)) {
+    text = candidate.content.map((c) => c?.text || '').join(' ').trim();
+  } else if (typeof data?.output === 'string') {
+    text = data.output;
+  }
+  const json = parseJsonFromText(text);
+  if (!json) {
+    throw new Error('Gemini returned unexpected format');
+  }
+  const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
+  if (!Array.isArray(json.itinerary) || json.itinerary.length === 0) {
+    throw new Error('Gemini returned empty itinerary');
+  }
+  const normalized = json.itinerary.slice(0, days).map((d, idx) => ({
+    day: Number(d.day || (idx + 1)),
+    date: d.date || getDateOffset(payload.startDate || new Date().toISOString().slice(0, 10), idx),
+    blocks: Array.isArray(d.blocks) ? d.blocks : []
+  }));
+
+  return {
+    source: 'gemini_itinerary_v1',
+    city: city.label,
+    theme: payload.theme || 'mixed',
+    summary: json.summary || `${city.label} ${days}일 AI 일정 (Gemini)`,
+    itinerary: normalized,
+    tips: Array.isArray(json.tips) ? json.tips : []
   };
 }
 
@@ -525,14 +883,40 @@ async function buildTravelPlan(payload) {
     budget: payload.budget,
     limit: Math.max(6, Math.min(12, Number(payload.days || 3) * 2))
   });
-  const it = createItinerary({ ...payload, city: key, _picks: rec.picks });
+  const cityLabel = rec.city || '';
+  const mergedPicks = mergeSelectedDestinations(payload._picks, rec.picks, cityLabel);
+  rec.picks = mergedPicks;
+  const picksForItinerary = mergedPicks.length ? mergedPicks : rec.picks;
+  let it;
+  let aiNote = '';
+  if (payload.useAi) {
+    if (USE_GEMINI) {
+      try {
+        it = await createItineraryWithGemini({ ...payload, city: key, _picks: picksForItinerary }, picksForItinerary);
+      } catch (err) {
+        aiNote = `Gemini: ${err.message}`;
+      }
+    }
+    if (!it && OPENAI_API_KEY) {
+      try {
+        it = await createItineraryWithOpenAI({ ...payload, city: key, _picks: picksForItinerary }, picksForItinerary);
+      } catch (err) {
+        aiNote = aiNote ? `${aiNote}; OpenAI: ${err.message}` : err.message;
+      }
+    }
+  }
+  if (!it) {
+    it = createItinerary({ ...payload, city: key, _picks: picksForItinerary });
+  }
   return {
     source: 'integrated_travel_planner_v1',
     city: rec.city,
     recommendations: rec.picks,
     itinerary: it.itinerary,
+    itinerarySource: it.source,
     tips: it.tips,
-    summary: `${rec.city} 추천 ${rec.picks.length}곳 + ${it.itinerary.length}일 일정`
+    summary: `${rec.city} 추천 ${rec.picks.length}곳 + ${it.itinerary.length}일 일정`,
+    aiNote
   };
 }
 
@@ -540,9 +924,67 @@ function toDateKey(dateLike) {
   return String(dateLike || '').replace(/-/g, '');
 }
 
+function buildFlightDeeplink(provider, tripType, legs) {
+  const safeProvider = provider === 'KAYAK' ? 'KAYAK' : 'Skyscanner';
+  const first = legs[0];
+  const last = legs[legs.length - 1];
+  if (!first) return '';
+
+  if (safeProvider === 'KAYAK') {
+    if (tripType === 'roundtrip' && legs.length >= 2) {
+      return `https://www.kayak.co.kr/flights/${first.from}-${first.to}/${first.date}/${last.date}`;
+    }
+    if (tripType === 'multicity' && legs.length >= 2) {
+      const path = legs.map((l) => `${l.from}-${l.to}/${l.date}`).join('/');
+      return `https://www.kayak.co.kr/flights/${path}`;
+    }
+    return `https://www.kayak.co.kr/flights/${first.from}-${first.to}/${first.date}`;
+  }
+
+  if (tripType === 'multicity' && legs.length >= 2) {
+    const path = legs.map((l) => `${l.from}-${l.to}/${l.date}`).join('/');
+    return `https://www.kayak.co.kr/flights/${path}`;
+  }
+
+  // Skyscanner (KR)
+  if (tripType === 'roundtrip' && legs.length >= 2) {
+    return `https://www.skyscanner.co.kr/transport/flights/${first.from.toLowerCase()}/${first.to.toLowerCase()}/${toDateKey(first.date)}/${toDateKey(last.date)}/`;
+  }
+  return `https://www.skyscanner.co.kr/transport/flights/${first.from.toLowerCase()}/${first.to.toLowerCase()}/${toDateKey(first.date)}/`;
+}
+
+function buildFlightDeeplinks(tripType, legs) {
+  return {
+    kayak: buildFlightDeeplink('KAYAK', tripType, legs),
+    skyscanner: buildFlightDeeplink('Skyscanner', tripType, legs)
+  };
+}
+
 function toMinutes(timeText) {
   const [h, m] = String(timeText || '00:00').split(':').map(Number);
   return (h * 60) + (m || 0);
+}
+
+function parseIsoDurationToMinutes(value) {
+  const text = String(value || '').toUpperCase();
+  const m = /PT(?:(\d+)H)?(?:(\d+)M)?/.exec(text);
+  if (!m) return 0;
+  return (Number(m[1] || 0) * 60) + Number(m[2] || 0);
+}
+
+function isoToDateTimeParts(value) {
+  const raw = String(value || '');
+  if (!raw.includes('T')) return { date: raw.slice(0, 10), time: raw.slice(11, 16) };
+  return { date: raw.slice(0, 10), time: raw.slice(11, 16) };
+}
+
+function convertToKRW(amount, currency) {
+  const num = Number(amount || 0);
+  if (!Number.isFinite(num)) return 0;
+  const cur = String(currency || 'KRW').toUpperCase();
+  if (cur === 'KRW') return num;
+  if (cur === 'USD') return num * fxUsdKrw;
+  return num;
 }
 
 function buildLegCandidates(leg, index) {
@@ -638,6 +1080,7 @@ function flightCandidates(payload) {
     const airlines = Array.from(new Set(combo.map((x) => x.airline)));
     const airports = Array.from(new Set(combo.flatMap((x) => [x.from, x.to])));
     const providers = Array.from(new Set(combo.map((x) => x.provider)));
+    const deeplinks = buildFlightDeeplinks(tripType, combo);
     return {
       id: `itin_${idx + 1}`,
       tripType,
@@ -648,6 +1091,8 @@ function flightCandidates(payload) {
       totalDurationMin,
       totalStops,
       departureMinute: toMinutes(combo[0].departureTime),
+      deeplinkKayak: deeplinks.kayak,
+      deeplinkSkyscanner: deeplinks.skyscanner,
       legs: combo
     };
   });
@@ -659,14 +1104,23 @@ function applyFlightFilters(items, filters = {}) {
   const minHour = Number(filters.departHourMin ?? 0);
   const maxHour = Number(filters.departHourMax ?? 23);
   const airports = Array.isArray(filters.airports) ? filters.airports.map((x) => String(x).toUpperCase()) : [];
-  const airlines = Array.isArray(filters.airlines) ? filters.airlines.map((x) => String(x)) : [];
+  const airlines = Array.isArray(filters.airlines) ? filters.airlines.map((x) => String(x).toLowerCase()) : [];
 
   return items.filter((x) => {
     if (x.totalPriceKRW < minPrice || x.totalPriceKRW > maxPrice) return false;
-    const depHour = Math.floor(x.departureMinute / 60);
-    if (depHour < minHour || depHour > maxHour) return false;
+    const legs = Array.isArray(x.legs) ? x.legs : [];
+    if (legs.length > 0) {
+      const hourOk = legs.every((l) => {
+        const depHour = Math.floor(toMinutes(l.departureTime) / 60);
+        return depHour >= minHour && depHour <= maxHour;
+      });
+      if (!hourOk) return false;
+    } else {
+      const depHour = Math.floor(x.departureMinute / 60);
+      if (depHour < minHour || depHour > maxHour) return false;
+    }
     if (airports.length > 0 && !x.airports.some((a) => airports.includes(a))) return false;
-    if (airlines.length > 0 && !x.airlines.some((a) => airlines.includes(a))) return false;
+    if (airlines.length > 0 && !x.airlines.some((a) => airlines.includes(String(a).toLowerCase()))) return false;
     return true;
   });
 }
@@ -689,6 +1143,515 @@ function rankFlights(payload) {
       };
     })
     .sort((a, b) => b.aiScore - a.aiScore);
+}
+
+function dateDiffNights(checkIn, checkOut) {
+  const inDate = new Date(checkIn);
+  const outDate = new Date(checkOut);
+  if (Number.isNaN(inDate.getTime()) || Number.isNaN(outDate.getTime())) return 1;
+  const diff = Math.ceil((outDate.getTime() - inDate.getTime()) / (1000 * 60 * 60 * 24));
+  return Math.max(1, diff);
+}
+
+function normalizeHotelType(type) {
+  const key = String(type || '').toUpperCase();
+  if (key.includes('APARTMENT')) return { key: 'apartment', label: '레지던스' };
+  if (key.includes('HOSTEL') || key.includes('GUEST')) return { key: 'guesthouse', label: '게스트하우스' };
+  if (key.includes('RYOKAN')) return { key: 'ryokan', label: '료칸' };
+  return { key: 'hotel', label: '호텔' };
+}
+
+function cityCodeFromAirport(airportCode) {
+  const code = String(airportCode || '').toUpperCase();
+  if (code === 'NRT' || code === 'HND') return 'TYO';
+  if (code === 'KIX' || code === 'ITM') return 'OSA';
+  if (code === 'CTS') return 'SPK';
+  return code;
+}
+
+async function fetchAmadeusHotelIdsByCity(cityCode) {
+  if (!cityCode) return [];
+  const token = await getAmadeusToken();
+  const params = new URLSearchParams({
+    cityCode,
+    radius: '10',
+    radiusUnit: 'KM',
+    hotelSource: 'ALL'
+  });
+  const endpoint = `${amadeusBaseUrl()}/v1/reference-data/locations/hotels/by-city?${params.toString()}`;
+  const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    throw new Error(`Amadeus hotel list(city) error: ${res.status}`);
+  }
+  const data = await res.json();
+  const list = Array.isArray(data?.data) ? data.data : [];
+  return list
+    .map((h) => ({
+      id: h.hotelId,
+      name: h.name || '',
+      geoCode: h.geoCode || null,
+      address: h.address || null
+    }))
+    .filter((h) => h.id);
+}
+
+async function fetchAmadeusHotelIdsByGeocode(center) {
+  if (!center) return [];
+  const token = await getAmadeusToken();
+  const params = new URLSearchParams({
+    latitude: String(center.lat),
+    longitude: String(center.lng),
+    radius: '10',
+    radiusUnit: 'KM',
+    hotelSource: 'ALL'
+  });
+  const endpoint = `${amadeusBaseUrl()}/v1/reference-data/locations/hotels/by-geocode?${params.toString()}`;
+  const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    throw new Error(`Amadeus hotel list error: ${res.status}`);
+  }
+  const data = await res.json();
+  const list = Array.isArray(data?.data) ? data.data : [];
+  return list
+    .map((h) => ({
+      id: h.hotelId,
+      name: h.name || '',
+      geoCode: h.geoCode || null,
+      address: h.address || null
+    }))
+    .filter((h) => h.id);
+}
+
+async function fetchAmadeusHotelOffers(payload) {
+  const cityKey = cityKeyByInput(payload.city || 'tokyo');
+  const city = CITY_DATA[cityKey] || CITY_DATA.tokyo;
+  const checkIn = payload.checkIn || new Date().toISOString().slice(0, 10);
+  const checkOut = payload.checkOut || getDateOffset(checkIn, 2);
+  const guests = Math.max(1, Number(payload.guests || 2));
+  const rooms = Math.max(1, Number(payload.rooms || 1));
+  const nights = dateDiffNights(checkIn, checkOut);
+
+  let hotelIds = [];
+  if (GOOGLE_MAPS_API_KEY) {
+    const center = await fetchGoogleCityCenter(city.label);
+    const byGeo = await fetchAmadeusHotelIdsByGeocode(center);
+    hotelIds = byGeo.slice(0, 20).map((h) => h.id);
+  }
+
+  if (hotelIds.length === 0) {
+    const cityCode = cityCodeFromAirport(city.airport);
+    const byCity = await fetchAmadeusHotelIdsByCity(cityCode);
+    hotelIds = byCity.slice(0, 20).map((h) => h.id);
+  }
+
+  if (hotelIds.length === 0) return [];
+
+  const token = await getAmadeusToken();
+  const params = new URLSearchParams({
+    hotelIds: hotelIds.join(','),
+    adults: String(Math.min(9, guests)),
+    checkInDate: checkIn,
+    checkOutDate: checkOut,
+    roomQuantity: String(Math.max(1, rooms))
+  });
+  const endpoint = `${amadeusBaseUrl()}/v3/shopping/hotel-offers?${params.toString()}`;
+  const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) {
+    throw new Error(`Amadeus hotel offers error: ${res.status}`);
+  }
+  const data = await res.json();
+  const offers = Array.isArray(data?.data) ? data.data : [];
+
+  return offers.map((entry, idx) => {
+    const hotel = entry.hotel || {};
+    const offer = Array.isArray(entry.offers) ? entry.offers[0] : null;
+    const priceCurrency = offer?.price?.currency || 'KRW';
+    const total = Number(offer?.price?.total || 0);
+    const totalPriceKRW = Math.round(convertToKRW(total, priceCurrency));
+    const basePriceKRW = Math.round(convertToKRW(offer?.price?.base || 0, priceCurrency));
+    const taxesKRW = Math.round(convertToKRW(
+      (Array.isArray(offer?.price?.taxes) ? offer.price.taxes : [])
+        .reduce((sum, t) => sum + Number(t.amount || 0), 0),
+      priceCurrency
+    ));
+    const feesKRW = Math.round(convertToKRW(
+      (Array.isArray(offer?.price?.fees) ? offer.price.fees : [])
+        .reduce((sum, f) => sum + Number(f.amount || 0), 0),
+      priceCurrency
+    ));
+    const pricePerNightKRW = Math.round(totalPriceKRW / Math.max(1, nights) / Math.max(1, rooms));
+    const ratingRaw = hotel.rating || hotel.category || '';
+    const ratingNum = Number(ratingRaw) || 0;
+    const rating = ratingNum > 0 ? (ratingNum <= 5 ? ratingNum * 2 : ratingNum) : 0;
+    const amenityList = Array.isArray(hotel.amenities) ? hotel.amenities : [];
+    const hotelType = normalizeHotelType(hotel.type || '');
+    const roomType = offer?.room?.typeEstimated?.category || offer?.room?.typeEstimated?.bedType || '';
+    const boardType = offer?.boardType || offer?.room?.typeEstimated?.mealType || '';
+    const cancellation = Array.isArray(offer?.policies?.cancellations) && offer.policies.cancellations[0]
+      ? (offer.policies.cancellations[0].description || offer.policies.cancellations[0].deadline || '')
+      : '';
+
+    return {
+      id: hotel.hotelId || `amadeus_hotel_${idx + 1}`,
+      name: hotel.name || `${city.label} 호텔`,
+      provider: 'Amadeus',
+      type: hotelType.key,
+      typeLabel: hotelType.label,
+      area: hotel.address?.cityName || city.label,
+      rating: rating ? Number(rating.toFixed(1)) : 0,
+      guests,
+      rooms,
+      checkIn,
+      checkOut,
+      nights,
+      pricePerNightKRW,
+      totalPriceKRW,
+      priceBreakdown: {
+        baseKRW: basePriceKRW,
+        taxesKRW,
+        feesKRW,
+        totalKRW: totalPriceKRW
+      },
+      offerId: offer?.id || '',
+      roomType,
+      boardType,
+      cancellation,
+      amenities: amenityList.slice(0, 6),
+      aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
+      deeplink: `https://www.booking.com/searchresults.ko.html?ss=${encodeURIComponent(city.label)}&checkin=${checkIn}&checkout=${checkOut}&group_adults=${guests}&no_rooms=${rooms}&group_children=0`
+    };
+  });
+}
+
+function stayCandidates(payload) {
+  const cityKey = cityKeyByInput(payload.city || 'tokyo');
+  const city = CITY_DATA[cityKey] || CITY_DATA.tokyo;
+  const checkIn = payload.checkIn || new Date().toISOString().slice(0, 10);
+  const checkOut = payload.checkOut || getDateOffset(checkIn, 2);
+  const guests = Math.max(1, Number(payload.guests || 2));
+  const rooms = Math.max(1, Number(payload.rooms || 1));
+  const nights = dateDiffNights(checkIn, checkOut);
+
+  const providers = ['Agoda', 'Booking', 'Expedia', 'Trip.com', 'Hotels.com'];
+  const amenities = ['조식 포함', '무료 Wi-Fi', '온천', '야외 수영장', '피트니스', '공항 셔틀'];
+  const types = [
+    { key: 'hotel', label: '호텔', price: 1.0 },
+    { key: 'ryokan', label: '료칸', price: 1.5 },
+    { key: 'apartment', label: '레지던스', price: 1.2 },
+    { key: 'guesthouse', label: '게스트하우스', price: 0.75 }
+  ];
+
+  const baseNames = [
+    `${city.label} 그랜드 호텔`,
+    `${city.label} 센트럴 스테이`,
+    `${city.label} 파노라마 료칸`,
+    `${city.label} 시티 레지던스`,
+    `${city.label} 마켓 하우스`,
+    `${city.label} 리버사이드`,
+    `${city.label} 미드타운 호텔`,
+    `${city.label} 가든 스테이`,
+    `${city.label} 아카데미아`,
+    `${city.label} 스카이뷰 스테이`,
+    `${city.label} 모던 하우스`,
+    `${city.label} 힐탑 숙소`
+  ];
+
+  return baseNames.map((name, idx) => {
+    const type = types[idx % types.length];
+    const provider = providers[idx % providers.length];
+    const area = city.areas[idx % city.areas.length];
+    const rating = Number((7.2 + ((idx % 8) * 0.3)).toFixed(1));
+    const basePrice = 65000 + (idx % 6) * 28000;
+    const pricePerNightKRW = Math.round(basePrice * type.price + (guests - 2) * 8000 + (rooms - 1) * 20000);
+    const totalPriceKRW = pricePerNightKRW * nights * rooms;
+    const amenityPack = amenities.filter((_, i) => (i + idx) % 2 === 0).slice(0, 3);
+    const aiScore = Math.round((rating * 100) - (pricePerNightKRW / 1200));
+    return {
+      id: `stay_${idx + 1}`,
+      name,
+      provider,
+      type: type.key,
+      typeLabel: type.label,
+      area,
+      rating,
+      guests,
+      rooms,
+      checkIn,
+      checkOut,
+      nights,
+      pricePerNightKRW,
+      totalPriceKRW,
+      amenities: amenityPack,
+      aiScore,
+      deeplink: provider === 'Booking'
+        ? `https://www.booking.com/searchresults.ko.html?ss=${encodeURIComponent(city.label)}&checkin=${checkIn}&checkout=${checkOut}&group_adults=${guests}&no_rooms=${rooms}&group_children=0`
+        : provider === 'Agoda'
+          ? `https://www.agoda.com/ko-kr/search?city=${encodeURIComponent(city.label)}&checkIn=${checkIn}&checkOut=${checkOut}&adult=${guests}&rooms=${rooms}`
+          : provider === 'Trip.com'
+            ? `https://kr.trip.com/hotels/?keyword=${encodeURIComponent(city.label)}&checkin=${checkIn}&checkout=${checkOut}&adult=${guests}&room=${rooms}`
+            : provider === 'Hotels.com'
+              ? `https://kr.hotels.com/Hotel-Search?destination=${encodeURIComponent(city.label)}&start-date=${checkIn}&end-date=${checkOut}&adults=${guests}&rooms=${rooms}`
+              : `https://www.expedia.co.kr/Hotel-Search?destination=${encodeURIComponent(city.label)}&startDate=${checkIn}&endDate=${checkOut}&adults=${guests}&rooms=${rooms}`
+    };
+  });
+}
+
+function applyStayFilters(items, filters = {}) {
+  const minPrice = Number(filters.minPrice || 0);
+  const maxPrice = Number(filters.maxPrice || 10000000);
+  const minRating = Number(filters.minRating || 0);
+  const stayType = String(filters.stayType || '');
+  const providers = Array.isArray(filters.providers) ? filters.providers.map((x) => String(x)) : [];
+  const amenities = Array.isArray(filters.amenities) ? filters.amenities.map((x) => String(x)) : [];
+
+  return items.filter((x) => {
+    if (x.pricePerNightKRW < minPrice || x.pricePerNightKRW > maxPrice) return false;
+    if (x.rating < minRating) return false;
+    if (stayType && x.type !== stayType) return false;
+    if (providers.length > 0 && !providers.includes(x.provider)) return false;
+    if (amenities.length > 0 && !amenities.every((a) => x.amenities.includes(a))) return false;
+    return true;
+  });
+}
+
+function rankStays(payload) {
+  const preference = payload.preference || 'balanced';
+  const base = Array.isArray(payload._candidates) ? payload._candidates : stayCandidates(payload);
+  const filtered = applyStayFilters(base, payload.filters);
+  return filtered
+    .map((x) => {
+      let score;
+      if (preference === 'price') score = 1000000 - x.pricePerNightKRW * 6 - x.totalPriceKRW * 0.3;
+      else if (preference === 'rating') score = 1000000 + x.rating * 2000 - x.pricePerNightKRW * 4;
+      else score = 1000000 + x.rating * 1200 - x.pricePerNightKRW * 5;
+      return { ...x, aiScore: Math.round(score) };
+    })
+    .sort((a, b) => b.aiScore - a.aiScore);
+}
+
+const amadeusTokenState = {
+  accessToken: '',
+  expiresAt: 0
+};
+
+async function refreshFxRate() {
+  try {
+    const res = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=KRW');
+    if (!res.ok) return;
+    const data = await res.json();
+    const rate = Number(data?.rates?.KRW || 0);
+    if (Number.isFinite(rate) && rate > 0) {
+      fxUsdKrw = rate;
+    }
+  } catch {
+    // ignore and keep last known rate
+  }
+}
+
+refreshFxRate();
+const fxTimer = setInterval(refreshFxRate, 12 * 60 * 60 * 1000);
+if (typeof fxTimer.unref === 'function') fxTimer.unref();
+
+function amadeusBaseUrl() {
+  return AMADEUS_ENV === 'prod' ? 'https://api.amadeus.com' : 'https://test.api.amadeus.com';
+}
+
+async function getAmadeusToken() {
+  if (amadeusTokenState.accessToken && Date.now() < amadeusTokenState.expiresAt) {
+    return amadeusTokenState.accessToken;
+  }
+  const endpoint = `${amadeusBaseUrl()}/v1/security/oauth2/token`;
+  const body = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: AMADEUS_API_KEY,
+    client_secret: AMADEUS_API_SECRET
+  });
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body
+  });
+  if (!res.ok) {
+    throw new Error(`Amadeus token error: ${res.status}`);
+  }
+  const data = await res.json();
+  const expiresIn = Number(data.expires_in || 0);
+  amadeusTokenState.accessToken = data.access_token || '';
+  amadeusTokenState.expiresAt = Date.now() + Math.max(0, (expiresIn - 60)) * 1000;
+  return amadeusTokenState.accessToken;
+}
+
+function cabinLabel(cabin) {
+  const key = String(cabin || '').toUpperCase();
+  if (key === 'ECONOMY') return '이코노미';
+  if (key === 'PREMIUM_ECONOMY') return '프리미엄 이코노미';
+  if (key === 'BUSINESS') return '비즈니스';
+  if (key === 'FIRST') return '퍼스트';
+  return key || '미상';
+}
+
+function baggageLabel(bags) {
+  if (!bags) return '수하물 정보 없음';
+  if (Number.isFinite(bags.quantity)) return `위탁 ${bags.quantity}개`;
+  if (Number.isFinite(bags.weight)) return `위탁 ${bags.weight}${bags.weightUnit || 'KG'}`;
+  return '수하물 정보 없음';
+}
+
+function normalizeAmadeusLeg(itinerary, carrierMap = {}, fareMap = {}) {
+  const segments = Array.isArray(itinerary?.segments) ? itinerary.segments : [];
+  const first = segments[0];
+  const last = segments[segments.length - 1];
+  if (!first || !last) return null;
+  const dep = isoToDateTimeParts(first.departure?.at);
+  const arr = isoToDateTimeParts(last.arrival?.at);
+  const carrierCode = first.carrierCode || '';
+  const carrierName = carrierMap[carrierCode] || carrierCode || 'N/A';
+  const segmentDetails = segments.map((seg) => {
+    const segDep = isoToDateTimeParts(seg.departure?.at);
+    const segArr = isoToDateTimeParts(seg.arrival?.at);
+    const segCarrierCode = seg.carrierCode || '';
+    const segCarrierName = carrierMap[segCarrierCode] || segCarrierCode || 'N/A';
+    const fare = fareMap[seg.id] || {};
+    const cabin = fare.cabin || fare.travelClass || '';
+    const bags = fare.includedCheckedBags || null;
+    return {
+      from: seg.departure?.iataCode || '',
+      to: seg.arrival?.iataCode || '',
+      departureTime: segDep.time,
+      arrivalTime: segArr.time,
+      airline: segCarrierName,
+      airlineCode: segCarrierCode,
+      flightNumber: segCarrierCode && seg.number ? `${segCarrierCode}${seg.number}` : (seg.number || ''),
+      cabin,
+      cabinLabel: cabinLabel(cabin),
+      baggageLabel: baggageLabel(bags)
+    };
+  });
+  return {
+    from: first.departure?.iataCode || '',
+    to: last.arrival?.iataCode || '',
+    date: dep.date,
+    departureTime: dep.time,
+    arrivalTime: arr.time,
+    durationMin: parseIsoDurationToMinutes(itinerary?.duration),
+    stops: Math.max(0, segments.length - 1),
+    airline: carrierName,
+    airlineCode: carrierCode,
+    segments: segmentDetails
+  };
+}
+
+async function fetchAmadeusFlights(payload) {
+  const tripType = payload.tripType || 'oneway';
+  const from = (payload.from || 'ICN').toUpperCase();
+  const cityKey = cityKeyByInput(payload.city || payload.to || 'tokyo');
+  const defaultTo = CITY_DATA[cityKey].airport;
+  const to = (payload.to || defaultTo).toUpperCase();
+  const departDate = payload.departDate || new Date().toISOString().slice(0, 10);
+  const returnDate = payload.returnDate || getDateOffset(departDate, 3);
+
+  let legs = [{ from, to, date: departDate }];
+  if (tripType === 'roundtrip') {
+    legs = [{ from, to, date: departDate }, { from: to, to: from, date: returnDate }];
+  } else if (tripType === 'multicity') {
+    const candidate = Array.isArray(payload.multiSegments) ? payload.multiSegments : [];
+    const normalized = candidate
+      .map((s) => ({
+        from: String(s.from || '').toUpperCase(),
+        to: String(s.to || '').toUpperCase(),
+        date: String(s.date || '')
+      }))
+      .filter((s) => s.from && s.to && s.date);
+    legs = normalized.length >= 2 ? normalized.slice(0, 4) : legs;
+  }
+
+  const token = await getAmadeusToken();
+  const endpoint = `${amadeusBaseUrl()}/v2/shopping/flight-offers`;
+  const body = {
+    currencyCode: 'KRW',
+    originDestinations: legs.map((leg, idx) => ({
+      id: String(idx + 1),
+      originLocationCode: leg.from,
+      destinationLocationCode: leg.to,
+      departureDateTimeRange: { date: leg.date }
+    })),
+    travelers: [{ id: '1', travelerType: 'ADULT' }],
+    sources: ['GDS'],
+    searchCriteria: {
+      maxFlightOffers: 40
+    }
+  };
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    throw new Error(`Amadeus offers error: ${res.status}`);
+  }
+  const data = await res.json();
+  const offers = Array.isArray(data?.data) ? data.data : [];
+  const carrierMap = data?.dictionaries?.carriers || {};
+
+  return offers.map((offer, idx) => {
+    const itineraries = Array.isArray(offer?.itineraries) ? offer.itineraries : [];
+    const fareMap = {};
+    const traveler = Array.isArray(offer?.travelerPricings) ? offer.travelerPricings[0] : null;
+    const fareDetails = Array.isArray(traveler?.fareDetailsBySegment) ? traveler.fareDetailsBySegment : [];
+    fareDetails.forEach((d) => {
+      if (!d?.segmentId) return;
+      fareMap[d.segmentId] = {
+        cabin: d.cabin,
+        travelClass: d.travelClass,
+        includedCheckedBags: d.includedCheckedBags || null
+      };
+    });
+
+    const mappedLegs = itineraries.map((it) => normalizeAmadeusLeg(it, carrierMap, fareMap)).filter(Boolean);
+    const totalDurationMin = mappedLegs.reduce((sum, l) => sum + l.durationMin, 0);
+    const totalStops = mappedLegs.reduce((sum, l) => sum + l.stops, 0);
+    const airlines = Array.from(new Set(mappedLegs.map((l) => l.airline).filter(Boolean)));
+    const airports = Array.from(new Set(mappedLegs.flatMap((l) => [l.from, l.to]).filter(Boolean)));
+    const priceCurrency = offer?.price?.currency || 'KRW';
+    const rawPrice = Number(offer?.price?.total || 0);
+    const totalPriceKRW = Math.round(convertToKRW(rawPrice, priceCurrency));
+    const basePriceKRW = Math.round(convertToKRW(offer?.price?.base || 0, priceCurrency));
+    const feesKRW = Math.round(convertToKRW(
+      (Array.isArray(offer?.price?.fees) ? offer.price.fees : [])
+        .reduce((sum, f) => sum + Number(f.amount || 0), 0),
+      priceCurrency
+    ));
+    const taxesKRW = Math.max(0, Math.round(convertToKRW(
+      (Array.isArray(offer?.price?.taxes) ? offer.price.taxes : [])
+        .reduce((sum, t) => sum + Number(t.amount || 0), 0),
+      priceCurrency
+    )) || (totalPriceKRW - basePriceKRW - feesKRW));
+
+    return {
+      id: offer?.id || `amadeus_${idx + 1}`,
+      tripType,
+      provider: 'Amadeus',
+      airlines,
+      airports,
+      totalPriceKRW,
+      priceBreakdown: {
+        baseKRW: basePriceKRW,
+        taxesKRW,
+        feesKRW,
+        totalKRW: totalPriceKRW
+      },
+      totalDurationMin,
+      totalStops,
+      departureMinute: toMinutes(mappedLegs[0]?.departureTime || '00:00'),
+      deeplinkKayak: buildFlightDeeplink('KAYAK', tripType, mappedLegs),
+      deeplinkSkyscanner: buildFlightDeeplink('Skyscanner', tripType, mappedLegs),
+      legs: mappedLegs
+    };
+  }).filter((x) => x.legs.length > 0);
 }
 
 function normalizePriceLevel(level) {
@@ -854,18 +1817,72 @@ async function handleApi(req, res, parsedUrl) {
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/flights') {
       const payload = await readBody(req);
-      const allCandidates = flightCandidates(payload);
+      let allCandidates = [];
+      let source = 'mock';
+      let sourceNote = '';
+
+      if (AMADEUS_API_KEY && AMADEUS_API_SECRET) {
+        try {
+          allCandidates = await fetchAmadeusFlights(payload);
+          source = AMADEUS_ENV === 'prod' ? 'amadeus_live' : 'amadeus_test';
+        } catch (err) {
+          allCandidates = [];
+          sourceNote = `Amadeus 항공 조회 실패: ${err.message}`;
+        }
+      }
+
+      if (allCandidates.length === 0) {
+        allCandidates = flightCandidates(payload);
+        source = 'mock';
+        if (!sourceNote) sourceNote = '실데이터 조회 실패로 더미 데이터 사용';
+      }
+
       const ranked = rankFlights({ ...payload, _candidates: allCandidates });
       const airports = Array.from(new Set(allCandidates.flatMap((x) => x.airports)));
       const airlines = Array.from(new Set(allCandidates.flatMap((x) => x.airlines)));
       return sendJson(res, 200, {
-        source: 'kayak_skyscanner_style',
+        source,
+        note: sourceNote,
         tripType: payload.tripType || 'oneway',
         preference: payload.preference || 'balanced',
         recommendation: ranked[0] || null,
         total: ranked.length,
         filterOptions: { airports, airlines },
         flights: ranked
+      });
+    }
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/stays') {
+      const payload = await readBody(req);
+      let all = [];
+      let source = 'mock';
+      let sourceNote = '';
+      if (AMADEUS_API_KEY && AMADEUS_API_SECRET) {
+        try {
+          all = await fetchAmadeusHotelOffers(payload);
+          source = AMADEUS_ENV === 'prod' ? 'amadeus_live' : 'amadeus_test';
+        } catch (err) {
+          all = [];
+          sourceNote = `Amadeus 호텔 조회 실패: ${err.message}`;
+        }
+      }
+
+      if (all.length === 0) {
+        all = stayCandidates(payload);
+        source = 'mock';
+        if (!sourceNote) sourceNote = '실데이터 조회 실패로 더미 데이터 사용';
+      }
+
+      const ranked = rankStays({ ...payload, _candidates: all });
+      const providers = Array.from(new Set(all.map((x) => x.provider)));
+      const amenities = Array.from(new Set(all.flatMap((x) => x.amenities || [])));
+      return sendJson(res, 200, {
+        source,
+        note: sourceNote,
+        city: payload.city || 'tokyo',
+        total: ranked.length,
+        filterOptions: { providers, amenities },
+        stays: ranked
       });
     }
 
