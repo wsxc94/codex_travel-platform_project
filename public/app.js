@@ -214,7 +214,8 @@ function getFlightCardsPerRow() {
 function flightCardTemplate(x) {
   const first = x.legs[0];
   const last = x.legs[x.legs.length - 1];
-  const route = `${first.from}(${airportCityByCode(first.from)}) - ${last.to}(${airportCityByCode(last.to)})`;
+  const routeTo = x.tripType === 'roundtrip' ? first.to : last.to;
+  const route = `${first.from}(${airportCityByCode(first.from)}) - ${routeTo}(${airportCityByCode(routeTo)})`;
   const dateRange = first.date === last.date ? first.date : `${first.date} ~ ${last.date}`;
   const legRows = x.legs
     .map((l) => `<div class="flight-leg-row">${l.departureTime} ${l.from}(${airportCityByCode(l.from)}) ~ ${l.to}(${airportCityByCode(l.to)}) ${l.airline}</div>`)
