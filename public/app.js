@@ -70,6 +70,8 @@ let selectedDestinations = [];
 let latestDestList = [];
 let selectedStayId = '';
 let selectedStay = null;
+let aiPreferredAreas = [];
+let aiPreferAirportAccess = false;
 
 function parseCsv(text) {
   return String(text || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -178,6 +180,90 @@ async function initCityOptions() {
   el('city').value = 'tokyo';
   el('foodCity').value = 'tokyo';
   el('stayCity').value = 'tokyo';
+}
+
+function upsertCityOption(cityMeta) {
+  if (!cityMeta || !cityMeta.key || !cityMeta.label) return;
+  if (!cityCatalog.some((c) => c.key === cityMeta.key)) {
+    cityCatalog.push({ key: cityMeta.key, label: cityMeta.label, airport: cityMeta.airport || '' });
+  }
+  const text = `${cityMeta.label} (${cityMeta.airport || 'N/A'})`;
+  ['city', 'foodCity', 'stayCity'].forEach((id) => {
+    const select = el(id);
+    if (!select) return;
+    let option = Array.from(select.options).find((o) => o.value === cityMeta.key);
+    if (!option) {
+      option = document.createElement('option');
+      option.value = cityMeta.key;
+      select.appendChild(option);
+    }
+    option.textContent = text;
+  });
+}
+
+function escapeHtml(text) {
+  return String(text || '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function appendAiChat(role, text) {
+  const box = el('aiChatLog');
+  if (!box) return;
+  const cls = role === 'user' ? 'user' : 'assistant';
+  const label = role === 'user' ? '사용자' : 'AI';
+  box.insertAdjacentHTML('beforeend', `<div class="chat-msg ${cls}"><strong>${label}</strong><br>${escapeHtml(text)}</div>`);
+  box.scrollTop = box.scrollHeight;
+}
+
+function syncDatesToDependentForms() {
+  const start = el('startDate').value || new Date().toISOString().slice(0, 10);
+  const days = Math.max(1, Number(el('days').value) || 1);
+  el('departDate').value = start;
+  el('returnDate').value = addDays(start, Math.max(0, days - 1));
+  el('checkIn').value = start;
+  el('checkOut').value = addDays(start, Math.max(1, days));
+}
+
+function applyAiConditions(parsed) {
+  if (!parsed) return;
+  if (parsed.cityKey && cityCatalog.some((c) => c.key === parsed.cityKey)) {
+    el('city').value = parsed.cityKey;
+    el('foodCity').value = parsed.cityKey;
+    el('stayCity').value = parsed.cityKey;
+  }
+  if (parsed.theme && ['mixed', 'foodie', 'culture', 'shopping', 'nature'].includes(parsed.theme)) {
+    el('theme').value = parsed.theme;
+  }
+  if (parsed.budget && ['low', 'mid', 'high'].includes(parsed.budget)) {
+    el('budget').value = parsed.budget;
+    el('foodBudget').value = parsed.budget;
+  }
+  if (Number.isFinite(Number(parsed.days))) {
+    el('days').value = Math.max(1, Math.min(10, Number(parsed.days)));
+  }
+  if (parsed.startDate && /^\d{4}-\d{2}-\d{2}$/.test(parsed.startDate)) {
+    el('startDate').value = parsed.startDate;
+  }
+  syncDatesToDependentForms();
+
+  const selectedCity = cityCatalog.find((c) => c.key === el('city').value);
+  const arrivalAirport = resolveAirportCode(parsed.arrivalAirport || selectedCity?.airport || '');
+  if (arrivalAirport) {
+    el('to').value = formatAirportDisplay(arrivalAirport);
+  }
+  if (!el('from').value) {
+    el('from').value = formatAirportDisplay('ICN');
+  }
+
+  aiPreferredAreas = Array.isArray(parsed.preferredAreas) ? parsed.preferredAreas.filter(Boolean) : [];
+  aiPreferAirportAccess = Boolean(parsed.preferAirportAccess);
+  if (parsed.foodKeyword) {
+    el('foodGenre').value = parsed.foodKeyword;
+  }
 }
 
 function addDays(dateText, offset) {
@@ -514,6 +600,13 @@ async function runPlan(extra = {}, syncAux = false) {
   const payload = buildPlanPayload(extra);
   const data = await postJson('/api/travel-plan', payload);
   renderCards('destCards', data.recommendations, 'dest');
+  const destSourceNote = el('destSourceNote');
+  if (destSourceNote) {
+    const src = data.recommendationSource || 'unknown';
+    const isFallback = String(src).includes('fallback') || String(src).includes('local_curated');
+    destSourceNote.textContent = `추천 여행지 데이터 소스: ${src}`;
+    destSourceNote.classList.toggle('warn', isFallback);
+  }
   renderItinerary({
     summary: data.summary,
     itinerary: data.itinerary,
@@ -808,6 +901,39 @@ el('btnPlan').addEventListener('click', async () => {
   }
 });
 
+el('btnAiAssist')?.addEventListener('click', async () => {
+  const message = String(el('aiRequest')?.value || '').trim();
+  if (!message) {
+    appendAiChat('assistant', '요청 문장을 입력해 주세요.');
+    return;
+  }
+
+  appendAiChat('user', message);
+  try {
+    const context = {
+      city: el('city').value,
+      theme: el('theme').value,
+      budget: el('budget').value,
+      days: Number(el('days').value || 4),
+      startDate: el('startDate').value
+    };
+    const data = await postJson('/api/ai-travel-chat', { message, context });
+    if (data.cityMeta) upsertCityOption(data.cityMeta);
+    applyAiConditions(data.parsed || {});
+    selectedDestinations = [];
+    if (Array.isArray(data.selectedDestinations) && data.selectedDestinations.length > 0) {
+      selectedDestinations = data.selectedDestinations.map(normalizeDestinationForPlan).filter(Boolean);
+    }
+    appendAiChat('assistant', data.reply || '요청 내용을 반영해서 새 추천을 생성합니다.');
+    resetFlightSelectionDisplay();
+    selectStayById('');
+    await runPlan({}, true);
+    await el('btnStays').click();
+  } catch (err) {
+    appendAiChat('assistant', `요청 처리 중 오류가 발생했습니다: ${err.message}`);
+  }
+});
+
 el('btnFlights').addEventListener('click', async () => {
   try {
     const multiSegments = readSegments();
@@ -909,6 +1035,13 @@ el('btnFood').addEventListener('click', async () => {
     const res = await fetch(`/api/foods?city=${city}&genre=${genre}&budget=${budget}`);
     const data = await res.json();
     renderCards('foodCards', data.list, 'food');
+    const sourceNote = el('foodSourceNote');
+    if (sourceNote) {
+      const source = data.source || 'unknown';
+      const warning = data.warning ? ` · ${data.warning}` : '';
+      sourceNote.textContent = `데이터 소스: ${source}${warning}`;
+      sourceNote.classList.toggle('warn', Boolean(data.warning));
+    }
   } catch (err) {
     el('foodCards').innerHTML = `<div class="card">오류: ${err.message}</div>`;
   }
@@ -925,6 +1058,11 @@ el('btnStays').addEventListener('click', async () => {
       guests: Number(el('stayGuests').value || 2),
       rooms: Number(el('stayRooms').value || 1),
       preference: staySortMode,
+      aiHints: {
+        preferredAreas: aiPreferredAreas,
+        preferAirportAccess: aiPreferAirportAccess,
+        arrivalAirport: resolveAirportCode(el('to').value)
+      },
       filters: {
         minPrice: Number(el('stayPriceMin').value || 0),
         maxPrice: Number(el('stayPriceMax').value || 9999999),
@@ -974,6 +1112,7 @@ el('city').addEventListener('change', () => {
 
 (async () => {
   await initCityOptions();
+  appendAiChat('assistant', '가고 싶은 장소를 채팅으로 입력하면 공항 기준 지역과 여행 조건을 자동으로 맞춰드릴게요.');
   el('from').value = formatAirportDisplay(resolveAirportCode(el('from').value));
   setTripTab('oneway');
   resetSegments();
