@@ -72,6 +72,9 @@ let selectedStayId = '';
 let selectedStay = null;
 let aiPreferredAreas = [];
 let aiPreferAirportAccess = false;
+let aiRouteCities = [];
+let aiRegionDayPlan = [];
+let aiSpecialPrefs = {};
 
 function parseCsv(text) {
   return String(text || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -261,6 +264,9 @@ function applyAiConditions(parsed) {
 
   aiPreferredAreas = Array.isArray(parsed.preferredAreas) ? parsed.preferredAreas.filter(Boolean) : [];
   aiPreferAirportAccess = Boolean(parsed.preferAirportAccess);
+  aiRouteCities = Array.isArray(parsed.routeCities) ? parsed.routeCities.filter(Boolean) : [];
+  aiRegionDayPlan = Array.isArray(parsed.regionDayPlan) ? parsed.regionDayPlan.filter((x) => x && x.cityLabel && Number(x.days) > 0) : [];
+  aiSpecialPrefs = parsed.specialPrefs && typeof parsed.specialPrefs === 'object' ? parsed.specialPrefs : {};
   if (parsed.foodKeyword) {
     el('foodGenre').value = parsed.foodKeyword;
   }
@@ -400,11 +406,10 @@ function renderFlightCards(reset = false) {
 }
 
 function renderItinerary(data) {
-  const aiSources = new Set(['openai_itinerary_v1', 'gemini_itinerary_v1']);
-  const sourceTag = aiSources.has(data.itinerarySource) ? 'AI 일정(모델 기반)' : '일정(규칙 기반)';
+  const sourceTag = describeEngineSource(data.itinerarySource, 'itinerary');
   const labelNode = el('planSourceLabel');
   if (labelNode) {
-    labelNode.textContent = sourceTag;
+    labelNode.textContent = `일정 생성 방식: ${sourceTag}`;
   }
   const noteNode = el('planSourceNote');
   if (noteNode) {
@@ -579,7 +584,26 @@ function buildPlanPayload(extra = {}) {
   if (selectedDestinations.length > 0 && !payload._picks) {
     payload._picks = selectedDestinations.map(normalizeDestinationForPlan).filter(Boolean);
   }
+  if (aiRouteCities.length > 0 && !payload._routeCities) {
+    payload._routeCities = aiRouteCities;
+  }
+  if (aiRegionDayPlan.length > 0 && !payload._regionDayPlan) {
+    payload._regionDayPlan = aiRegionDayPlan;
+  }
+  if (aiSpecialPrefs && Object.keys(aiSpecialPrefs).length > 0 && !payload._specialPrefs) {
+    payload._specialPrefs = aiSpecialPrefs;
+  }
   return payload;
+}
+
+function describeEngineSource(source, mode = 'chat') {
+  const s = String(source || '').toLowerCase();
+  if (!s) return mode === 'itinerary' ? '규칙기반(기본)' : '규칙기반(기본)';
+  if (s.includes('gemini')) return 'LLM 기반 (Gemini)';
+  if (s.includes('openai')) return 'LLM 기반 (OpenAI)';
+  if (s.includes('rule')) return '규칙기반(Fallback)';
+  if (s.includes('fallback') || s.includes('local_curated')) return '규칙기반(Fallback)';
+  return `기타(${source})`;
 }
 
 function buildFlightPayload(flight) {
@@ -918,6 +942,12 @@ el('btnAiAssist')?.addEventListener('click', async () => {
       startDate: el('startDate').value
     };
     const data = await postJson('/api/ai-travel-chat', { message, context });
+    const aiSourceNote = el('aiSourceNote');
+    if (aiSourceNote) {
+      const sourceLabel = describeEngineSource(data.source, 'chat');
+      aiSourceNote.textContent = `채팅 해석 방식: ${sourceLabel}`;
+      aiSourceNote.classList.toggle('warn', sourceLabel.includes('규칙기반'));
+    }
     if (data.cityMeta) upsertCityOption(data.cityMeta);
     applyAiConditions(data.parsed || {});
     selectedDestinations = [];
@@ -1061,7 +1091,9 @@ el('btnStays').addEventListener('click', async () => {
       aiHints: {
         preferredAreas: aiPreferredAreas,
         preferAirportAccess: aiPreferAirportAccess,
-        arrivalAirport: resolveAirportCode(el('to').value)
+        arrivalAirport: resolveAirportCode(el('to').value),
+        oceanViewStay: Boolean(aiSpecialPrefs?.oceanViewStay),
+        safeAreaPriority: Boolean(aiSpecialPrefs?.safeAreaPriority)
       },
       filters: {
         minPrice: Number(el('stayPriceMin').value || 0),

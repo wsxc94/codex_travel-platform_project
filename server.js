@@ -288,7 +288,43 @@ const MUST_ATTRACTIONS = [
   { name: '츄라우미 수족관', cityKey: 'okinawa', area: '오키나와', aliases: ['츄라우미 수족관', 'churaumi aquarium'] },
   { name: '국제거리', cityKey: 'okinawa', area: '오키나와', aliases: ['국제거리', 'kokusai dori'] },
   { name: '벳푸 지옥온천', cityKey: 'oita', area: '오이타', aliases: ['벳푸 지옥온천', 'beppu hells'] },
-  { name: '유후인', cityKey: 'oita', area: '오이타', aliases: ['유후인', 'yufuin'] }
+  { name: '유후인', cityKey: 'oita', area: '오이타', aliases: ['유후인', 'yufuin'] },
+  { name: '우에노 공원', cityKey: 'tokyo', area: '도쿄', aliases: ['우에노공원', '우에노 공원', 'ueno park'] },
+  { name: '메구로강', cityKey: 'tokyo', area: '도쿄', aliases: ['메구로강', '메구로 강', 'meguro river'] },
+  { name: '오타루 운하', cityKey: 'sapporo', area: '삿포로', aliases: ['오타루', '오타루 운하', 'otaru canal'] },
+  { name: '다자이후 텐만구', cityKey: 'fukuoka', area: '후쿠오카', aliases: ['다자이후', '다자이후 텐만구', 'dazaifu tenmangu'] },
+  { name: '노토반도', cityKey: 'kanazawa', area: '가나자와', aliases: ['노토반도', '노토 반도', 'noto peninsula'] },
+  { name: '시라카와고', cityKey: 'kanazawa', area: '가나자와', aliases: ['시라카와고', 'shirakawago'] },
+  { name: '원폭돔', cityKey: 'hiroshima', area: '히로시마', aliases: ['원폭돔', '원폭 돔', 'atomic bomb dome'] },
+  { name: '사쿠라지마', cityKey: 'kagoshima', area: '가고시마', aliases: ['사쿠라지마', 'sakurajima'] },
+  { name: '후라노 라벤더밭', cityKey: 'asahikawa', area: '아사히카와', aliases: ['후라노', '라벤더', 'furano lavender'] },
+  { name: '비에이 청의 호수', cityKey: 'asahikawa', area: '아사히카와', aliases: ['비에이', '청의 호수', 'biei blue pond'] },
+  { name: '후지큐 하이랜드', cityKey: 'tokyo', area: '도쿄', aliases: ['후지큐', '후지큐 하이랜드', 'fujikyu highland'] },
+  { name: '나가시마 스파랜드', cityKey: 'nagoya', area: '나고야', aliases: ['나가시마 스파랜드', 'nagashima spa land'] },
+  { name: '닌텐도 뮤지엄', cityKey: 'kyoto', area: '교토', aliases: ['닌텐도 뮤지엄', 'nintendo museum'] },
+  { name: '지브리파크', cityKey: 'nagoya', area: '나고야', aliases: ['지브리파크', 'ghibli park'] },
+  { name: '도쿄 해리포터 스튜디오', cityKey: 'tokyo', area: '도쿄', aliases: ['해리포터 스튜디오', 'harry potter studio tokyo'] },
+  { name: '하코다테 아침시장', cityKey: 'hakodate', area: '하코다테', aliases: ['하코다테 아침시장', 'hakodate morning market'] },
+  { name: '니가타 사케 양조장', cityKey: 'niigata', area: '니가타', aliases: ['사케 양조장', '사케 투어', 'brewery tour'] },
+  { name: '오키나와 스노클링', cityKey: 'okinawa', area: '오키나와', aliases: ['스노클링', 'snorkeling'] },
+  { name: '알펜루트', cityKey: 'toyama', area: '도야마', aliases: ['알펜루트', '다테야마 쿠로베', 'tateyama kurobe alpine route'] },
+  { name: '구마노고도', cityKey: 'kobe', area: '고베', aliases: ['구마노고도', 'kumano kodo'] },
+  { name: '가마쿠라', cityKey: 'tokyo', area: '도쿄', aliases: ['가마쿠라', 'kamakura'] },
+  { name: '에노시마', cityKey: 'tokyo', area: '도쿄', aliases: ['에노시마', 'enoshima'] },
+  { name: '오이라세 계곡', cityKey: 'aomori', area: '아오모리', aliases: ['오이라세 계곡', 'oirase gorge'] },
+  { name: '시레토코 국립공원', cityKey: 'memanbetsu', area: '메만베쓰', aliases: ['시레토코', 'shiretoko'] },
+  { name: '야쿠시마 트레킹', cityKey: 'yakushima', area: '야쿠시마', aliases: ['야쿠시마', 'yakushima'] },
+  { name: '아소산', cityKey: 'kumamoto', area: '구마모토', aliases: ['아소산', 'aso'] },
+  { name: '돗토리 사구', cityKey: 'tottori', area: '돗토리', aliases: ['돗토리 사구', 'tottori sand dune'] },
+  { name: '카미코치', cityKey: 'matsumoto', area: '마쓰모토', aliases: ['카미코치', 'kamikochi'] },
+  { name: '쿠사츠 온천', cityKey: 'tokyo', area: '도쿄', aliases: ['쿠사츠 온천', 'kusatsu onsen'] },
+  { name: '긴잔 온천', cityKey: 'yamagata', area: '야마가타', aliases: ['긴잔온천', '긴잔 온천', 'ginzan onsen'] },
+  { name: '노보리베츠 온천', cityKey: 'sapporo', area: '삿포로', aliases: ['노보리베츠', 'noboribetsu'] },
+  { name: '게로 온천', cityKey: 'nagoya', area: '나고야', aliases: ['게로온천', '게로 온천', 'gero onsen'] },
+  { name: '키노사키 온천', cityKey: 'tajima', area: '다지마', aliases: ['키노사키', 'kinosaki onsen'] },
+  { name: '아리마 온천', cityKey: 'kobe', area: '고베', aliases: ['아리마 온천', 'arima onsen'] },
+  { name: '시부 온천', cityKey: 'matsumoto', area: '마쓰모토', aliases: ['시부온천', '시부 온천', 'shibu onsen'] },
+  { name: '스노우몽키 파크', cityKey: 'matsumoto', area: '마쓰모토', aliases: ['스노우몽키', 'snow monkey'] }
 ];
 
 function matchMustAttractions(text) {
@@ -415,6 +451,10 @@ function cityKeyByInput(input) {
   for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
     if (aliases.some((alias) => raw.includes(String(alias).toLowerCase()))) return key;
   }
+  for (const [key, city] of Object.entries(CITY_DATA)) {
+    const label = String(city?.label || '').toLowerCase();
+    if ((label && raw.includes(label)) || raw.includes(String(key).toLowerCase())) return key;
+  }
   return 'tokyo';
 }
 
@@ -424,6 +464,10 @@ function detectCityKeyByInput(input) {
   if (CITY_DATA[raw]) return raw;
   for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
     if (aliases.some((alias) => raw.includes(String(alias).toLowerCase()))) return key;
+  }
+  for (const [key, city] of Object.entries(CITY_DATA)) {
+    const label = String(city?.label || '').toLowerCase();
+    if ((label && raw.includes(label)) || raw.includes(String(key).toLowerCase())) return key;
   }
   return '';
 }
@@ -436,6 +480,28 @@ function cityKeyFromLandmark(text) {
   return '';
 }
 
+function detectAllCityKeysFromText(text) {
+  const raw = String(text || '').toLowerCase();
+  const found = new Set();
+  for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
+    if (aliases.some((a) => raw.includes(String(a).toLowerCase()))) {
+      found.add(key);
+    }
+  }
+  for (const [key, city] of Object.entries(CITY_DATA)) {
+    const label = String(city?.label || '').toLowerCase();
+    if ((label && raw.includes(label)) || raw.includes(String(key).toLowerCase())) {
+      found.add(key);
+    }
+  }
+  for (const [key, words] of Object.entries(LANDMARK_CITY_HINTS)) {
+    if (words.some((w) => raw.includes(String(w).toLowerCase()))) {
+      found.add(key);
+    }
+  }
+  return Array.from(found);
+}
+
 function cityKeyByAirport(airportCode) {
   const code = String(airportCode || '').toUpperCase().trim();
   if (!code) return '';
@@ -443,6 +509,118 @@ function cityKeyByAirport(airportCode) {
     if (String(city.airport || '').toUpperCase() === code) return key;
   }
   return '';
+}
+
+function detectMentionedCityKeysOrdered(text) {
+  const raw = String(text || '').toLowerCase();
+  if (!raw) return [];
+  const hits = [];
+  const pushHit = (key, idx) => {
+    if (!key || idx < 0) return;
+    if (hits.some((h) => h.key === key)) return;
+    hits.push({ key, idx });
+  };
+
+  for (const [key, city] of Object.entries(CITY_DATA)) {
+    const label = String(city?.label || '').toLowerCase();
+    if (label) {
+      const idx = raw.indexOf(label);
+      if (idx >= 0) pushHit(key, idx);
+    }
+    const keyIdx = raw.indexOf(String(key).toLowerCase());
+    if (keyIdx >= 0) pushHit(key, keyIdx);
+  }
+
+  for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
+    for (const alias of aliases || []) {
+      const a = String(alias || '').toLowerCase().trim();
+      if (!a) continue;
+      const idx = raw.indexOf(a);
+      if (idx >= 0) pushHit(key, idx);
+    }
+  }
+
+  hits.sort((a, b) => a.idx - b.idx);
+  return hits.map((h) => h.key);
+}
+
+function detectCityMentionsDetailed(text) {
+  const raw = String(text || '');
+  const lower = raw.toLowerCase();
+  if (!raw) return [];
+  const hits = [];
+  const push = (key, idx, matched) => {
+    if (!key || idx < 0) return;
+    const exist = hits.find((h) => h.key === key && h.idx === idx);
+    if (exist) return;
+    hits.push({ key, idx, matched });
+  };
+
+  for (const [key, city] of Object.entries(CITY_DATA)) {
+    const label = String(city?.label || '').trim();
+    if (label) {
+      let from = 0;
+      while (from < raw.length) {
+        const idx = raw.indexOf(label, from);
+        if (idx < 0) break;
+        push(key, idx, label);
+        from = idx + Math.max(1, label.length);
+      }
+    }
+    const keyText = String(key).toLowerCase();
+    if (keyText) {
+      let from = 0;
+      while (from < lower.length) {
+        const idx = lower.indexOf(keyText, from);
+        if (idx < 0) break;
+        push(key, idx, keyText);
+        from = idx + Math.max(1, keyText.length);
+      }
+    }
+  }
+
+  for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
+    for (const aliasRaw of aliases || []) {
+      const alias = String(aliasRaw || '').trim();
+      if (!alias) continue;
+      const aliasLower = alias.toLowerCase();
+      let from = 0;
+      while (from < lower.length) {
+        const idx = lower.indexOf(aliasLower, from);
+        if (idx < 0) break;
+        push(key, idx, alias);
+        from = idx + Math.max(1, aliasLower.length);
+      }
+    }
+  }
+
+  hits.sort((a, b) => a.idx - b.idx);
+  const dedupKeys = [];
+  const seen = new Set();
+  for (const h of hits) {
+    if (seen.has(h.key)) continue;
+    seen.add(h.key);
+    dedupKeys.push(h);
+  }
+  return dedupKeys;
+}
+
+function detectMentionedCityKeysByLabels(text) {
+  const raw = String(text || '');
+  const lower = raw.toLowerCase();
+  const found = [];
+  for (const [key, city] of Object.entries(CITY_DATA)) {
+    const label = String(city?.label || '').trim();
+    if (label && raw.includes(label) && !found.includes(key)) {
+      found.push(key);
+      continue;
+    }
+    const keyText = String(key).toLowerCase();
+    if (keyText && lower.includes(keyText) && !found.includes(key)) {
+      found.push(key);
+    }
+  }
+  return found;
 }
 
 function toCustomCityKey(label) {
@@ -465,15 +643,24 @@ function findNearestAirportCode(lat, lng, fallbackCode = 'NRT') {
 function extractRequestedLocality(text) {
   const raw = String(text || '');
   if (!raw) return '';
+  const skip = new Set([
+    '일본', '여행', '숙소', '공항', '맛집', '음식', '온천', '쇼핑', '일정', '관광', '동선', '이동', '휴식', '추천',
+    '예산', '가성비', '실내', '수족관', '기준', '지역', '중심', '위주', '하루', '기간', '좋은', '동네'
+  ]);
   const nested = raw.match(/의\s*([가-힣A-Za-z]{2,20}?)(?=라는|에서|으로|근처|쪽|\s|$)/);
   if (nested && nested[1]) {
-    return nested[1].trim();
+    const token = nested[1].trim();
+    if (!skip.has(token)) {
+      const isKnown = Boolean(detectCityKeyByInput(token) || LOCALITY_PARENT_CITY_MAP[token] || cityKeyFromLandmark(token));
+      if (isKnown) return token;
+    }
   }
   const matches = raw.match(/([가-힣A-Za-z]{2,20})(?:의|에서|으로|근처|쪽)/g) || [];
-  const skip = new Set(['일본', '여행', '숙소', '공항', '맛집', '음식', '온천', '쇼핑']);
   for (const m of matches) {
     const token = m.replace(/(?:의|에서|으로|근처|쪽)$/, '').trim();
     if (!token || skip.has(token)) continue;
+    const isKnown = Boolean(detectCityKeyByInput(token) || LOCALITY_PARENT_CITY_MAP[token] || cityKeyFromLandmark(token));
+    if (!isKnown) continue;
     return token;
   }
   return '';
@@ -578,6 +765,19 @@ function parseStartDateFromText(text) {
     const d = new Date(year, Number(md[1]) - 1, Number(md[2]));
     if (!Number.isNaN(d.getTime())) return formatDateISO(d);
   }
+  const monthOnly = raw.match(/(\d{1,2})\s*월(?:\s*(초|중|말))?/);
+  if (monthOnly) {
+    const now = new Date();
+    let year = now.getFullYear();
+    const month = clamp(Number(monthOnly[1]), 1, 12);
+    const phase = monthOnly[2] || '';
+    const day = phase === '초' ? 5 : phase === '중' ? 15 : phase === '말' ? 25 : 10;
+    let d = new Date(year, month - 1, day);
+    if (d.getTime() < now.getTime() - (1000 * 60 * 60 * 24 * 30)) {
+      d = new Date(year + 1, month - 1, day);
+    }
+    if (!Number.isNaN(d.getTime())) return formatDateISO(d);
+  }
   if (/내일/.test(raw)) {
     const d = new Date();
     d.setDate(d.getDate() + 1);
@@ -589,6 +789,23 @@ function parseStartDateFromText(text) {
     return formatDateISO(d);
   }
   return '';
+}
+
+function inferSeasonalStartDate(text, fallbackDate = '') {
+  const raw = String(text || '');
+  if (!raw) return fallbackDate || '';
+  const hasExplicit = Boolean(parseStartDateFromText(raw));
+  if (hasExplicit) return parseStartDateFromText(raw);
+  if (/알펜루트/.test(raw) && /설벽/.test(raw)) {
+    const now = new Date();
+    let year = now.getFullYear();
+    let d = new Date(year, 4, 10); // May 10
+    if (d.getTime() < now.getTime() - (1000 * 60 * 60 * 24 * 30)) {
+      d = new Date(year + 1, 4, 10);
+    }
+    return formatDateISO(d);
+  }
+  return fallbackDate || '';
 }
 
 function parseDaysFromText(text, fallback = 4) {
@@ -606,7 +823,8 @@ function parseDaysFromText(text, fallback = 4) {
 
 function parseThemeFromText(text, fallback = 'mixed') {
   const raw = String(text || '').toLowerCase();
-  if (/쇼핑|아울렛|백화점|드럭스토어|구매|shopping|outlet|mall/.test(raw)) return 'shopping';
+  const removeShopping = /쇼핑\s*빼|쇼핑\s*제외|쇼핑\s*말고/.test(raw);
+  if (!removeShopping && /쇼핑|아울렛|백화점|드럭스토어|구매|shopping|outlet|mall/.test(raw)) return 'shopping';
   if (/자연|온천|트레킹|바다|해변|공원|산|nature|onsen|hiking|beach|park/.test(raw)) return 'nature';
   if (/신사|절|박물관|역사|문화|전통|culture|museum|historic|temple/.test(raw)) return 'culture';
   if (/라멘|스시|교자|먹방|맛집|미식|이자카야|음식|food|restaurant|ramen|sushi|gyoza/.test(raw)) return 'foodie';
@@ -618,6 +836,48 @@ function parseBudgetFromText(text, fallback = 'mid') {
   if (/가성비|저렴|절약|싸게|저예산|cheap|budget|low cost/.test(raw)) return 'low';
   if (/럭셔리|고급|프리미엄|좋은 호텔|5성급|luxury|premium|high end/.test(raw)) return 'high';
   return fallback;
+}
+
+function parseSpecialPrefsFromText(text) {
+  const raw = String(text || '');
+  const lower = raw.toLowerCase();
+  const maxPlacesMatch = raw.match(/하루\s*([2-5])\s*~?\s*([2-5])?\s*개?/);
+  const maxPlacesPerDay = maxPlacesMatch
+    ? clamp(Number(maxPlacesMatch[2] || maxPlacesMatch[1]), 1, 5)
+    : (/(빡빡|여유|느긋|천천히|널널)/.test(raw) ? 2 : 3);
+
+  return {
+    indoorFocus: /실내|비\s*오|우천|rain|indoor/.test(raw),
+    relaxedPace: /여유|느긋|천천히|빡빡.*줄|타이트.*줄/.test(raw),
+    maxPlacesPerDay,
+    removeShopping: /쇼핑\s*빼|쇼핑\s*제외|쇼핑\s*말고/.test(raw),
+    optimizeTransit: /동선\s*최적|교통\s*이동\s*많|이동시간\s*최소|환승\s*적/.test(raw),
+    addRestDay: /휴식일|하루\s*쉬|아무것도\s*안/.test(raw),
+    replaceUniversalWithAquarium: /유니버셜\s*대신\s*수족관/.test(raw),
+    adjustKyotoUpOsakaDown: /교토.*하루.*늘|오사카.*줄/.test(raw),
+    lateStart: /아침\s*늦|늦게\s*시작|브런치\s*후/.test(raw),
+    moreCafes: /카페\s*많|카페\s*위주/.test(raw),
+    lowWalking: /많이\s*걷지|도보\s*최소|걷기\s*적/.test(raw),
+    safeAreaPriority: /안전한\s*동네|치안/.test(raw),
+    nightViewFocus: /야경\s*많|night view/.test(lower),
+    strollerFriendly: /유모차|아이랑|아기랑|baby|stroller/.test(lower),
+    rentalCarMode: /렌터카|렌트카|drive|driving/.test(lower),
+    jrPassMode: /jr\s*패스|jrpass|레일패스/.test(lower),
+    snowFocus: /눈\s*많|설경|snow/.test(lower),
+    firstDayShort: /첫날\s*짧|늦게\s*도착|비행기\s*늦/.test(raw),
+    lastDayAirportBufferMin: /공항\s*3시간\s*전/.test(raw) ? 180 : 120,
+    firstTimeJapan: /일본\s*처음|처음\s*일본/.test(raw),
+    localVibeFocus: /유명한데\s*말고|일본\s*느낌|로컬\s*동네/.test(raw),
+    lessCrowded: /사람\s*적|한적|붐비지\s*않|덜\s*붐비/.test(raw),
+    foodAndWalkFocus: /먹는거|먹거리|산책\s*위주|먹고\s*산책/.test(raw),
+    photoSpotsFocus: /사진\s*찍기|포토스팟|인생샷/.test(raw),
+    animeVibeFocus: /애니|animation|anime/.test(lower),
+    doNothingDay: /아무것도\s*안하는\s*일정/.test(raw),
+    minimizeTravelTime: /이동시간\s*최소|이동\s*최소|동선\s*짧/.test(raw),
+    oceanViewStay: /바다\s*보이는\s*숙소|오션뷰/.test(raw),
+    cheapFlightPriority: /비행기값\s*싼|항공권\s*저렴/.test(raw),
+    publicTransitOnly: /대중교통만|지하철만|버스만|차\s*없이/.test(raw)
+  };
 }
 
 function extractAirportCodeFromText(text) {
@@ -638,7 +898,8 @@ function extractPreferredAreas(text, cityKey) {
 const FOOD_KEYWORDS = [
   '장어덮밥', '장어 덮밥', '히츠마부시', '교자', '라멘', '스시', '오코노미야키', '타코야키',
   '규카츠', '돈카츠', '카레', '우동', '소바', '야키니쿠', '이자카야',
-  '카이센동', '짬뽕', '모츠나베', '디저트', '카페'
+  '카이센동', '짬뽕', '모츠나베', '디저트', '카페', '멘타이코', '스프카레',
+  '징기스칸', '가이세키', '오마카세', '해산물'
 ];
 
 function parseFoodKeywordFromText(text) {
@@ -727,9 +988,347 @@ function buildSyntheticWantedDestinations(wantedPlaces, cityKey) {
   return list.slice(0, 4);
 }
 
+function cityKeyByLabel(label) {
+  const target = String(label || '').trim();
+  if (!target) return '';
+  for (const [k, v] of Object.entries(CITY_DATA)) {
+    if (String(v.label || '').trim() === target) return k;
+  }
+  return detectCityKeyByInput(target) || '';
+}
+
+const CITY_TRANSFER_HINTS = {
+  '오사카|교토': 'JR/한큐 약 30~60분',
+  '도쿄|교토': '신칸센 약 2시간 10분',
+  '도쿄|오사카': '신칸센 약 2시간 30분',
+  '오사카|나라': '전철 약 40~60분',
+  '오사카|고베': '전철 약 30~50분',
+  '교토|나라': '전철 약 45~60분'
+};
+
+function transferHint(fromCity, toCity) {
+  const a = String(fromCity || '').trim();
+  const b = String(toCity || '').trim();
+  if (!a || !b || a === b) return '대중교통 기준 이동';
+  const key1 = `${a}|${b}`;
+  const key2 = `${b}|${a}`;
+  return CITY_TRANSFER_HINTS[key1] || CITY_TRANSFER_HINTS[key2] || '대중교통 기준 1~3시간';
+}
+
+function deriveRouteCities(payload, picks, defaultCityLabel) {
+  const out = [];
+  const add = (label) => {
+    const v = String(label || '').trim();
+    if (!v) return;
+    if (!out.includes(v)) out.push(v);
+  };
+
+  const regionDayPlan = Array.isArray(payload._regionDayPlan) ? payload._regionDayPlan : [];
+  regionDayPlan.forEach((item) => {
+    const cityLabel = String(item?.cityLabel || '').trim();
+    const key = cityKeyByInput(cityLabel) || cityKeyByLabel(cityLabel);
+    const city = CITY_DATA[key];
+    add(city?.label || cityLabel);
+  });
+
+  const routeCities = Array.isArray(payload._routeCities) ? payload._routeCities : [];
+  routeCities.forEach((c) => {
+    const k = cityKeyByInput(c);
+    const city = CITY_DATA[k];
+    add(city?.label || c);
+  });
+
+  const cityCount = new Map();
+  (Array.isArray(picks) ? picks : []).forEach((p) => {
+    const c = String(p?.city || '').trim();
+    if (!c) return;
+    cityCount.set(c, (cityCount.get(c) || 0) + 1);
+  });
+  const sortedByCount = Array.from(cityCount.entries()).sort((a, b) => b[1] - a[1]).map(([c]) => c);
+  sortedByCount.forEach(add);
+  add(defaultCityLabel);
+  return out;
+}
+
+function resolveCityLabelFromRegionToken(token, fallbackCityKey = '') {
+  const raw = String(token || '').trim();
+  if (!raw) return '';
+  const cleaned = raw.replace(/[(){}\[\],.!?]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!cleaned) return '';
+  const stopWords = ['일정', '여행', '추천', '숙소', '공항', '맛집', '테마', '지역', '도시', '주말', '평일'];
+  if (stopWords.includes(cleaned)) return '';
+  const directKey = detectCityKeyByInput(cleaned) || cityKeyByLabel(cleaned);
+  if (directKey && CITY_DATA[directKey]) return CITY_DATA[directKey].label;
+  const orderedKeys = detectMentionedCityKeysOrdered(cleaned);
+  if (orderedKeys.length > 0 && CITY_DATA[orderedKeys[0]]) return CITY_DATA[orderedKeys[0]].label;
+  const locality = extractRequestedLocality(cleaned);
+  if (locality) {
+    const mapped = LOCALITY_PARENT_CITY_MAP[locality] || cityKeyFromLandmark(locality);
+    if (mapped && CITY_DATA[mapped]) return CITY_DATA[mapped].label;
+  }
+  const byLandmark = cityKeyFromLandmark(cleaned);
+  if (byLandmark && CITY_DATA[byLandmark]) return CITY_DATA[byLandmark].label;
+  const fallbackKey = detectCityKeyByInput(fallbackCityKey);
+  if (fallbackKey && CITY_DATA[fallbackKey]) return CITY_DATA[fallbackKey].label;
+  return '';
+}
+
+function extractRegionDayPlanFromText(text, fallbackCityKey = '') {
+  const raw = String(text || '');
+  if (!raw) return [];
+  const byCityWindow = [];
+  const mentions = detectCityMentionsDetailed(raw);
+  for (let i = 0; i < mentions.length; i += 1) {
+    const curr = mentions[i];
+    const next = mentions[i + 1];
+    const end = next ? next.idx : raw.length;
+    const window = raw.slice(curr.idx, end);
+    const cityLabel = CITY_DATA[curr.key]?.label || '';
+    if (!cityLabel) continue;
+    const night = window.match(/(\d{1,2})\s*박/i);
+    const day = window.match(/(\d{1,2})\s*일/i);
+    if (night) byCityWindow.push({ cityLabel, days: clamp(Number(night[1]), 1, 10), unit: 'night' });
+    else if (day) byCityWindow.push({ cityLabel, days: clamp(Number(day[1]), 1, 10), unit: 'day' });
+  }
+  if (byCityWindow.length > 0) {
+    return normalizeRegionDayPlan(byCityWindow, []);
+  }
+
+  const list = [];
+  const pushHint = (cityToken, amount, unit) => {
+    const token = String(cityToken || '').trim();
+    if (!token) return;
+    if (/[0-9]/.test(token)) return;
+    if (/박|일|night|day|여행|일정/i.test(token)) return;
+    const n = clamp(Number(amount), 1, 10);
+    if (!Number.isFinite(n) || n <= 0) return;
+    const cityLabel = resolveCityLabelFromRegionToken(token, '');
+    if (!cityLabel) return;
+    list.push({ cityLabel, days: n, unit: unit === 'night' ? 'night' : 'day' });
+  };
+
+  const patterns = [
+    { re: /([가-힣A-Za-z][가-힣A-Za-z\s]{0,18}?)(?:에서|은|는|에|쪽)?\s*(\d{1,2})\s*박/g, unit: 'night', tokenIdx: 1, numIdx: 2 },
+    { re: /([가-힣A-Za-z][가-힣A-Za-z\s]{0,18}?)(?:에서|은|는|에|쪽)?\s*(\d{1,2})\s*일/g, unit: 'day', tokenIdx: 1, numIdx: 2 },
+    { re: /(\d{1,2})\s*박\s*([가-힣A-Za-z][가-힣A-Za-z\s]{0,18})/g, unit: 'night', tokenIdx: 2, numIdx: 1 },
+    { re: /(\d{1,2})\s*일\s*([가-힣A-Za-z][가-힣A-Za-z\s]{0,18})/g, unit: 'day', tokenIdx: 2, numIdx: 1 }
+  ];
+
+  for (const p of patterns) {
+    let match = null;
+    while ((match = p.re.exec(raw)) !== null) {
+      pushHint(match[p.tokenIdx], match[p.numIdx], p.unit);
+    }
+  }
+
+  // Known-city targeted parsing for "교토 1박", "오사카 2일" style.
+  for (const [key, city] of Object.entries(CITY_DATA)) {
+    const label = String(city?.label || '').trim();
+    if (!label || !raw.includes(label)) continue;
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const night = new RegExp(`${escaped}\\s*(?:에서|은|는|에|쪽)?\\s*(\\d{1,2})\\s*박`);
+    const day = new RegExp(`${escaped}\\s*(?:에서|은|는|에|쪽)?\\s*(\\d{1,2})\\s*일`);
+    const mNight = raw.match(night);
+    if (mNight) list.push({ cityLabel: CITY_DATA[key].label, days: clamp(Number(mNight[1]), 1, 10), unit: 'night' });
+    const mDay = raw.match(day);
+    if (mDay) list.push({ cityLabel: CITY_DATA[key].label, days: clamp(Number(mDay[1]), 1, 10), unit: 'day' });
+  }
+
+  const merged = new Map();
+  for (const item of list) {
+    const key = `${item.cityLabel}|${item.unit}`;
+    const prev = merged.get(key);
+    if (!prev) merged.set(key, { ...item });
+    else prev.days = clamp(prev.days + item.days, 1, 10);
+  }
+  const normalized = Array.from(merged.values()).filter((x) => {
+    const label = String(x.cityLabel || '');
+    return !/^(으로|로|에서|여행|일정)$/.test(label);
+  }).slice(0, 6);
+  if (normalized.length > 0) return normalized;
+  if (fallbackCityKey && CITY_DATA[fallbackCityKey]) {
+    return [];
+  }
+  return [];
+}
+
+function inferDaysFromRegionPlan(regionDayPlan, fallbackDays) {
+  const plan = Array.isArray(regionDayPlan) ? regionDayPlan : [];
+  if (plan.length === 0) return clamp(Number(fallbackDays || 4), 1, 10);
+  const dayTotal = plan.filter((x) => x.unit === 'day').reduce((acc, x) => acc + Number(x.days || 0), 0);
+  const nightTotal = plan.filter((x) => x.unit === 'night').reduce((acc, x) => acc + Number(x.days || 0), 0);
+  if (dayTotal > 0 && nightTotal === 0) return clamp(dayTotal, 1, 10);
+  if (dayTotal === 0 && nightTotal > 0) return clamp(nightTotal + 1, 1, 10);
+  return clamp(dayTotal + nightTotal, 1, 10);
+}
+
+function normalizeRegionDayPlan(rawPlan, fallback = []) {
+  const src = Array.isArray(rawPlan) ? rawPlan : (Array.isArray(fallback) ? fallback : []);
+  const out = [];
+  const seen = new Set();
+  for (const item of src) {
+    const cityToken = String(item?.cityLabel || item?.city || '').trim();
+    const cityLabel = resolveCityLabelFromRegionToken(cityToken, '');
+    if (!cityLabel) continue;
+    const unit = String(item?.unit || 'day').toLowerCase() === 'night' ? 'night' : 'day';
+    const days = clamp(Number(item?.days || 0), 1, 10);
+    const key = `${cityLabel}|${unit}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ cityLabel, days, unit });
+    if (out.length >= 6) break;
+  }
+  return out;
+}
+
+function allocateDaysByCities(routeCities, picks, totalDays, regionDayPlan = []) {
+  const days = Math.max(1, Number(totalDays) || 1);
+  if (!Array.isArray(routeCities) || routeCities.length === 0) return new Array(days).fill('');
+  if (routeCities.length === 1) return routeCities.flatMap((c) => new Array(days).fill(c));
+
+  const normalizedPlan = normalizeRegionDayPlan(regionDayPlan, []);
+  if (normalizedPlan.length > 0) {
+    const route = Array.from(new Set([
+      ...routeCities.map((c) => String(c || '').trim()).filter(Boolean),
+      ...normalizedPlan.map((x) => x.cityLabel)
+    ]));
+    const planByCity = new Map(route.map((c) => [c, 0]));
+    const explicitDays = normalizedPlan.filter((x) => x.unit === 'day');
+    const explicitNights = normalizedPlan.filter((x) => x.unit === 'night');
+
+    if (explicitDays.length > 0) {
+      explicitDays.forEach((x) => {
+        planByCity.set(x.cityLabel, (planByCity.get(x.cityLabel) || 0) + x.days);
+      });
+      let remain = days - Array.from(planByCity.values()).reduce((a, b) => a + b, 0);
+      if (remain > 0 && explicitNights.length > 0) {
+        const weights = explicitNights.map((x) => ({ city: x.cityLabel, weight: x.days }));
+        const sumW = weights.reduce((a, b) => a + b.weight, 0) || 1;
+        const dist = weights.map((x) => ({
+          city: x.city,
+          add: Math.floor((x.weight / sumW) * remain),
+          frac: ((x.weight / sumW) * remain) % 1
+        }));
+        dist.forEach((x) => planByCity.set(x.city, (planByCity.get(x.city) || 0) + x.add));
+        let rest = remain - dist.reduce((a, b) => a + b.add, 0);
+        dist.sort((a, b) => b.frac - a.frac);
+        let idx = 0;
+        while (rest > 0 && dist.length > 0) {
+          const cityLabel = dist[idx % dist.length].city;
+          planByCity.set(cityLabel, (planByCity.get(cityLabel) || 0) + 1);
+          rest -= 1;
+          idx += 1;
+        }
+      }
+    } else {
+      const sumNights = explicitNights.reduce((a, b) => a + b.days, 0);
+      if (sumNights > 0) {
+        if (days === sumNights + 1) {
+          explicitNights.forEach((x) => {
+            planByCity.set(x.cityLabel, (planByCity.get(x.cityLabel) || 0) + x.days);
+          });
+          planByCity.set(explicitNights[0].cityLabel, (planByCity.get(explicitNights[0].cityLabel) || 0) + 1);
+        } else {
+          const dist = explicitNights.map((x) => ({
+            city: x.cityLabel,
+            add: Math.max(1, Math.floor((x.days / sumNights) * days)),
+            frac: ((x.days / sumNights) * days) % 1
+          }));
+          dist.forEach((x) => planByCity.set(x.city, x.add));
+          let remain = days - dist.reduce((a, b) => a + b.add, 0);
+          dist.sort((a, b) => b.frac - a.frac);
+          let idx = 0;
+          while (remain > 0 && dist.length > 0) {
+            const cityLabel = dist[idx % dist.length].city;
+            planByCity.set(cityLabel, (planByCity.get(cityLabel) || 0) + 1);
+            remain -= 1;
+            idx += 1;
+          }
+        }
+      }
+    }
+
+    let sumAlloc = Array.from(planByCity.values()).reduce((a, b) => a + b, 0);
+    if (sumAlloc < days) {
+      const fillOrder = route.length > 0 ? route : routeCities;
+      let idx = 0;
+      while (sumAlloc < days && fillOrder.length > 0) {
+        const cityLabel = fillOrder[idx % fillOrder.length];
+        planByCity.set(cityLabel, (planByCity.get(cityLabel) || 0) + 1);
+        sumAlloc += 1;
+        idx += 1;
+      }
+    } else if (sumAlloc > days) {
+      const reduceOrder = [...route].reverse();
+      let idx = 0;
+      while (sumAlloc > days && reduceOrder.length > 0) {
+        const cityLabel = reduceOrder[idx % reduceOrder.length];
+        const curr = planByCity.get(cityLabel) || 0;
+        if (curr > 1) {
+          planByCity.set(cityLabel, curr - 1);
+          sumAlloc -= 1;
+        }
+        idx += 1;
+        if (idx > 200) break;
+      }
+      while (sumAlloc > days) {
+        const cityLabel = route[route.length - 1] || route[0];
+        const curr = planByCity.get(cityLabel) || 0;
+        if (curr <= 0) break;
+        planByCity.set(cityLabel, curr - 1);
+        sumAlloc -= 1;
+      }
+    }
+
+    const sequence = [];
+    route.forEach((c) => {
+      const d = Math.max(0, Number(planByCity.get(c) || 0));
+      for (let i = 0; i < d; i += 1) sequence.push(c);
+    });
+    if (sequence.length < days) {
+      const fill = route[0] || routeCities[0] || '';
+      while (sequence.length < days) sequence.push(fill);
+    }
+    return sequence.slice(0, days);
+  }
+
+  const counts = new Map(routeCities.map((c) => [c, 1]));
+  (Array.isArray(picks) ? picks : []).forEach((p) => {
+    const c = String(p?.city || '').trim();
+    if (!c || !counts.has(c)) return;
+    counts.set(c, counts.get(c) + 1);
+  });
+
+  const sum = Array.from(counts.values()).reduce((a, b) => a + b, 0) || 1;
+  const baseAlloc = new Map(routeCities.map((c) => [c, 1]));
+  let remaining = days - routeCities.length;
+
+  if (remaining > 0) {
+    const ratios = routeCities.map((c) => {
+      const exact = (counts.get(c) / sum) * days;
+      return { c, frac: exact - Math.floor(exact) };
+    }).sort((a, b) => b.frac - a.frac);
+    let idx = 0;
+    while (remaining > 0) {
+      const target = ratios[idx % ratios.length].c;
+      baseAlloc.set(target, (baseAlloc.get(target) || 1) + 1);
+      remaining -= 1;
+      idx += 1;
+    }
+  }
+
+  const sequence = [];
+  routeCities.forEach((c) => {
+    const d = Math.max(1, baseAlloc.get(c) || 1);
+    for (let i = 0; i < d; i += 1) sequence.push(c);
+  });
+  return sequence.slice(0, days);
+}
+
 function parseTravelChatInput(payload = {}) {
   const message = String(payload.message || '').trim();
   const context = payload.context || {};
+  const specialPrefs = parseSpecialPrefsFromText(message);
   const locality = extractRequestedLocality(message);
   const fallbackCity = cityKeyByInput(context.city || 'tokyo');
   const airportInText = extractAirportCodeFromText(message);
@@ -744,6 +1343,23 @@ function parseTravelChatInput(payload = {}) {
   const useLocalityAsCity = Boolean(locality) && (explicitLocality || !localityMappedCity);
   const cityLabel = useLocalityAsCity ? locality : city.label;
   const rawWantedPlaces = extractWantedPlacesFromMessage(message, cityKey);
+  const mustMatches = matchMustAttractions(message);
+  const mentionedCityKeys = Array.from(new Set([
+    ...detectMentionedCityKeysByLabels(message),
+    ...detectMentionedCityKeysOrdered(message),
+    ...detectAllCityKeysFromText(message)
+  ]));
+  let inferredCityKeys = [...mentionedCityKeys];
+  if (specialPrefs.cheapFlightPriority && inferredCityKeys.length === 0) {
+    inferredCityKeys = ['osaka', 'fukuoka', 'tokyo'];
+  }
+  const routeCityKeys = Array.from(new Set([cityKey, ...mustMatches.map((m) => m.cityKey), ...inferredCityKeys]));
+  const routeCities = routeCityKeys.map((k) => CITY_DATA[k]?.label || k);
+  const regionDayPlan = normalizeRegionDayPlan(extractRegionDayPlanFromText(message, cityKey), []);
+  const hasGlobalTripDays = /(\d{1,2})\s*박\s*(\d{1,2})\s*일|(\d{1,2})\s*일\s*(\d{1,2})\s*박/.test(message);
+  const parsedDays = parseDaysFromText(message, context.days || 4);
+  const inferredDays = inferDaysFromRegionPlan(regionDayPlan, parsedDays);
+  const finalDays = hasGlobalTripDays ? parsedDays : Math.max(parsedDays, inferredDays);
   const wantedPlaces = rawWantedPlaces.filter((name) => {
     const n = String(name || '').trim();
     if (!n) return false;
@@ -752,23 +1368,40 @@ function parseTravelChatInput(payload = {}) {
     return true;
   });
 
+  const seasonalStart = inferSeasonalStartDate(message, '');
   const parsed = {
     cityKey,
     cityLabel,
     arrivalAirport: city.airport,
     theme: parseThemeFromText(message, context.theme || 'mixed'),
     budget: parseBudgetFromText(message, context.budget || 'mid'),
-    days: parseDaysFromText(message, context.days || 4),
-    startDate: parseStartDateFromText(message) || context.startDate || new Date().toISOString().slice(0, 10),
+    days: finalDays,
+    startDate: seasonalStart || parseStartDateFromText(message) || context.startDate || new Date().toISOString().slice(0, 10),
     preferredAreas: extractPreferredAreas(message, cityKey),
     preferAirportAccess: /공항.*가깝|이동.*편|교통.*좋|환승.*적|접근성|airport.*access|easy.*move|easy.*transport|near.*airport/i.test(message),
     wantedPlaces,
-    foodKeyword: parseFoodKeywordFromText(message)
+    foodKeyword: parseFoodKeywordFromText(message),
+    routeCities,
+    regionDayPlan,
+    specialPrefs
   };
+
+  if (specialPrefs.replaceUniversalWithAquarium) {
+    parsed.wantedPlaces = parsed.wantedPlaces.filter((w) => !/유니버셜|usj|universal/i.test(String(w)));
+    if (!parsed.wantedPlaces.some((w) => /수족관|aquarium/i.test(String(w)))) {
+      parsed.wantedPlaces.push('수족관');
+    }
+  }
 
   if (airportInText) parsed.arrivalAirport = airportInText;
   if (!airportInText && useLocalityAsCity && DYNAMIC_LOCALITY_AIRPORT_HINT[cityLabel]) {
     parsed.arrivalAirport = DYNAMIC_LOCALITY_AIRPORT_HINT[cityLabel];
+  }
+  if (Array.isArray(parsed.routeCities) && parsed.routeCities.length > 1) {
+    const firstRouteKey = cityKeyByLabel(parsed.routeCities[0]);
+    if (firstRouteKey && CITY_DATA[firstRouteKey]?.airport) {
+      parsed.arrivalAirport = CITY_DATA[firstRouteKey].airport;
+    }
   }
   return parsed;
 }
@@ -776,12 +1409,29 @@ function parseTravelChatInput(payload = {}) {
 function buildTravelChatReply(parsed) {
   const lines = [];
   lines.push(`${parsed.cityLabel}로 여행 지역을 맞췄어요.`);
+  if (parsed.arrivalAirport) {
+    lines.push(`도착 공항은 ${parsed.arrivalAirport} 기준으로 설정했어요.`);
+  }
+  if (Array.isArray(parsed.regionDayPlan) && parsed.regionDayPlan.length > 0) {
+    const dayText = parsed.regionDayPlan
+      .map((x) => `${x.cityLabel} ${x.days}${x.unit === 'night' ? '박' : '일'}`)
+      .join(', ');
+    lines.push(`지역별 일정 분배도 반영했어요: ${dayText}`);
+  }
   if (parsed.foodKeyword) {
     lines.push(`맛집은 "${parsed.foodKeyword}" 중심으로 검색되도록 반영했어요.`);
   }
   if (parsed.theme === 'shopping') {
     lines.push('일정 테마는 쇼핑 중심으로 변경했어요.');
   }
+  if (parsed.startDate) {
+    lines.push(`출발일은 ${parsed.startDate}로 맞췄어요.`);
+  }
+  if (parsed.specialPrefs?.indoorFocus) lines.push('비/우천을 고려해 실내 위주 동선으로 조정할게요.');
+  if (parsed.specialPrefs?.removeShopping) lines.push('쇼핑 일정은 제외하고 관광 중심으로 구성할게요.');
+  if (parsed.specialPrefs?.addRestDay || parsed.specialPrefs?.doNothingDay) lines.push('중간에 휴식일을 반영할게요.');
+  if (parsed.specialPrefs?.lateStart) lines.push('아침 늦은 시작 일정으로 맞출게요.');
+  if (parsed.specialPrefs?.publicTransitOnly) lines.push('대중교통만 이용하는 동선으로 구성할게요.');
   if (parsed.preferredAreas.length > 0) {
     lines.push(`숙소는 ${parsed.preferredAreas.join(', ')} 근처를 우선 추천할게요.`);
   } else if (parsed.preferAirportAccess) {
@@ -828,6 +1478,19 @@ function normalizeTravelChatParsed(candidate, fallback) {
     ? raw.wantedPlaces.map((x) => String(x).trim()).filter((x) => isMeaningfulPlaceKeyword(x)).slice(0, 8)
     : fallback.wantedPlaces;
   const foodKeyword = String(raw.foodKeyword || fallback.foodKeyword || '').trim();
+  const rawRouteCities = Array.isArray(raw.routeCities)
+    ? raw.routeCities.map((x) => String(x).trim()).filter(Boolean)
+    : [];
+  const regionDayPlan = normalizeRegionDayPlan(raw.regionDayPlan, fallback.regionDayPlan || []);
+  const fallbackRoute = Array.isArray(fallback.routeCities) ? fallback.routeCities : [cityLabel];
+  const routeCities = Array.from(new Set([
+    ...rawRouteCities,
+    ...fallbackRoute,
+    ...regionDayPlan.map((x) => x.cityLabel)
+  ])).filter(Boolean).slice(0, 5);
+  const specialPrefs = typeof raw.specialPrefs === 'object' && raw.specialPrefs
+    ? { ...(fallback.specialPrefs || {}), ...raw.specialPrefs }
+    : (fallback.specialPrefs || {});
   const reasons = Array.isArray(raw.reasons)
     ? raw.reasons.map((x) => String(x).trim()).filter(Boolean).slice(0, 5)
     : [];
@@ -844,6 +1507,9 @@ function normalizeTravelChatParsed(candidate, fallback) {
     preferAirportAccess: Boolean(raw.preferAirportAccess),
     wantedPlaces,
     foodKeyword,
+    routeCities,
+    regionDayPlan,
+    specialPrefs,
     reasons
   };
 }
@@ -854,6 +1520,8 @@ async function parseTravelChatWithOpenAI(message, context) {
     'You parse travel chat input into structured JSON.',
     'Target country is Japan, region should map to a city in the provided list.',
     'Split user intent by type: destination(city), food preference, travel theme.',
+    'If user specifies city-specific durations (e.g. Osaka 2 nights, Kyoto 1 night), fill regionDayPlan.',
+    'If user asks for constraints (indoor, less walking, rest day, no shopping, late start), fill specialPrefs.',
     'Never convert generic words like "먹고싶어" or "쇼핑" into place names.',
     'Prefer airport-centric city selection.',
     'Return only JSON matching schema.'
@@ -889,9 +1557,24 @@ async function parseTravelChatWithOpenAI(message, context) {
             preferAirportAccess: { type: 'boolean' },
             wantedPlaces: { type: 'array', items: { type: 'string' } },
             foodKeyword: { type: 'string' },
+            routeCities: { type: 'array', items: { type: 'string' } },
+            specialPrefs: { type: 'object' },
+            regionDayPlan: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  cityLabel: { type: 'string' },
+                  days: { type: 'integer' },
+                  unit: { type: 'string' }
+                },
+                required: ['cityLabel', 'days', 'unit']
+              }
+            },
             reasons: { type: 'array', items: { type: 'string' } }
           },
-          required: ['cityKey', 'arrivalAirport', 'theme', 'budget', 'days', 'startDate', 'preferredAreas', 'preferAirportAccess', 'wantedPlaces', 'foodKeyword', 'reasons']
+          required: ['cityKey', 'arrivalAirport', 'theme', 'budget', 'days', 'startDate', 'preferredAreas', 'preferAirportAccess', 'wantedPlaces', 'foodKeyword', 'routeCities', 'reasons']
         },
         strict: true
       }
@@ -918,6 +1601,8 @@ async function parseTravelChatWithGemini(message, context) {
     'Parse the travel chat into JSON only.',
     'Country is Japan and must map to one city key from availableCities.',
     'Split intent into city/food/theme.',
+    'If city-level durations are mentioned, include regionDayPlan with cityLabel/days/unit(day|night).',
+    'For constraints like indoor/no shopping/less walking/rest day/late start/public transit, include specialPrefs.',
     'Do not treat generic request words as place names.',
     'Use airport-centric destination logic.',
     'Do not return markdown.',
@@ -927,31 +1612,13 @@ async function parseTravelChatWithGemini(message, context) {
       availableCities: Object.entries(CITY_DATA).map(([k, v]) => ({ key: k, label: v.label, airport: v.airport, areas: v.areas }))
     })
   ].join('\n');
-  const body = {
-    prompt: { text: prompt },
+  const data = await callGeminiGenerateContent(prompt, {
     temperature: 0.2,
     maxOutputTokens: 700,
     topP: 0.9,
-    candidateCount: 1
-  };
-  const url = `${GEMINI_ENDPOINT}/${GEMINI_API_MODEL}:generateText`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${GEMINI_API_KEY}`
-    },
-    body: JSON.stringify(body)
+    responseMimeType: 'application/json'
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${text}`);
-  }
-  const data = await res.json();
-  const candidate = Array.isArray(data?.candidates) ? data.candidates[0] : null;
-  const text = candidate?.output
-    || (Array.isArray(candidate?.content) ? candidate.content.map((c) => c?.text || '').join(' ') : '')
-    || '';
+  const text = extractGeminiText(data);
   const parsed = parseJsonFromText(text);
   if (!parsed) throw new Error('Gemini parser returned unexpected format');
   return parsed;
@@ -988,6 +1655,22 @@ async function buildTravelChatPlan(payload = {}) {
       throw new Error(aiNote || 'AI chat parser is unavailable');
     }
     parsed = fallback;
+  }
+
+  if (parsed.specialPrefs?.adjustKyotoUpOsakaDown) {
+    const hasKyoto = parsed.routeCities.includes('교토');
+    const hasOsaka = parsed.routeCities.includes('오사카');
+    if (hasKyoto && hasOsaka) {
+      const base = Array.isArray(parsed.regionDayPlan) ? [...parsed.regionDayPlan] : [];
+      const get = (cityLabel) => base.find((x) => x.cityLabel === cityLabel && x.unit === 'day');
+      const ky = get('교토');
+      const os = get('오사카');
+      if (ky) ky.days = clamp(Number(ky.days || 1) + 1, 1, 10);
+      else base.push({ cityLabel: '교토', days: 2, unit: 'day' });
+      if (os) os.days = clamp(Number(os.days || 2) - 1, 1, 10);
+      else base.push({ cityLabel: '오사카', days: 1, unit: 'day' });
+      parsed.regionDayPlan = normalizeRegionDayPlan(base, []);
+    }
   }
 
   let cityMeta = null;
@@ -1036,17 +1719,43 @@ async function buildTravelChatPlan(payload = {}) {
     }).slice(0, 6);
   }
 
+  if (Array.isArray(parsed.routeCities) && parsed.routeCities.length > 1) {
+    const selectedCities = new Set(selectedDestinations.map((d) => String(d.city || '').trim()).filter(Boolean));
+    for (const cityLabel of parsed.routeCities) {
+      if (selectedCities.has(cityLabel)) continue;
+      const ck = cityKeyByLabel(cityLabel);
+      const cityData = CITY_DATA[ck];
+      const anchor = cityData?.highlights?.[0];
+      if (!anchor) continue;
+      selectedDestinations.push({
+        name: anchor.name,
+        city: cityData.label,
+        area: anchor.area || cityData.label,
+        category: anchor.category || '요청 명소',
+        bestTime: anchor.bestTime || '10:00-17:00',
+        stayMin: Number(anchor.stayMin || 90),
+        mapUrl: mapUrl(`${anchor.name} ${cityData.label}`),
+        aiScore: 95
+      });
+      selectedCities.add(cityData.label);
+      if (selectedDestinations.length >= 8) break;
+    }
+  }
+
   const reasons = [
     ...(Array.isArray(parsed.reasons) ? parsed.reasons : []),
     `도시/공항 매핑: ${parsed.cityLabel} - ${parsed.arrivalAirport}`,
     parsed.preferredAreas.length ? `숙소 우선 지역 반영: ${parsed.preferredAreas.join(', ')}` : '숙소 우선 지역 미지정: 중심 접근성 기준',
     parsed.preferAirportAccess ? '공항 접근성 선호 반영(공항 셔틀/이동 편의 가점)' : '공항 접근성 기본값 적용'
   ].slice(0, 6);
+  const resolvedSpecialPrefs = (parsed.specialPrefs && typeof parsed.specialPrefs === 'object')
+    ? parsed.specialPrefs
+    : parseSpecialPrefsFromText(payload.message || '');
 
   return {
-    parsed: { ...parsed, reasons },
+    parsed: { ...parsed, specialPrefs: resolvedSpecialPrefs, reasons },
     selectedDestinations,
-    reply: buildTravelChatReply(parsed),
+    reply: buildTravelChatReply({ ...parsed, specialPrefs: resolvedSpecialPrefs }),
     cityMeta,
     uiActions: {
       foodCity: parsed.cityKey,
@@ -1269,6 +1978,52 @@ function createItinerary(payload) {
   const picks = Array.isArray(payload._picks) && payload._picks.length > 0
     ? payload._picks
     : city.highlights.map((p) => ({ ...p, city: city.label, mapUrl: mapUrl(`${p.name} ${city.label}`), aiScore: 65 }));
+  const routeCities = deriveRouteCities(payload, picks, city.label);
+  const dayCitySequence = allocateDaysByCities(routeCities, picks, days, payload._regionDayPlan);
+  const prefs = typeof payload._specialPrefs === 'object' && payload._specialPrefs ? payload._specialPrefs : {};
+
+  const buildCityAttractionPool = (cityLabel) => {
+    const ck = cityKeyByLabel(cityLabel);
+    const c = CITY_DATA[ck];
+    const base = [];
+    if (c?.highlights?.length) {
+      c.highlights.forEach((h) => {
+        base.push({
+          ...h,
+          city: c.label,
+          mapUrl: mapUrl(`${h.name} ${c.label}`)
+        });
+      });
+    }
+    const mustForCity = MUST_ATTRACTIONS
+      .filter((m) => (CITY_DATA[m.cityKey]?.label || '') === cityLabel)
+      .map((m) => ({
+        name: m.name,
+        city: cityLabel,
+        area: m.area || cityLabel,
+        category: '요청 명소',
+        bestTime: '10:00-17:00',
+        stayMin: 100,
+        mapUrl: mapUrl(`${m.name} ${cityLabel}`)
+      }));
+    const synthetic = (c?.areas || [cityLabel]).slice(0, 4).map((a, idx) => ({
+      name: `${cityLabel} 추천 명소 ${idx + 1}`,
+      city: cityLabel,
+      area: a || cityLabel,
+      category: '관광',
+      bestTime: idx % 2 === 0 ? '09:00-11:00' : '14:00-16:00',
+      stayMin: 80,
+      mapUrl: mapUrl(`${cityLabel} ${a || ''} 관광지`)
+    }));
+    const merged = [...base, ...mustForCity, ...synthetic];
+    const seen = new Set();
+    return merged.filter((x) => {
+      const key = String(x?.name || '').trim().toLowerCase();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
 
   const formatMinutes = (value) => {
     const safe = Math.max(0, Math.min(1439, Math.round(Number(value) || 0)));
@@ -1291,13 +2046,27 @@ function createItinerary(payload) {
     return m ? Number(m[1]) : 12;
   };
 
-  const morningPool = picks.filter((p) => startHour(p.bestTime) < 12);
-  const afternoonPool = picks.filter((p) => startHour(p.bestTime) >= 12 && startHour(p.bestTime) < 18);
-  const fallbackPool = picks;
-  const foods = city.foods || [];
+  const isLikelyIndoor = (p) => /박물관|미술관|시장|쇼핑|수족관|타워|성|신사|절|문화|museum|aquarium|tower|castle|shrine|temple/i.test(`${p.name} ${p.category} ${p.area}`);
+  const isLikelyShopping = (p) => /쇼핑|아울렛|백화점|mall|store|shopping/i.test(`${p.name} ${p.category} ${p.area}`);
+  let planPicks = Array.isArray(picks) ? [...picks] : [];
+  if (prefs.removeShopping) {
+    planPicks = planPicks.filter((p) => !isLikelyShopping(p));
+  }
+  if (prefs.indoorFocus) {
+    const indoor = planPicks.filter(isLikelyIndoor);
+    if (indoor.length > 0) planPicks = [...indoor, ...planPicks.filter((p) => !isLikelyIndoor(p))];
+  }
 
+  const morningPool = planPicks.filter((p) => startHour(p.bestTime) < 12);
+  const afternoonPool = planPicks.filter((p) => startHour(p.bestTime) >= 12 && startHour(p.bestTime) < 18);
+  const fallbackPool = planPicks.length > 0 ? planPicks : picks;
+  const foodsByCity = Object.fromEntries(
+    Object.entries(CITY_DATA).map(([k, c]) => [c.label, c.foods || []])
+  );
+
+  const lateStart = Boolean(prefs.lateStart);
   const baseRanges = {
-    morning: [8 * 60 + 30, 11 * 60 + 30],
+    morning: lateStart ? [10 * 60 + 30, 12 * 60 + 30] : [8 * 60 + 30, 11 * 60 + 30],
     afternoon: [13 * 60, 17 * 60],
     evening: [18 * 60, 20 * 60]
   };
@@ -1305,24 +2074,103 @@ function createItinerary(payload) {
   const day1MinStart = outbound?.arrivalTime ? toMinutes(outbound.arrivalTime) + 90 : null;
   const lastDayMaxEnd = inbound?.departureTime ? toMinutes(inbound.departureTime) - 120 : null;
 
+  const restDayIndex = (prefs.addRestDay || prefs.doNothingDay) && days >= 3 ? Math.floor(days / 2) : -1;
+  const maxPlacesPerDay = clamp(Number(prefs.maxPlacesPerDay || 3), 1, 4);
+
   const itinerary = [];
+  const extraRecommendations = [];
+  const recentNamesByCity = new Map();
+  const usedPlaceNamesGlobal = new Set();
+  const syntheticSeqByCity = new Map();
+  const nextSyntheticPlace = (cityLabel) => {
+    const seq = (syntheticSeqByCity.get(cityLabel) || 0) + 1;
+    syntheticSeqByCity.set(cityLabel, seq);
+    return {
+      name: `${cityLabel} 추가 추천지 ${seq}`,
+      city: cityLabel,
+      area: cityLabel,
+      category: '관광',
+      bestTime: seq % 2 === 0 ? '14:00-16:00' : '09:00-11:00',
+      stayMin: 80,
+      mapUrl: mapUrl(`${cityLabel} 관광지 ${seq}`)
+    };
+  };
+  const choosePlace = (pool, fallback, seed, bannedNames = new Set()) => {
+    const main = Array.isArray(pool) && pool.length > 0 ? pool : (Array.isArray(fallback) ? fallback : []);
+    if (main.length === 0) return null;
+    const start = Math.abs(seed) % main.length;
+    for (let step = 0; step < main.length; step += 1) {
+      const idx = (start + step) % main.length;
+      const cand = main[idx];
+      const name = String(cand?.name || '');
+      if (!name || bannedNames.has(name) || usedPlaceNamesGlobal.has(name)) continue;
+      return cand;
+    }
+    return null;
+  };
   for (let i = 0; i < days; i += 1) {
-    const a = (morningPool[i % Math.max(1, morningPool.length)]) || fallbackPool[(i * 2) % fallbackPool.length];
-    const b = (afternoonPool[i % Math.max(1, afternoonPool.length)]) || fallbackPool[(i * 2 + 1) % fallbackPool.length];
-    const dinner = foods[i % Math.max(1, foods.length)];
+    const dayCity = dayCitySequence[i] || city.label;
+    const dayMorningPool = morningPool.filter((p) => String(p.city || city.label) === dayCity);
+    const dayAfternoonPool = afternoonPool.filter((p) => String(p.city || city.label) === dayCity);
+    const dayFallbackPool = fallbackPool.filter((p) => String(p.city || city.label) === dayCity);
+    const cityExpandedPool = buildCityAttractionPool(dayCity);
+    const poolA = dayMorningPool.length > 0 ? dayMorningPool : (dayFallbackPool.length > 0 ? dayFallbackPool : morningPool);
+    const poolB = dayAfternoonPool.length > 0 ? dayAfternoonPool : (dayFallbackPool.length > 0 ? dayFallbackPool : afternoonPool);
+    const recentSet = new Set(recentNamesByCity.get(dayCity) || []);
+    const a = choosePlace(poolA, fallbackPool, i * 3 + 1, recentSet)
+      || choosePlace(cityExpandedPool, cityExpandedPool, i * 5 + 11, recentSet)
+      || nextSyntheticPlace(dayCity);
+    const banForB = new Set([...(recentNamesByCity.get(dayCity) || []), String(a?.name || '')]);
+    let b = choosePlace(poolB, fallbackPool, i * 3 + 2, banForB)
+      || choosePlace(cityExpandedPool, cityExpandedPool, i * 5 + 17, banForB)
+      || nextSyntheticPlace(dayCity);
+    if (String(a?.name || '') && String(a?.name || '') === String(b?.name || '')) {
+      const alt = choosePlace(dayFallbackPool, fallbackPool, i * 7 + 3, new Set([String(a?.name || '')]))
+        || choosePlace(cityExpandedPool, cityExpandedPool, i * 7 + 5, new Set([String(a?.name || '')]));
+      if (alt) b = alt;
+      else b = nextSyntheticPlace(dayCity);
+    }
+    const dayFoods = foodsByCity[dayCity] && foodsByCity[dayCity].length > 0 ? foodsByCity[dayCity] : (city.foods || []);
+    const dinner = dayFoods[i % Math.max(1, dayFoods.length)];
     const minStart = (i === 0 && Number.isFinite(day1MinStart)) ? day1MinStart : 0;
     const maxEnd = (i === days - 1 && Number.isFinite(lastDayMaxEnd)) ? lastDayMaxEnd : (24 * 60);
+    if (i === restDayIndex) {
+      itinerary.push({
+        day: i + 1,
+        date: getDateOffset(startDate, i),
+        blocks: [
+          `${dayCity} 휴식일: 카페/산책 중심으로 여유 일정`,
+          prefs.publicTransitOnly ? '대중교통 중심으로 가까운 동선만 이동' : '자유 휴식'
+        ]
+      });
+      continue;
+    }
+
     const blocks = [];
     const morningRange = clampRange(baseRanges.morning, minStart, maxEnd);
     if (morningRange) blocks.push(`오전(${formatRange(morningRange)}): ${a.name} (${a.bestTime})`);
     const afternoonRange = clampRange(baseRanges.afternoon, minStart, maxEnd);
-    if (afternoonRange) blocks.push(`오후(${formatRange(afternoonRange)}): ${b.name} (${b.bestTime})`);
-    const dinnerText = dinner ? `${dinner.name} (${dinner.genre})` : `${city.areas[i % city.areas.length]} 로컬 미식 동선`;
+    if (afternoonRange && maxPlacesPerDay >= 2) {
+      if (b && String(b.name || '') !== String(a?.name || '')) {
+        blocks.push(`오후(${formatRange(afternoonRange)}): ${b.name} (${b.bestTime})`);
+      } else {
+        blocks.push(`오후(${formatRange(afternoonRange)}): ${dayCity} 여유 산책/카페`);
+      }
+    }
+    const dinnerText = dinner ? `${dinner.name} (${dinner.genre})` : `${dayCity} 로컬 미식 동선`;
     const eveningRange = clampRange(baseRanges.evening, minStart, maxEnd);
-    if (eveningRange) blocks.push(`저녁(${formatRange(eveningRange)}): ${dinnerText}`);
+    if (eveningRange && maxPlacesPerDay >= 3) {
+      const cafeOrDinner = prefs.moreCafes ? `${dayCity} 감성 카페/디저트` : dinnerText;
+      blocks.push(`저녁(${formatRange(eveningRange)}): ${cafeOrDinner}`);
+    }
+
+    const prevCity = i > 0 ? (dayCitySequence[i - 1] || dayCity) : dayCity;
+    if (i > 0 && prevCity !== dayCity) {
+      blocks.unshift(`도시 이동: ${prevCity} -> ${dayCity} (${transferHint(prevCity, dayCity)})`);
+    }
 
     if (blocks.length === 0) {
-      if (i === 0 && Number.isFinite(day1MinStart)) {
+      if (i === 0 && (Number.isFinite(day1MinStart) || prefs.firstDayShort)) {
         const start = Math.max(day1MinStart, 18 * 60);
         const end = Math.min(20 * 60 + 30, maxEnd);
         if (end > start) {
@@ -1347,6 +2195,24 @@ function createItinerary(payload) {
       date: getDateOffset(startDate, i),
       blocks
     });
+    const pushExtra = (place, cityLabelForDay) => {
+      if (!place || !place.name) return;
+      extraRecommendations.push({
+        name: String(place.name),
+        city: String(place.city || cityLabelForDay || city.label),
+        area: String(place.area || place.city || cityLabelForDay || city.label),
+        category: String(place.category || '관광'),
+        bestTime: String(place.bestTime || '09:00-17:00'),
+        stayMin: Math.max(30, Number(place.stayMin || 90)),
+        mapUrl: place.mapUrl || mapUrl(`${place.name} ${place.city || cityLabelForDay || city.label}`),
+        aiScore: Math.max(60, Number(place.aiScore || 85))
+      });
+    };
+    pushExtra(a, dayCity);
+    pushExtra(b, dayCity);
+    if (a?.name) usedPlaceNamesGlobal.add(String(a.name));
+    if (b?.name) usedPlaceNamesGlobal.add(String(b.name));
+    recentNamesByCity.set(dayCity, [String(a?.name || ''), String(b?.name || '')].filter(Boolean));
   }
 
   const tips = [
@@ -1361,6 +2227,29 @@ function createItinerary(payload) {
   if (inbound?.departureTime) {
     tips.unshift(`출국 ${inbound.departureTime} 2시간 전 공항 도착 기준으로 마지막날 조정`);
   }
+  if (prefs.lastDayAirportBufferMin && Number(prefs.lastDayAirportBufferMin) > 120) {
+    tips.unshift(`마지막날 공항 도착 버퍼 ${prefs.lastDayAirportBufferMin}분 반영`);
+  }
+  if (prefs.indoorFocus) tips.unshift('우천 가능성을 고려해 실내 비중을 높여 구성');
+  if (prefs.removeShopping) tips.unshift('쇼핑 동선 제외 후 관광/체험 중심으로 구성');
+  if (prefs.optimizeTransit || prefs.minimizeTravelTime) tips.unshift('도시/지역 이동 횟수를 줄이는 방향으로 동선 최적화');
+  if (prefs.lowWalking || prefs.strollerFriendly) tips.unshift('도보 부담을 줄이기 위해 구간 집중형 일정으로 구성');
+  if (prefs.publicTransitOnly) tips.unshift('대중교통 전용 이동 기준으로 일정 구성');
+  if (prefs.jrPassMode) tips.unshift('JR 패스 활용 가능 구간 우선으로 동선 제안');
+  if (prefs.nightViewFocus) tips.unshift('야경 명소 시간대를 우선 배치');
+  if (prefs.firstTimeJapan) tips.unshift('일본 첫 여행 기준으로 대표 명소를 우선 반영');
+  if (routeCities.length > 1) {
+    tips.unshift(`다중 도시 일정: ${routeCities.join(' -> ')} 순서로 동선을 구성`);
+  }
+
+  const extraDedup = [];
+  const extraSeen = new Set();
+  for (const p of extraRecommendations) {
+    const k = `${String(p.city || '').toLowerCase()}|${String(p.name || '').toLowerCase()}`;
+    if (!p.name || extraSeen.has(k)) continue;
+    extraSeen.add(k);
+    extraDedup.push(p);
+  }
 
   return {
     source: 'ai_planner_v1',
@@ -1368,7 +2257,8 @@ function createItinerary(payload) {
     theme,
     summary: `${city.label} ${days}일 맞춤 일정${flightLegs.length ? ' (항공권 시간 반영)' : ''}`,
     itinerary,
-    tips
+    tips,
+    extraRecommendations: extraDedup
   };
 }
 
@@ -1394,6 +2284,7 @@ function buildAiContext(payload, picks, city) {
       area: f.area,
       genre: f.genre
     })),
+    specialPrefs: payload._specialPrefs || {},
     flight: payload.flight || null,
     stay: payload.stay || null
   };
@@ -1464,6 +2355,48 @@ function extractOpenAiText(data) {
     });
   });
   return texts.join('\n').trim();
+}
+
+function extractGeminiText(data) {
+  if (!data) return '';
+  const candidates = Array.isArray(data.candidates) ? data.candidates : [];
+  const texts = [];
+  candidates.forEach((cand) => {
+    const parts = Array.isArray(cand?.content?.parts) ? cand.content.parts : [];
+    parts.forEach((p) => {
+      if (typeof p?.text === 'string' && p.text.trim()) texts.push(p.text);
+    });
+  });
+  return texts.join('\n').trim();
+}
+
+async function callGeminiGenerateContent(prompt, opts = {}) {
+  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is missing');
+  const body = {
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: String(prompt || '') }]
+      }
+    ],
+    generationConfig: {
+      temperature: Number(opts.temperature ?? 0.2),
+      topP: Number(opts.topP ?? 0.9),
+      maxOutputTokens: Number(opts.maxOutputTokens ?? 900),
+      responseMimeType: opts.responseMimeType || 'application/json'
+    }
+  };
+  const url = `${GEMINI_ENDPOINT}/${encodeURIComponent(GEMINI_API_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Gemini error ${res.status}: ${text}`);
+  }
+  return res.json();
 }
 
 async function createItineraryWithOpenAI(payload, picks) {
@@ -1588,37 +2521,13 @@ async function createItineraryWithGemini(payload, picks) {
   const ctx = buildAiContext(payload, picks, city);
   const prompt = `${AI_SYSTEM_MESSAGE}\nContext:\n${JSON.stringify(ctx, null, 2)}\nRespond with only JSON that matches the schema.`;
 
-  const body = {
-    prompt: { text: prompt },
+  const data = await callGeminiGenerateContent(prompt, {
     temperature: 0.28,
     maxOutputTokens: 900,
     topP: 0.9,
-    candidateCount: 1
-  };
-
-  const url = `${GEMINI_ENDPOINT}/${GEMINI_API_MODEL}:generateText`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${GEMINI_API_KEY}`
-    },
-    body: JSON.stringify(body)
+    responseMimeType: 'application/json'
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${text}`);
-  }
-  const data = await res.json();
-  const candidate = Array.isArray(data?.candidates) ? data.candidates[0] : null;
-  let text = '';
-  if (candidate?.output) {
-    text = candidate.output;
-  } else if (Array.isArray(candidate?.content)) {
-    text = candidate.content.map((c) => c?.text || '').join(' ').trim();
-  } else if (typeof data?.output === 'string') {
-    text = data.output;
-  }
+  const text = extractGeminiText(data);
   const json = parseJsonFromText(text);
   if (!json) {
     throw new Error('Gemini returned unexpected format');
@@ -1677,15 +2586,28 @@ async function buildTravelPlan(payload) {
   if (!it) {
     it = createItinerary({ ...payload, city: key, _picks: picksForItinerary });
   }
+  const mergedRecommendations = (() => {
+    const base = Array.isArray(rec.picks) ? [...rec.picks] : [];
+    const extra = Array.isArray(it.extraRecommendations) ? it.extraRecommendations : [];
+    if (extra.length === 0) return base;
+    const seen = new Set(base.map((p) => `${String(p?.city || '').toLowerCase()}|${String(p?.name || '').toLowerCase()}`));
+    extra.forEach((p) => {
+      const k = `${String(p?.city || '').toLowerCase()}|${String(p?.name || '').toLowerCase()}`;
+      if (!p?.name || seen.has(k)) return;
+      seen.add(k);
+      base.push(p);
+    });
+    return base.slice(0, Math.max(10, Math.min(24, base.length)));
+  })();
   return {
     source: 'integrated_travel_planner_v1',
     city: rec.city,
     recommendationSource: rec.source || 'unknown',
-    recommendations: rec.picks,
+    recommendations: mergedRecommendations,
     itinerary: it.itinerary,
     itinerarySource: it.source,
     tips: it.tips,
-    summary: `${rec.city} 추천 ${rec.picks.length}곳 + ${it.itinerary.length}일 일정`,
+    summary: `${rec.city} 추천 ${mergedRecommendations.length}곳 + ${it.itinerary.length}일 일정`,
     aiNote
   };
 }
@@ -2191,6 +3113,8 @@ function rankStays(payload) {
   const aiHints = payload.aiHints || {};
   const preferredAreas = Array.isArray(aiHints.preferredAreas) ? aiHints.preferredAreas.map((x) => String(x)) : [];
   const preferAirportAccess = Boolean(aiHints.preferAirportAccess);
+  const oceanViewStay = Boolean(aiHints.oceanViewStay);
+  const safeAreaPriority = Boolean(aiHints.safeAreaPriority);
   const cityKey = cityKeyByInput(payload.city || 'tokyo');
   const city = CITY_DATA[cityKey] || CITY_DATA.tokyo;
   const airportCode = String(aiHints.arrivalAirport || city.airport || '').toUpperCase();
@@ -2207,6 +3131,12 @@ function rankStays(payload) {
       }
       if (preferAirportAccess && (x.amenities || []).some((a) => String(a).includes('공항 셔틀'))) {
         score += 28000;
+      }
+      if (oceanViewStay && (x.amenities || []).some((a) => /오션뷰|바다/.test(String(a)))) {
+        score += 30000;
+      }
+      if (safeAreaPriority && (x.amenities || []).some((a) => /24시간|보안|프론트/.test(String(a)))) {
+        score += 26000;
       }
       score += airportMatchBoost;
       return { ...x, aiScore: Math.round(score) };
@@ -2640,6 +3570,13 @@ async function handleApi(req, res, parsedUrl) {
         ok: true,
         app: 'japantravel-suite',
         supabaseConfigured: hasSupabase(),
+        ai: {
+          geminiConfigured: Boolean(GEMINI_API_KEY),
+          geminiModel: GEMINI_API_MODEL,
+          openaiConfigured: Boolean(OPENAI_API_KEY),
+          openaiModel: OPENAI_MODEL,
+          chatParseStrictAi: CHAT_PARSE_STRICT_AI
+        },
         now: new Date().toISOString()
       });
     }
