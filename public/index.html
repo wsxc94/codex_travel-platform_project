@@ -43,6 +43,15 @@
           </label>
           <button id="btnPlan">추천+AI일정 통합 생성</button>
         </div>
+        <div class="ai-chat-wrap">
+          <h3>AI 여행 조건 채팅</h3>
+          <p class="note">가고 싶은 장소를 자연어로 입력하면 공항 기준 지역/조건을 자동 설정하고 추천을 생성합니다.</p>
+          <div class="ai-chat-input">
+            <textarea id="aiRequest" placeholder="예: 유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고, 3박 4일로 이동 편한 숙소 추천해줘"></textarea>
+            <button id="btnAiAssist" type="button">AI로 조건 적용</button>
+          </div>
+          <div id="aiChatLog" class="ai-chat-log"></div>
+        </div>
       </section>
 
       <section class="panel">
@@ -50,6 +59,7 @@
         <div class="split">
           <div>
             <h3>추천 여행지</h3>
+            <div id="destSourceNote" class="source-note"></div>
             <div id="destCards" class="cards"></div>
           </div>
         <div>
@@ -80,6 +90,7 @@
             </select></label>
           <button id="btnFood">맛집 검색</button>
         </div>
+        <div id="foodSourceNote" class="source-note"></div>
         <div id="foodCards" class="cards"></div>
       </section>
 
