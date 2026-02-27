@@ -1,64 +1,84 @@
 ﻿# JapanTravel Suite Prototype
 
-트리플/Skyscanner/KAYAK/Tabelog 스타일 UX를 참고한 웹+모바일 반응형 프로토타입입니다.
+일본 여행 계획을 한 번에 생성하는 웹 프로토타입입니다.
+여행지 추천, 일정 생성, 항공권/숙소/맛집 탐색, 저장 기능까지 포함합니다.
 
-## 핵심 기능
-- 여행지 추천: `/api/destinations`
-  - 도시 + 테마 기반 AI 점수 추천
-  - 일본 공항 보유 지역(대도시+소도시) 대량 지원
-- 일정 생성: `/api/itinerary`
-  - 추천 여행지를 기반으로 일자별 플랜 자동 생성
-  - 소도시(예: 다카마쓰, 가고시마 등)도 동일하게 일정 생성 지원
-- 통합 생성: `/api/travel-plan`
-  - 추천 여행지 + AI 일정을 한 번에 생성
-- 항공권 탐색: `/api/flights`
-  - KAYAK/Skyscanner 스타일 결과 + 딥링크
-  - 여행 타입: `oneway`, `roundtrip`, `multicity`
-  - 다구간은 UI에서 `구간 추가/삭제`로 동적 입력
-  - 선호도(`balanced`, `cheap`, `fast`) 기반 랭킹
-  - 필터: 가격 범위, 출발 시간대 범위, 공항, 항공사
-  - UI 탭: 편도/왕복/다구간 + 공항/항공사 체크박스
-  - 공항 자동완성: 한국/일본 공항 코드+이름 유사문자열 추천
-- 맛집 탐색: `/api/foods`
-  - Tabelog 스타일 큐레이션 + 지도/Tabelog 링크
-  - `GOOGLE_MAPS_API_KEY` 설정 시 Google Places 결과 확장
+## 최근 반영 내용 요약
+- AI 일정 생성 경로 보강 (모델 기반/규칙 기반 소스 구분 표시)
+- 항공권 왕복 라벨 표시 보정
+- 모바일 레이아웃/오버플로우/날짜 입력 UI 개선
+- `.env` 파일 Git 제외 설정
+- 배포 설정 파일 추가 (`render.yaml`, `deploy/`)
 
-## 실행
-```powershell
-cd "C:\Users\wx94\OneDrive\바탕 화면\이거"
-node server.js
+## 현재 기능
+- 통합 여행 플랜 생성: `POST /api/travel-plan`
+  - 여행지 추천 + 일정 생성 + (선택) 항공권/숙소 반영
+- 여행지 추천: `POST /api/destinations`
+  - 도시/테마/예산/인원 기반 추천
+- 일정 생성: `POST /api/itinerary`
+  - 일자별 일정 자동 생성
+- 항공권 탐색: `POST /api/flights`
+  - 타입: `oneway`, `roundtrip`, `multicity`
+  - 필터: 가격/시간대/공항/항공사
+  - 선호도: `balanced`, `cheap`, `fast`
+  - 딥링크: Skyscanner, KAYAK
+- 숙소 탐색: `POST /api/stays`
+  - 가격/성급/평점/편의시설 기반 필터
+- 맛집 탐색: `GET /api/foods`
+  - 도시/장르/예산 기반 큐레이션
+  - Google Maps/Tabelog 링크 제공
+
+## 저장 기능 (Supabase)
+- `GET /api/health`: Supabase 설정 상태 확인
+- `POST /api/travel-plan/save`: 여행 플랜 저장(upsert)
+- `GET /api/travel-plan/list?limit=20&userLabel=guest`: 저장 목록 조회
+- `GET /api/travel-plan/get?planKey=...`: 저장 상세 조회
+
+## 프로젝트 구조
+```text
+project-root/
+  public/            # 프론트엔드 정적 파일
+  deploy/            # 배포 가이드/설정
+  server.js          # Node.js API 서버
+  .env.example       # 환경 변수 예시
+  render.yaml        # Render 배포 설정
 ```
 
-브라우저: `http://localhost:3000`
+## 실행 방법
+1. 예시 경로로 이동
+```powershell
+cd "C:\path\to\project"
+```
+2. 서버 실행
+```powershell
+node server.js
+```
+3. 브라우저 접속: `http://localhost:3000`
 
-포트 충돌 시:
+포트 변경 예시:
 ```powershell
 $env:PORT="3011"
 node server.js
 ```
-브라우저: `http://localhost:3011`
+접속 주소: `http://localhost:3011`
+
+## 서비스 URL
+- 운영 주소: `https://japanjapantravel.onrender.com/`
 
 ## 환경 변수
-```powershell
-$env:GOOGLE_MAPS_API_KEY="YOUR_KEY"
-$env:SUPABASE_URL="https://YOUR_PROJECT.supabase.co"
-$env:SUPABASE_SERVICE_ROLE_KEY="YOUR_SERVICE_ROLE_KEY"
+`.env.example`를 참고해 `.env`를 생성해서 사용하세요.
+
+```env
+PORT=3000
+GOOGLE_MAPS_API_KEY=
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=
+APP_ENV=development
 ```
 
-## 현재 상태
-- 실제 플랫폼의 비공개/제휴 API는 키/계약 이슈로 기본 미연동
-- 대신 플랫폼형 응답 구조와 딥링크/확장 포인트를 구현해 즉시 데모 가능
-- UI는 각 입력 항목 라벨/필터 설명을 포함한 사용자 친화형 레이아웃으로 구성
-- 현재 일본 도시 데이터: 62개 지역(공항 코드 포함)
+## 보안/공개 주의사항
+- 실제 API 키/토큰/개인 경로/개인 식별 정보는 커밋하지 마세요.
+- `.env`는 Git에 포함하지 않고, `.env.example`만 공유하세요.
 
-## 저장 API (Supabase)
-- `GET /api/health`
-  - Supabase 연결 설정 여부 확인 (`supabaseConfigured`)
-- `POST /api/travel-plan/save`
-  - 통합 추천+AI 일정 결과를 DB에 upsert 저장
-- `GET /api/travel-plan/list?limit=20&userLabel=guest`
-  - 저장된 일정 목록 조회
-- `GET /api/travel-plan/get?planKey=...`
-  - 단건 일정 상세 조회
-
-상세 배포 순서: `deploy/DEPLOY.md`
+## 배포
+- 배포 상세: `deploy/DEPLOY.md`
