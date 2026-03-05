@@ -710,6 +710,10 @@ button:hover {
   margin-top: 10px;
   display: grid;
   gap: 8px;
+  max-height: clamp(220px, 38vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
 }
 
 .chat-msg {
