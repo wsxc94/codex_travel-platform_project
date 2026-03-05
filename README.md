@@ -30,6 +30,7 @@
 
 ## 저장 기능 (Supabase)
 - `GET /api/health`: Supabase 설정 상태 확인
+- `GET /api/ai-diagnostics`: AI 키/모델 설정 진단 (`?probe=1`이면 외부 API 연결까지 실제 점검)
 - `POST /api/travel-plan/save`: 여행 플랜 저장(upsert)
 - `GET /api/travel-plan/list?limit=20&userLabel=guest`: 저장 목록 조회
 - `GET /api/travel-plan/get?planKey=...`: 저장 상세 조회
@@ -74,6 +75,18 @@ GOOGLE_MAPS_API_KEY=
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
 APP_ENV=development
+AI_REQUEST_TIMEOUT_MS=15000
+CHAT_PARSE_STRICT_AI=false
+GEMINI_API_KEY=
+GEMINI_API_MODEL=gemini-2.5-pro
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
+```
+
+AI 연결 체크 예시:
+```powershell
+curl "http://localhost:3000/api/ai-diagnostics"
+curl "http://localhost:3000/api/ai-diagnostics?probe=1"
 ```
 
 ## 보안/공개 주의사항

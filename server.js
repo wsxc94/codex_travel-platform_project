@@ -36,13 +36,14 @@ const AMADEUS_API_SECRET = process.env.AMADEUS_API_SECRET || '';
 const AMADEUS_ENV = (process.env.AMADEUS_ENV || 'test').toLowerCase();
 const FX_USD_KRW = Number(process.env.FX_USD_KRW || 1350);
 let fxUsdKrw = FX_USD_KRW;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const GEMINI_API_MODEL = process.env.GEMINI_API_MODEL || 'gemini-2.5-pro';
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const USE_GEMINI = Boolean(GEMINI_API_KEY);
 const CHAT_PARSE_STRICT_AI = String(process.env.CHAT_PARSE_STRICT_AI || 'false').toLowerCase() === 'true';
+const AI_REQUEST_TIMEOUT_MS = Math.max(4000, Number(process.env.AI_REQUEST_TIMEOUT_MS || 15000));
 
 const AI_SYSTEM_MESSAGE = [
   'You are a travel itinerary planner.',
@@ -1580,14 +1581,14 @@ async function parseTravelChatWithOpenAI(message, context) {
       }
     }
   };
-  const res = await fetch('https://api.openai.com/v1/responses', {
+  const res = await fetchWithTimeout('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
       'Content-Type': 'application/json'
     },
     body: JSON.stringify(body)
-  });
+  }, AI_REQUEST_TIMEOUT_MS);
   if (!res.ok) throw new Error(`OpenAI error: ${res.status}`);
   const data = await res.json();
   const parsed = parseJsonFromText(extractOpenAiText(data));
@@ -1628,7 +1629,7 @@ async function buildTravelChatPlan(payload = {}) {
   const fallback = parseTravelChatInput(payload);
   let parsed = null;
   let source = 'rule_based';
-  let aiNote = '';
+  const aiErrors = [];
 
   if (USE_GEMINI) {
     try {
@@ -1636,7 +1637,7 @@ async function buildTravelChatPlan(payload = {}) {
       parsed = normalizeTravelChatParsed(geminiParsed, fallback);
       source = 'gemini_chat_parser_v1';
     } catch (err) {
-      aiNote = `Gemini: ${err.message}`;
+      aiErrors.push(classifyAiError('Gemini', err));
     }
   }
 
@@ -1646,13 +1647,13 @@ async function buildTravelChatPlan(payload = {}) {
       parsed = normalizeTravelChatParsed(openaiParsed, fallback);
       source = 'openai_chat_parser_v1';
     } catch (err) {
-      aiNote = aiNote ? `${aiNote}; OpenAI: ${err.message}` : `OpenAI: ${err.message}`;
+      aiErrors.push(classifyAiError('OpenAI', err));
     }
   }
 
   if (!parsed) {
     if (CHAT_PARSE_STRICT_AI) {
-      throw new Error(aiNote || 'AI chat parser is unavailable');
+      throw new Error(summarizeAiErrors(aiErrors) || 'AI chat parser is unavailable');
     }
     parsed = fallback;
   }
@@ -1763,7 +1764,8 @@ async function buildTravelChatPlan(payload = {}) {
       theme: parsed.theme
     },
     source,
-    aiNote
+    aiNote: summarizeAiErrors(aiErrors),
+    aiErrors
   };
 }
 
@@ -2304,6 +2306,169 @@ function parseJsonFromText(text) {
   }
 }
 
+function maskSecret(secret) {
+  const raw = String(secret || '').trim();
+  if (!raw) return '';
+  if (raw.length <= 8) return `${raw[0]}***`;
+  return `${raw.slice(0, 4)}...${raw.slice(-4)}`;
+}
+
+function looksLikeGeminiKey(key) {
+  return /^AIza[0-9A-Za-z_-]{20,}$/.test(String(key || '').trim());
+}
+
+function looksLikeOpenAiKey(key) {
+  return /^sk-[A-Za-z0-9_-]{20,}$/.test(String(key || '').trim());
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`timeout after ${timeoutMs}ms`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function classifyAiError(provider, err) {
+  const raw = String(err?.message || err || '').trim();
+  const low = raw.toLowerCase();
+  const jsonStart = raw.indexOf('{');
+  let embedded = null;
+  if (jsonStart >= 0) {
+    try {
+      embedded = JSON.parse(raw.slice(jsonStart));
+    } catch {
+      embedded = null;
+    }
+  }
+  const embeddedErr = embedded && typeof embedded === 'object' ? (embedded.error || embedded) : null;
+  const embeddedStatus = String(embeddedErr?.status || '').toLowerCase();
+  const embeddedMessage = String(embeddedErr?.message || '').toLowerCase();
+  let code = 'unknown';
+  let action = '서버 로그의 원문 에러를 확인해 주세요.';
+  if (!raw) {
+    code = 'empty_error';
+    action = `${provider} 응답이 비어 있습니다. 모델/네트워크 상태를 다시 확인해 주세요.`;
+  } else if (
+    low.includes('resource_exhausted') ||
+    low.includes('429') ||
+    low.includes('quota') ||
+    low.includes('rate limit') ||
+    embeddedStatus.includes('resource_exhausted') ||
+    embeddedMessage.includes('quota')
+  ) {
+    code = 'quota_or_rate_limit';
+    action = `${provider} 사용량 한도/요금제(결제) 및 모델별 쿼터를 확인해 주세요.`;
+  } else if (low.includes('401') || low.includes('unauthorized') || low.includes('invalid api key') || low.includes('api key not valid') || low.includes('unauthenticated')) {
+    code = 'invalid_key';
+    action = `${provider} API 키가 유효한지 확인하고 새 키로 교체해 주세요.`;
+  } else if (low.includes('403') || low.includes('permission') || low.includes('forbidden')) {
+    code = 'permission_denied';
+    action = `${provider} 키 권한/프로젝트 결제 설정을 확인해 주세요.`;
+  } else if (
+    low.includes('404') ||
+    low.includes('not found') ||
+    embeddedStatus.includes('not_found')
+  ) {
+    code = 'model_not_found';
+    action = `${provider} 모델명 설정을 확인해 주세요.`;
+  } else if (
+    low.includes('unexpected format') ||
+    low.includes('did not return valid') ||
+    low.includes('json') ||
+    low.includes('empty itinerary')
+  ) {
+    code = 'invalid_model_response';
+    action = `${provider} 응답 형식이 스키마와 맞지 않습니다. 모델 변경 또는 프롬프트/스키마를 점검해 주세요.`;
+  } else if (low.includes('fetch failed') || low.includes('network') || low.includes('enotfound') || low.includes('econn') || low.includes('timeout')) {
+    code = 'network_error';
+    action = '서버 네트워크/방화벽/DNS에서 외부 API 도메인 접근이 가능한지 확인해 주세요.';
+  }
+  return {
+    provider,
+    code,
+    message: raw || 'unknown error',
+    action
+  };
+}
+
+function summarizeAiErrors(errors = []) {
+  const list = Array.isArray(errors) ? errors.filter(Boolean) : [];
+  if (list.length === 0) return '';
+  const chunks = list.map((e) => `${e.provider}(${e.code}): ${e.action}`);
+  return chunks.join(' | ');
+}
+
+async function probeGemini() {
+  if (!GEMINI_API_KEY) {
+    return { configured: false, ok: false, reason: 'missing_key' };
+  }
+  try {
+    await callGeminiGenerateContent('Return {"ok":true} as JSON only.', {
+      temperature: 0,
+      topP: 0.1,
+      maxOutputTokens: 20,
+      responseMimeType: 'application/json'
+    });
+    return { configured: true, ok: true, model: GEMINI_API_MODEL };
+  } catch (err) {
+    const classified = classifyAiError('Gemini', err);
+    return { configured: true, ok: false, model: GEMINI_API_MODEL, error: classified };
+  }
+}
+
+async function probeOpenAI() {
+  if (!OPENAI_API_KEY) {
+    return { configured: false, ok: false, reason: 'missing_key' };
+  }
+  try {
+    const url = `https://api.openai.com/v1/models/${encodeURIComponent(OPENAI_MODEL)}`;
+    const res = await fetchWithTimeout(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }
+    }, AI_REQUEST_TIMEOUT_MS);
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`OpenAI error ${res.status}: ${text}`);
+    }
+    return { configured: true, ok: true, model: OPENAI_MODEL };
+  } catch (err) {
+    const classified = classifyAiError('OpenAI', err);
+    return { configured: true, ok: false, model: OPENAI_MODEL, error: classified };
+  }
+}
+
+async function buildAiDiagnostics({ probe = false } = {}) {
+  const info = {
+    timeoutMs: AI_REQUEST_TIMEOUT_MS,
+    providers: {
+      gemini: {
+        configured: Boolean(GEMINI_API_KEY),
+        model: GEMINI_API_MODEL,
+        keyMasked: maskSecret(GEMINI_API_KEY),
+        keyFormatOk: looksLikeGeminiKey(GEMINI_API_KEY)
+      },
+      openai: {
+        configured: Boolean(OPENAI_API_KEY),
+        model: OPENAI_MODEL,
+        keyMasked: maskSecret(OPENAI_API_KEY),
+        keyFormatOk: looksLikeOpenAiKey(OPENAI_API_KEY)
+      }
+    }
+  };
+  if (!probe) return info;
+  const [gemini, openai] = await Promise.all([probeGemini(), probeOpenAI()]);
+  info.probe = { gemini, openai, checkedAt: new Date().toISOString() };
+  return info;
+}
+
 function normalizeSelectedDestination(pick, cityLabel) {
   if (!pick) return null;
   const name = String(pick.name || pick.label || '').trim();
@@ -2387,11 +2552,11 @@ async function callGeminiGenerateContent(prompt, opts = {}) {
     }
   };
   const url = `${GEMINI_ENDPOINT}/${encodeURIComponent(GEMINI_API_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
-  });
+  }, AI_REQUEST_TIMEOUT_MS);
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Gemini error ${res.status}: ${text}`);
@@ -2469,14 +2634,14 @@ async function createItineraryWithOpenAI(payload, picks) {
   let json = null;
   let lastError = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const res = await fetch('https://api.openai.com/v1/responses', {
+    const res = await fetchWithTimeout('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(body)
-    });
+    }, AI_REQUEST_TIMEOUT_MS);
 
     if (!res.ok) {
       lastError = new Error(`OpenAI error: ${res.status}`);
@@ -2566,20 +2731,20 @@ async function buildTravelPlan(payload) {
   rec.picks = mergedPicks;
   const picksForItinerary = mergedPicks.length ? mergedPicks : rec.picks;
   let it;
-  let aiNote = '';
+  const aiErrors = [];
   if (payload.useAi) {
     if (USE_GEMINI) {
       try {
         it = await createItineraryWithGemini({ ...payload, city: key, _picks: picksForItinerary }, picksForItinerary);
       } catch (err) {
-        aiNote = `Gemini: ${err.message}`;
+        aiErrors.push(classifyAiError('Gemini', err));
       }
     }
     if (!it && OPENAI_API_KEY) {
       try {
         it = await createItineraryWithOpenAI({ ...payload, city: key, _picks: picksForItinerary }, picksForItinerary);
       } catch (err) {
-        aiNote = aiNote ? `${aiNote}; OpenAI: ${err.message}` : err.message;
+        aiErrors.push(classifyAiError('OpenAI', err));
       }
     }
   }
@@ -2608,7 +2773,8 @@ async function buildTravelPlan(payload) {
     itinerarySource: it.source,
     tips: it.tips,
     summary: `${rec.city} 추천 ${mergedRecommendations.length}곳 + ${it.itinerary.length}일 일정`,
-    aiNote
+    aiNote: summarizeAiErrors(aiErrors),
+    aiErrors
   };
 }
 
@@ -3566,6 +3732,7 @@ function tabelogStyleFoods(payload) {
 async function handleApi(req, res, parsedUrl) {
   try {
     if (req.method === 'GET' && parsedUrl.pathname === '/api/health') {
+      const diagnostics = await buildAiDiagnostics({ probe: false });
       return sendJson(res, 200, {
         ok: true,
         app: 'japantravel-suite',
@@ -3575,10 +3742,18 @@ async function handleApi(req, res, parsedUrl) {
           geminiModel: GEMINI_API_MODEL,
           openaiConfigured: Boolean(OPENAI_API_KEY),
           openaiModel: OPENAI_MODEL,
-          chatParseStrictAi: CHAT_PARSE_STRICT_AI
+          chatParseStrictAi: CHAT_PARSE_STRICT_AI,
+          requestTimeoutMs: AI_REQUEST_TIMEOUT_MS,
+          geminiKeyFormatOk: diagnostics.providers.gemini.keyFormatOk,
+          openaiKeyFormatOk: diagnostics.providers.openai.keyFormatOk
         },
         now: new Date().toISOString()
       });
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/ai-diagnostics') {
+      const probe = parsedUrl.searchParams.get('probe') === '1';
+      return sendJson(res, 200, await buildAiDiagnostics({ probe }));
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/cities') {

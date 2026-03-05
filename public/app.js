@@ -945,8 +945,9 @@ el('btnAiAssist')?.addEventListener('click', async () => {
     const aiSourceNote = el('aiSourceNote');
     if (aiSourceNote) {
       const sourceLabel = describeEngineSource(data.source, 'chat');
-      aiSourceNote.textContent = `채팅 해석 방식: ${sourceLabel}`;
-      aiSourceNote.classList.toggle('warn', sourceLabel.includes('규칙기반'));
+      const extra = data.aiNote ? ` | ${data.aiNote}` : '';
+      aiSourceNote.textContent = `채팅 해석 방식: ${sourceLabel}${extra}`;
+      aiSourceNote.classList.toggle('warn', sourceLabel.includes('규칙기반') || Boolean(data.aiNote));
     }
     if (data.cityMeta) upsertCityOption(data.cityMeta);
     applyAiConditions(data.parsed || {});
