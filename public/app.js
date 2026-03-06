@@ -939,12 +939,13 @@ function buildPlanPayload(extra = {}) {
 
 function describeEngineSource(source, mode = 'chat') {
   const s = String(source || '').toLowerCase();
-  if (!s) return mode === 'itinerary' ? '규칙기반(기본)' : '규칙기반(기본)';
-  if (s.includes('gemini')) return 'LLM 기반 (Gemini)';
-  if (s.includes('openai')) return 'LLM 기반 (OpenAI)';
-  if (s.includes('rule')) return '규칙기반(Fallback)';
-  if (s.includes('fallback') || s.includes('local_curated')) return '규칙기반(Fallback)';
-  return `기타(${source})`;
+  if (!s) return 'ℹ️ 규칙기반 (기본)';
+  if (s.includes('gemini')) return '✨ AI 기반 (Gemini)';
+  if (s.includes('openai')) return '✨ AI 기반 (OpenAI)';
+  if (s.includes('ai_planner')) return '✨ AI 기반 (Planner)';
+  if (s.includes('rule')) return '📋 규칙기반 (AI 미응답 시 폴백)';
+  if (s.includes('fallback') || s.includes('local_curated')) return '📋 규칙기반 (AI 미응답 시 폴백)';
+  return `ℹ️ ${source}`;
 }
 
 function buildFlightPayload(flight) {
@@ -975,7 +976,8 @@ async function runPlan(extra = {}, syncAux = false) {
   if (destSourceNote) {
     const src = data.recommendationSource || 'unknown';
     const isFallback = String(src).includes('fallback') || String(src).includes('local_curated');
-    destSourceNote.textContent = `추천 여행지 데이터 소스: ${src}`;
+    var destSrcLabel = String(src).includes('google') ? '✨ AI + Google Places 기반' : isFallback ? '📋 규칙기반 추천 (폴백)' : '✨ AI 기반 추천';
+    destSourceNote.textContent = `추천 여행지: ${destSrcLabel}`;
     destSourceNote.classList.toggle('warn', isFallback);
   }
   renderItinerary({
@@ -1352,7 +1354,8 @@ el('btnFlights').addEventListener('click', async () => {
         sourceNote.textContent = data.note || '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
         sourceNote.classList.add('warn');
       } else {
-        sourceNote.textContent = `데이터 소스: ${data.source}`;
+        var flightSrcLabel = String(data.source).includes('mock') ? '📋 더미 데이터 (폴백)' : '✨ ' + data.source;
+        sourceNote.textContent = `항공편 데이터: ${flightSrcLabel}`;
         sourceNote.classList.remove('warn');
       }
     }
@@ -1567,7 +1570,8 @@ el('btnFood').addEventListener('click', async () => {
     if (sourceNote) {
       const source = data.source || 'unknown';
       const warning = data.warning ? ` · ${data.warning}` : '';
-      sourceNote.textContent = `데이터 소스: ${source}${warning}`;
+      var foodSrcLabel = String(source).includes('google') ? '✨ Google Places 기반' : String(source).includes('tabelog') ? '✨ 타베로그 스타일' : String(source).includes('curated') ? '📋 규칙기반 (폴백)' : '✨ ' + source;
+      sourceNote.textContent = `맛집 데이터: ${foodSrcLabel}${warning}`;
       sourceNote.classList.toggle('warn', Boolean(data.warning));
     }
   } catch (err) {
@@ -1613,7 +1617,8 @@ el('btnStays').addEventListener('click', async () => {
         sourceNote.textContent = data.note || '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
         sourceNote.classList.add('warn');
       } else {
-        sourceNote.textContent = `데이터 소스: ${data.source}`;
+        var staySrcLabel = String(data.source).includes('mock') ? '📋 더미 데이터 (폴백)' : '✨ ' + data.source;
+        sourceNote.textContent = `숙소 데이터: ${staySrcLabel}`;
         sourceNote.classList.remove('warn');
       }
     }
@@ -2054,7 +2059,8 @@ async function calculateDayRouteCost(dayNum) {
     }
     h += '</div><div class="route-cost-total">합계: ¥' + data.totalFareJPY.toLocaleString() + ' (~' + data.totalFareKRW.toLocaleString() + '원) · 이동 ' + data.totalDurationMin + '분</div>';
     if (data.routeTip) h += '<div class="route-cost-tip">' + escapeHtml(data.routeTip) + '</div>';
-    if (data.source === 'ai') h += '<div class="route-cost-source">AI 기반 추정</div>';
+    var routeSourceLabel = data.source === 'ai' ? '✨ AI 기반 계산 (Gemini)' : data.source === 'distance_estimate' ? '📏 거리 기반 추정 (AI 미응답 시 자동 폴백)' : data.source === 'directions_api' ? '🗺 Google 경로 API' : 'ℹ️ 추정치';
+    h += '<div class="route-cost-source">' + routeSourceLabel + '</div>';
     resultEl.innerHTML = h;
     routeCostCache[dayNum] = data;
   } catch (err) { resultEl.innerHTML = '<div class="route-cost-empty">오류: ' + escapeHtml(err.message) + '</div>'; }
