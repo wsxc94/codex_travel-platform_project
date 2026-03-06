@@ -68,9 +68,9 @@ const CITY_DATA = {
       { name: '오다이바 해변공원', area: '오다이바', category: '산책', stayMin: 100, bestTime: '16:00-18:00', crowdScore: 2 }
     ],
     foods: [
-      { name: '스시다이', area: '츠키지', genre: '스시', priceLevel: 4, score: 4.2, tabelogUrl: 'https://tabelog.com/en/tokyo/' },
-      { name: '아후리 라멘', area: '에비스', genre: '라멘', priceLevel: 2, score: 3.8, tabelogUrl: 'https://tabelog.com/en/tokyo/' },
-      { name: '토리키조쿠', area: '신주쿠', genre: '이자카야', priceLevel: 1, score: 3.6, tabelogUrl: 'https://tabelog.com/en/tokyo/' }
+      { name: '스시다이', area: '츠키지', genre: '스시', priceLevel: 4, score: 4.2 },
+      { name: '아후리 라멘', area: '에비스', genre: '라멘', priceLevel: 2, score: 3.8 },
+      { name: '토리키조쿠', area: '신주쿠', genre: '이자카야', priceLevel: 1, score: 3.6 }
     ]
   },
   osaka: {
@@ -84,9 +84,9 @@ const CITY_DATA = {
       { name: '신세카이', area: '에비스초', category: '로컬', stayMin: 90, bestTime: '15:00-18:00', crowdScore: 3 }
     ],
     foods: [
-      { name: '쿠시카츠 다루마', area: '신세카이', genre: '쿠시카츠', priceLevel: 2, score: 3.7, tabelogUrl: 'https://tabelog.com/en/osaka/' },
-      { name: '타코야키 주하치반', area: '난바', genre: '타코야키', priceLevel: 1, score: 3.8, tabelogUrl: 'https://tabelog.com/en/osaka/' },
-      { name: '후쿠타로 오코노미야키', area: '난바', genre: '오코노미야키', priceLevel: 2, score: 4.0, tabelogUrl: 'https://tabelog.com/en/osaka/' }
+      { name: '쿠시카츠 다루마', area: '신세카이', genre: '쿠시카츠', priceLevel: 2, score: 3.7 },
+      { name: '타코야키 주하치반', area: '난바', genre: '타코야키', priceLevel: 1, score: 3.8 },
+      { name: '후쿠타로 오코노미야키', area: '난바', genre: '오코노미야키', priceLevel: 2, score: 4.0 }
     ]
   },
   kyoto: {
@@ -99,8 +99,8 @@ const CITY_DATA = {
       { name: '아라시야마 대나무숲', area: '아라시야마', category: '자연', stayMin: 100, bestTime: '08:00-09:30', crowdScore: 3 }
     ],
     foods: [
-      { name: '오멘 긴카쿠지', area: '사쿄구', genre: '우동', priceLevel: 2, score: 3.9, tabelogUrl: 'https://tabelog.com/en/kyoto/' },
-      { name: '기온 우오신', area: '기온', genre: '가이세키', priceLevel: 4, score: 4.1, tabelogUrl: 'https://tabelog.com/en/kyoto/' }
+      { name: '오멘 긴카쿠지', area: '사쿄구', genre: '우동', priceLevel: 2, score: 3.9 },
+      { name: '기온 우오신', area: '기온', genre: '가이세키', priceLevel: 4, score: 4.1 }
     ]
   }
 };
@@ -184,8 +184,8 @@ function buildGenericCity(profile) {
       { name: profile.sightC, area: a3, category: '로컬/산책', stayMin: 110, bestTime: '16:00-18:00', crowdScore: 2 }
     ],
     foods: [
-      { name: profile.foodA, area: a1, genre: profile.genreA, priceLevel: 2, score: 3.8, tabelogUrl: 'https://tabelog.com/en/' },
-      { name: profile.foodB, area: a2, genre: profile.genreB, priceLevel: 3, score: 4.0, tabelogUrl: 'https://tabelog.com/en/' }
+      { name: profile.foodA, area: a1, genre: profile.genreA, priceLevel: 2, score: 3.8 },
+      { name: profile.foodB, area: a2, genre: profile.genreB, priceLevel: 3, score: 4.0 }
     ]
   };
 }
@@ -197,8 +197,8 @@ for (const [key, profile] of Object.entries(JAPAN_CITY_PROFILES)) {
 function augmentCityData(city) {
   const [a1, a2] = city.areas;
   const extraFoods = [
-    { name: `${city.label} 로컬 이자카야`, area: a1, genre: '이자카야', priceLevel: 2, score: 3.7, tabelogUrl: 'https://tabelog.com/en/' },
-    { name: `${city.label} 대표 라멘`, area: a2, genre: '라멘', priceLevel: 2, score: 3.9, tabelogUrl: 'https://tabelog.com/en/' }
+    { name: `${city.label} 로컬 이자카야`, area: a1, genre: '이자카야', priceLevel: 2, score: 3.7 },
+    { name: `${city.label} 대표 라멘`, area: a2, genre: '라멘', priceLevel: 2, score: 3.9 }
   ];
   city.foods = [...city.foods, ...extraFoods];
 }
@@ -210,7 +210,13 @@ for (const city of Object.values(CITY_DATA)) {
 const CITY_ALIASES = {
   tokyo: ['도쿄', 'tokyo'],
   osaka: ['오사카', 'osaka'],
-  kyoto: ['교토', 'kyoto']
+  kyoto: ['교토', 'kyoto'],
+  sapporo: ['삿포로', 'sapporo', '홋카이도', 'hokkaido'],
+  fukuoka: ['후쿠오카', 'fukuoka', '규슈', 'kyushu'],
+  nagoya: ['나고야', 'nagoya'],
+  hiroshima: ['히로시마', 'hiroshima'],
+  okinawa: ['오키나와', 'okinawa'],
+  kanazawa: ['가나자와', 'kanazawa']
 };
 
 const LANDMARK_CITY_HINTS = {
@@ -699,10 +705,10 @@ async function ensureDynamicCityProfile(cityLabel, theme = 'mixed', budget = 'mi
     const places = await fetchGoogleAttractions(cityLabel, theme);
     highlights = (places || []).slice(0, 10).map((p) => ({
       name: p.displayName?.text || '추천 명소',
-      area: p.formattedAddress || cityLabel,
-      category: p.primaryType || '관광',
+      area: shortArea(p.formattedAddress, cityLabel),
+      category: localizeType(p.primaryType) || '관광',
       stayMin: 90,
-      bestTime: p.currentOpeningHours?.openNow ? '10:00-12:00' : '13:00-15:00',
+      bestTime: inferBestTime(p),
       crowdScore: 3
     }));
   } catch {
@@ -713,11 +719,10 @@ async function ensureDynamicCityProfile(cityLabel, theme = 'mixed', budget = 'mi
       const places = await fetchFoodPlacesForCity(cityLabel, geocoded?.lat, geocoded?.lng, foodKeyword, budget);
       foods = (places || []).slice(0, 10).map((f) => ({
         name: f.name,
-        area: f.address || cityLabel,
+        area: shortArea(f.address, cityLabel) || f.area || cityLabel,
         genre: f.genre || foodKeyword || '일식',
         priceLevel: Number(f.priceLevel || 3),
-        score: Number(f.score || 3.8),
-        tabelogUrl: f.tabelogUrl || 'https://tabelog.com/en/'
+        score: Number(f.score || 3.8)
       }));
     }
   } catch {
@@ -731,7 +736,7 @@ async function ensureDynamicCityProfile(cityLabel, theme = 'mixed', budget = 'mi
   }
   if (foods.length === 0) {
     foods = [
-      { name: `${cityLabel} 로컬 맛집`, area: cityLabel, genre: foodKeyword || '일식', priceLevel: 2, score: 3.8, tabelogUrl: 'https://tabelog.com/en/' }
+      { name: `${cityLabel} 로컬 맛집`, area: cityLabel, genre: foodKeyword || '일식', priceLevel: 2, score: 3.8 }
     ];
   }
   const profile = {
@@ -898,24 +903,35 @@ function extractPreferredAreas(text, cityKey) {
 
 const FOOD_KEYWORDS = [
   '장어덮밥', '장어 덮밥', '히츠마부시', '교자', '라멘', '스시', '오코노미야키', '타코야키',
-  '규카츠', '돈카츠', '카레', '우동', '소바', '야키니쿠', '이자카야',
-  '카이센동', '짬뽕', '모츠나베', '디저트', '카페', '멘타이코', '스프카레',
-  '징기스칸', '가이세키', '오마카세', '해산물'
+  '규카츠', '돈카츠', '스프카레', '카레', '우동', '소바', '야키니쿠', '이자카야',
+  '카이센동', '짬뽕', '모츠나베', '디저트', '카페', '멘타이코',
+  '징기스칸', '가이세키', '오마카세', '해산물',
+  '아구', '오리온', '사케', '양조', '규탄', '부타동', '소바', '복어',
+  '고베규', '와규', '스테이크', '카츠오', '성게', '게요리'
 ];
 
 function parseFoodKeywordFromText(text) {
   const raw = String(text || '').toLowerCase();
+  // Collect ALL matching food keywords, return the most specific (longest) one
+  const matches = [];
   for (const keyword of FOOD_KEYWORDS) {
     if (raw.includes(keyword.toLowerCase())) {
-      if (keyword === '장어 덮밥') return '장어덮밥';
-      return keyword;
+      matches.push(keyword === '장어 덮밥' ? '장어덮밥' : keyword);
     }
   }
-  if (/hitsumabushi/i.test(raw)) return '장어덮밥';
-  if (/장어|eel|unagi/i.test(raw)) return '장어덮밥';
-  if (/ramen/i.test(raw)) return '라멘';
-  if (/sushi/i.test(raw)) return '스시';
-  return '';
+  if (/hitsumabushi/i.test(raw)) matches.push('장어덮밥');
+  if (/장어|eel|unagi/i.test(raw)) matches.push('장어덮밥');
+  if (/ramen/i.test(raw)) matches.push('라멘');
+  if (/sushi/i.test(raw)) matches.push('스시');
+  if (/아구.*돼지|아구돼지|아구 돼지/i.test(raw)) matches.push('아구돼지');
+  if (/오리온.*맥주|오리온맥주/i.test(raw)) matches.push('오리온맥주');
+  if (/사케.*양조|양조.*투어/i.test(raw)) matches.push('사케');
+  // Return longest match (most specific)
+  if (matches.length === 0) return '';
+  // Join multiple keywords with comma for multi-food queries
+  const unique = [...new Set(matches)];
+  if (unique.length > 1) return unique.slice(0, 3).join(', ');
+  return unique[0];
 }
 
 function isMeaningfulPlaceKeyword(token) {
@@ -1454,7 +1470,13 @@ function normalizeTravelChatParsed(candidate, fallback) {
   const raw = candidate || {};
   const rawCityText = String(raw.cityKey || raw.cityLabel || fallback.cityLabel || fallback.cityKey || '').trim();
   const detectedCityKey = detectCityKeyByInput(rawCityText) || detectCityKeyByInput(raw.cityKey) || '';
-  const resolvedCityKey = detectedCityKey || fallback.cityKey;
+  // If fallback explicitly detected a city (not default tokyo) and AI returned a different/generic city,
+  // trust the fallback's explicit detection from the user message
+  const fallbackExplicit = fallback.cityKey && fallback.cityKey !== 'tokyo';
+  const aiCityKey = detectedCityKey || '';
+  const resolvedCityKey = (fallbackExplicit && aiCityKey !== fallback.cityKey && aiCityKey !== '')
+    ? fallback.cityKey  // user's message clearly mentioned a city — trust it
+    : (detectedCityKey || fallback.cityKey);
   const city = CITY_DATA[resolvedCityKey] || CITY_DATA[fallback.cityKey] || CITY_DATA.tokyo;
 
   const theme = ['mixed', 'foodie', 'culture', 'shopping', 'nature'].includes(raw.theme)
@@ -1466,7 +1488,8 @@ function normalizeTravelChatParsed(candidate, fallback) {
 
   const airportCode = String(raw.arrivalAirport || city.airport || fallback.arrivalAirport).toUpperCase().trim();
   const cityByAirport = cityKeyByAirport(airportCode);
-  const finalCityKey = cityByAirport || resolvedCityKey;
+  // Don't let airport override an explicitly detected city (e.g. kyoto/osaka both use KIX)
+  const finalCityKey = (resolvedCityKey && CITY_DATA[resolvedCityKey]) ? resolvedCityKey : (cityByAirport || resolvedCityKey);
   const finalCity = CITY_DATA[finalCityKey] || city;
   const arrivalAirport = cityByAirport ? airportCode : finalCity.airport;
   const preferredLabel = String(raw.cityLabel || '').trim();
@@ -1515,9 +1538,10 @@ function normalizeTravelChatParsed(candidate, fallback) {
   };
 }
 
-async function parseTravelChatWithOpenAI(message, context) {
+async function parseTravelChatWithOpenAI(message, context, history, prevParsed) {
   if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
-  const system = [
+  const hasHistory = Array.isArray(history) && history.length > 0;
+  const systemParts = [
     'You parse travel chat input into structured JSON.',
     'Target country is Japan, region should map to a city in the provided list.',
     'Split user intent by type: destination(city), food preference, travel theme.',
@@ -1525,20 +1549,33 @@ async function parseTravelChatWithOpenAI(message, context) {
     'If user asks for constraints (indoor, less walking, rest day, no shopping, late start), fill specialPrefs.',
     'Never convert generic words like "먹고싶어" or "쇼핑" into place names.',
     'Prefer airport-centric city selection.',
+    hasHistory ? 'This is a FOLLOW-UP message. The user may reference previous context. Merge new intent with previous conditions. Keep previous values unless explicitly changed. Set isFollowUp to true.' : '',
     'Return only JSON matching schema.'
-  ].join(' ');
+  ].filter(Boolean);
+  const system = systemParts.join(' ');
+  const inputMessages = [
+    {
+      role: 'system',
+      content: [{ type: 'input_text', text: system }]
+    }
+  ];
+  if (hasHistory) {
+    for (const h of history.slice(-10)) {
+      inputMessages.push({
+        role: h.role === 'user' ? 'user' : 'assistant',
+        content: [{ type: 'input_text', text: h.content }]
+      });
+    }
+  }
+  const userData = { message, context, availableCities: Object.entries(CITY_DATA).map(([k, v]) => ({ key: k, label: v.label, airport: v.airport, areas: v.areas })) };
+  if (prevParsed) userData.prevParsed = prevParsed;
+  inputMessages.push({
+    role: 'user',
+    content: [{ type: 'input_text', text: JSON.stringify(userData) }]
+  });
   const body = {
     model: OPENAI_MODEL,
-    input: [
-      {
-        role: 'system',
-        content: [{ type: 'input_text', text: system }]
-      },
-      {
-        role: 'user',
-        content: [{ type: 'input_text', text: JSON.stringify({ message, context, availableCities: Object.entries(CITY_DATA).map(([k, v]) => ({ key: k, label: v.label, airport: v.airport, areas: v.areas })) }) }]
-      }
-    ],
+    input: inputMessages,
     text: {
       format: {
         type: 'json_schema',
@@ -1573,9 +1610,10 @@ async function parseTravelChatWithOpenAI(message, context) {
                 required: ['cityLabel', 'days', 'unit']
               }
             },
-            reasons: { type: 'array', items: { type: 'string' } }
+            reasons: { type: 'array', items: { type: 'string' } },
+            isFollowUp: { type: 'boolean' }
           },
-          required: ['cityKey', 'arrivalAirport', 'theme', 'budget', 'days', 'startDate', 'preferredAreas', 'preferAirportAccess', 'wantedPlaces', 'foodKeyword', 'routeCities', 'reasons']
+          required: ['cityKey', 'arrivalAirport', 'theme', 'budget', 'days', 'startDate', 'preferredAreas', 'preferAirportAccess', 'wantedPlaces', 'foodKeyword', 'routeCities', 'reasons', 'isFollowUp']
         },
         strict: true
       }
@@ -1596,8 +1634,15 @@ async function parseTravelChatWithOpenAI(message, context) {
   return parsed;
 }
 
-async function parseTravelChatWithGemini(message, context) {
+async function parseTravelChatWithGemini(message, context, history, prevParsed) {
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is missing');
+  const hasHistory = Array.isArray(history) && history.length > 0;
+  const historyBlock = hasHistory
+    ? '\nPrevious conversation:\n' + history.map(h => `${h.role}: ${h.content}`).join('\n') + '\n'
+    : '';
+  const prevBlock = prevParsed
+    ? '\nPreviously parsed conditions (use as baseline for follow-up):\n' + JSON.stringify(prevParsed) + '\n'
+    : '';
   const prompt = [
     'Parse the travel chat into JSON only.',
     'Country is Japan and must map to one city key from availableCities.',
@@ -1606,13 +1651,17 @@ async function parseTravelChatWithGemini(message, context) {
     'For constraints like indoor/no shopping/less walking/rest day/late start/public transit, include specialPrefs.',
     'Do not treat generic request words as place names.',
     'Use airport-centric destination logic.',
+    hasHistory ? 'This is a FOLLOW-UP message in an ongoing conversation. The user may refer to previous context ("거기", "그곳", "추가", "변경", "빼줘"). Merge new intent with previous conditions. Keep previous values unless explicitly changed.' : '',
+    hasHistory ? 'Set isFollowUp: true in your response.' : '',
     'Do not return markdown.',
+    historyBlock,
+    prevBlock,
     JSON.stringify({
       message,
       context,
       availableCities: Object.entries(CITY_DATA).map(([k, v]) => ({ key: k, label: v.label, airport: v.airport, areas: v.areas }))
     })
-  ].join('\n');
+  ].filter(Boolean).join('\n');
   const data = await callGeminiGenerateContent(prompt, {
     temperature: 0.2,
     maxOutputTokens: 700,
@@ -1626,14 +1675,36 @@ async function parseTravelChatWithGemini(message, context) {
 }
 
 async function buildTravelChatPlan(payload = {}) {
+  const history = Array.isArray(payload.history) ? payload.history : [];
+  const prevParsed = payload.prevParsed || null;
+  const isFollowUp = history.length > 0 && prevParsed;
   const fallback = parseTravelChatInput(payload);
+
+  // For follow-ups, merge fallback with previous parsed conditions
+  if (isFollowUp) {
+    for (const key of ['cityKey', 'cityLabel', 'theme', 'budget', 'arrivalAirport', 'foodKeyword']) {
+      if (!fallback[key] && prevParsed[key]) fallback[key] = prevParsed[key];
+    }
+    if ((!fallback.days || fallback.days <= 1) && prevParsed.days > 1) fallback.days = prevParsed.days;
+    if (fallback.wantedPlaces.length === 0 && Array.isArray(prevParsed.wantedPlaces)) {
+      fallback.wantedPlaces = [...prevParsed.wantedPlaces];
+    }
+    // Always merge routeCities from previous context - don't lose previous cities
+    if (Array.isArray(prevParsed.routeCities) && prevParsed.routeCities.length > 0) {
+      const merged = new Set([...fallback.routeCities, ...prevParsed.routeCities]);
+      fallback.routeCities = [...merged].slice(0, 6);
+    }
+    // Preserve previous startDate if not newly specified
+    if (!fallback.startDate && prevParsed.startDate) fallback.startDate = prevParsed.startDate;
+  }
+
   let parsed = null;
   let source = 'rule_based';
   const aiErrors = [];
 
   if (USE_GEMINI) {
     try {
-      const geminiParsed = await parseTravelChatWithGemini(payload.message, payload.context || {});
+      const geminiParsed = await parseTravelChatWithGemini(payload.message, payload.context || {}, history, prevParsed);
       parsed = normalizeTravelChatParsed(geminiParsed, fallback);
       source = 'gemini_chat_parser_v1';
     } catch (err) {
@@ -1643,7 +1714,7 @@ async function buildTravelChatPlan(payload = {}) {
 
   if (!parsed && OPENAI_API_KEY) {
     try {
-      const openaiParsed = await parseTravelChatWithOpenAI(payload.message, payload.context || {});
+      const openaiParsed = await parseTravelChatWithOpenAI(payload.message, payload.context || {}, history, prevParsed);
       parsed = normalizeTravelChatParsed(openaiParsed, fallback);
       source = 'openai_chat_parser_v1';
     } catch (err) {
@@ -1657,6 +1728,9 @@ async function buildTravelChatPlan(payload = {}) {
     }
     parsed = fallback;
   }
+
+  // Carry forward isFollowUp flag
+  parsed.isFollowUp = isFollowUp || Boolean(parsed.isFollowUp);
 
   if (parsed.specialPrefs?.adjustKyotoUpOsakaDown) {
     const hasKyoto = parsed.routeCities.includes('교토');
@@ -1830,6 +1904,201 @@ function congestionPenalty(userRatingCount, openNow) {
   return clamp(base + closedPenalty, 0, 0.45);
 }
 
+// ── Korean address formatter ──
+const JP_KO_AREA = {
+  // Cities
+  'osaka': '오사카', 'tokyo': '도쿄', 'kyoto': '교토', 'fukuoka': '후쿠오카',
+  'sapporo': '삿포로', 'nagoya': '나고야', 'kobe': '고베', 'nara': '나라',
+  'hiroshima': '히로시마', 'yokohama': '요코하마', 'okinawa': '오키나와',
+  'kamakura': '가마쿠라', 'hakone': '하코네', 'nikko': '닛코',
+  // Wards
+  'chuo ward': '추오구', 'chuo-ku': '추오구', 'kita ward': '키타구', 'kita-ku': '키타구',
+  'nishi ward': '니시구', 'nishi-ku': '니시구', 'minami ward': '미나미구', 'minami-ku': '미나미구',
+  'naniwa ward': '나니와구', 'naniwa-ku': '나니와구',
+  'tennoji ward': '덴노지구', 'tennoji-ku': '덴노지구',
+  'abeno ward': '아베노구', 'abeno-ku': '아베노구',
+  'sumida ward': '스미다구', 'sumida-ku': '스미다구',
+  'taito ward': '다이토구', 'taito-ku': '다이토구',
+  'shibuya ward': '시부야구', 'shibuya-ku': '시부야구',
+  'shinjuku ward': '신주쿠구', 'shinjuku-ku': '신주쿠구',
+  'minato ward': '미나토구', 'minato-ku': '미나토구',
+  'toshima ward': '도시마구', 'toshima-ku': '도시마구',
+  'chiyoda ward': '치요다구', 'chiyoda-ku': '치요다구',
+  'setagaya ward': '세타가야구', 'setagaya-ku': '세타가야구',
+  'meguro ward': '메구로구', 'meguro-ku': '메구로구',
+  'nakano ward': '나카노구', 'nakano-ku': '나카노구',
+  'bunkyo ward': '분쿄구', 'bunkyo-ku': '분쿄구',
+  'higashiyama ward': '히가시야마구', 'higashiyama-ku': '히가시야마구',
+  'sakyo ward': '사쿄구', 'sakyo-ku': '사쿄구',
+  'shimogyo ward': '시모교구', 'shimogyo-ku': '시모교구',
+  'hakata ward': '하카타구', 'hakata-ku': '하카타구',
+  'naka ward': '나카구', 'naka-ku': '나카구',
+  // City suffixes (Google Places returns "X City" pattern)
+  'shibuya city': '시부야', 'shinjuku city': '신주쿠',
+  'minato city': '미나토', 'chuo city': '추오',
+  'taito city': '다이토', 'sumida city': '스미다',
+  'toshima city': '도시마', 'chiyoda city': '치요다',
+  'meguro city': '메구로', 'setagaya city': '세타가야',
+  'nakano city': '나카노', 'bunkyo city': '분쿄',
+  'koto city': '코토', 'shinagawa city': '시나가와',
+  'ota city': '오타', 'suginami city': '스기나미',
+  'itabashi city': '이타바시', 'nerima city': '네리마',
+  'adachi city': '아다치', 'katsushika city': '카츠시카',
+  'edogawa city': '에도가와', 'arakawa city': '아라카와',
+  // Osaka city areas
+  'osaka city': '오사카', 'sakai city': '사카이',
+  // Kyoto
+  'kyoto city': '교토',
+  // Common area names in addresses
+  'kabukicho': '카부키초', 'kabukichō': '카부키초',
+  'roppongi hills': '롭폰기힐즈',
+  'nihonbashi': '니혼바시', 'nihombashi': '니혼바시',
+  'ebisu': '에비스', 'daikanyama': '다이칸야마',
+  'shimokitazawa': '시모키타자와',
+  'kichijoji': '기치조지', 'nakameguro': '나카메구로',
+  'yurakucho': '유라쿠초', 'marunouchi': '마루노우치',
+  'shinbashi': '신바시', 'shimbashi': '신바시',
+  'takadanobaba': '다카다노바바',
+  'kagurazaka': '카구라자카', 'jimbocho': '진보초',
+  'ochanomizu': '오차노미즈', 'ueno park': '우에노 공원',
+  'senso-ji': '센소지', 'meiji shrine': '메이지 신궁',
+  'tokyo tower': '도쿄 타워', 'tokyo skytree': '도쿄 스카이트리',
+  'shinsaibashi-suji': '신사이바시스지',
+  'namba parks': '난바 파크스',
+  'jingumae': '진구마에', 'jingūmae': '진구마에',
+  'minamiaoyama': '미나미아오야마', 'aoyama': '아오야마',
+  'azabu': '아자부', 'azabujuban': '아자부주반',
+  'sendagaya': '센다가야', 'yoyogi': '요요기',
+  'meguro': '메구로', 'gotanda': '고탄다',
+  'shibakoen': '시바코엔', 'hamamatsucho': '하마마츠초',
+  'toranomon': '도라노몬', 'otemachi': '오테마치',
+  'tsukishima': '츠키시마', 'toyosu': '도요스',
+  // Districts (standalone names - Google often uses these without ward/city suffix)
+  'shibuya': '시부야', 'shinjuku': '신주쿠', 'ikebukuro': '이케부쿠로',
+  'omotesando': '오모테산도', 'takeshita': '다케시타',
+  'nishishinjuku': '니시신주쿠', 'nishishinsaibashi': '니시신사이바시',
+  'shinsaibashisuji': '신사이바시스지',
+  'yoyogikamizonocho': '요요기카미조노초',
+  'yoyogikamizonochō': '요요기카미조노초',
+  'dotonbori': '도톤보리', 'namba': '난바', 'umeda': '우메다',
+  'shinsaibashi': '신사이바시', 'shinsekai': '신세카이',
+  'tennoji': '덴노지', 'asakusa': '아사쿠사', 'ueno': '우에노',
+  'akihabara': '아키하바라', 'ginza': '긴자', 'roppongi': '롭폰기',
+  'harajuku': '하라주쿠', 'ikebukuro': '이케부쿠로',
+  'odaiba': '오다이바', 'tsukiji': '츠키지',
+  'gion': '기온', 'arashiyama': '아라시야마', 'fushimi': '후시미',
+  'tenjin': '덴진', 'canal city': '캐널시티',
+  'susukino': '스스키노', 'otaru': '오타루',
+  'minato mirai': '미나토미라이', 'chinatown': '차이나타운',
+};
+
+function koreanizeAddress(formattedAddr, cityLabel) {
+  if (!formattedAddr) return cityLabel || '';
+  let addr = String(formattedAddr);
+  // Remove zip codes
+  addr = addr.replace(/\u3012?\d{3}-?\d{4}\s*/g, '');
+  // Remove Japan/日本
+  addr = addr.replace(/\b(Japan|日本)\b[,、\s]*/gi, '');
+  // Normalize macron vowels for consistent matching
+  addr = addr.replace(/\u014d/gi, 'o').replace(/\u016b/gi, 'u').replace(/\u0113/gi, 'e').replace(/\u012b/gi, 'i').replace(/\u0101/gi, 'a');
+  // Translate known place names to Korean
+  for (const [en, ko] of Object.entries(JP_KO_AREA)) {
+    const re = new RegExp('\\b' + en.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&') + '\\b', 'gi');
+    addr = addr.replace(re, ko);
+  }
+  // Remove chome/番地/etc detail numbers
+  addr = addr.replace(/\d+-ch\u014dme[\-\u2212]?[\d\u2212\-]*/gi, '');
+  addr = addr.replace(/[\d\u2212\-]+\u756a\u5730?/g, '');
+  // Remove leftover romaji building names (sequences of katakana+latin after district)
+  addr = addr.replace(/[\u30A0-\u30FF\u3000-\u303F\uFF00-\uFFEF]+/g, ''); // katakana blocks
+  // Clean up separators
+  addr = addr.replace(/[,、]+/g, ', ');
+  addr = addr.replace(/\s+/g, ' ');
+  addr = addr.replace(/^[,\s]+/, '').replace(/[,\s]+$/, '').trim();
+  return addr || cityLabel || '';
+}
+
+function shortArea(formattedAddr, cityLabel) {
+  const clean = koreanizeAddress(formattedAddr, cityLabel);
+  const parts = clean.split(/,/).map(s => s.trim()).filter(s => s && s.length > 1);
+  if (parts.length === 0) return cityLabel || '';
+  if (parts.length <= 2) return parts.join(', ');
+  return parts.slice(0, 2).join(', ');
+}
+
+// ── Google Places primaryType Korean mapping ──
+const PRIMARY_TYPE_KO = {
+  // Attractions
+  'tourist_attraction': '관광명소', 'museum': '박물관', 'art_gallery': '미술관',
+  'aquarium': '수족관', 'zoo': '동물원', 'amusement_park': '놀이공원',
+  'theme_park': '테마파크', 'water_park': '워터파크',
+  'historical_landmark': '역사명소', 'monument': '기념비', 'castle': '성',
+  // Culture/Religion
+  'temple': '사원', 'shrine': '신사', 'church': '교회', 'mosque': '모스크',
+  'place_of_worship': '종교시설', 'cultural_center': '문화센터',
+  // Nature
+  'park': '공원', 'national_park': '국립공원', 'garden': '정원',
+  'botanical_garden': '식물원', 'beach': '해변', 'mountain': '산',
+  'hiking_area': '등산로', 'campground': '캠핑장', 'natural_feature': '자연경관',
+  // Shopping
+  'shopping_mall': '쇼핑몰', 'department_store': '백화점', 'store': '매장',
+  'market': '시장', 'supermarket': '슈퍼마켓', 'convenience_store': '편의점',
+  'clothing_store': '의류매장', 'electronics_store': '전자제품점',
+  'book_store': '서점', 'gift_shop': '기념품점', 'jewelry_store': '보석점',
+  // Food & Drink
+  'restaurant': '레스토랑', 'japanese_restaurant': '일식당', 'sushi_restaurant': '스시',
+  'ramen_restaurant': '라멘', 'chinese_restaurant': '중식당',
+  'korean_restaurant': '한식당', 'italian_restaurant': '이탈리안',
+  'french_restaurant': '프렌치', 'indian_restaurant': '인도식',
+  'thai_restaurant': '태국식', 'vietnamese_restaurant': '베트남식',
+  'mexican_restaurant': '멕시칸', 'american_restaurant': '아메리칸',
+  'seafood_restaurant': '해산물', 'steak_house': '스테이크',
+  'barbecue_restaurant': '바베큐', 'vegetarian_restaurant': '채식',
+  'vegan_restaurant': '비건', 'pizza_restaurant': '피자',
+  'hamburger_restaurant': '버거', 'sandwich_shop': '샌드위치',
+  'fast_food_restaurant': '패스트푸드', 'food_court': '푸드코트',
+  'meal_delivery': '배달', 'meal_takeaway': '포장',
+  'cafe': '카페', 'coffee_shop': '커피숍', 'tea_house': '찻집',
+  'bakery': '베이커리', 'ice_cream_shop': '아이스크림',
+  'dessert_shop': '디저트', 'confectionery': '과자점',
+  'bar': '바', 'pub': '펍', 'wine_bar': '와인바',
+  'izakaya': '이자카야', 'night_club': '나이트클럽',
+  // Entertainment
+  'movie_theater': '영화관', 'performing_arts_theater': '공연장',
+  'stadium': '경기장', 'bowling_alley': '볼링장', 'gym': '체육관',
+  'spa': '스파', 'hot_spring': '온천',
+  // Transport
+  'train_station': '기차역', 'subway_station': '지하철역',
+  'bus_station': '버스정류장', 'airport': '공항', 'ferry_terminal': '항구',
+  // Accommodation
+  'hotel': '호텔', 'lodging': '숙박', 'resort_hotel': '리조트',
+  'guest_house': '게스트하우스', 'hostel': '호스텔',
+  // Viewing/Observation
+  'observation_deck': '전망대', 'lookout': '전망대', 'viewing_point': '전망대',
+  'scenic_spot': '경승지',
+  // Government/Office
+  'government_office': '관공서', 'city_hall': '시청', 'local_government_office': '관공서',
+  // Education
+  'university': '대학교', 'school': '학교', 'library': '도서관',
+  // Medical
+  'hospital': '병원', 'pharmacy': '약국',
+  // Other
+  'point_of_interest': '명소', 'establishment': '시설',
+  'political': '행정구역', 'locality': '지역',
+};
+
+function localizeType(primaryType) {
+  if (!primaryType) return '';
+  const key = String(primaryType).toLowerCase().replace(/\s+/g, '_');
+  if (PRIMARY_TYPE_KO[key]) return PRIMARY_TYPE_KO[key];
+  // Try partial match
+  for (const [k, v] of Object.entries(PRIMARY_TYPE_KO)) {
+    if (key.includes(k) || k.includes(key)) return v;
+  }
+  // Convert snake_case to readable if no match
+  return key.replace(/_/g, ' ');
+}
+
 async function fetchGoogleCityCenter(cityLabel) {
   if (!GOOGLE_MAPS_API_KEY) return null;
   const endpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(cityLabel + ' Japan')}&key=${GOOGLE_MAPS_API_KEY}`;
@@ -1840,23 +2109,106 @@ async function fetchGoogleCityCenter(cityLabel) {
   return loc ? { lat: Number(loc.lat), lng: Number(loc.lng) } : null;
 }
 
+
+// ── Infer best visit time from place type + opening hours ──
+function inferBestTime(place) {
+  const type = String(place.primaryType || '').toLowerCase();
+  const name = String(place.displayName?.text || '').toLowerCase();
+  const periods = place.regularOpeningHours?.periods || [];
+
+  // Night-view / observation spots -> evening
+  if (/observation|tower|sky|viewing|viewpoint/.test(type) ||
+      /전망|스카이|타워|야경/.test(name)) {
+    return '17:00-20:00';
+  }
+
+  // Nightlife / entertainment districts
+  if (/night_club|bar|entertainment/.test(type) ||
+      /도톤보리|밤|야시장|포장마차/.test(name)) {
+    return '18:00-21:00';
+  }
+
+  // Markets / morning spots
+  if (/market|fish/.test(type) ||
+      /시장|외시장|어시장|츠키지/.test(name)) {
+    return '09:00-12:00';
+  }
+
+  // Shrines / temples -> early morning
+  if (/shrine|temple|place_of_worship/.test(type) ||
+      /신사|사원|절|이나리|신궁/.test(name)) {
+    return '08:30-10:30';
+  }
+
+  // Parks / gardens -> morning-midday
+  if (/park|garden|zoo|aquarium/.test(type) ||
+      /공원|정원|동물원|수족관/.test(name)) {
+    return '09:30-12:00';
+  }
+
+  // Shopping -> afternoon
+  if (/shopping|store|mall/.test(type) ||
+      /쇼핑|백화점|마켓|면세점/.test(name)) {
+    return '13:00-17:00';
+  }
+
+  // Museums -> late morning
+  if (/museum|gallery|art/.test(type) ||
+      /박물관|미술관|기념관/.test(name)) {
+    return '10:00-12:30';
+  }
+
+  // Amusement / theme park -> all day
+  if (/amusement|theme_park/.test(type) ||
+      /디즈니|유니버셜|테마파크/.test(name)) {
+    return '09:00-17:00';
+  }
+
+  // Try to infer from opening hours periods
+  if (periods.length > 0) {
+    // Find a weekday period (e.g., Wednesday = index ~3)
+    const sample = periods.find(p => p.open && p.close) || periods[0];
+    if (sample && sample.open && sample.close) {
+      const openH = sample.open.hour || 9;
+      const closeH = sample.close.hour || 17;
+      if (closeH >= 21) {
+        // Opens late or closes late -> afternoon/evening
+        return openH >= 15 ? '17:00-20:00' : '14:00-18:00';
+      }
+      if (openH <= 8) {
+        return '08:30-11:00';
+      }
+      const midH = Math.round((openH + closeH) / 2);
+      const startH = Math.max(openH, midH - 1);
+      const endH = Math.min(closeH, startH + 2);
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${pad(startH)}:00-${pad(endH)}:00`;
+    }
+  }
+
+  // Default: use openNow hint
+  return place.currentOpeningHours?.openNow ? '10:00-12:00' : '13:00-15:00';
+}
+
 async function fetchGoogleAttractions(cityLabel, theme) {
   if (!GOOGLE_MAPS_API_KEY) return [];
   const endpoint = 'https://places.googleapis.com/v1/places:searchText';
   const themeHint = theme === 'foodie' ? '맛집 명소' : theme === 'culture' ? '역사 문화 명소' : theme === 'shopping' ? '쇼핑 명소' : theme === 'nature' ? '자연 공원 명소' : '인기 관광지';
   const queries = [
     `${cityLabel} ${themeHint}`,
-    `${cityLabel} 인기 관광지`
+    `${cityLabel} 인기 관광지`,
+    `${cityLabel} 꼭 가봐야 할 곳`,
+    `${cityLabel} 추천 명소`
   ];
 
   const results = await Promise.all(queries.map(async (q) => {
-    const body = { textQuery: q, maxResultCount: 12, languageCode: 'ko', regionCode: 'JP' };
+    const body = { textQuery: q, maxResultCount: 20, languageCode: 'ko', regionCode: 'JP' };
     const r = await fetch(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.currentOpeningHours.openNow,places.location'
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.currentOpeningHours.openNow,places.regularOpeningHours,places.location,places.photos'
       },
       body: JSON.stringify(body)
     });
@@ -1866,11 +2218,26 @@ async function fetchGoogleAttractions(cityLabel, theme) {
   }));
 
   const merged = results.flat();
+  // Filter out non-Japan results
+  const jpOnly = merged.filter((p) => {
+    const addr = String(p.formattedAddress || '');
+    if (/한국|대한민국|South Korea|Korea|서울|부산|대구|인천|China|中国|台湾|Taiwan|Thailand|Vietnam|Philippines/i.test(addr)) return false;
+    return true;
+  });
   const uniq = new Map();
-  for (const p of merged) {
-    const key = p.id || p.displayName?.text;
-    if (!key || uniq.has(key)) continue;
-    uniq.set(key, p);
+  const seenNames = new Set();
+  for (const p of jpOnly) {
+    const id = p.id || '';
+    const name = String(p.displayName?.text || '').trim();
+    if (!name) continue;
+    // Dedup by ID
+    if (id && uniq.has(id)) continue;
+    // Dedup by normalized name (remove spaces/brackets for fuzzy match)
+    const normName = name.replace(/[\s\(\)（）　]/g, '').toLowerCase();
+    if (seenNames.has(normName)) continue;
+    seenNames.add(normName);
+    if (id) uniq.set(id, p);
+    else uniq.set(name, p);
   }
   return Array.from(uniq.values());
 }
@@ -1887,15 +2254,13 @@ function scoreExternalPlace(place, ctx) {
   const mobilityScore = clamp(1 - (centerDistKm / 20), 0.1, 1);
   const congestion = congestionPenalty(reviewCount, place.currentOpeningHours?.openNow);
   const composite = (
-    ratingScore * 0.23 +
-    reviewScore * 0.17 +
-    recentnessScore * 0.14 +
-    preferenceScore * 0.21 +
-    budgetScore * 0.08 +
-    mobilityScore * 0.17
+    ratingScore * 0.40 +
+    reviewScore * 0.30 +
+    mobilityScore * 0.20 +
+    preferenceScore * 0.10
   ) * 100;
 
-  return Math.round(clamp(composite - (congestion * 30), 0, 100));
+  return Math.round(clamp(composite - (congestion * 10), 0, 100));
 }
 
 async function recommendDestinations(payload) {
@@ -1904,7 +2269,7 @@ async function recommendDestinations(payload) {
   const theme = payload.theme || 'mixed';
   const pace = payload.pace || 'normal';
   const budget = payload.budget || 'mid';
-  const max = Math.max(6, Math.min(14, Number(payload.limit) || 10));
+  const max = Math.max(6, Math.min(30, Number(payload.limit) || 20));
 
   if (GOOGLE_MAPS_API_KEY) {
     try {
@@ -1913,20 +2278,29 @@ async function recommendDestinations(payload) {
         fetchGoogleAttractions(city.label, theme)
       ]);
       if (places.length > 0) {
+        const seenScored = new Set();
         const scored = places
           .map((p) => ({
             name: p.displayName?.text || '이름 없음',
             city: city.label,
-            category: p.primaryType || '관광',
-            area: p.formattedAddress || city.label,
-            stayMin: 90,
-            bestTime: p.currentOpeningHours?.openNow ? '10:00-12:00' : '13:00-15:00',
+            category: localizeType(p.primaryType) || '관광',
+            area: shortArea(p.formattedAddress, city.label),
+            bestTime: inferBestTime(p),
             crowdScore: 3,
             mapUrl: p.googleMapsUri || mapUrl(`${p.displayName?.text || city.label} ${city.label}`),
+            photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null,
             aiScore: scoreExternalPlace(p, { theme, budget, center }),
             rating: p.rating || null,
-            reviewCount: p.userRatingCount || 0
+            reviewCount: p.userRatingCount || 0,
+            lat: p.location?.latitude || null,
+            lng: p.location?.longitude || null
           }))
+          .filter((p) => {
+            const norm = p.name.replace(/[\s\(\)（）　]/g, '').toLowerCase();
+            if (seenScored.has(norm)) return false;
+            seenScored.add(norm);
+            return true;
+          })
           .sort((a, b) => b.aiScore - a.aiScore)
           .slice(0, max);
 
@@ -2150,16 +2524,16 @@ function createItinerary(payload) {
 
     const blocks = [];
     const morningRange = clampRange(baseRanges.morning, minStart, maxEnd);
-    if (morningRange) blocks.push(`오전(${formatRange(morningRange)}): ${a.name} (${a.bestTime})`);
+    if (morningRange) blocks.push(`오전(${formatRange(morningRange)}): ${a.name} (${a.area || dayCity})`);
     const afternoonRange = clampRange(baseRanges.afternoon, minStart, maxEnd);
     if (afternoonRange && maxPlacesPerDay >= 2) {
       if (b && String(b.name || '') !== String(a?.name || '')) {
-        blocks.push(`오후(${formatRange(afternoonRange)}): ${b.name} (${b.bestTime})`);
+        blocks.push(`오후(${formatRange(afternoonRange)}): ${b.name} (${b.area || dayCity})`);
       } else {
         blocks.push(`오후(${formatRange(afternoonRange)}): ${dayCity} 여유 산책/카페`);
       }
     }
-    const dinnerText = dinner ? `${dinner.name} (${dinner.genre})` : `${dayCity} 로컬 미식 동선`;
+    const dinnerText = dinner ? `${dinner.name} (${dinner.area || dayCity})` : `${dayCity} 로컬 미식 동선`;
     const eveningRange = clampRange(baseRanges.evening, minStart, maxEnd);
     if (eveningRange && maxPlacesPerDay >= 3) {
       const cafeOrDinner = prefs.moreCafes ? `${dayCity} 감성 카페/디저트` : dinnerText;
@@ -2717,16 +3091,145 @@ async function createItineraryWithGemini(payload, picks) {
   };
 }
 
+async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo) {
+  if (!GOOGLE_MAPS_API_KEY) return [];
+
+  // Compute centroid from destinations + stay location
+  const points = [];
+  for (const d of (destinations || [])) {
+    if (d.lat && d.lng) points.push({ lat: Number(d.lat), lng: Number(d.lng) });
+  }
+  // Weight stay location higher (add twice)
+  if (stayInfo && stayInfo.lat && stayInfo.lng) {
+    points.push({ lat: Number(stayInfo.lat), lng: Number(stayInfo.lng) });
+    points.push({ lat: Number(stayInfo.lat), lng: Number(stayInfo.lng) });
+  }
+
+  let center = null;
+  if (points.length > 0) {
+    center = {
+      lat: points.reduce((s, p) => s + p.lat, 0) / points.length,
+      lng: points.reduce((s, p) => s + p.lng, 0) / points.length
+    };
+  } else {
+    center = await fetchGoogleCityCenter(cityLabel);
+  }
+  if (!center) return [];
+
+
+  const endpoint = 'https://places.googleapis.com/v1/places:searchText';
+  const queries = [
+    `${cityLabel} \uC778\uAE30 \uB9DB\uC9D1`,
+    `${cityLabel} \uD604\uC9C0\uC778 \uCD94\uCC9C \uB808\uC2A4\uD1A0\uB791`
+  ];
+  const allPlaces = [];
+  for (const q of queries) {
+    try {
+      const body = {
+        textQuery: q,
+        maxResultCount: 20,
+        languageCode: 'ko',
+        regionCode: 'JP',
+        locationBias: {
+          circle: {
+            center: { latitude: center.lat, longitude: center.lng },
+            radius: 8000
+          }
+        }
+      };
+      const r = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos'
+        },
+        body: JSON.stringify(body)
+      });
+      if (!r.ok) continue;
+      const data = await r.json();
+      if (data.places) allPlaces.push(...data.places);
+    } catch (err) { /* skip */ }
+  }
+
+
+  const seen = new Set();
+  const unique = [];
+  for (const p of allPlaces) {
+    const name = p.displayName?.text;
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    unique.push(p);
+  }
+
+
+
+  return unique
+    .map((p) => {
+      const rating = Number(p.rating || 0);
+      const reviewCount = Number(p.userRatingCount || 0);
+      const loc = p.location ? { lat: p.location.latitude, lng: p.location.longitude } : null;
+      const distKm = loc ? haversineKm(center, loc) : 10;
+      const ratingScore = (rating / 5) * 40;
+      const reviewScore = Math.min(30, Math.log10(Math.max(1, reviewCount)) * 10);
+      const proximityScore = Math.max(0, 20 - distKm * 3);
+      const bonusScore = 10;
+      const aiFit = Math.round(Math.min(100, ratingScore + reviewScore + proximityScore + bonusScore));
+      const priceLevel = normalizePriceLevel(p.priceLevel);
+      const addr = p.formattedAddress || '';
+      const area = shortArea(addr, cityLabel);
+      return {
+        name: p.displayName?.text || '맛집', city: cityLabel, genre: localizeType(p.primaryType) || '\uC74C\uC2DD\uC810',
+        area, score: rating, reviewCount, priceLevel, aiFit, mapUrl: p.googleMapsUri || '',
+        photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null,
+        lat: loc ? loc.lat : null, lng: loc ? loc.lng : null,
+        distFromCenter: Math.round(distKm * 10) / 10
+      };
+    })
+    .filter((f) => f.score >= 3.0 || f.score === null)
+    .sort((a, b) => b.aiFit - a.aiFit)
+    .slice(0, 20);
+}
+
 async function buildTravelPlan(payload) {
   const key = cityKeyByInput(payload.city);
+  const days = Number(payload.days || 3);
+  const limitPerCity = Math.max(6, Math.min(12, days * 2));
+
+  // Fetch recommendations for primary city
   const rec = await recommendDestinations({
     city: key,
     theme: payload.theme,
     pace: payload.pace,
-    budget: payload.budget,
-    limit: Math.max(6, Math.min(12, Number(payload.days || 3) * 2))
+    budget: 'mid',
+    limit: limitPerCity
   });
   const cityLabel = rec.city || '';
+
+  // Fetch recommendations for additional route cities
+  const routeCities = Array.isArray(payload._routeCities) ? payload._routeCities : [];
+  const additionalCityKeys = routeCities
+    .map((c) => cityKeyByInput(c) || cityKeyByLabel(c))
+    .filter((k) => k && k !== key && CITY_DATA[k]);
+  const uniqueAdditionalKeys = [...new Set(additionalCityKeys)];
+
+  if (uniqueAdditionalKeys.length > 0) {
+    const extraRecs = await Promise.all(uniqueAdditionalKeys.map((ck) =>
+      recommendDestinations({
+        city: ck,
+        theme: payload.theme,
+        pace: payload.pace,
+        budget: 'mid',
+        limit: Math.max(4, Math.min(8, Math.ceil(limitPerCity / (uniqueAdditionalKeys.length + 1))))
+      }).catch(() => ({ picks: [] }))
+    ));
+    for (const er of extraRecs) {
+      if (Array.isArray(er.picks)) {
+        rec.picks.push(...er.picks);
+      }
+    }
+  }
+
   const mergedPicks = mergeSelectedDestinations(payload._picks, rec.picks, cityLabel);
   rec.picks = mergedPicks;
   const picksForItinerary = mergedPicks.length ? mergedPicks : rec.picks;
@@ -2764,11 +3267,34 @@ async function buildTravelPlan(payload) {
     });
     return base.slice(0, Math.max(10, Math.min(24, base.length)));
   })();
+  // Fetch recommended foods near destinations + stay (for all route cities)
+  let recommendedFoods = [];
+  try {
+    const stayLoc = payload.stay ? { lat: payload.stay.lat, lng: payload.stay.lng } : null;
+    const foodCities = [rec.city, ...uniqueAdditionalKeys.map((k) => CITY_DATA[k]?.label).filter(Boolean)];
+    const allFoods = await Promise.all(foodCities.map((cl) => {
+      const cityDests = mergedRecommendations.filter((d) => String(d.city || '') === cl);
+      return fetchRecommendedFoods(cityDests.length > 0 ? cityDests : mergedRecommendations, cl, payload.budget, stayLoc).catch(() => []);
+    }));
+    const seenFoodNames = new Set();
+    for (const foods of allFoods) {
+      for (const f of foods) {
+        const norm = String(f.name || '').trim().toLowerCase();
+        if (!norm || seenFoodNames.has(norm)) continue;
+        seenFoodNames.add(norm);
+        recommendedFoods.push(f);
+      }
+    }
+    recommendedFoods.sort((a, b) => (b.aiFit || 0) - (a.aiFit || 0));
+    recommendedFoods = recommendedFoods.slice(0, 20);
+  } catch (err) { /* non-critical */ }
+
   return {
     source: 'integrated_travel_planner_v1',
     city: rec.city,
     recommendationSource: rec.source || 'unknown',
     recommendations: mergedRecommendations,
+    recommendedFoods,
     itinerary: it.itinerary,
     itinerarySource: it.source,
     tips: it.tips,
@@ -3554,8 +4080,11 @@ function normalizePriceLevel(level) {
 
 function scoreFoodFit(score, priceLevel, budget) {
   const baseScore = Number.isFinite(score) ? score : 3.6;
-  const price = Number.isFinite(priceLevel) ? priceLevel : (budget === 'low' ? 2 : budget === 'high' ? 4 : 3);
-  return Math.round((baseScore * 20) + (budget === 'low' ? (5 - price) * 4 : budget === 'high' ? price * 3 : 10));
+  const ratingPart = (baseScore / 5) * 40;
+  const reviewPart = 20;
+  const proximityPart = 15;
+  const bonusPart = 10;
+  return Math.round(Math.min(100, ratingPart + reviewPart + proximityPart + bonusPart));
 }
 
 const FOOD_GENRE_SYNONYMS = {
@@ -3591,13 +4120,13 @@ function isGenreMatchFoodName(name, genre) {
   return tokens.some((t) => lower.includes(String(t).toLowerCase()));
 }
 
-async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverride = '', maxResultCount = 8) {
+async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverride = '', maxResultCount = 20) {
   const endpoint = 'https://places.googleapis.com/v1/places:searchText';
   const cleanGenre = String(genre || '').trim();
   const textQuery = String(queryOverride || '').trim() || (cleanGenre ? `${query} ${cleanGenre} 맛집` : `${query} 일본 맛집`);
   const body = {
     textQuery,
-    maxResultCount: Math.max(5, Math.min(20, Number(maxResultCount) || 8)),
+    maxResultCount: Math.max(5, Math.min(20, Number(maxResultCount) || 15)),
     languageCode: 'ko',
     regionCode: 'JP'
   };
@@ -3606,7 +4135,7 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
     body.locationBias = {
       circle: {
         center: { latitude: Number(lat), longitude: Number(lng) },
-        radius: 4000
+        radius: 8000
       }
     };
   }
@@ -3616,7 +4145,7 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.googleMapsUri,places.priceLevel'
+      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.googleMapsUri,places.priceLevel,places.photos'
     },
     body: JSON.stringify(body)
   });
@@ -3624,19 +4153,24 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
   if (!response.ok) throw new Error(`Google Places API error: ${response.status}`);
 
   const data = await response.json();
-  return (data.places || []).map((p) => {
+  const jpPlaces = (data.places || []).filter((p) => {
+    const addr = String(p.formattedAddress || '');
+    if (/한국|대한민국|South Korea|Korea|서울|부산|대구|인천|China|中国|台湾|Taiwan|Thailand|Vietnam|Philippines/i.test(addr)) return false;
+    return true;
+  });
+  return jpPlaces.map((p) => {
     const priceLevel = normalizePriceLevel(p.priceLevel);
     const score = Number.isFinite(p.rating) ? p.rating : null;
     return {
       name: p.displayName?.text || '이름 없음',
-      area: '현지',
-      genre: cleanGenre || '일식',
+      area: shortArea(p.formattedAddress, query),
+      genre: cleanGenre || localizeType(p.primaryType) || '일식',
       score,
       priceLevel,
       aiFit: scoreFoodFit(score, priceLevel, budget || 'mid'),
       address: p.formattedAddress || '주소 없음',
       mapUrl: p.googleMapsUri || null,
-      tabelogUrl: 'https://tabelog.com/en/'
+      photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null
     };
   });
 }
@@ -3662,7 +4196,7 @@ async function fetchFoodPlacesForCity(query, lat, lng, genre, budget) {
 
   const results = await Promise.all(queries.map(async (q) => {
     try {
-      return await fetchPlacesWithGoogle(query, lat, lng, cleanGenre, budget, q, 12);
+      return await fetchPlacesWithGoogle(query, lat, lng, cleanGenre, budget, q, 20);
     } catch {
       return [];
     }
@@ -3674,9 +4208,9 @@ async function fetchFoodPlacesForCity(query, lat, lng, genre, budget) {
     if (!uniq.has(key)) uniq.set(key, item);
   });
   const merged = Array.from(uniq.values());
-  if (!cleanGenre) return merged.slice(0, 18);
+  if (!cleanGenre) return merged.slice(0, 30);
   const strict = merged.filter((x) => isGenreMatchFoodName(x.name, cleanGenre));
-  return strict.slice(0, 18);
+  return strict.slice(0, 30);
 }
 
 function classifyGooglePlacesFailure(errorText = '') {
@@ -3712,8 +4246,7 @@ function tabelogStyleFoods(payload) {
       area: city.areas[idx % Math.max(1, city.areas.length)] || city.label,
       genre,
       priceLevel: 2 + (idx % 2),
-      score: 3.6 + ((idx % 4) * 0.2),
-      tabelogUrl: 'https://tabelog.com/en/'
+      score: 3.6 + ((idx % 4) * 0.2)
     }));
     source = 'tabelog_style_curated_generated';
   }
@@ -3722,11 +4255,115 @@ function tabelogStyleFoods(payload) {
       ...f,
       city: city.label,
       mapUrl: mapUrl(`${f.name} ${city.label}`),
-      aiFit: Math.round((f.score * 20) + (budget === 'low' ? (5 - f.priceLevel) * 4 : budget === 'high' ? f.priceLevel * 3 : 10))
+      aiFit: Math.round(Math.min(100, (f.score / 5) * 40 + 20 + 15 + 10))
     }))
     .sort((a, b) => b.aiFit - a.aiFit);
 
   return { source, city: city.label, budget, list: normalized };
+}
+
+
+// ── Route Cost Calculator (Google Directions API transit) ──
+async function calculateRouteCost(places, city) {
+  if (!GOOGLE_MAPS_API_KEY || places.length < 2) {
+    return { segments: [], totalDurationMin: 0, totalFareJPY: 0, totalFareKRW: 0, error: places.length < 2 ? 'Need at least 2 places' : 'No API key' };
+  }
+
+  const JPY_TO_KRW = 9.3;
+  const cityKey = cityKeyByInput(city);
+  const cityObj = CITY_DATA[cityKey];
+  const cityLabel = (cityObj && cityObj.label) ? cityObj.label : city;
+  const segments = [];
+  let totalDuration = 0;
+  let totalFareJPY = 0;
+
+  for (let i = 0; i < places.length - 1; i++) {
+    const fromPlace = places[i];
+    const toPlace = places[i + 1];
+    const origin = encodeURIComponent(fromPlace + ' ' + cityLabel + ' Japan');
+    const dest = encodeURIComponent(toPlace + ' ' + cityLabel + ' Japan');
+
+    try {
+      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${dest}&mode=transit&language=ko&region=jp&key=${GOOGLE_MAPS_API_KEY}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+
+      if (data.status === 'OK' && data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        const leg = route.legs[0];
+        const distanceM = leg.distance ? leg.distance.value : 0;
+        const durationSec = leg.duration ? leg.duration.value : 0;
+        const durationMin = Math.round(durationSec / 60);
+
+        let fareJPY = 0;
+        if (route.fare && route.fare.value) {
+          fareJPY = route.fare.value;
+        } else {
+          const distKm = distanceM / 1000;
+          if (distKm < 0.8) {
+            fareJPY = 0;
+          } else {
+            fareJPY = Math.max(170, Math.round(distKm * 30));
+          }
+        }
+
+        let mode = 'walking';
+        if (leg.steps) {
+          for (const step of leg.steps) {
+            if (step.travel_mode === 'TRANSIT') {
+              const vehicle = (step.transit_details && step.transit_details.line && step.transit_details.line.vehicle && step.transit_details.line.vehicle.type) || '';
+              if (vehicle === 'SUBWAY' || vehicle === 'METRO_RAIL') mode = 'subway';
+              else if (vehicle === 'HEAVY_RAIL' || vehicle === 'COMMUTER_TRAIN') mode = 'rail';
+              else if (vehicle === 'BUS') mode = 'bus';
+              else if (vehicle === 'TRAM') mode = 'tram';
+              else mode = 'transit';
+              break;
+            }
+          }
+        }
+        if (durationMin <= 3 && distanceM < 500) mode = 'walking';
+
+        const actualFare = mode === 'walking' ? 0 : fareJPY;
+        segments.push({
+          from: fromPlace, to: toPlace,
+          distanceM, durationMin,
+          fareJPY: actualFare, fareKRW: Math.round(actualFare * JPY_TO_KRW),
+          mode
+        });
+        totalDuration += durationMin;
+        totalFareJPY += actualFare;
+      } else {
+        segments.push({
+          from: fromPlace, to: toPlace,
+          distanceM: 0, durationMin: 15,
+          fareJPY: 200, fareKRW: Math.round(200 * JPY_TO_KRW),
+          mode: 'estimated', estimated: true
+        });
+        totalDuration += 15;
+        totalFareJPY += 200;
+      }
+    } catch (err) {
+      console.error('[route-cost] Directions API error:', err.message);
+      segments.push({
+        from: fromPlace, to: toPlace,
+        distanceM: 0, durationMin: 0,
+        fareJPY: 0, fareKRW: 0,
+        mode: 'error', error: err.message
+      });
+    }
+
+    // Rate limit: small delay between API calls
+    if (i < places.length - 2) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+
+  return {
+    segments,
+    totalDurationMin: totalDuration,
+    totalFareJPY,
+    totalFareKRW: Math.round(totalFareJPY * JPY_TO_KRW)
+  };
 }
 
 async function handleApi(req, res, parsedUrl) {
@@ -3900,15 +4537,23 @@ async function handleApi(req, res, parsedUrl) {
 
       if (GOOGLE_MAPS_API_KEY) {
         try {
+          let foodLat = parsedUrl.searchParams.get('lat');
+          let foodLng = parsedUrl.searchParams.get('lng');
+          const foodCityKey = cityKeyByInput(payload.city);
+          const foodCityLabel = CITY_DATA[foodCityKey].label;
+          if (!foodLat || !foodLng) {
+            const foodCenter = await fetchGoogleCityCenter(foodCityLabel);
+            if (foodCenter) { foodLat = foodCenter.lat; foodLng = foodCenter.lng; }
+          }
           const places = await fetchFoodPlacesForCity(
-            CITY_DATA[cityKeyByInput(payload.city)].label,
-            parsedUrl.searchParams.get('lat'),
-            parsedUrl.searchParams.get('lng'),
+            foodCityLabel,
+            foodLat,
+            foodLng,
             payload.genre,
             payload.budget
           );
           if (Array.isArray(places) && places.length > 0) {
-            return sendJson(res, 200, { source: 'google_places_plus_tabelog_link', city: payload.city, list: places });
+            return sendJson(res, 200, { source: 'google_places', city: payload.city, list: places });
           }
           const fallback = tabelogStyleFoods(payload);
           return sendJson(res, 200, { ...fallback, warning: 'Google Places 결과 0건(쿼리/지역 조건), fallback 적용' });
@@ -3919,6 +4564,24 @@ async function handleApi(req, res, parsedUrl) {
       }
 
       return sendJson(res, 200, tabelogStyleFoods(payload));
+    }
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/dest-search') {
+      const payload = await readBody(req);
+      const result = await recommendDestinations({
+        city: payload.city || 'tokyo',
+        theme: payload.theme || 'mixed',
+        pace: 'normal',
+        budget: payload.budget || 'mid',
+        limit: payload.limit || 20
+      });
+      return sendJson(res, 200, { source: result.source || 'unknown', destinations: result.picks || [] });
+    }
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/route-cost') {
+      const payload = await readBody(req);
+      const result = await calculateRouteCost(payload.places || [], payload.city || 'tokyo');
+      return sendJson(res, 200, result);
     }
 
     return sendJson(res, 404, { error: 'Not Found' });
@@ -3962,6 +4625,14 @@ const server = http.createServer((req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
   if (parsedUrl.pathname.startsWith('/api/')) return handleApi(req, res, parsedUrl);
   return serveStatic(req, res, parsedUrl);
+});
+
+// Graceful error handling - prevent server crash on unhandled errors
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception:', err.message || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[WARN] Unhandled rejection:', reason instanceof Error ? reason.message : reason);
 });
 
 server.listen(PORT, () => {
