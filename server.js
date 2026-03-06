@@ -40,6 +40,13 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const GEMINI_API_MODEL = process.env.GEMINI_API_MODEL || 'gemini-2.5-pro';
+// Fallback model chain: if primary model hits 429, try these in order
+const GEMINI_FALLBACK_MODELS = [
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b'
+].filter(m => m !== GEMINI_API_MODEL);
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const USE_GEMINI = Boolean(GEMINI_API_KEY);
 const CHAT_PARSE_STRICT_AI = String(process.env.CHAT_PARSE_STRICT_AI || 'false').toLowerCase() === 'true';
@@ -2925,17 +2932,51 @@ async function callGeminiGenerateContent(prompt, opts = {}) {
       responseMimeType: opts.responseMimeType || 'application/json'
     }
   };
-  const url = `${GEMINI_ENDPOINT}/${encodeURIComponent(GEMINI_API_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-  const res = await fetchWithTimeout(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  }, AI_REQUEST_TIMEOUT_MS);
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Gemini error ${res.status}: ${text}`);
+
+  // Try primary model first, then fallbacks on 429
+  const modelsToTry = [opts.model || GEMINI_API_MODEL, ...GEMINI_FALLBACK_MODELS];
+  const tried = new Set();
+  let lastError = null;
+
+  for (const model of modelsToTry) {
+    if (tried.has(model)) continue;
+    tried.add(model);
+
+    const url = `${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+    try {
+      const res = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      }, AI_REQUEST_TIMEOUT_MS);
+
+      if (res.ok) {
+        const json = await res.json();
+        // Tag which model was actually used
+        if (json && json.candidates) json._usedModel = model;
+        if (model !== modelsToTry[0]) {
+          console.log(`[gemini] Primary model rate-limited, succeeded with fallback: ${model}`);
+        }
+        return json;
+      }
+
+      const text = await res.text();
+      lastError = `Gemini error ${res.status} (${model}): ${text.slice(0, 200)}`;
+
+      // Only retry on 429 (rate limit) or 503 (overloaded)
+      if (res.status !== 429 && res.status !== 503) {
+        throw new Error(lastError);
+      }
+      console.log(`[gemini] Model ${model} rate-limited (${res.status}), trying next...`);
+    } catch (err) {
+      if (err.message && err.message.includes('Gemini error')) throw err;
+      lastError = err.message;
+      // Network/timeout error - don't retry with different model
+      throw err;
+    }
   }
-  return res.json();
+
+  throw new Error(lastError || 'All Gemini models exhausted');
 }
 
 async function createItineraryWithOpenAI(payload, picks) {
@@ -4307,28 +4348,12 @@ JSON 형식:
 - 지하철/전철 기본요금 약 170~200엔 참고
 - 장거리 신칸센은 해당 요금 반영`;
 
-      // Use gemini-2.0-flash for route cost (higher rate limit than main model)
-      const ROUTE_MODEL = 'gemini-2.0-flash';
-      const routeUrl = `${GEMINI_ENDPOINT}/${encodeURIComponent(ROUTE_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
-      const routeBody = {
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.1,
-          topP: 0.9,
-          maxOutputTokens: 1500,
-          responseMimeType: 'application/json'
-        }
-      };
-      const routeResp = await fetchWithTimeout(routeUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(routeBody)
-      }, AI_REQUEST_TIMEOUT_MS);
-      if (!routeResp.ok) {
-        const errText = await routeResp.text();
-        throw new Error(`Gemini route error ${routeResp.status}: ${errText.slice(0, 200)}`);
-      }
-      const geminiResp = await routeResp.json();
+      const geminiResp = await callGeminiGenerateContent(prompt, {
+        model: 'gemini-2.0-flash',
+        temperature: 0.1,
+        maxOutputTokens: 1500,
+        responseMimeType: 'application/json'
+      });
 
       const text = geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || '';
       let parsed;
