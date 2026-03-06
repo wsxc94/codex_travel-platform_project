@@ -603,6 +603,41 @@ function renderItineraryTimeline() {
     h += '<div class="itin-day-header"><span class="itin-day-label">Day ' + day.day + '</span><span class="itin-day-date">' + escapeHtml(day.date || '') + '</span></div>';
     h += '<div class="itin-day-body">';
 
+
+    // --- Flight/Stay fixed info ---
+    var isFirstDay = (di === 0);
+    var isLastDay = (di === (data.itinerary || []).length - 1);
+    if (isFirstDay && selectedFlight) {
+      var fl = selectedFlight.legs ? selectedFlight.legs[0] : null;
+      if (fl) {
+        var arrTime = fl.arrivalTime || '';
+        h += '<div class="itin-fixed-block itin-flight-block">';
+        h += '<span class="itin-fixed-icon">✈️</span> ';
+        h += '<strong>도착</strong> ' + escapeHtml(fl.from || '') + ' → ' + escapeHtml(fl.to || '');
+        if (arrTime) h += ' <span class="itin-fixed-time">' + escapeHtml(arrTime) + ' 도착</span>';
+        h += '</div>';
+      }
+    }
+    if (isLastDay && selectedFlight && selectedFlight.tripType === 'roundtrip') {
+      var rl = selectedFlight.legs ? selectedFlight.legs[selectedFlight.legs.length - 1] : null;
+      if (rl) {
+        var depTime = rl.departureTime || '';
+        h += '<div class="itin-fixed-block itin-flight-block itin-flight-departure">';
+        h += '<span class="itin-fixed-icon">✈️</span> ';
+        h += '<strong>출발</strong> ' + escapeHtml(rl.from || '') + ' → ' + escapeHtml(rl.to || '');
+        if (depTime) h += ' <span class="itin-fixed-time">' + escapeHtml(depTime) + ' 출발</span>';
+        h += '</div>';
+      }
+    }
+    if (selectedStay) {
+      var stayLabel = isFirstDay ? '체크인' : isLastDay ? '체크아웃' : '숙소';
+      h += '<div class="itin-fixed-block itin-stay-block">';
+      h += '<span class="itin-fixed-icon">🏨</span> ';
+      h += '<strong>' + stayLabel + '</strong> ' + escapeHtml(selectedStay.name || '');
+      if (selectedStay.area) h += ' <span class="itin-place-info">' + escapeHtml(selectedStay.area) + '</span>';
+      h += '</div>';
+    }
+
     // --- Travel spots section (period zones) ---
     h += '<div class="itin-section-label">\uD83D\uDCCD \uC5EC\uD589\uC9C0</div>';
     for (var dpi = 0; dpi < destPeriods.length; dpi++) {
@@ -726,7 +761,12 @@ function selectionFlightCard(flight) {
   const airlines = (flight.airlines || []).join(', ') || (flight.provider || '항공사 정보 없음');
   return `
     <article class="selection-card">
-      <div class="selection-card-title">선택 항공권</div>
+      <div class="selection-card-title">선택 항공권
+        <span class="selection-card-actions">
+          <button type="button" class="selection-edit-btn" data-edit-type="flight">✏️ 수정</button>
+          <button type="button" class="selection-delete-btn" data-delete-type="flight">✕ 삭제</button>
+        </span>
+      </div>
       <div class="selection-card-body">
         <strong>${route}</strong>
         <span class="selection-card-date">${dateRange}</span>
@@ -746,7 +786,12 @@ function selectionStayCard(stay) {
   const amenities = (stay.amenities || []).slice(0, 3).join(', ');
   return `
     <article class="selection-card">
-      <div class="selection-card-title">선택 숙소</div>
+      <div class="selection-card-title">선택 숙소
+        <span class="selection-card-actions">
+          <button type="button" class="selection-edit-btn" data-edit-type="stay">✏️ 수정</button>
+          <button type="button" class="selection-delete-btn" data-delete-type="stay">✕ 삭제</button>
+        </span>
+      </div>
       <div class="selection-card-body">
         <strong>${stay.name}</strong>
         <span>${stay.area} · ${provider}</span>
@@ -799,6 +844,37 @@ function renderPlanSelectionCards() {
   if (selectedStay) cards.push(selectionStayCard(selectedStay));
 
   container.innerHTML = cards.join('') || '<div class="selection-card">선택된 항공권/숙소가 없습니다.</div>';
+
+  // Bind edit/delete handlers
+  container.querySelectorAll('.selection-delete-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var type = btn.dataset.deleteType;
+      if (type === 'flight') {
+        selectedFlightId = '';
+        selectedFlight = null;
+        renderFlightCards(false);
+      } else if (type === 'stay') {
+        selectedStayId = '';
+        selectedStay = null;
+        renderStayCards();
+      }
+      renderPlanExtras();
+      renderItineraryTimeline();
+    });
+  });
+  container.querySelectorAll('.selection-edit-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var type = btn.dataset.editType;
+      if (type === 'flight') {
+        // Scroll to flight section and open manual input
+        var flightSection = document.querySelector('.flight-section') || el('flightCards');
+        if (flightSection) flightSection.scrollIntoView({ behavior: 'smooth' });
+      } else if (type === 'stay') {
+        var staySection = document.querySelector('.stay-section') || el('stayCards');
+        if (staySection) staySection.scrollIntoView({ behavior: 'smooth' });
+      }
+    });
+  });
 }
 
 
@@ -1917,7 +1993,22 @@ function buildDayRouteOrder(dayNum) {
   var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === dayNum; });
   if (!dayData || !dayData.blocks) return [];
   var places = [];
-  if (selectedStay) places.push(selectedStay.name + (selectedStay.area ? ' ' + selectedStay.area : ''));
+  var isFirstDay = (dayNum === 1);
+  var totalDays = currentItineraryData.itinerary.length;
+  var isLastDay = (dayNum === totalDays);
+  // Day 1: start from airport, Last day: end at airport
+  var airportName = '';
+  if (selectedFlight && selectedFlight.legs && selectedFlight.legs[0]) {
+    var arrAirport = selectedFlight.legs[0].to || '';
+    var depAirport = selectedFlight.legs.length > 1 ? selectedFlight.legs[selectedFlight.legs.length - 1].from : arrAirport;
+    if (isFirstDay) airportName = arrAirport + ' 공항';
+    else if (isLastDay && selectedFlight.tripType === 'roundtrip') airportName = depAirport + ' 공항';
+  }
+  if (airportName && isFirstDay) {
+    places.push(airportName);
+  } else if (selectedStay) {
+    places.push(selectedStay.name + (selectedStay.area ? ' ' + selectedStay.area : ''));
+  }
   var po = ['아침','오전','점심','오후','종일','저녁'];
   for (var pi = 0; pi < po.length; pi++) {
     for (var bi = 0; bi < dayData.blocks.length; bi++) {
@@ -1928,7 +2019,11 @@ function buildDayRouteOrder(dayNum) {
       }
     }
   }
-  if (selectedStay && places.length > 1) places.push(selectedStay.name + (selectedStay.area ? ' ' + selectedStay.area : ''));
+  if (airportName && isLastDay) {
+    places.push(airportName);
+  } else if (selectedStay && places.length > 1) {
+    places.push(selectedStay.name + (selectedStay.area ? ' ' + selectedStay.area : ''));
+  }
   return places;
 }
 function modeLabel(mode) {
