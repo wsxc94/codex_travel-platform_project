@@ -34,13 +34,7 @@
               <option value="nature">자연</option>
             </select>
           </label>
-          <label class="form-item"><span>예산 타입</span>
-            <select id="budget">
-              <option value="low">절약형</option>
-              <option value="mid" selected>표준형</option>
-              <option value="high">프리미엄형</option>
-            </select>
-          </label>
+          <input type="hidden" id="budget" value="mid">
           <button id="btnPlan">추천+AI일정 통합 생성</button>
         </div>
         <div class="ai-chat-wrap">
@@ -59,9 +53,18 @@
         <h2>추천 결과</h2>
         <div class="split">
           <div>
-            <h3>추천 여행지</h3>
-            <div id="destSourceNote" class="source-note"></div>
-            <div id="destCards" class="cards"></div>
+            <div class="rec-tabs">
+              <button type="button" class="rec-tab active" data-rec-tab="dest">추천 여행지</button>
+              <button type="button" class="rec-tab" data-rec-tab="food">추천 맛집</button>
+            </div>
+            <div id="recDestPanel" class="rec-panel">
+              <div id="destSourceNote" class="source-note"></div>
+              <div id="destCards" class="cards"></div>
+            </div>
+            <div id="recFoodPanel" class="rec-panel" style="display:none">
+              <div id="recFoodSourceNote" class="source-note"></div>
+              <div id="recFoodCards" class="cards"></div>
+            </div>
           </div>
         <div>
           <h3>AI 일정</h3>
@@ -72,27 +75,84 @@
             <div class="plan-control-copy">선택된 항공·숙소를 유지하고 싶다면 버튼으로 AI 일정만 다시 요청하세요.</div>
           </div>
           <div id="planSelectionCards" class="selection-card-grid"></div>
-          <pre id="planResult" class="result"></pre>
+          <div class="manual-input-group">
+            <details class="manual-details">
+              <summary>직접 항공편 입력</summary>
+              <p class="manual-hint">출발/도착 공항·날짜는 여행 조건에서 자동 설정됩니다.</p>
+              <div class="fields two manual-fields">
+                <label class="form-item"><span>항공사</span><input id="manualFlightAirline" placeholder="예: 대한항공" /></label>
+                <label class="form-item"><span>편명</span><input id="manualFlightNumber" placeholder="예: KE713" /></label>
+                <label class="form-item"><span>출발 시간</span><input id="manualFlightDepartTime" type="time" value="09:00" /></label>
+                <label class="form-item"><span>도착 시간</span><input id="manualFlightArriveTime" type="time" value="12:00" /></label>
+                <label class="form-item"><span>가격(원)</span><input id="manualFlightPrice" type="number" min="0" step="1000" placeholder="350000" /></label>
+                <button id="btnManualFlight" type="button">항공편 추가</button>
+              </div>
+            </details>
+            <details class="manual-details">
+              <summary>직접 숙소 입력</summary>
+              <div class="fields two manual-fields">
+                <label class="form-item"><span>숙소명</span><input id="manualStayName" placeholder="예: 도쿄 시나가와 호텔" /></label>
+                <label class="form-item"><span>지역</span><input id="manualStayArea" placeholder="예: 시나가와" /></label>
+                <label class="form-item"><span>1박 가격(원)</span><input id="manualStayPrice" type="number" min="0" step="1000" placeholder="120000" /></label>
+                <label class="form-item"><span>평점 (0~10)</span><input id="manualStayRating" type="number" min="0" max="10" step="0.1" placeholder="8.5" /></label>
+                <label class="form-item"><span>숙소 타입</span><select id="manualStayType">
+                    <option value="hotel" selected>호텔</option>
+                    <option value="ryokan">료칸</option>
+                    <option value="apartment">레지던스</option>
+                    <option value="guesthouse">게스트하우스</option>
+                  </select></label>
+                <label class="form-item"><span>예약 링크</span><input id="manualStayUrl" placeholder="https://..." /></label>
+                <button id="btnManualStay" type="button">숙소 추가</button>
+              </div>
+            </details>
+          </div>
+          <div id="planResult" class="itinerary-timeline"></div>
+          <div id="itinMapWrap" class="itin-map-wrap">
+            <h4 class="itin-map-title">일정 지도</h4>
+            <div id="itinMap" class="itin-map"></div>
+          </div>
+          <div id="budgetSummary" class="budget-summary"></div>
+
         </div>
         </div>
       </section>
 
       <section class="panel">
-        <h2>맛집 탐색</h2>
-        <div class="fields three">
-          <label class="form-item"><span>도시</span>
-            <select id="foodCity"></select>
-          </label>
-          <label class="form-item"><span>장르</span><input id="foodGenre" placeholder="장르 (예: 라멘)" /></label>
-          <label class="form-item"><span>예산</span><select id="foodBudget">
-              <option value="low">가성비</option>
-              <option value="mid" selected>중간</option>
-              <option value="high">고급</option>
-            </select></label>
-          <button id="btnFood">맛집 검색</button>
+        <h2>탐색</h2>
+        <div class="search-tabs">
+          <button type="button" class="search-tab active" data-search-tab="dest">여행지</button>
+          <button type="button" class="search-tab" data-search-tab="food">맛집</button>
         </div>
-        <div id="foodSourceNote" class="source-note"></div>
-        <div id="foodCards" class="cards"></div>
+        <div id="searchDestPanel" class="search-panel">
+          <div class="fields three">
+            <label class="form-item"><span>도시</span>
+              <select id="destSearchCity"></select>
+            </label>
+            <label class="form-item"><span>테마</span>
+              <select id="destSearchTheme">
+                <option value="mixed" selected>전체</option>
+                <option value="culture">문화</option>
+                <option value="nature">자연</option>
+                <option value="shopping">쇼핑</option>
+              </select>
+            </label>
+            <button id="btnDestSearch">검색</button>
+          </div>
+          <div id="destSearchSourceNote" class="source-note"></div>
+          <div id="destSearchCards" class="cards"></div>
+        </div>
+        <div id="searchFoodPanel" class="search-panel" style="display:none">
+          <div class="fields two">
+            <label class="form-item"><span>도시</span>
+              <select id="foodCity"></select>
+            </label>
+            <label class="form-item"><span>장르</span><input id="foodGenre" placeholder="장르 (예: 라멘)" /></label>
+
+            <button id="btnFood">검색</button>
+          </div>
+          <div id="foodSourceNote" class="source-note"></div>
+          <div id="foodCards" class="cards"></div>
+        </div>
       </section>
 
       <section class="panel">
@@ -217,6 +277,47 @@
 
     </main>
 
+    <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCJFUEGaOZKP0xvaRroik9XCnrd1IoCXvY&language=ko&region=jp"></script>
     <script src="/app.js"></script>
+  
+    <div id="addToPlanModal" class="plan-modal-overlay hidden">
+      <div class="plan-modal">
+        <h4>일정에 추가</h4>
+        <div class="plan-modal-place" id="modalPlaceName"></div>
+        <div class="plan-modal-field" id="modalCustomWrap" style="display:none">
+          <span>장소 이름</span>
+          <input type="text" id="modalCustomName" placeholder="추가할 장소 이름 입력" />
+        </div>
+        <div class="plan-modal-field">
+          <span>유형</span>
+          <div class="plan-modal-type-btns">
+            <button type="button" class="type-btn active" data-type="dest">여행지</button>
+            <button type="button" class="type-btn" data-type="food">맛집</button>
+          </div>
+        </div>
+        <div class="plan-modal-field">
+          <span>Day 선택</span>
+          <select id="modalDaySelect"></select>
+        </div>
+        <div class="plan-modal-field">
+          <span>시간대</span>
+          <div class="plan-modal-slots" id="destSlots">
+            <button type="button" class="slot-btn" data-slot="morning">오전</button>
+            <button type="button" class="slot-btn active" data-slot="afternoon">오후</button>
+            <button type="button" class="slot-btn" data-slot="allday">종일</button>
+          </div>
+          <div class="plan-modal-slots" id="foodSlots" style="display:none">
+            <button type="button" class="slot-btn" data-slot="breakfast">아침</button>
+            <button type="button" class="slot-btn" data-slot="lunch">점심</button>
+            <button type="button" class="slot-btn active" data-slot="dinner">저녁</button>
+          </div>
+        </div>
+        <div class="plan-modal-actions">
+          <button type="button" id="modalConfirmAdd">추가</button>
+          <button type="button" id="modalCancelAdd" class="ghost-btn">취소</button>
+        </div>
+      </div>
+    </div>
+
   </body>
 </html>

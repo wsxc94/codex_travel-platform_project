@@ -66,8 +66,18 @@ let selectedFlightId = '';
 let selectedFlight = null;
 let stayResults = [];
 let staySortMode = 'balanced';
-let selectedDestinations = [];
 let latestDestList = [];
+let latestRecFoodList = [];
+let latestDestSearchList = [];
+let latestFoodList = [];
+var currentItineraryData = null;
+var itinMap = null;
+var itinMarkers = [];
+var itinGeoCache = {};
+var dragData = null;
+var pendingAddPlace = null;
+var pendingAddType = 'dest';
+var pendingAddSlot = 'afternoon';
 let selectedStayId = '';
 let selectedStay = null;
 let aiPreferredAreas = [];
@@ -180,9 +190,11 @@ async function initCityOptions() {
   el('city').innerHTML = options;
   el('foodCity').innerHTML = options;
   el('stayCity').innerHTML = options;
+  if (el('destSearchCity')) el('destSearchCity').innerHTML = options;
   el('city').value = 'tokyo';
   el('foodCity').value = 'tokyo';
   el('stayCity').value = 'tokyo';
+  if (el('destSearchCity')) el('destSearchCity').value = 'tokyo';
 }
 
 function upsertCityOption(cityMeta) {
@@ -213,6 +225,55 @@ function escapeHtml(text) {
     .replaceAll("'", '&#39;');
 }
 
+function starRating(score) {
+  if (!score) return '';
+  var s = parseFloat(score);
+  var full = Math.floor(s);
+  var half = (s - full) >= 0.3 ? 1 : 0;
+  var empty = 5 - full - half;
+  var h = '<span class="stars">';
+  for (var i = 0; i < full; i++) h += '<span class="star">★</span>';
+  if (half) h += '<span class="star-half">★</span>';
+  for (var i2 = 0; i2 < empty; i2++) h += '<span class="star-empty">☆</span>';
+  h += ' <span class="star-num">' + s.toFixed(1) + '</span></span>';
+  return h;
+}
+
+function priceYen(level) {
+  if (!level) return '';
+  var n = level === 'high' ? 3 : level === 'low' ? 1 : 2;
+  return '<span class="price-yen">' + '¥'.repeat(n) + '<span class="price-yen-empty">' + '¥'.repeat(3 - n) + '</span></span>';
+}
+
+function aiScoreBadge(score) {
+  if (score == null) return '';
+  var n = Number(score);
+  var cls = n >= 80 ? 'ai-high' : n >= 50 ? 'ai-mid' : 'ai-low';
+  return '<span class="ai-badge ' + cls + '">' + n + '</span>';
+}
+
+function categoryIcon(cat) {
+  if (!cat) return '';
+  var s = String(cat);
+  if (s.indexOf('역사') >= 0 || s.indexOf('문화') >= 0) return '🏯';
+  if (s.indexOf('자연') >= 0 || s.indexOf('공원') >= 0 || s.indexOf('정원') >= 0) return '🌿';
+  if (s.indexOf('도시') >= 0 || s.indexOf('번화가') >= 0) return '🏙️';
+  if (s.indexOf('쪰핑') >= 0 || s.indexOf('마켓') >= 0) return '🛍️';
+  if (s.indexOf('신사') >= 0 || s.indexOf('사원') >= 0) return '⛩️';
+  if (s.indexOf('박물관') >= 0 || s.indexOf('미술') >= 0) return '🏛️';
+  if (s.indexOf('전망') >= 0 || s.indexOf('타워') >= 0) return '🗼';
+  if (s.indexOf('어뮤즈') >= 0 || s.indexOf('테마파크') >= 0) return '🎢';
+  if (s.indexOf('음식') >= 0 || s.indexOf('맛집') >= 0 || s.indexOf('레스토랑') >= 0) return '🍽️';
+  if (s.indexOf('관광') >= 0) return '🎯';
+  return '📍';
+}
+
+function cardPhoto(url, name) {
+  if (url) return '<div class="card-photo" style="background-image:url(' + escapeHtml(url) + ')"></div>';
+  var letter = (name || '?').charAt(0);
+  return '<div class="card-photo card-photo-none">' + escapeHtml(letter) + '</div>';
+}
+
 function appendAiChat(role, text) {
   const box = el('aiChatLog');
   if (!box) return;
@@ -237,13 +298,12 @@ function applyAiConditions(parsed) {
     el('city').value = parsed.cityKey;
     el('foodCity').value = parsed.cityKey;
     el('stayCity').value = parsed.cityKey;
+    if (el('destSearchCity')) el('destSearchCity').value = parsed.cityKey;
   }
   if (parsed.theme && ['mixed', 'foodie', 'culture', 'shopping', 'nature'].includes(parsed.theme)) {
     el('theme').value = parsed.theme;
   }
-  if (parsed.budget && ['low', 'mid', 'high'].includes(parsed.budget)) {
-    el('budget').value = parsed.budget;
-    el('foodBudget').value = parsed.budget;
+  if (false) { // budget removed
   }
   if (Number.isFinite(Number(parsed.days))) {
     el('days').value = Math.max(1, Math.min(10, Number(parsed.days)));
@@ -305,29 +365,39 @@ function renderCards(targetId, items, mode) {
     latestDestList = items;
   }
 
+  if (mode !== 'dest') latestFoodList = items;
   target.innerHTML = items.map((x, index) => {
     if (mode === 'dest') {
-      const isSelected = selectedDestinations.some((d) => d.name === x.name && d.area === x.area);
-      const selectedClass = isSelected ? ' selected' : '';
-      const label = isSelected ? '선택 취소' : 'AI 일정에 포함';
-      return `<article class="card${selectedClass}">
-        <h4>${x.name}</h4>
-        <div class="meta">${x.city || '-'} · ${x.category} · ${x.area}</div>
-        <div class="meta">추천시간 ${x.bestTime} / 체류 ${x.stayMin}분</div>
-        <div class="meta">AI 점수 ${x.aiScore}</div>
+      return `<article class="card" draggable="true" data-drag-type="dest" data-drag-index="${index}">
+        <div class="card-layout">
+          ${cardPhoto(x.photoUrl, x.name)}
+          <div class="card-body">
+            <h4>${categoryIcon(x.category)} ${escapeHtml(x.name)}</h4>
+            <div class="card-info-row">${escapeHtml(x.category || '')} · ${escapeHtml(x.area || x.city || '')}</div>
+            <div class="card-scores">${aiScoreBadge(x.aiScore)} ${starRating(x.score)}</div>
+          </div>
+        </div>
+        <span class="drag-hint">☰ 드래그</span>
         <div class="link-row">
-          <button type="button" class="stay-select-btn dest-select-btn" data-dest-index="${index}">${label}</button>
-          <a href="${x.mapUrl}" target="_blank" rel="noreferrer">Google Maps</a>
+          <a href="${x.mapUrl}" target="_blank" rel="noreferrer">지도</a>
+          <button type="button" class="rec-delete-btn" data-delete-type="dest" data-delete-index="${index}">✕</button>
         </div>
       </article>`;
     }
 
     return `<article class="card">
-      <h4>${x.name}</h4>
-      <div class="meta">${x.city || ''} ${x.genre} · ${x.area || ''}</div>
-      <div class="meta">평점 ${x.score ?? '-'} · 예산레벨 ${x.priceLevel ?? '-'}</div>
-      <div class="meta">AI 적합도 ${x.aiFit ?? '-'}</div>
-      <div class="link-row"><a href="${x.mapUrl}" target="_blank" rel="noreferrer">지도</a><a href="${x.tabelogUrl}" target="_blank" rel="noreferrer">Tabelog</a></div>
+      <div class="card-layout">
+        ${cardPhoto(x.photoUrl, x.name)}
+        <div class="card-body">
+          <h4>${escapeHtml(x.name)}</h4>
+          <div class="card-info-row">${escapeHtml(x.genre || '')} · ${escapeHtml(x.area || '')}</div>
+          <div class="card-scores">${aiScoreBadge(x.aiFit)} ${starRating(x.score)} ${priceYen(x.priceLevel)}</div>
+        </div>
+      </div>
+      <div class="link-row">
+        <button type="button" class="add-to-plan-btn" data-add-type="food" data-add-index="${index}" data-add-source="foodSearch">일정에 추가</button>
+        <a href="${x.mapUrl}" target="_blank" rel="noreferrer">지도</a>
+      </div>
     </article>`;
   }).join('');
 }
@@ -405,11 +475,91 @@ function renderFlightCards(reset = false) {
   moreBtn.classList.toggle('hidden', !hasMore);
 }
 
+function parsePlaceInfo(placeText) {
+  var s = String(placeText || '');
+  var m = s.match(/^(.+?)\s*\((.+)\)\s*$/);
+  if (m) return { name: m[1].trim(), info: m[2].trim() };
+  return { name: s.trim(), info: '' };
+}
+
+function parseItineraryBlock(text) {
+  var s = String(text || '');
+  if (/^\s{2,}/.test(s) && s.indexOf('\uD83D\uDCA1') >= 0) {
+    return { type: 'tip', text: s.replace(/^\s*\uD83D\uDCA1\s*/, '') };
+  }
+  if (/^\s{2,}/.test(s)) {
+    return { type: 'sub', text: s.trim() };
+  }
+  var m = s.match(/^(\uC624\uC804|\uC624\uD6C4|\uC800\uB141|\uC885\uC77C|\uC544\uCE68|\uC810\uC2EC)\((\d{1,2}:\d{2})-(\d{1,2}:\d{2})\):\s*(.+)/);
+  if (m) return { type: 'main', period: m[1], startTime: m[2], endTime: m[3], place: m[4].trim() };
+  return { type: 'plain', text: s.trim() };
+}
+
+function groupItineraryBlocks(blocks) {
+  var groups = [];
+  var current = null;
+  for (var i = 0; i < blocks.length; i++) {
+    var parsed = parseItineraryBlock(blocks[i]);
+    if (parsed.type === 'main') {
+      if (current) groups.push(current);
+      current = Object.assign({}, parsed, { subs: [], tips: [] });
+    } else if (parsed.type === 'sub' && current) {
+      current.subs.push(parsed);
+    } else if (parsed.type === 'tip' && current) {
+      current.tips.push(parsed);
+    } else {
+      if (current) groups.push(current);
+      current = null;
+      groups.push(parsed);
+    }
+  }
+  if (current) groups.push(current);
+  return groups;
+}
+
+function isMealPeriod(period) {
+  return period === '\uC800\uB141' || period === '\uC544\uCE68' || period === '\uC810\uC2EC';
+}
+
+function periodColor(period) {
+  var map = { '\uC624\uC804': '#059669', '\uC624\uD6C4': '#d97706', '\uC885\uC77C': '#dc2626', '\uC800\uB141': '#7c3aed', '\uC544\uCE68': '#ea580c', '\uC810\uC2EC': '#0284c7' };
+  return map[period] || '#6b7280';
+}
+
+function periodIcon(period) {
+  var map = { '\uC624\uC804': '\uD83C\uDF05', '\uC624\uD6C4': '\uD83C\uDF1E', '\uC885\uC77C': '\uD83C\uDF1F', '\uC800\uB141': '\uD83C\uDF07', '\uC544\uCE68': '\uD83C\uDF73', '\uC810\uC2EC': '\uD83C\uDF5C' };
+  return map[period] || '';
+}
+
+function extractPlaceName(blockText) {
+  var parsed = parseItineraryBlock(blockText);
+  if (parsed.type === 'main') {
+    var info = parsePlaceInfo(parsed.place);
+    return info.name;
+  }
+  return '';
+}
+
+function stripServerMealBlocks() {
+  if (!currentItineraryData || !currentItineraryData.itinerary) return;
+  for (var i = 0; i < currentItineraryData.itinerary.length; i++) {
+    var day = currentItineraryData.itinerary[i];
+    var cleaned = [];
+    for (var j = 0; j < day.blocks.length; j++) {
+      var b = day.blocks[j];
+      var parsed = parseItineraryBlock(b);
+      if (parsed.type === 'main' && parsed.period === '\uC800\uB141') continue;
+      cleaned.push(b);
+    }
+    day.blocks = cleaned;
+  }
+}
+
 function renderItinerary(data) {
   const sourceTag = describeEngineSource(data.itinerarySource, 'itinerary');
   const labelNode = el('planSourceLabel');
   if (labelNode) {
-    labelNode.textContent = `일정 생성 방식: ${sourceTag}`;
+    labelNode.textContent = '\uC77C\uC815 \uC0DD\uC131 \uBC29\uC2DD: ' + sourceTag;
   }
   const noteNode = el('planSourceNote');
   if (noteNode) {
@@ -421,16 +571,127 @@ function renderItinerary(data) {
       noteNode.classList.remove('warn');
     }
   }
-  const lines = [data.summary, '', ''];
-  for (const day of data.itinerary) {
-    lines.push(`Day ${day.day} (${day.date})`);
-    for (const block of day.blocks) lines.push(`- ${block}`);
-    lines.push('');
-  }
-  lines.push('Tips');
-  for (const t of data.tips) lines.push(`- ${t}`);
-  el('planResult').textContent = lines.join('\n');
+  currentItineraryData = data;
+  stripServerMealBlocks();
+  renderItineraryTimeline();
   renderPlanExtras();
+  updateItinMap();
+}
+
+function renderItineraryTimeline() {
+  var container = el('planResult');
+  if (!container || !currentItineraryData) return;
+  var data = currentItineraryData;
+  var h = '';
+  if (data.summary) {
+    h += '<div class="itin-summary">' + escapeHtml(data.summary) + '</div>';
+  }
+  var mealPeriods = [
+    { key: 'breakfast', period: '\uC544\uCE68', icon: '\uD83C\uDF73', color: '#ea580c', time: '08:00 - 09:30' },
+    { key: 'lunch', period: '\uC810\uC2EC', icon: '\uD83C\uDF5C', color: '#0284c7', time: '12:00 - 13:30' },
+    { key: 'dinner', period: '\uC800\uB141', icon: '\uD83C\uDF07', color: '#7c3aed', time: '18:00 - 20:00' }
+  ];
+  var destPeriods = [
+    { key: 'morning', period: '\uC624\uC804', icon: '\uD83C\uDF05', color: '#059669', time: '09:00 - 12:00' },
+    { key: 'afternoon', period: '\uC624\uD6C4', icon: '\uD83C\uDF1E', color: '#d97706', time: '13:00 - 17:00' },
+    { key: 'allday', period: '\uC885\uC77C', icon: '\uD83C\uDF1F', color: '#dc2626', time: '09:00 - 18:00' }
+  ];
+  for (var di = 0; di < (data.itinerary || []).length; di++) {
+    var day = data.itinerary[di];
+    var groups = groupItineraryBlocks(day.blocks || []);
+    h += '<div class="itin-day">';
+    h += '<div class="itin-day-header"><span class="itin-day-label">Day ' + day.day + '</span><span class="itin-day-date">' + escapeHtml(day.date || '') + '</span></div>';
+    h += '<div class="itin-day-body">';
+
+    // --- Travel spots section (period zones) ---
+    h += '<div class="itin-section-label">\uD83D\uDCCD \uC5EC\uD589\uC9C0</div>';
+    for (var dpi = 0; dpi < destPeriods.length; dpi++) {
+      var dp = destPeriods[dpi];
+      var filledSlots = [];
+      for (var gi = 0; gi < groups.length; gi++) {
+        var g = groups[gi];
+        if (g.type === 'main' && !isMealPeriod(g.period) && g.period === dp.period) {
+          g._blockIndex = -1;
+          for (var bii = 0; bii < (day.blocks||[]).length; bii++) { var bpp = parseItineraryBlock(day.blocks[bii]); if (bpp.type==='main' && bpp.period===g.period && bpp.place===g.place) { g._blockIndex=bii; break; } }
+          filledSlots.push(g);
+        }
+      }
+      h += '<div class="itin-period-zone itin-drop-zone" data-drop-day="' + day.day + '" data-drop-type="dest" data-drop-dest-period="' + dp.key + '" style="border-left-color:' + dp.color + '">';
+      h += '<div class="itin-period-header"><span style="color:' + dp.color + '">' + dp.icon + ' ' + dp.period + '</span><span class="itin-period-time">' + dp.time + '</span><span class="drop-hint">\uC5EC\uAE30\uC5D0 \uB4DC\uB86D</span></div>';
+      if (filledSlots.length > 0) {
+        for (var fsi = 0; fsi < filledSlots.length; fsi++) {
+          var fs = filledSlots[fsi];
+          h += '<div class="itin-slot-inline" draggable="true" data-itin-day="' + day.day + '" data-itin-period="' + escapeHtml(fs.period) + '" data-itin-block-index="' + fs._blockIndex + '">';
+          var placeInfo = parsePlaceInfo(fs.place);
+          var destMapQ = encodeURIComponent(placeInfo.name + (placeInfo.info ? ' ' + placeInfo.info : ''));
+          var destMapUrl = 'https://www.google.com/maps/search/?api=1&query=' + destMapQ;
+          h += '<div class="itin-slot-place">' + escapeHtml(placeInfo.name) + (placeInfo.info ? '<span class="itin-place-info">' + escapeHtml(placeInfo.info) + '</span>' : '') + '<a href="' + destMapUrl + '" target="_blank" rel="noreferrer" class="itin-map-link" title="Google Maps">MAP</a></div>';
+          if (fs.subs.length > 0) {
+            h += '<div class="itin-sub-list">';
+            for (var si = 0; si < fs.subs.length; si++) h += '<div class="itin-sub-item">' + escapeHtml(fs.subs[si].text) + '</div>';
+            h += '</div>';
+          }
+          for (var ti = 0; ti < fs.tips.length; ti++) h += '<div class="itin-tip">\uD83D\uDCA1 ' + escapeHtml(fs.tips[ti].text) + '</div>';
+          if (filledSlots.length > 1) {
+            h += '<div class="itin-reorder-btns">';
+            if (fsi > 0) h += '<button type="button" class="itin-reorder-btn" data-day="' + day.day + '" data-block-index="' + fs._blockIndex + '" data-direction="up" title="위로">▲</button>';
+            if (fsi < filledSlots.length - 1) h += '<button type="button" class="itin-reorder-btn" data-day="' + day.day + '" data-block-index="' + fs._blockIndex + '" data-direction="down" title="아래로">▼</button>';
+            h += '</div>';
+          }
+          h += '<button type="button" class="itin-remove-btn" data-day="' + day.day + '" data-block-index="' + fs._blockIndex + '">✕</button>';
+          h += '</div>';
+        }
+      }
+      h += '</div>';
+    }
+    // Plain blocks (city transfer etc)
+    for (var gi3 = 0; gi3 < groups.length; gi3++) {
+      var g3 = groups[gi3];
+      if (g3.type === 'plain' && g3.text) {
+        h += '<div class="itin-slot itin-slot-plain"><div class="itin-slot-place">' + escapeHtml(g3.text) + '</div></div>';
+      }
+    }
+
+    // --- Meal section ---
+    h += '<div class="itin-section-label itin-drop-zone" data-drop-day="' + day.day + '" data-drop-type="food">\uD83C\uDF74 \uB9DB\uC9D1 <span class="drop-hint">\uC5EC\uAE30\uC5D0 \uB4DC\uB86D</span></div>';
+    for (var mi = 0; mi < mealPeriods.length; mi++) {
+      var meal = mealPeriods[mi];
+      var filled = null;
+      for (var gi2 = 0; gi2 < groups.length; gi2++) {
+        var g2 = groups[gi2];
+        if (g2.type === 'main' && g2.period === meal.period) { filled = g2; break; }
+      }
+      if (filled) {
+        var mc = meal.color;
+        h += '<div class="itin-slot" draggable="true" data-itin-day="' + day.day + '" data-itin-period="' + escapeHtml(filled.period) + '" style="border-left-color:' + mc + '">';
+        h += '<div class="itin-slot-header"><span class="itin-slot-period" style="color:' + mc + '">' + meal.icon + ' ' + escapeHtml(filled.period) + '</span>';
+        h += '<span class="itin-slot-time">' + escapeHtml(filled.startTime + ' - ' + filled.endTime) + '</span></div>';
+        var mealInfo = parsePlaceInfo(filled.place);
+        var mealMapQ = encodeURIComponent(mealInfo.name + (mealInfo.info ? ' ' + mealInfo.info : ''));
+        var mealMapUrl = 'https://www.google.com/maps/search/?api=1&query=' + mealMapQ;
+        h += '<div class="itin-slot-place">' + escapeHtml(mealInfo.name) + (mealInfo.info ? '<span class="itin-place-info itin-place-loc">' + escapeHtml(mealInfo.info) + '</span>' : '') + '<a href="' + mealMapUrl + '" target="_blank" rel="noreferrer" class="itin-map-link" title="Google Maps">MAP</a></div>';
+        h += '<button type="button" class="itin-remove-btn" data-day="' + day.day + '" data-period="' + escapeHtml(filled.period) + '">\uC0AD\uC81C</button>';
+        h += '</div>';
+      } else {
+        h += '<div class="itin-meal-empty itin-drop-zone" data-drop-day="' + day.day + '" data-drop-type="food" data-drop-meal="' + meal.key + '" style="border-left-color:' + meal.color + '">';
+        h += '<span class="itin-meal-label">' + meal.icon + ' ' + meal.period + '</span>';
+        h += '<button type="button" class="itin-meal-add-btn" data-day="' + day.day + '" data-meal-slot="' + meal.key + '">\uB9DB\uC9D1 \uCD94\uAC00</button>';
+        h += '</div>';
+      }
+    }
+
+    h += '<div class="itin-route-cost-section">';
+    h += '<button type="button" class="itin-route-cost-btn" data-route-day="' + day.day + '">🚃 경로 교통비 계산</button>';
+    h += '<div class="itin-route-cost-result" id="routeCostDay' + day.day + '"></div>';
+    h += '</div>';
+    h += '</div></div>';
+  }
+  if (data.tips && data.tips.length > 0) {
+    h += '<div class="itin-tips-section"><div class="itin-tips-title">Tips</div>';
+    for (var tt = 0; tt < data.tips.length; tt++) h += '<div class="itin-tip-item">' + escapeHtml(data.tips[tt]) + '</div>';
+    h += '</div>';
+  }
+  container.innerHTML = h;
 }
 
 function describeFlightSummary(flight) {
@@ -456,7 +717,8 @@ function selectionFlightCard(flight) {
   if (!flight) return '';
   const first = flight.legs?.[0];
   const last = flight.legs?.[flight.legs.length - 1];
-  const route = `${first?.from || '출발 미정'} → ${last?.to || first?.to || '도착 미정'}`;
+  const destAirport = flight.tripType === 'roundtrip' ? (first?.to || '도착 미정') : (last?.to || first?.to || '도착 미정');
+  const route = `${first?.from || '출발 미정'} → ${destAirport}`;
   const dateRange = first?.date === last?.date ? first?.date : `${first?.date || ''} ~ ${last?.date || ''}`;
   const price = flight.totalPriceKRW ? `${flight.totalPriceKRW.toLocaleString()}원` : '요금 미확인';
   const duration = flight.totalDurationMin ? `${flight.totalDurationMin}분` : '시간 미등록';
@@ -495,8 +757,38 @@ function selectionStayCard(stay) {
     </article>`;
 }
 
+
+function renderBudgetSummary() {
+  var wrap = el('budgetSummary');
+  if (!wrap) return;
+  var flightCost = selectedFlight ? selectedFlight.totalPriceKRW : 0;
+  var stayCost = selectedStay ? (selectedStay.totalPriceKRW || selectedStay.totalKRW || 0) : 0;
+  var days = Number(el('days').value) || 4;
+  var mealPerDay = 55000;
+  var transportPerDay = 22000;
+  var activityPerDay = 25000;
+  var mealTotal = mealPerDay * days;
+  var transportTotal = transportPerDay * days;
+  var activityTotal = activityPerDay * days;
+  var total = flightCost + stayCost + mealTotal + transportTotal + activityTotal;
+  var fmt = function(n) { return n.toLocaleString() + '원'; };
+  var budgetLabel = '표준';
+  wrap.innerHTML =
+    '<h4>예상 비용 요약</h4>' +
+    '<div class="budget-rows">' +
+      '<div class="budget-row"><span>✈️ 항공권</span><span>' + (flightCost ? fmt(flightCost) : '미선택') + '</span></div>' +
+      '<div class="budget-row"><span>🏨 숙소 (' + (selectedStay ? (selectedStay.nights || Math.max(1, days - 1)) + '박' : '-') + ')</span><span>' + (stayCost ? fmt(stayCost) : '미선택') + '</span></div>' +
+      '<div class="budget-row"><span>🍜 식비</span><span>~' + fmt(mealTotal) + '</span></div>' +
+      '<div class="budget-row"><span>🚃 교통비</span><span>~' + fmt(transportTotal) + '</span></div>' +
+      '<div class="budget-row"><span>🎫 활동비</span><span>~' + fmt(activityTotal) + '</span></div>' +
+      '<div class="budget-row budget-total"><span>합계 (예상)</span><span>~' + fmt(total) + '</span></div>' +
+    '</div>' +
+    '<div class="budget-note">' + budgetLabel + ' 기준 · 1인 · ' + days + '일 · 식비/교통/활동은 예상치</div>';
+}
+
 function renderPlanExtras() {
   renderPlanSelectionCards();
+  renderBudgetSummary();
 }
 
 function renderPlanSelectionCards() {
@@ -505,38 +797,13 @@ function renderPlanSelectionCards() {
   const cards = [];
   if (selectedFlight) cards.push(selectionFlightCard(selectedFlight));
   if (selectedStay) cards.push(selectionStayCard(selectedStay));
-  if (selectedDestinations.length > 0) {
-    cards.push(selectionDestCard());
-  }
+
   container.innerHTML = cards.join('') || '<div class="selection-card">선택된 항공권/숙소가 없습니다.</div>';
 }
 
-function toggleDestinationSelection(index) {
-  const dest = latestDestList[index];
-  if (!dest) return;
-  const exists = selectedDestinations.find((d) => d.name === dest.name && d.area === dest.area);
-  if (exists) {
-    selectedDestinations = selectedDestinations.filter((d) => !(d.name === dest.name && d.area === dest.area));
-  } else {
-    selectedDestinations = [...selectedDestinations, dest];
-  }
-  renderCards('destCards', latestDestList, 'dest');
-  renderPlanSelectionCards();
-}
 
-function selectionDestCard() {
-  if (selectedDestinations.length === 0) return '';
-  const lines = selectedDestinations.map((dest) => `${dest.name} (${dest.area || dest.city || '-'})`).join(', ');
-  return `
-    <article class="selection-card">
-      <div class="selection-card-title">AI 일정 우선 여행지</div>
-      <div class="selection-card-body">
-        <strong>선택 목록</strong>
-        <span>${lines}</span>
-        <span>AI 일정에 포함된 순서로 반영됩니다.</span>
-      </div>
-    </article>`;
-}
+
+
 
 function stayPayloadFromSelection() {
   if (!selectedStay) return null;
@@ -574,16 +841,14 @@ function buildPlanPayload(extra = {}) {
     startDate: el('startDate').value,
     days: Number(el('days').value),
     pace: 'normal',
-    budget: el('budget').value,
+    budget: 'mid',
     useAi: true,
     ...extra
   };
   const stayInfo = stayPayloadFromSelection();
   if (stayInfo && !payload.stay) payload.stay = stayInfo;
   if (selectedFlight && !payload.flight) payload.flight = buildFlightPayload(selectedFlight);
-  if (selectedDestinations.length > 0 && !payload._picks) {
-    payload._picks = selectedDestinations.map(normalizeDestinationForPlan).filter(Boolean);
-  }
+
   if (aiRouteCities.length > 0 && !payload._routeCities) {
     payload._routeCities = aiRouteCities;
   }
@@ -624,6 +889,12 @@ async function runPlan(extra = {}, syncAux = false) {
   const payload = buildPlanPayload(extra);
   const data = await postJson('/api/travel-plan', payload);
   renderCards('destCards', data.recommendations, 'dest');
+  if (data.recommendedFoods && data.recommendedFoods.length > 0) {
+    latestRecFoodList = data.recommendedFoods.map(function(food) {
+      return { name: food.name, city: food.city, genre: food.genre, area: food.area, score: food.score, reviewCount: food.reviewCount || 0, priceLevel: food.priceLevel, mapUrl: food.mapUrl, photoUrl: food.photoUrl || null, aiScore: food.aiFit || 70, aiFit: food.aiFit || 70, lat: food.lat || null, lng: food.lng || null };
+    });
+    renderRecFoodCards(latestRecFoodList);
+  }
   const destSourceNote = el('destSourceNote');
   if (destSourceNote) {
     const src = data.recommendationSource || 'unknown';
@@ -659,6 +930,7 @@ async function runPlan(extra = {}, syncAux = false) {
   el('foodCity').value = el('city').value;
   el('btnFlights').click();
   el('btnFood').click();
+  if (el('btnDestSearch')) el('btnDestSearch').click();
 }
 
 function segmentRowTemplate(index, from = '', to = '', date = '') {
@@ -911,12 +1183,14 @@ document.addEventListener('click', (event) => {
 });
 
 el('btnPlan').addEventListener('click', async () => {
+    chatHistory = []; lastParsedConditions = null; aiPreferredAreas = []; aiRouteCities = []; aiRegionDayPlan = []; aiSpecialPrefs = {};
   try {
     resetFlightSelectionDisplay();
     selectStayById('');
     await runPlan({}, true);
     const stayStart = el('startDate').value || new Date().toISOString().slice(0, 10);
     el('stayCity').value = el('city').value;
+    if (el('destSearchCity')) el('destSearchCity').value = el('city').value;
     el('checkIn').value = stayStart;
     el('checkOut').value = addDays(stayStart, Math.max(1, Number(el('days').value) || 2));
     el('btnStays').click();
@@ -937,7 +1211,7 @@ el('btnAiAssist')?.addEventListener('click', async () => {
     const context = {
       city: el('city').value,
       theme: el('theme').value,
-      budget: el('budget').value,
+      budget: 'mid',
       days: Number(el('days').value || 4),
       startDate: el('startDate').value
     };
@@ -951,10 +1225,7 @@ el('btnAiAssist')?.addEventListener('click', async () => {
     }
     if (data.cityMeta) upsertCityOption(data.cityMeta);
     applyAiConditions(data.parsed || {});
-    selectedDestinations = [];
-    if (Array.isArray(data.selectedDestinations) && data.selectedDestinations.length > 0) {
-      selectedDestinations = data.selectedDestinations.map(normalizeDestinationForPlan).filter(Boolean);
-    }
+
     appendAiChat('assistant', data.reply || '요청 내용을 반영해서 새 추천을 생성합니다.');
     resetFlightSelectionDisplay();
     selectStayById('');
@@ -1039,12 +1310,162 @@ el('flightCards').addEventListener('click', async (event) => {
   await selectFlightById(flightId);
 });
 
+
+function showAddToPlanModal(name, opts) {
+  opts = opts || {};
+  pendingAddPlace = { name: name || '' };
+  pendingAddType = opts.addType || 'dest';
+  pendingAddSlot = pendingAddType === 'food' ? 'dinner' : 'afternoon';
+  var modal = el('addToPlanModal');
+  if (!modal) return;
+  el('modalPlaceName').textContent = name || '';
+  var customWrap = el('modalCustomWrap');
+  if (customWrap) customWrap.style.display = name ? 'none' : '';
+  var daySelect = el('modalDaySelect');
+  if (daySelect && currentItineraryData) {
+    daySelect.innerHTML = currentItineraryData.itinerary.map(function(d) { return '<option value="' + d.day + '">Day ' + d.day + '</option>'; }).join('');
+    if (opts.day) daySelect.value = String(opts.day);
+  }
+  // Show/hide type buttons + slot buttons
+  var destSlots = el('destSlots');
+  var foodSlots = el('foodSlots');
+  if (destSlots) destSlots.style.display = pendingAddType === 'food' ? 'none' : '';
+  if (foodSlots) foodSlots.style.display = pendingAddType === 'food' ? '' : 'none';
+  document.querySelectorAll('.type-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.type === pendingAddType); });
+  modal.classList.remove('hidden');
+}
+
+function hideAddToPlanModal() {
+  var modal = el('addToPlanModal');
+  if (modal) modal.classList.add('hidden');
+  pendingAddPlace = null;
+}
+
+function confirmAddToPlan() {
+  if (!pendingAddPlace || !currentItineraryData) return;
+  var dayNum = Number(el('modalDaySelect').value);
+  var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === dayNum; });
+  if (!dayData) return;
+  var destSlotMap = {
+    morning: { period: '\uC624\uC804', start: '09:00', end: '11:00' },
+    afternoon: { period: '\uC624\uD6C4', start: '13:00', end: '15:00' },
+    allday: { period: '\uC885\uC77C', start: '09:00', end: '18:00' }
+  };
+  var foodSlotMap = {
+    breakfast: { period: '\uC544\uCE68', start: '08:00', end: '09:30' },
+    lunch: { period: '\uC810\uC2EC', start: '12:00', end: '13:30' },
+    dinner: { period: '\uC800\uB141', start: '18:00', end: '20:00' }
+  };
+  var activeMap = pendingAddType === 'food' ? foodSlotMap : destSlotMap;
+  var slot = activeMap[pendingAddSlot] || (pendingAddType === 'food' ? foodSlotMap.dinner : destSlotMap.afternoon);
+  var customName = (el('modalCustomName') || {}).value || '';
+  if (customName) pendingAddPlace.name = customName;
+  if (!pendingAddPlace.name) { hideAddToPlanModal(); return; }
+  var newBlock;
+  if (pendingAddType === 'food') {
+    var foodArea = pendingAddPlace.area || pendingAddPlace.city || '';
+    newBlock = slot.period + '(' + slot.start + '-' + slot.end + '): ' + pendingAddPlace.name + ' (' + foodArea + ')';
+  } else {
+    var destArea = pendingAddPlace.area || pendingAddPlace.city || '';
+    newBlock = slot.period + '(' + slot.start + '-' + slot.end + '): ' + pendingAddPlace.name + (destArea ? ' (' + destArea + ')' : '');
+  }
+  var periodOrder = { '\uC544\uCE68': -1, '\uC624\uC804': 0, '\uC810\uC2EC': 0.5, '\uC624\uD6C4': 1, '\uC885\uC77C': 1, '\uC800\uB141': 2 };
+  var targetOrder = periodOrder[slot.period];
+  var insertIdx = dayData.blocks.length;
+  for (var i = 0; i < dayData.blocks.length; i++) {
+    var p = parseItineraryBlock(dayData.blocks[i]);
+    if (p.type === 'main' && (periodOrder[p.period] || 0) > targetOrder) {
+      insertIdx = i;
+      break;
+    }
+  }
+  dayData.blocks.splice(insertIdx, 0, newBlock);
+  renderItineraryTimeline();
+  updateItinMap();
+  hideAddToPlanModal();
+}
+
+function renderRecFoodCards(items) {
+  var target = el('recFoodCards');
+  if (!target) return;
+  latestRecFoodList = items || [];
+  if (items.length === 0) {
+    target.innerHTML = '<div class="card">\uACB0\uACFC \uC5C6\uC74C</div>';
+    return;
+  }
+  target.innerHTML = items.map(function(x, index) {
+    return '<article class="card" draggable="true" data-drag-type="food" data-drag-index="' + index + '">' +
+      '<div class="card-layout">' +
+        cardPhoto(x.photoUrl, x.name) +
+        '<div class="card-body">' +
+          '<h4>' + escapeHtml(x.name) + '</h4>' +
+          '<div class="card-info-row">' + escapeHtml(x.genre || '') + ' \u00B7 ' + escapeHtml(x.area || '') + '</div>' +
+          '<div class="card-scores">' + aiScoreBadge(x.aiFit) + starRating(x.score) + priceYen(x.priceLevel) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<span class="drag-hint">\u2630 \uB4DC\uB798\uADF8</span>' +
+      '<div class="link-row"><a href="' + (x.mapUrl || '#') + '" target="_blank" rel="noreferrer">\uC9C0\uB3C4</a>' +
+      '<button type="button" class="rec-delete-btn" data-delete-type="food" data-delete-index="' + index + '">\u2715</button></div>' +
+    '</article>';
+  }).join('');
+}
+
+function renderDestSearchCards(items) {
+  var target = el('destSearchCards');
+  if (!target) return;
+  latestDestSearchList = items || [];
+  if (items.length === 0) {
+    target.innerHTML = '<div class="card">\uACB0\uACFC \uC5C6\uC74C</div>';
+    return;
+  }
+  target.innerHTML = items.map(function(x, index) {
+    return '<article class="card">' +
+      '<div class="card-layout">' +
+        cardPhoto(x.photoUrl, x.name) +
+        '<div class="card-body">' +
+          '<h4>' + categoryIcon(x.category) + ' ' + escapeHtml(x.name) + '</h4>' +
+          '<div class="card-info-row">' + escapeHtml(x.category || '') + ' · ' + escapeHtml(x.area || x.city || '') + '</div>' +
+          '<div class="card-scores">' + aiScoreBadge(x.aiScore) + starRating(x.score) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="link-row">' +
+        '<button type="button" class="add-to-plan-btn" data-add-type="dest" data-add-index="' + index + '" data-add-source="destSearch">\uC77C\uC815\uC5D0 \uCD94\uAC00</button>' +
+        '<a href="' + (x.mapUrl || '#') + '" target="_blank" rel="noreferrer">\uC9C0\uB3C4</a>' +
+      '</div>' +
+    '</article>';
+  }).join('');
+}
+
 el('destCards')?.addEventListener('click', (event) => {
+  const delBtn = event.target.closest('.rec-delete-btn');
+  if (delBtn) {
+    const idx = Number(delBtn.dataset.deleteIndex);
+    if (!Number.isNaN(idx) && idx >= 0 && idx < latestDestList.length) {
+      const removed = latestDestList[idx];
+
+      latestDestList.splice(idx, 1);
+      renderCards('destCards', latestDestList, 'dest');
+      renderPlanSelectionCards();
+    }
+    return;
+  }
   const btn = event.target.closest('.dest-select-btn');
   if (!btn) return;
   const index = Number(btn.dataset.destIndex);
   if (Number.isNaN(index)) return;
   toggleDestinationSelection(index);
+});
+
+el('recFoodCards')?.addEventListener('click', (event) => {
+  const delBtn = event.target.closest('.rec-delete-btn');
+  if (delBtn) {
+    const idx = Number(delBtn.dataset.deleteIndex);
+    if (!Number.isNaN(idx) && idx >= 0 && idx < latestRecFoodList.length) {
+      latestRecFoodList.splice(idx, 1);
+      renderRecFoodCards(latestRecFoodList);
+    }
+    return;
+  }
 });
 
 const planRefreshButton = el('btnPlanRefresh');
@@ -1062,10 +1483,10 @@ el('btnFood').addEventListener('click', async () => {
   try {
     const city = encodeURIComponent(el('foodCity').value);
     const genre = encodeURIComponent(el('foodGenre').value);
-    const budget = encodeURIComponent(el('foodBudget').value);
-    const res = await fetch(`/api/foods?city=${city}&genre=${genre}&budget=${budget}`);
+    const res = await fetch(`/api/foods?city=${city}&genre=${genre}&budget=mid`);
     const data = await res.json();
-    renderCards('foodCards', data.list, 'food');
+    latestFoodList = data.list || [];
+  renderCards('foodCards', data.list, 'food');
     const sourceNote = el('foodSourceNote');
     if (sourceNote) {
       const source = data.source || 'unknown';
@@ -1140,8 +1561,647 @@ el('stayPreference').addEventListener('change', () => {
 el('city').addEventListener('change', () => {
   el('foodCity').value = el('city').value;
   el('stayCity').value = el('city').value;
+  if (el('destSearchCity')) el('destSearchCity').value = el('city').value;
   if (currentTripType === 'multicity') resetSegments();
 });
+
+
+// ── Recommendation tab switching ──
+document.querySelectorAll('.rec-tab').forEach(function(tab) {
+  tab.addEventListener('click', function() {
+    document.querySelectorAll('.rec-tab').forEach(function(t) { t.classList.remove('active'); });
+    tab.classList.add('active');
+    var which = tab.dataset.recTab;
+    var destPanel = el('recDestPanel');
+    var foodPanel = el('recFoodPanel');
+    if (destPanel) destPanel.style.display = which === 'dest' ? '' : 'none';
+    if (foodPanel) foodPanel.style.display = which === 'food' ? '' : 'none';
+  });
+});
+
+// ── Modal event handling ──
+document.addEventListener('click', function(e) {
+  if (e.target.id === 'modalConfirmAdd') { confirmAddToPlan(); return; }
+  if (e.target.id === 'modalCancelAdd') { hideAddToPlanModal(); return; }
+
+  var typeBtn = e.target.closest('.type-btn');
+  if (typeBtn) {
+    pendingAddType = typeBtn.dataset.type;
+    document.querySelectorAll('.type-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.type === pendingAddType); });
+    var destSlots = el('destSlots');
+    var foodSlots = el('foodSlots');
+    if (destSlots) destSlots.style.display = pendingAddType === 'food' ? 'none' : '';
+    if (foodSlots) foodSlots.style.display = pendingAddType === 'food' ? '' : 'none';
+    return;
+  }
+
+  var slotBtn = e.target.closest('.slot-btn');
+  if (slotBtn) {
+    pendingAddSlot = slotBtn.dataset.slot;
+    slotBtn.closest('.plan-modal-slots').querySelectorAll('.slot-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.slot === pendingAddSlot); });
+    return;
+  }
+
+  var removeBtn = e.target.closest('.itin-remove-btn');
+  if (removeBtn && currentItineraryData) {
+    var rDay = Number(removeBtn.dataset.day);
+    var rPeriod = removeBtn.dataset.period;
+    var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === rDay; });
+    if (dayData) {
+      var rBlockIdx = removeBtn.dataset.blockIndex;
+      if (rBlockIdx !== undefined && rBlockIdx !== '' && rBlockIdx !== '-1') {
+        dayData.blocks.splice(Number(rBlockIdx), 1);
+      } else {
+        dayData.blocks = dayData.blocks.filter(function(b) {
+          var p = parseItineraryBlock(b);
+          return !(p.type === 'main' && p.period === rPeriod);
+        });
+      }
+      renderItineraryTimeline();
+      updateItinMap();
+    }
+    return;
+  }
+
+  var mealAddBtn = e.target.closest('.itin-meal-add-btn');
+  if (mealAddBtn) {
+    var mdn = Number(mealAddBtn.dataset.day);
+    var mslot = mealAddBtn.dataset.mealSlot || 'dinner';
+    showAddToPlanModal('', { day: mdn, addType: 'food' });
+    el('modalDaySelect').value = String(mdn);
+    pendingAddSlot = mslot;
+    var foodSlotsEl = el('foodSlots');
+    if (foodSlotsEl) foodSlotsEl.querySelectorAll('.slot-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.slot === mslot); });
+    return;
+  }
+
+  // destsearch-to-rec-btn: add to rec list
+  var dsearchBtn = e.target.closest('.destsearch-to-rec-btn');
+  if (dsearchBtn) {
+    var dsIdx = Number(dsearchBtn.dataset.dsearchIndex);
+    var dest = (latestDestSearchList || [])[dsIdx];
+    if (dest) {
+      var isDup = latestDestList.some(function(d) { return d.name === dest.name; });
+      if (!isDup) {
+        latestDestList.push(dest);
+        renderCards('destCards', latestDestList, 'dest');
+      }
+    }
+    return;
+  }
+
+  // food-to-rec-btn: add to rec food list
+  var foodRecBtn = e.target.closest('.food-to-rec-btn');
+  if (foodRecBtn) {
+    var fIdx = Number(foodRecBtn.dataset.foodIndex);
+    var food = (latestFoodList || [])[fIdx];
+    if (food) {
+      var isFDup = latestRecFoodList.some(function(f) { return f.name === food.name; });
+      if (!isFDup) {
+        latestRecFoodList.push(food);
+        renderRecFoodCards(latestRecFoodList);
+      }
+    }
+    return;
+  }
+});
+
+// ── Drag & Drop ──
+document.addEventListener('dragstart', function(e) {
+  var card = e.target.closest('[data-drag-type]');
+  if (card) {
+    var type = card.dataset.dragType;
+    var index = Number(card.dataset.dragIndex);
+    var item = type === 'dest' ? (latestDestList || [])[index] : (latestRecFoodList || [])[index];
+    if (!item) return;
+    dragData = { source: 'rec', type: type, item: item, index: index };
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('text/plain', item.name);
+    card.classList.add('dragging');
+    setTimeout(function() {
+      document.querySelectorAll('.itin-drop-zone, .itin-day-body').forEach(function(z) { z.classList.add('drop-active'); });
+    }, 0);
+    return;
+  }
+  var slot = e.target.closest('[data-itin-day][data-itin-period]');
+  if (slot) {
+    var srcBlockIndex = slot.dataset.itinBlockIndex !== undefined ? Number(slot.dataset.itinBlockIndex) : -1;
+    dragData = { source: 'itin', day: Number(slot.dataset.itinDay), period: slot.dataset.itinPeriod, blockIndex: srcBlockIndex };
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', 'itin');
+    slot.classList.add('dragging');
+  }
+});
+
+document.addEventListener('dragend', function(e) {
+  dragData = null;
+  document.querySelectorAll('.dragging').forEach(function(el) { el.classList.remove('dragging'); });
+  document.querySelectorAll('.drop-active').forEach(function(el) { el.classList.remove('drop-active'); });
+  document.querySelectorAll('.drop-hover').forEach(function(el) { el.classList.remove('drop-hover'); });
+});
+
+document.addEventListener('dragover', function(e) {
+  if (!dragData) return;
+  var zone = e.target.closest('.itin-drop-zone, .itin-period-zone, .itin-meal-empty');
+  if (zone) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = dragData.source === 'itin' ? 'move' : 'copy';
+    zone.classList.add('drop-hover');
+  }
+});
+
+document.addEventListener('dragleave', function(e) {
+  var zone = e.target.closest('.itin-drop-zone, .itin-period-zone, .itin-meal-empty');
+  if (zone && !zone.contains(e.relatedTarget)) {
+    zone.classList.remove('drop-hover');
+  }
+});
+
+document.addEventListener('drop', function(e) {
+  if (!dragData) return;
+  e.preventDefault();
+  document.querySelectorAll('.drop-hover').forEach(function(el) { el.classList.remove('drop-hover'); });
+
+  // Drop from itin: move to new zone or remove if dropped outside
+  if (dragData.source === 'itin' && currentItineraryData) {
+    var zone = e.target.closest('.itin-drop-zone, .itin-period-zone, .itin-meal-empty');
+    var srcDayData = currentItineraryData.itinerary.find(function(d) { return d.day === dragData.day; });
+    if (!srcDayData) return;
+
+    // Find source block text
+    var srcBlockText = null;
+    var srcParsed = null;
+    if (dragData.blockIndex >= 0 && srcDayData.blocks[dragData.blockIndex]) {
+      srcBlockText = srcDayData.blocks[dragData.blockIndex];
+      srcParsed = parseItineraryBlock(srcBlockText);
+    } else {
+      for (var sbi = 0; sbi < srcDayData.blocks.length; sbi++) {
+        var sbp = parseItineraryBlock(srcDayData.blocks[sbi]);
+        if (sbp.type === 'main' && sbp.period === dragData.period) { srcBlockText = srcDayData.blocks[sbi]; srcParsed = sbp; break; }
+      }
+    }
+
+    if (!zone || !srcParsed || srcParsed.type !== 'main') {
+      // Dropped outside = remove
+      if (dragData.blockIndex >= 0) {
+        srcDayData.blocks.splice(dragData.blockIndex, 1);
+      } else {
+        srcDayData.blocks = srcDayData.blocks.filter(function(b) {
+          var p = parseItineraryBlock(b);
+          return !(p.type === 'main' && p.period === dragData.period);
+        });
+      }
+      renderItineraryTimeline();
+      updateItinMap();
+      return;
+    }
+
+    var dropDay = Number(zone.dataset.dropDay);
+    var dropType = zone.dataset.dropType;
+    var mealSlot = zone.dataset.dropMeal;
+    var destPeriodKey = zone.dataset.dropDestPeriod;
+
+    var targetSlot;
+    if (dropType === 'food' || isMealPeriod(dragData.period)) {
+      if (mealSlot === 'breakfast') targetSlot = { period: '아침', start: '08:00', end: '09:30' };
+      else if (mealSlot === 'lunch') targetSlot = { period: '점심', start: '12:00', end: '13:30' };
+      else targetSlot = { period: '저녁', start: '18:00', end: '20:00' };
+    } else if (destPeriodKey === 'morning') {
+      targetSlot = { period: '오전', start: '09:00', end: '12:00' };
+    } else if (destPeriodKey === 'allday') {
+      targetSlot = { period: '종일', start: '09:00', end: '18:00' };
+    } else {
+      targetSlot = { period: '오후', start: '13:00', end: '17:00' };
+    }
+
+    // Same day + same period = no-op
+    if (dropDay === dragData.day && targetSlot.period === srcParsed.period) return;
+
+    var newBlockText = targetSlot.period + '(' + targetSlot.start + '-' + targetSlot.end + '): ' + srcParsed.place;
+
+    var tgtDayData = currentItineraryData.itinerary.find(function(d) { return d.day === dropDay; });
+    if (!tgtDayData) return;
+
+    // Check if target slot already has a meal (for swap)
+    var existingTargetBlock = null;
+    var existingTargetIdx = -1;
+    var existingTargetParsed = null;
+    if (isMealPeriod(srcParsed.period) || isMealPeriod(targetSlot.period)) {
+      for (var eti = 0; eti < tgtDayData.blocks.length; eti++) {
+        var etp = parseItineraryBlock(tgtDayData.blocks[eti]);
+        if (etp.type === 'main' && etp.period === targetSlot.period) {
+          existingTargetBlock = tgtDayData.blocks[eti];
+          existingTargetIdx = eti;
+          existingTargetParsed = etp;
+          break;
+        }
+      }
+    }
+
+    // If both are meal periods and target has existing food -> SWAP
+    if (existingTargetParsed && isMealPeriod(srcParsed.period) && isMealPeriod(targetSlot.period)) {
+      // Build swap block: move target food to source's old period
+      var swapBlock = srcParsed.period + '(' + srcParsed.start + '-' + srcParsed.end + '): ' + existingTargetParsed.place;
+
+      // Replace source block with swapped food
+      if (dragData.blockIndex >= 0 && srcDayData.blocks[dragData.blockIndex]) {
+        srcDayData.blocks[dragData.blockIndex] = swapBlock;
+      } else {
+        for (var si = 0; si < srcDayData.blocks.length; si++) {
+          var sp = parseItineraryBlock(srcDayData.blocks[si]);
+          if (sp.type === 'main' && sp.period === srcParsed.period && sp.place === srcParsed.place) {
+            srcDayData.blocks[si] = swapBlock;
+            break;
+          }
+        }
+      }
+      // Replace target block with moved food
+      tgtDayData.blocks[existingTargetIdx] = newBlockText;
+      renderItineraryTimeline();
+      updateItinMap();
+      return;
+    }
+
+    // Remove from source (non-swap case)
+    if (dragData.blockIndex >= 0) {
+      srcDayData.blocks.splice(dragData.blockIndex, 1);
+    } else {
+      srcDayData.blocks = srcDayData.blocks.filter(function(b) {
+        var p = parseItineraryBlock(b);
+        return !(p.type === 'main' && p.period === dragData.period && p.place === srcParsed.place);
+      });
+    }
+
+    // Insert into target day
+    var periodOrder = { '아침': -1, '오전': 0, '점심': 0.5, '오후': 1, '종일': 1, '저녁': 2 };
+    var targetOrder = periodOrder[targetSlot.period] || 1;
+    var insertIdx = tgtDayData.blocks.length;
+    for (var ii = 0; ii < tgtDayData.blocks.length; ii++) {
+      var pp = parseItineraryBlock(tgtDayData.blocks[ii]);
+      if (pp.type === 'main' && (periodOrder[pp.period] || 0) > targetOrder) { insertIdx = ii; break; }
+    }
+    tgtDayData.blocks.splice(insertIdx, 0, newBlockText);
+    renderItineraryTimeline();
+    updateItinMap();
+    return;
+  }
+
+  // Drop from rec card
+  if (dragData.source !== 'rec') return;
+  var zone = e.target.closest('.itin-drop-zone, .itin-period-zone, .itin-meal-empty');
+  if (!zone) return;
+
+  var dropDay = Number(zone.dataset.dropDay);
+  var dropType = zone.dataset.dropType;
+  var mealSlot = zone.dataset.dropMeal;
+  var type = dragData.type;
+  var item = dragData.item;
+  if (!item || !currentItineraryData) return;
+
+  var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === dropDay; });
+  if (!dayData) return;
+
+  var slot;
+  var destPeriodKey = zone.dataset.dropDestPeriod;
+  if (dropType === 'food' || type === 'food') {
+    if (mealSlot === 'breakfast') slot = { period: '\uC544\uCE68', start: '08:00', end: '09:30' };
+    else if (mealSlot === 'lunch') slot = { period: '\uC810\uC2EC', start: '12:00', end: '13:30' };
+    else slot = { period: '\uC800\uB141', start: '18:00', end: '20:00' };
+  } else if (destPeriodKey === 'morning') {
+    slot = { period: '\uC624\uC804', start: '09:00', end: '12:00' };
+  } else if (destPeriodKey === 'allday') {
+    slot = { period: '\uC885\uC77C', start: '09:00', end: '18:00' };
+  } else {
+    slot = { period: '\uC624\uD6C4', start: '13:00', end: '17:00' };
+  }
+
+  var newBlock;
+  if (type === 'food') {
+    var foodArea = item.area || item.city || '';
+    newBlock = slot.period + '(' + slot.start + '-' + slot.end + '): ' + item.name + ' (' + foodArea + ')';
+  } else {
+    var destArea = item.area || item.city || '';
+    newBlock = slot.period + '(' + slot.start + '-' + slot.end + '): ' + item.name + (destArea ? ' (' + destArea + ')' : '');
+  }
+
+
+  // If dropping food into a meal slot, remove existing food in that slot
+  if (type === 'food' && isMealPeriod(slot.period)) {
+    dayData.blocks = dayData.blocks.filter(function(b) {
+      var bp = parseItineraryBlock(b);
+      return !(bp.type === 'main' && bp.period === slot.period);
+    });
+  }
+
+  var periodOrder = { '\uC544\uCE68': -1, '\uC624\uC804': 0, '\uC810\uC2EC': 0.5, '\uC624\uD6C4': 1, '\uC885\uC77C': 1, '\uC800\uB141': 2 };
+  var targetOrder = periodOrder[slot.period] || 1;
+  var insertIdx = dayData.blocks.length;
+  for (var i = 0; i < dayData.blocks.length; i++) {
+    var p = parseItineraryBlock(dayData.blocks[i]);
+    if (p.type === 'main' && (periodOrder[p.period] || 0) > targetOrder) {
+      insertIdx = i;
+      break;
+    }
+  }
+  dayData.blocks.splice(insertIdx, 0, newBlock);
+  renderItineraryTimeline();
+  updateItinMap();
+});
+
+// ── Itinerary Map ──
+
+// Route Cost
+var routeCostCache = {};
+function buildDayRouteOrder(dayNum) {
+  if (!currentItineraryData) return [];
+  var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === dayNum; });
+  if (!dayData || !dayData.blocks) return [];
+  var places = [];
+  if (selectedStay) places.push(selectedStay.name + (selectedStay.area ? ' ' + selectedStay.area : ''));
+  var po = ['아침','오전','점심','오후','종일','저녁'];
+  for (var pi = 0; pi < po.length; pi++) {
+    for (var bi = 0; bi < dayData.blocks.length; bi++) {
+      var p = parseItineraryBlock(dayData.blocks[bi]);
+      if (p.type === 'main' && p.period === po[pi]) {
+        var info = parsePlaceInfo(p.place);
+        places.push(info.name + (info.info ? ' ' + info.info : ''));
+      }
+    }
+  }
+  if (selectedStay && places.length > 1) places.push(selectedStay.name + (selectedStay.area ? ' ' + selectedStay.area : ''));
+  return places;
+}
+function modeLabel(mode) {
+  var m = { subway: '🚇 지하철', rail: '🚃 전철', bus: '🚌 버스', tram: '🚊 트램', transit: '🚍 대중교통', walking: '🚶 도보', estimated: '📍 추정', error: '⚠️ 오류' };
+  return m[mode] || mode;
+}
+async function calculateDayRouteCost(dayNum) {
+  var resultEl = document.getElementById('routeCostDay' + dayNum);
+  if (!resultEl) return;
+  var places = buildDayRouteOrder(dayNum);
+  if (places.length < 2) { resultEl.innerHTML = '<div class="route-cost-empty">일정에 장소가 2개 이상 필요합니다.</div>'; return; }
+  resultEl.innerHTML = '<div class="route-cost-loading">계산 중...</div>';
+  try {
+    var city = (el('city') && el('city').value) || 'tokyo';
+    var resp = await fetch('/api/route-cost', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ places: places, city: city }) });
+    var data = await resp.json();
+    if (data.error) { resultEl.innerHTML = '<div class="route-cost-empty">' + escapeHtml(data.error) + '</div>'; return; }
+    var h = '<div class="route-cost-segments">';
+    for (var i = 0; i < data.segments.length; i++) {
+      var seg = data.segments[i];
+      var fareText = seg.fareJPY > 0 ? '¥' + seg.fareJPY.toLocaleString() + ' (~' + seg.fareKRW.toLocaleString() + '원)' : '무료';
+      h += '<div class="route-cost-seg' + (seg.estimated ? ' route-cost-estimated' : '') + '">';
+      h += '<span class="route-seg-mode">' + modeLabel(seg.mode) + '</span>';
+      h += '<span class="route-seg-route">' + escapeHtml(seg.from.split(' ')[0]) + ' → ' + escapeHtml(seg.to.split(' ')[0]) + '</span>';
+      h += '<span class="route-seg-detail">' + seg.durationMin + '분 · ' + fareText + '</span>';
+      h += '</div>';
+    }
+    h += '</div><div class="route-cost-total">합계: ¥' + data.totalFareJPY.toLocaleString() + ' (~' + data.totalFareKRW.toLocaleString() + '원) · 이동 ' + data.totalDurationMin + '분</div>';
+    resultEl.innerHTML = h;
+    routeCostCache[dayNum] = data;
+  } catch (err) { resultEl.innerHTML = '<div class="route-cost-empty">오류: ' + escapeHtml(err.message) + '</div>'; }
+}
+document.addEventListener('click', function(e) {
+  var routeBtn = e.target.closest('.itin-route-cost-btn');
+  if (routeBtn) { calculateDayRouteCost(Number(routeBtn.dataset.routeDay)); }
+  var reorderBtn = e.target.closest('.itin-reorder-btn');
+  if (reorderBtn && currentItineraryData) {
+    var roDay = Number(reorderBtn.dataset.day);
+    var roIdx = Number(reorderBtn.dataset.blockIndex);
+    var roDir = reorderBtn.dataset.direction;
+    var roDayData = currentItineraryData.itinerary.find(function(d) { return d.day === roDay; });
+    if (roDayData && roDayData.blocks) {
+      var roParsed = parseItineraryBlock(roDayData.blocks[roIdx]);
+      var swapIdx = -1;
+      if (roDir === 'up') { for (var ri = roIdx - 1; ri >= 0; ri--) { var rp = parseItineraryBlock(roDayData.blocks[ri]); if (rp.type === 'main' && rp.period === roParsed.period) { swapIdx = ri; break; } } }
+      else { for (var ri2 = roIdx + 1; ri2 < roDayData.blocks.length; ri2++) { var rp2 = parseItineraryBlock(roDayData.blocks[ri2]); if (rp2.type === 'main' && rp2.period === roParsed.period) { swapIdx = ri2; break; } } }
+      if (swapIdx >= 0) { var tmp = roDayData.blocks[roIdx]; roDayData.blocks[roIdx] = roDayData.blocks[swapIdx]; roDayData.blocks[swapIdx] = tmp; renderItineraryTimeline(); updateItinMap(); }
+    }
+  }
+});
+
+var DAY_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#10b981'];
+
+async function updateItinMap() {
+  if (!currentItineraryData || !currentItineraryData.itinerary) return;
+  var mapEl = el('itinMap');
+  if (!mapEl || typeof google === 'undefined') return;
+
+  if (!itinMap) {
+    itinMap = new google.maps.Map(mapEl, { zoom: 12, center: { lat: 35.68, lng: 139.76 }, mapTypeControl: false });
+  }
+  for (var mi = 0; mi < itinMarkers.length; mi++) itinMarkers[mi].setMap(null);
+  itinMarkers = [];
+
+  var places = [];
+  for (var di = 0; di < currentItineraryData.itinerary.length; di++) {
+    var day = currentItineraryData.itinerary[di];
+    var blocks = day.blocks || [];
+    for (var bi = 0; bi < blocks.length; bi++) {
+      var parsed = parseItineraryBlock(blocks[bi]);
+      if (parsed.type !== 'main') continue;
+      var name = extractPlaceName(blocks[bi]);
+      if (!name) continue;
+      var isMeal = isMealPeriod(parsed.period);
+      places.push({ name: name, day: day.day, period: parsed.period, isMeal: isMeal });
+    }
+  }
+
+  if (places.length === 0) return;
+  var bounds = new google.maps.LatLngBounds();
+  var labelIdx = 0;
+  for (var pi = 0; pi < places.length; pi++) {
+    var p = places[pi];
+    var pos = itinGeoCache[p.name];
+    if (!pos) {
+      try {
+        var geocoder = new google.maps.Geocoder();
+        var result = await new Promise(function(resolve, reject) {
+          geocoder.geocode({ address: p.name + ' Japan' }, function(results, status) {
+            if (status === 'OK' && results[0]) resolve(results[0].geometry.location);
+            else reject(status);
+          });
+        });
+        pos = { lat: result.lat(), lng: result.lng() };
+        itinGeoCache[p.name] = pos;
+      } catch (err) {
+        continue;
+      }
+    }
+    bounds.extend(pos);
+    labelIdx++;
+    var label = String(labelIdx);
+    var colorIdx = (p.day - 1) % DAY_COLORS.length;
+    var markerColor = p.isMeal ? '#f97316' : DAY_COLORS[colorIdx];
+    var marker = new google.maps.Marker({
+      position: pos,
+      map: itinMap,
+      title: 'Day ' + p.day + ' ' + p.period + ': ' + p.name,
+      label: { text: p.isMeal ? '' : label, color: '#fff', fontWeight: '700', fontSize: '11px' },
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        fillColor: markerColor,
+        fillOpacity: 0.9,
+        strokeColor: '#fff',
+        strokeWeight: 2,
+        scale: p.isMeal ? 14 : 16
+      }
+    });
+    itinMarkers.push(marker);
+  }
+  if (itinMarkers.length > 0) itinMap.fitBounds(bounds);
+}
+
+// ── Dest search handler ──
+if (el('btnDestSearch')) {
+  el('btnDestSearch').addEventListener('click', async function() {
+    try {
+      var payload = {
+        city: el('destSearchCity').value,
+        theme: el('destSearchTheme').value,
+        budget: 'mid',
+        limit: 10
+      };
+      var data = await postJson('/api/dest-search', payload);
+      renderDestSearchCards(data.destinations || []);
+      var srcNote = el('destSearchSourceNote');
+      if (srcNote) srcNote.textContent = 'Source: ' + (data.source || 'unknown');
+    } catch (err) {
+      var cards = el('destSearchCards');
+      if (cards) cards.innerHTML = '<div class="card">\uC624\uB958: ' + escapeHtml(err.message) + '</div>';
+    }
+  });
+}
+
+// ── Food cards store ref ──
+var _origRenderCards = renderCards;
+// Patch renderCards to store food list
+var _patchedRenderCards = false;
+
+
+
+// Add-to-plan button handler (search cards)
+document.addEventListener('click', function(e) {
+  var addBtn = e.target.closest('.add-to-plan-btn');
+  if (addBtn) {
+    var addType = addBtn.dataset.addType || 'dest';
+    var addIdx = Number(addBtn.dataset.addIndex);
+    var addSource = addBtn.dataset.addSource;
+    var place = null;
+    if (addSource === 'foodSearch') place = (latestFoodList || [])[addIdx];
+    else if (addSource === 'destSearch') place = (latestDestSearchList || [])[addIdx];
+    if (place && currentItineraryData) {
+      pendingAddPlace = { name: place.name, area: place.area || place.city || '' };
+      showAddToPlanModal(place.name, { addType: addType });
+    } else if (place) {
+      alert('먼저 AI 일정을 생성해주세요.');
+    }
+  }
+});
+
+// Search tab switching
+document.querySelectorAll('.search-tab').forEach(function(tab) {
+  tab.addEventListener('click', function() {
+    document.querySelectorAll('.search-tab').forEach(function(t) { t.classList.remove('active'); });
+    tab.classList.add('active');
+    var target = tab.dataset.searchTab;
+    var destPanel = el('searchDestPanel');
+    var foodPanel = el('searchFoodPanel');
+    if (destPanel) destPanel.style.display = target === 'dest' ? '' : 'none';
+    if (foodPanel) foodPanel.style.display = target === 'food' ? '' : 'none';
+  });
+});
+
+// Manual flight input
+if (el('btnManualFlight')) {
+  el('btnManualFlight').addEventListener('click', function() {
+    var airline = (el('manualFlightAirline').value || '').trim();
+    var flightNum = (el('manualFlightNumber').value || '').trim();
+    var departTime = el('manualFlightDepartTime').value || '09:00';
+    var arriveTime = el('manualFlightArriveTime').value || '12:00';
+    var price = Number(el('manualFlightPrice').value) || 0;
+    if (!airline && !flightNum) { alert('항공사 또는 편명을 입력해주세요.'); return; }
+    var fromAirport = el('from') ? el('from').value.split(' ')[0] : 'ICN';
+    var toAirport = el('to') ? el('to').value.split(' ')[0] : 'NRT';
+    var departDate = el('departDate') ? el('departDate').value : '';
+    var returnDate = el('returnDate') ? el('returnDate').value : '';
+    var manualFlight = {
+      _id: 'manual_' + Date.now(),
+      provider: airline || '직접입력',
+      airlines: [airline || '직접입력'],
+      legs: [{ from: fromAirport, to: toAirport, date: departDate, departureTime: departTime, arrivalTime: arriveTime, airline: airline, flightNumber: flightNum }],
+      tripType: returnDate ? 'roundtrip' : 'oneway',
+      totalPriceKRW: price, totalDurationMin: 0, totalStops: 0, manual: true
+    };
+    if (returnDate) manualFlight.legs.push({ from: toAirport, to: fromAirport, date: returnDate, departureTime: '14:00', arrivalTime: '17:00', airline: airline, flightNumber: '' });
+    flightResults.unshift(manualFlight);
+    selectedFlightId = manualFlight._id;
+    selectedFlight = manualFlight;
+    renderFlightCards(true);
+    renderPlanExtras();
+    renderBudgetSummary();
+    // Regenerate itinerary with new flight info
+    try { runPlan({ flight: buildFlightPayload(manualFlight) }, false); } catch(e) {}
+    el('manualFlightAirline').value = '';
+    el('manualFlightNumber').value = '';
+    el('manualFlightPrice').value = '';
+  });
+}
+
+// Manual stay input
+if (el('btnManualStay')) {
+  el('btnManualStay').addEventListener('click', function() {
+    var name = (el('manualStayName').value || '').trim();
+    var area = (el('manualStayArea').value || '').trim();
+    var pricePerNight = Number(el('manualStayPrice').value) || 0;
+    var rating = Number(el('manualStayRating').value) || 0;
+    var stayType = el('manualStayType') ? el('manualStayType').value : 'hotel';
+    var url = (el('manualStayUrl').value || '').trim();
+    if (!name) { alert('숙소명을 입력해주세요.'); return; }
+    var checkIn = el('checkIn') ? el('checkIn').value : '';
+    var checkOut = el('checkOut') ? el('checkOut').value : '';
+    var nights = 1;
+    if (checkIn && checkOut) { var d1 = new Date(checkIn), d2 = new Date(checkOut); nights = Math.max(1, Math.round((d2 - d1) / 86400000)); }
+    var manualStay = {
+      id: 'manual_stay_' + Date.now(), name: name, area: area, type: stayType,
+      pricePerNightKRW: pricePerNight, totalPriceKRW: pricePerNight * nights, totalKRW: pricePerNight * nights,
+      nights: nights, rating: rating, checkIn: checkIn, checkOut: checkOut, url: url || '',
+      provider: '직접입력', manual: true
+    };
+    stayResults.unshift(manualStay);
+    selectedStayId = manualStay.id;
+    selectedStay = manualStay;
+    renderStayCards();
+    renderPlanExtras();
+    renderBudgetSummary();
+    // Regenerate itinerary with new stay info
+    try { runPlan({}, false); } catch(e) {}
+    ['manualStayName','manualStayArea','manualStayPrice','manualStayRating','manualStayUrl'].forEach(function(id) { el(id).value = ''; });
+  });
+}
+
+// Date validation
+if (el('returnDate')) {
+  el('returnDate').addEventListener('change', function() {
+    var dep = el('departDate') ? el('departDate').value : '';
+    var ret = this.value;
+    if (dep && ret && ret < dep) {
+      alert('귀국일이 출발일보다 빠를 수 없습니다.');
+      this.value = dep;
+    }
+  });
+}
+if (el('checkOut')) {
+  el('checkOut').addEventListener('change', function() {
+    var ci = el('checkIn') ? el('checkIn').value : '';
+    var co = this.value;
+    if (ci && co && co <= ci) {
+      alert('체크아웃이 체크인 이후여야 합니다.');
+      var d = new Date(ci); d.setDate(d.getDate() + 1);
+      this.value = d.toISOString().slice(0, 10);
+    }
+  });
+}
 
 (async () => {
   await initCityOptions();
@@ -1153,5 +2213,6 @@ el('city').addEventListener('change', () => {
   el('btnPlan').click();
   el('btnFlights').click();
   el('btnFood').click();
+  if (el('btnDestSearch')) el('btnDestSearch').click();
   el('btnStays').click();
 })();
