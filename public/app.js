@@ -1,3 +1,17 @@
+// Dynamically load Google Maps JS API (key from server, not hardcoded)
+(function loadGoogleMaps() {
+  fetch('/api/maps-config')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.key) { console.warn('Google Maps API key not configured'); return; }
+      var s = document.createElement('script');
+      s.src = 'https://maps.googleapis.com/maps/api/js?key=' + data.key + '&language=ko&region=jp';
+      s.async = true;
+      document.head.appendChild(s);
+    })
+    .catch(function(e) { console.warn('Failed to load Maps config:', e); });
+})();
+
 ﻿function setToday(id) {
   const node = document.getElementById(id);
   if (node && !node.value) node.value = new Date().toISOString().slice(0, 10);
