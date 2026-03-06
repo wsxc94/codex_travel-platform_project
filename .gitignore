@@ -1,2 +1,10 @@
 .env
 __.env
+node_modules/
+*.log
+*.pid
+.DS_Store
+Thumbs.db
+dist/
+build/
+.cache/

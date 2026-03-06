@@ -36,19 +36,32 @@ create trigger trg_travel_plans_updated_at
 before update on public.travel_plans
 for each row execute function public.set_updated_at();
 
--- Optional RLS setup for future auth integration
+-- RLS: only service_role and authenticated users can access
 alter table public.travel_plans enable row level security;
 
+-- Drop old permissive policy if exists
 do $$
 begin
-  if not exists (
+  if exists (
     select 1 from pg_policies
     where schemaname='public' and tablename='travel_plans' and policyname='service_role_all'
   ) then
-    create policy service_role_all on public.travel_plans
-      for all
-      using (true)
-      with check (true);
+    drop policy service_role_all on public.travel_plans;
   end if;
 end;
 $$;
+
+-- Service role bypasses RLS automatically.
+-- Anon users: read-only access to own plans by user_label
+create policy anon_read_own on public.travel_plans
+  for select
+  using (
+    current_setting('request.jwt.claims', true)::json->>'role' = 'service_role'
+    or user_label = coalesce(current_setting('request.jwt.claims', true)::json->>'sub', '')
+  );
+
+-- Only service_role can insert/update/delete
+create policy service_write on public.travel_plans
+  for all
+  using (current_setting('request.jwt.claims', true)::json->>'role' = 'service_role')
+  with check (current_setting('request.jwt.claims', true)::json->>'role' = 'service_role');
