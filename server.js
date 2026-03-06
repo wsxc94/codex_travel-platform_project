@@ -4500,6 +4500,11 @@ JSON 형식:
 
 async function handleApi(req, res, parsedUrl) {
   try {
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/maps-config') {
+      // Return Maps API key for client-side JS loading (key from env, not hardcoded)
+      return sendJson(res, 200, { key: GOOGLE_MAPS_API_KEY || '' });
+    }
+
     if (req.method === 'GET' && parsedUrl.pathname === '/api/health') {
       const diagnostics = await buildAiDiagnostics({ probe: false });
       return sendJson(res, 200, {
