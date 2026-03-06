@@ -667,16 +667,18 @@ button:hover {
   flex-direction: column;
   gap: 4px;
   font-size: 0.82rem;
-  color: var(--muted);
+  color: #334155;
 }
 
 .selection-card-body .selection-card-date {
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   color: #0f766e;
+  font-weight: 500;
 }
 
 .selection-card-body strong {
-  color: #111827;
+  color: #0f172a;
+  font-size: 0.88rem;
 }
 
 .result {
@@ -2912,16 +2914,21 @@ button:hover {
 }
 .selection-card-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .selection-edit-btn,
 .selection-delete-btn {
-  background: none;
-  border: 1px solid var(--border, #d1d5db);
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
   border-radius: 6px;
-  padding: 2px 8px;
-  font-size: 0.75rem;
+  padding: 3px 8px;
+  font-size: 0.73rem;
   cursor: pointer;
+  color: #334155;
+  font-weight: 500;
+  white-space: nowrap;
   transition: all 0.15s;
 }
 .selection-edit-btn:hover {
@@ -2963,4 +2970,27 @@ button:hover {
 .itin-fixed-time {
   color: var(--accent, #2563eb);
   font-weight: 600;
+}
+
+/* ── Route cost AI tips ── */
+.route-seg-tip {
+  display: block;
+  font-size: 0.72rem;
+  color: #0f766e;
+  margin-top: 2px;
+  padding-left: 28px;
+}
+.route-cost-tip {
+  font-size: 0.78rem;
+  color: #0f766e;
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: rgba(15, 118, 110, 0.06);
+  border-radius: 8px;
+}
+.route-cost-source {
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-align: right;
+  margin-top: 4px;
 }

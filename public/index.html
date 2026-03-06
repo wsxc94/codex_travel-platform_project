@@ -78,12 +78,12 @@
           <div class="manual-input-group">
             <details class="manual-details">
               <summary>직접 항공편 입력</summary>
-              <p class="manual-hint">출발/도착 공항·날짜는 여행 조건에서 자동 설정됩니다.</p>
+              <p class="manual-hint">출발/도착 공항·날짜는 여행 조건에서 자동 설정됩니다. 가는편=출발지→도착지, 오는편=도착지→출발지</p>
               <div class="fields two manual-fields">
                 <label class="form-item"><span>항공사</span><input id="manualFlightAirline" placeholder="예: 대한항공" /></label>
                 <label class="form-item"><span>편명</span><input id="manualFlightNumber" placeholder="예: KE713" /></label>
-                <label class="form-item"><span>출발 시간</span><input id="manualFlightDepartTime" type="time" value="09:00" /></label>
-                <label class="form-item"><span>도착 시간</span><input id="manualFlightArriveTime" type="time" value="12:00" /></label>
+                <label class="form-item"><span>가는편 출발</span><input id="manualFlightDepartTime" type="time" value="09:00" /></label>
+                <label class="form-item"><span>오는편 출발</span><input id="manualFlightArriveTime" type="time" value="12:00" /></label>
                 <label class="form-item"><span>가격(원)</span><input id="manualFlightPrice" type="number" min="0" step="1000" placeholder="350000" /></label>
                 <button id="btnManualFlight" type="button">항공편 추가</button>
               </div>

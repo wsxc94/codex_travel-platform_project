@@ -763,8 +763,8 @@ function selectionFlightCard(flight) {
     <article class="selection-card">
       <div class="selection-card-title">선택 항공권
         <span class="selection-card-actions">
-          <button type="button" class="selection-edit-btn" data-edit-type="flight">✏️ 수정</button>
-          <button type="button" class="selection-delete-btn" data-delete-type="flight">✕ 삭제</button>
+          <button type="button" class="selection-edit-btn" data-edit-type="flight">✏️수정</button>
+          <button type="button" class="selection-delete-btn" data-delete-type="flight">✕삭제</button>
         </span>
       </div>
       <div class="selection-card-body">
@@ -788,8 +788,8 @@ function selectionStayCard(stay) {
     <article class="selection-card">
       <div class="selection-card-title">선택 숙소
         <span class="selection-card-actions">
-          <button type="button" class="selection-edit-btn" data-edit-type="stay">✏️ 수정</button>
-          <button type="button" class="selection-delete-btn" data-delete-type="stay">✕ 삭제</button>
+          <button type="button" class="selection-edit-btn" data-edit-type="stay">✏️수정</button>
+          <button type="button" class="selection-delete-btn" data-delete-type="stay">✕삭제</button>
         </span>
       </div>
       <div class="selection-card-body">
@@ -865,13 +865,13 @@ function renderPlanSelectionCards() {
   container.querySelectorAll('.selection-edit-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
       var type = btn.dataset.editType;
-      if (type === 'flight') {
-        // Scroll to flight section and open manual input
-        var flightSection = document.querySelector('.flight-section') || el('flightCards');
-        if (flightSection) flightSection.scrollIntoView({ behavior: 'smooth' });
-      } else if (type === 'stay') {
-        var staySection = document.querySelector('.stay-section') || el('stayCards');
-        if (staySection) staySection.scrollIntoView({ behavior: 'smooth' });
+      var detailsList = document.querySelectorAll('.manual-input-group .manual-details');
+      if (type === 'flight' && detailsList[0]) {
+        detailsList[0].setAttribute('open', '');
+        detailsList[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } else if (type === 'stay' && detailsList[1]) {
+        detailsList[1].setAttribute('open', '');
+        detailsList[1].scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     });
   });
@@ -2049,9 +2049,12 @@ async function calculateDayRouteCost(dayNum) {
       h += '<span class="route-seg-mode">' + modeLabel(seg.mode) + '</span>';
       h += '<span class="route-seg-route">' + escapeHtml(seg.from.split(' ')[0]) + ' → ' + escapeHtml(seg.to.split(' ')[0]) + '</span>';
       h += '<span class="route-seg-detail">' + seg.durationMin + '분 · ' + fareText + '</span>';
+      if (seg.tip) h += '<span class="route-seg-tip">' + escapeHtml(seg.tip) + '</span>';
       h += '</div>';
     }
     h += '</div><div class="route-cost-total">합계: ¥' + data.totalFareJPY.toLocaleString() + ' (~' + data.totalFareKRW.toLocaleString() + '원) · 이동 ' + data.totalDurationMin + '분</div>';
+    if (data.routeTip) h += '<div class="route-cost-tip">' + escapeHtml(data.routeTip) + '</div>';
+    if (data.source === 'ai') h += '<div class="route-cost-source">AI 기반 추정</div>';
     resultEl.innerHTML = h;
     routeCostCache[dayNum] = data;
   } catch (err) { resultEl.innerHTML = '<div class="route-cost-empty">오류: ' + escapeHtml(err.message) + '</div>'; }

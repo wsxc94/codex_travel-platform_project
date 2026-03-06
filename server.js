@@ -4263,16 +4263,101 @@ function tabelogStyleFoods(payload) {
 }
 
 
-// ── Route Cost Calculator (Google Directions API transit) ──
+// ── Route Cost Calculator (AI-based via Gemini) ──
 async function calculateRouteCost(places, city) {
-  if (!GOOGLE_MAPS_API_KEY || places.length < 2) {
-    return { segments: [], totalDurationMin: 0, totalFareJPY: 0, totalFareKRW: 0, error: places.length < 2 ? 'Need at least 2 places' : 'No API key' };
+  if (places.length < 2) {
+    return { segments: [], totalDurationMin: 0, totalFareJPY: 0, totalFareKRW: 0, error: 'Need at least 2 places' };
   }
 
   const JPY_TO_KRW = 9.3;
   const cityKey = cityKeyByInput(city);
   const cityObj = CITY_DATA[cityKey];
   const cityLabel = (cityObj && cityObj.label) ? cityObj.label : city;
+
+  // Build route string for AI
+  const routeList = places.map((p, i) => `${i + 1}. ${p}`).join('\n');
+
+  // Try AI first
+  if (GEMINI_API_KEY) {
+    try {
+      const prompt = `일본 ${cityLabel} 여행 경로의 대중교통 이동 정보를 계산해주세요.
+
+경로 (순서대로):
+${routeList}
+
+각 구간별로 다음을 JSON으로 답해주세요:
+- from: 출발지명
+- to: 도착지명
+- mode: 이동수단 (subway/rail/bus/tram/walking 중 하나, 가장 현실적인 수단)
+- durationMin: 예상 소요시간(분, 정수)
+- fareJPY: 예상 요금(엔, 정수. 도보는 0)
+- tip: 한줄 팁 (예: "JR야마노테선 이용", "도보 5분 거리")
+
+JSON 형식:
+{
+  "segments": [ { "from": "...", "to": "...", "mode": "...", "durationMin": 0, "fareJPY": 0, "tip": "..." } ],
+  "totalDurationMin": 0,
+  "totalFareJPY": 0,
+  "routeTip": "전체 경로 팁 한줄"
+}
+
+주의:
+- 실제 일본 대중교통 요금 기준으로 현실적으로 계산
+- 500m 이내 가까운 거리는 walking(도보)으로, 요금 0
+- 지하철/전철 기본요금 약 170~200엔 참고
+- 장거리 신칸센은 해당 요금 반영`;
+
+      const geminiResp = await callGeminiGenerateContent(prompt, {
+        temperature: 0.1,
+        maxOutputTokens: 1500,
+        responseMimeType: 'application/json'
+      });
+
+      const text = geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
+      }
+
+      if (parsed && Array.isArray(parsed.segments) && parsed.segments.length > 0) {
+        // Normalize and add KRW conversion
+        const segments = parsed.segments.map(seg => ({
+          from: seg.from || '',
+          to: seg.to || '',
+          mode: seg.mode || 'transit',
+          durationMin: Math.round(Number(seg.durationMin) || 0),
+          fareJPY: Math.round(Number(seg.fareJPY) || 0),
+          fareKRW: Math.round((Number(seg.fareJPY) || 0) * JPY_TO_KRW),
+          distanceM: 0,
+          tip: seg.tip || '',
+          estimated: false
+        }));
+
+        const totalDurationMin = segments.reduce((s, seg) => s + seg.durationMin, 0);
+        const totalFareJPY = segments.reduce((s, seg) => s + seg.fareJPY, 0);
+
+        return {
+          segments,
+          totalDurationMin,
+          totalFareJPY,
+          totalFareKRW: Math.round(totalFareJPY * JPY_TO_KRW),
+          routeTip: parsed.routeTip || '',
+          source: 'ai'
+        };
+      }
+    } catch (err) {
+      console.error('[route-cost] AI calculation failed, falling back:', err.message);
+    }
+  }
+
+  // Fallback: Google Directions API
+  if (!GOOGLE_MAPS_API_KEY) {
+    return { segments: [], totalDurationMin: 0, totalFareJPY: 0, totalFareKRW: 0, error: 'AI/API 키가 설정되지 않았습니다' };
+  }
+
   const segments = [];
   let totalDuration = 0;
   let totalFareJPY = 0;
@@ -4328,7 +4413,7 @@ async function calculateRouteCost(places, city) {
           from: fromPlace, to: toPlace,
           distanceM, durationMin,
           fareJPY: actualFare, fareKRW: Math.round(actualFare * JPY_TO_KRW),
-          mode
+          mode, tip: ''
         });
         totalDuration += durationMin;
         totalFareJPY += actualFare;
@@ -4337,7 +4422,7 @@ async function calculateRouteCost(places, city) {
           from: fromPlace, to: toPlace,
           distanceM: 0, durationMin: 15,
           fareJPY: 200, fareKRW: Math.round(200 * JPY_TO_KRW),
-          mode: 'estimated', estimated: true
+          mode: 'estimated', estimated: true, tip: ''
         });
         totalDuration += 15;
         totalFareJPY += 200;
@@ -4348,11 +4433,10 @@ async function calculateRouteCost(places, city) {
         from: fromPlace, to: toPlace,
         distanceM: 0, durationMin: 0,
         fareJPY: 0, fareKRW: 0,
-        mode: 'error', error: err.message
+        mode: 'error', error: err.message, tip: ''
       });
     }
 
-    // Rate limit: small delay between API calls
     if (i < places.length - 2) {
       await new Promise(r => setTimeout(r, 100));
     }
@@ -4362,7 +4446,8 @@ async function calculateRouteCost(places, city) {
     segments,
     totalDurationMin: totalDuration,
     totalFareJPY,
-    totalFareKRW: Math.round(totalFareJPY * JPY_TO_KRW)
+    totalFareKRW: Math.round(totalFareJPY * JPY_TO_KRW),
+    source: 'directions_api'
   };
 }
 
