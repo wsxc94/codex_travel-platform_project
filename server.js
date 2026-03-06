@@ -42,10 +42,10 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY 
 const GEMINI_API_MODEL = process.env.GEMINI_API_MODEL || 'gemini-2.5-pro';
 // Fallback model chain: if primary model hits 429, try these in order
 const GEMINI_FALLBACK_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
   'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b'
+  'gemini-2.0-flash-lite'
 ].filter(m => m !== GEMINI_API_MODEL);
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const USE_GEMINI = Boolean(GEMINI_API_KEY);
@@ -2966,15 +2966,15 @@ async function callGeminiGenerateContent(prompt, opts = {}) {
       const text = await res.text();
       lastError = `Gemini error ${res.status} (${model}): ${text.slice(0, 200)}`;
 
-      // Only retry on 429 (rate limit) or 503 (overloaded)
-      if (res.status !== 429 && res.status !== 503) {
+      // Retry on 429 (rate limit), 503 (overloaded), 404 (model not found)
+      if (res.status === 429 || res.status === 503 || res.status === 404) {
+        console.log(`[gemini] Model ${model} unavailable (${res.status}), trying next...`);
+      } else {
         throw new Error(lastError);
       }
-      console.log(`[gemini] Model ${model} rate-limited (${res.status}), trying next...`);
     } catch (err) {
       if (err.message && err.message.includes('Gemini error')) throw err;
       lastError = err.message;
-      // Network/timeout error - don't retry with different model
       throw err;
     }
   }
