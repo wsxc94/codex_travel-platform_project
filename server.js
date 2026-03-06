@@ -56,7 +56,7 @@ const AI_SYSTEM_MESSAGE = [
 
 const CITY_DATA = {
   tokyo: {
-    label: '도쿄',
+    label: '도쿄', nameJa: '東京',
     airport: 'NRT',
     areas: ['시부야', '신주쿠', '아사쿠사', '긴자'],
     highlights: [
@@ -74,7 +74,7 @@ const CITY_DATA = {
     ]
   },
   osaka: {
-    label: '오사카',
+    label: '오사카', nameJa: '大阪',
     airport: 'KIX',
     areas: ['난바', '우메다', '신사이바시', '덴노지'],
     highlights: [
@@ -90,7 +90,7 @@ const CITY_DATA = {
     ]
   },
   kyoto: {
-    label: '교토',
+    label: '교토', nameJa: '京都',
     airport: 'KIX',
     areas: ['기온', '아라시야마', '가와라마치'],
     highlights: [
@@ -106,35 +106,35 @@ const CITY_DATA = {
 };
 
 const JAPAN_CITY_PROFILES = {
-  sapporo: { label: '삿포로', airport: 'CTS', areas: ['오도리', '스스키노', '조잔케이'], sightA: '오도리 공원', sightB: '삿포로 TV 타워', sightC: '니조시장', foodA: '스프카레 GARAKU', foodB: '스미레 라멘', genreA: '카레', genreB: '라멘' },
+  sapporo: { label: '삿포로', nameJa: '札幌', airport: 'CTS', areas: ['오도리', '스스키노', '조잔케이'], sightA: '오도리 공원', sightB: '삿포로 TV 타워', sightC: '니조시장', foodA: '스프카레 GARAKU', foodB: '스미레 라멘', genreA: '카레', genreB: '라멘' },
   hakodate: { label: '하코다테', airport: 'HKD', areas: ['모토마치', '고료카쿠', '베이 에어리어'], sightA: '하코다테 야경', sightB: '고료카쿠 공원', sightC: '아침시장', foodA: '하코다테 카이센동', foodB: '시오라멘', genreA: '해산물', genreB: '라멘' },
   asahikawa: { label: '아사히카와', airport: 'AKJ', areas: ['역전', '아사히야마', '평화거리'], sightA: '아사히야마 동물원', sightB: '헤이와도리 쇼핑공원', sightC: '우에노팜', foodA: '아사히카와 라멘', foodB: '징기스칸', genreA: '라멘', genreB: '양고기' },
   aomori: { label: '아오모리', airport: 'AOJ', areas: ['신마치', '아사무시', '아오모리역'], sightA: '네부타 박물관', sightB: '아오모리 베이브리지', sightC: '아오모리 현립미술관', foodA: '아오모리 사과 디저트', foodB: '해산물 시장', genreA: '디저트', genreB: '해산물' },
   akita: { label: '아키타', airport: 'AXT', areas: ['센슈공원', '오가', '아키타역'], sightA: '센슈공원', sightB: '오가 반도', sightC: '아키타 시립박물관', foodA: '기리탄포', foodB: '이나니와 우동', genreA: '향토요리', genreB: '우동' },
   hanamaki: { label: '하나마키', airport: 'HNA', areas: ['온천지구', '역전', '이와테'], sightA: '하나마키 온천', sightB: '미야자와 겐지 기념관', sightC: '이와테 산책로', foodA: '완코소바', foodB: '모리오카 냉면', genreA: '소바', genreB: '면요리' },
   yamagata: { label: '야마가타', airport: 'GAJ', areas: ['자오', '야마가타역', '카조공원'], sightA: '자오 온천', sightB: '카조 공원', sightC: '리사쿠지', foodA: '이모니', foodB: '야마가타 소바', genreA: '향토요리', genreB: '소바' },
-  sendai: { label: '센다이', airport: 'SDJ', areas: ['아오바구', '고쿠분초', '마쓰시마'], sightA: '즈이호덴', sightB: '센다이성 유적', sightC: '마쓰시마', foodA: '규탄 전문점', foodB: '즈다모치 카페', genreA: '규탄', genreB: '디저트' },
+  sendai: { label: '센다이', nameJa: '仙台', airport: 'SDJ', areas: ['아오바구', '고쿠분초', '마쓰시마'], sightA: '즈이호덴', sightB: '센다이성 유적', sightC: '마쓰시마', foodA: '규탄 전문점', foodB: '즈다모치 카페', genreA: '규탄', genreB: '디저트' },
   fukushima: { label: '후쿠시마', airport: 'FKS', areas: ['아이즈와카마츠', '코리야마', '후쿠시마역'], sightA: '쓰루가성', sightB: '고시키누마', sightC: '오우치주쿠', foodA: '키타카타 라멘', foodB: '소스카츠동', genreA: '라멘', genreB: '돈카츠' },
   niigata: { label: '니가타', airport: 'KIJ', areas: ['반다이', '후루마치', '사도'], sightA: '피아반다이 시장', sightB: '니가타 수족관', sightC: '사도섬', foodA: '니가타 돈부리', foodB: '니혼슈 바', genreA: '해산물', genreB: '주점' },
-  kanazawa: { label: '가나자와', airport: 'KMQ', areas: ['겐로쿠엔', '히가시차야', '오미초'], sightA: '겐로쿠엔', sightB: '오미초 시장', sightC: '히가시차야 거리', foodA: '카나자와 스시', foodB: '노도구로 구이', genreA: '스시', genreB: '일식' },
+  kanazawa: { label: '가나자와', nameJa: '金沢', airport: 'KMQ', areas: ['겐로쿠엔', '히가시차야', '오미초'], sightA: '겐로쿠엔', sightB: '오미초 시장', sightC: '히가시차야 거리', foodA: '카나자와 스시', foodB: '노도구로 구이', genreA: '스시', genreB: '일식' },
   toyama: { label: '도야마', airport: 'TOY', areas: ['도야마역', '우나즈키', '알펜루트'], sightA: '알펜루트', sightB: '도야마성 공원', sightC: '글래스 미술관', foodA: '시로에비', foodB: '부리 샤브', genreA: '해산물', genreB: '일식' },
   shizuoka: { label: '시즈오카', airport: 'FSZ', areas: ['시미즈', '시즈오카역', '쿠사츠'], sightA: '미호노마쓰바라', sightB: '쿠노잔 도쇼구', sightC: '시즈오카 차밭', foodA: '사쿠라에비', foodB: '우나기 덮밥', genreA: '해산물', genreB: '일식' },
-  nagoya: { label: '나고야', airport: 'NGO', areas: ['사카에', '나고야역', '오스'], sightA: '나고야성', sightB: '오아시스21', sightC: '도요타 산업기술 기념관', foodA: '미소카츠', foodB: '히츠마부시', genreA: '돈카츠', genreB: '장어덮밥' },
+  nagoya: { label: '나고야', nameJa: '名古屋', airport: 'NGO', areas: ['사카에', '나고야역', '오스'], sightA: '나고야성', sightB: '오아시스21', sightC: '도요타 산업기술 기념관', foodA: '미소카츠', foodB: '히츠마부시', genreA: '돈카츠', genreB: '장어덮밥' },
   okayama: { label: '오카야마', airport: 'OKJ', areas: ['오카야마역', '고라쿠엔', '쿠라시키'], sightA: '고라쿠엔', sightB: '오카야마성', sightC: '쿠라시키 미관지구', foodA: '바라즈시', foodB: '데미카츠동', genreA: '향토요리', genreB: '돈카츠' },
-  hiroshima: { label: '히로시마', airport: 'HIJ', areas: ['나카구', '미야지마', '히로시마역'], sightA: '평화기념공원', sightB: '이쓰쿠시마 신사', sightC: '히로시마성', foodA: '히로시마 오코노미야키', foodB: '굴 요리', genreA: '오코노미야키', genreB: '해산물' },
+  hiroshima: { label: '히로시마', nameJa: '広島', airport: 'HIJ', areas: ['나카구', '미야지마', '히로시마역'], sightA: '평화기념공원', sightB: '이쓰쿠시마 신사', sightC: '히로시마성', foodA: '히로시마 오코노미야키', foodB: '굴 요리', genreA: '오코노미야키', genreB: '해산물' },
   yonago: { label: '요나고', airport: 'YGJ', areas: ['사카이미나토', '다이센', '요나고역'], sightA: '미즈키 시게루 로드', sightB: '다이센', sightC: '카이케 온천', foodA: '게 요리', foodB: '회덮밥', genreA: '해산물', genreB: '일식' },
   izumo: { label: '이즈모', airport: 'IZO', areas: ['이즈모타이샤', '신지호', '역전'], sightA: '이즈모 타이샤', sightB: '이나사 해변', sightC: '신지호 석양', foodA: '이즈모 소바', foodB: '젠자이', genreA: '소바', genreB: '디저트' },
   takamatsu: { label: '다카마쓰', airport: 'TAK', areas: ['리쓰린', '선포트', '야시마'], sightA: '리쓰린 공원', sightB: '타카마츠성 유적', sightC: '야시마 전망대', foodA: '사누키 우동', foodB: '올리브 소고기', genreA: '우동', genreB: '일식' },
   matsuyama: { label: '마쓰야마', airport: 'MYJ', areas: ['도고온천', '마쓰야마성', '오카이도'], sightA: '도고온천', sightB: '마쓰야마성', sightC: '보찬 열차', foodA: '도미밥', foodB: '쟈코텐', genreA: '일식', genreB: '향토요리' },
   kochi: { label: '고치', airport: 'KCZ', areas: ['고치성', '히로메시장', '카츠라하마'], sightA: '고치성', sightB: '카츠라하마', sightC: '히로메 시장', foodA: '가츠오 타타키', foodB: '사와치 요리', genreA: '해산물', genreB: '향토요리' },
   tokushima: { label: '도쿠시마', airport: 'TKS', areas: ['아와오도리', '비잔', '나루토'], sightA: '아와오도리 회관', sightB: '나루토 소용돌이', sightC: '비잔 로프웨이', foodA: '도쿠시마 라멘', foodB: '아와규', genreA: '라멘', genreB: '일식' },
-  fukuoka: { label: '후쿠오카', airport: 'FUK', areas: ['하카타', '텐진', '모모치'], sightA: '오호리 공원', sightB: '캐널시티 하카타', sightC: '후쿠오카 타워', foodA: '하카타 라멘', foodB: '모츠나베', genreA: '라멘', genreB: '전골' },
+  fukuoka: { label: '후쿠오카', nameJa: '福岡', airport: 'FUK', areas: ['하카타', '텐진', '모모치'], sightA: '오호리 공원', sightB: '캐널시티 하카타', sightC: '후쿠오카 타워', foodA: '하카타 라멘', foodB: '모츠나베', genreA: '라멘', genreB: '전골' },
   nagasaki: { label: '나가사키', airport: 'NGS', areas: ['데지마', '차이나타운', '이나사야마'], sightA: '글로버가든', sightB: '평화공원', sightC: '이나사야마 전망대', foodA: '짬뽕', foodB: '카스테라', genreA: '면요리', genreB: '디저트' },
   kumamoto: { label: '구마모토', airport: 'KMJ', areas: ['구마모토성', '스이젠지', '아소'], sightA: '구마모토성', sightB: '스이젠지 공원', sightC: '아소 화산', foodA: '바사시', foodB: '구마모토 라멘', genreA: '일식', genreB: '라멘' },
   oita: { label: '오이타', airport: 'OIT', areas: ['벳푸', '유후인', '오이타역'], sightA: '벳푸 지옥온천', sightB: '유후인 거리', sightC: '타카사키야마', foodA: '도리텐', foodB: '벳푸 냉면', genreA: '향토요리', genreB: '면요리' },
   miyazaki: { label: '미야자키', airport: 'KMI', areas: ['아오시마', '니치난', '시내'], sightA: '아오시마 신사', sightB: '우도신궁', sightC: '선멧세 니치난', foodA: '치킨난반', foodB: '미야자키 소고기', genreA: '일식', genreB: '육류' },
   kagoshima: { label: '가고시마', airport: 'KOJ', areas: ['사쿠라지마', '덴몬칸', '이부스키'], sightA: '사쿠라지마', sightB: '센간엔', sightC: '이부스키 모래찜', foodA: '쿠로부타 돈카츠', foodB: '사츠마아게', genreA: '돈카츠', genreB: '향토요리' },
-  okinawa: { label: '오키나와', airport: 'OKA', areas: ['나하', '차탄', '온나'], sightA: '국제거리', sightB: '츄라우미 수족관', sightC: '아메리칸 빌리지', foodA: '오키나와 소바', foodB: '고야참푸루', genreA: '면요리', genreB: '향토요리' },
+  okinawa: { label: '오키나와', nameJa: '沖縄', airport: 'OKA', areas: ['나하', '차탄', '온나'], sightA: '국제거리', sightB: '츄라우미 수족관', sightC: '아메리칸 빌리지', foodA: '오키나와 소바', foodB: '고야참푸루', genreA: '면요리', genreB: '향토요리' },
   obihiro: { label: '오비히로', airport: 'OBO', areas: ['반에이', '도카치', '역전'], sightA: '반에이 경마', sightB: '도카치가와 온천', sightC: '마나베 정원', foodA: '부타동', foodB: '유제품 디저트', genreA: '덮밥', genreB: '디저트' }
 };
 
@@ -151,7 +151,7 @@ const JAPAN_CITY_PROFILES_EXTRA = {
   ibaraki: { label: '이바라키', airport: 'IBR', areas: ['미토', '오아라이', '히타치'], sightA: '가이라쿠엔', sightB: '오아라이 해변', sightC: '히타치 해변공원', foodA: '아구 돼지 요리', foodB: '낫토 정식', genreA: '일식', genreB: '향토요리' },
   matsumoto: { label: '마쓰모토', airport: 'MMJ', areas: ['마쓰모토성', '나와테', '아즈미노'], sightA: '마쓰모토성', sightB: '나카마치 거리', sightC: '가미코치', foodA: '신슈 소바', foodB: '바사시', genreA: '소바', genreB: '육류' },
   nanki_shirahama: { label: '난키 시라하마', airport: 'SHM', areas: ['시라하마', '엔게츠섬', '어드벤처월드'], sightA: '시라라하마 해변', sightB: '엔게츠섬', sightC: '어드벤처월드', foodA: '해산물 정식', foodB: '온천 달걀 요리', genreA: '해산물', genreB: '일식' },
-  kobe: { label: '고베', airport: 'UKB', areas: ['산노미야', '모자이크', '기타노'], sightA: '고베 하버랜드', sightB: '기타노 이진칸', sightC: '누노비키 허브원', foodA: '고베규 스테이크', foodB: '아카시야키', genreA: '육류', genreB: '분식' },
+  kobe: { label: '고베', nameJa: '神戸', airport: 'UKB', areas: ['산노미야', '모자이크', '기타노'], sightA: '고베 하버랜드', sightB: '기타노 이진칸', sightC: '누노비키 허브원', foodA: '고베규 스테이크', foodB: '아카시야키', genreA: '육류', genreB: '분식' },
   tajima: { label: '다지마', airport: 'TJH', areas: ['도요오카', '기노사키', '출석가'], sightA: '기노사키 온천', sightB: '고노토리 공원', sightC: '겐부도', foodA: '카니 요리', foodB: '다지마규 구이', genreA: '해산물', genreB: '육류' },
   tottori: { label: '돗토리', airport: 'TTJ', areas: ['돗토리 사구', '쿠라요시', '돗토리역'], sightA: '돗토리 사구', sightB: '우라도메 해안', sightC: '모래 미술관', foodA: '게 요리', foodB: '배 디저트', genreA: '해산물', genreB: '디저트' },
   iwakuni: { label: '이와쿠니', airport: 'IWK', areas: ['긴타이쿄', '이와쿠니성', '역전'], sightA: '긴타이교', sightB: '이와쿠니성', sightC: '시라헤비 신사', foodA: '이와쿠니 스시', foodB: '연근 요리', genreA: '스시', genreB: '향토요리' },
@@ -4307,11 +4307,28 @@ JSON 형식:
 - 지하철/전철 기본요금 약 170~200엔 참고
 - 장거리 신칸센은 해당 요금 반영`;
 
-      const geminiResp = await callGeminiGenerateContent(prompt, {
-        temperature: 0.1,
-        maxOutputTokens: 1500,
-        responseMimeType: 'application/json'
-      });
+      // Use gemini-2.0-flash for route cost (higher rate limit than main model)
+      const ROUTE_MODEL = 'gemini-2.0-flash';
+      const routeUrl = `${GEMINI_ENDPOINT}/${encodeURIComponent(ROUTE_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+      const routeBody = {
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.1,
+          topP: 0.9,
+          maxOutputTokens: 1500,
+          responseMimeType: 'application/json'
+        }
+      };
+      const routeResp = await fetchWithTimeout(routeUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(routeBody)
+      }, AI_REQUEST_TIMEOUT_MS);
+      if (!routeResp.ok) {
+        const errText = await routeResp.text();
+        throw new Error(`Gemini route error ${routeResp.status}: ${errText.slice(0, 200)}`);
+      }
+      const geminiResp = await routeResp.json();
 
       const text = geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || '';
       let parsed;
@@ -4353,76 +4370,69 @@ JSON 형식:
     }
   }
 
-  // Fallback: Google Directions API
+  // Fallback: Google Directions API (driving mode, transit unavailable in Japan)
   if (!GOOGLE_MAPS_API_KEY) {
     return { segments: [], totalDurationMin: 0, totalFareJPY: 0, totalFareKRW: 0, error: 'AI/API 키가 설정되지 않았습니다' };
   }
 
+  const cityNameJa = (cityObj && cityObj.nameJa) ? cityObj.nameJa : cityLabel;
   const segments = [];
   let totalDuration = 0;
   let totalFareJPY = 0;
 
+  // Japanese transit fare estimation based on distance
+  function estimateTransitFare(distKm) {
+    if (distKm < 0.5) return { fareJPY: 0, mode: 'walking', tip: '도보 이동' };
+    if (distKm < 2) return { fareJPY: 170, mode: 'subway', tip: '지하철 1구간' };
+    if (distKm < 5) return { fareJPY: 200, mode: 'subway', tip: '지하철 2~3구간' };
+    if (distKm < 10) return { fareJPY: 250, mode: 'subway', tip: '지하철/전철' };
+    if (distKm < 20) return { fareJPY: 400, mode: 'rail', tip: 'JR/사철 이용' };
+    if (distKm < 50) return { fareJPY: 800, mode: 'rail', tip: '장거리 전철' };
+    return { fareJPY: Math.round(distKm * 20), mode: 'rail', tip: '특급/신칸센 추정' };
+  }
+
+  // Estimate transit duration from driving duration (transit ~1.5x driving in cities)
+  function estimateTransitDuration(drivingMin, distKm) {
+    if (distKm < 0.5) return Math.max(3, Math.round(distKm * 12));
+    return Math.round(drivingMin * 1.5);
+  }
+
   for (let i = 0; i < places.length - 1; i++) {
     const fromPlace = places[i];
     const toPlace = places[i + 1];
-    const origin = encodeURIComponent(fromPlace + ' ' + cityLabel + ' Japan');
-    const dest = encodeURIComponent(toPlace + ' ' + cityLabel + ' Japan');
+    const origin = encodeURIComponent(fromPlace + ' ' + cityNameJa + ' Japan');
+    const dest = encodeURIComponent(toPlace + ' ' + cityNameJa + ' Japan');
 
     try {
-      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${dest}&mode=transit&language=ko&region=jp&key=${GOOGLE_MAPS_API_KEY}`;
+      // Use driving mode (transit returns ZERO_RESULTS in Japan)
+      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${dest}&mode=driving&language=ja&region=jp&key=${GOOGLE_MAPS_API_KEY}`;
       const resp = await fetch(url);
       const data = await resp.json();
 
       if (data.status === 'OK' && data.routes && data.routes.length > 0) {
-        const route = data.routes[0];
-        const leg = route.legs[0];
+        const leg = data.routes[0].legs[0];
         const distanceM = leg.distance ? leg.distance.value : 0;
-        const durationSec = leg.duration ? leg.duration.value : 0;
-        const durationMin = Math.round(durationSec / 60);
+        const drivingDurationMin = Math.round((leg.duration ? leg.duration.value : 0) / 60);
+        const distKm = distanceM / 1000;
 
-        let fareJPY = 0;
-        if (route.fare && route.fare.value) {
-          fareJPY = route.fare.value;
-        } else {
-          const distKm = distanceM / 1000;
-          if (distKm < 0.8) {
-            fareJPY = 0;
-          } else {
-            fareJPY = Math.max(170, Math.round(distKm * 30));
-          }
-        }
+        const est = estimateTransitFare(distKm);
+        const transitDurationMin = estimateTransitDuration(drivingDurationMin, distKm);
 
-        let mode = 'walking';
-        if (leg.steps) {
-          for (const step of leg.steps) {
-            if (step.travel_mode === 'TRANSIT') {
-              const vehicle = (step.transit_details && step.transit_details.line && step.transit_details.line.vehicle && step.transit_details.line.vehicle.type) || '';
-              if (vehicle === 'SUBWAY' || vehicle === 'METRO_RAIL') mode = 'subway';
-              else if (vehicle === 'HEAVY_RAIL' || vehicle === 'COMMUTER_TRAIN') mode = 'rail';
-              else if (vehicle === 'BUS') mode = 'bus';
-              else if (vehicle === 'TRAM') mode = 'tram';
-              else mode = 'transit';
-              break;
-            }
-          }
-        }
-        if (durationMin <= 3 && distanceM < 500) mode = 'walking';
-
-        const actualFare = mode === 'walking' ? 0 : fareJPY;
         segments.push({
           from: fromPlace, to: toPlace,
-          distanceM, durationMin,
-          fareJPY: actualFare, fareKRW: Math.round(actualFare * JPY_TO_KRW),
-          mode, tip: ''
+          distanceM, durationMin: transitDurationMin,
+          fareJPY: est.fareJPY, fareKRW: Math.round(est.fareJPY * JPY_TO_KRW),
+          mode: est.mode, estimated: true,
+          tip: est.tip + ` (約${distKm.toFixed(1)}km)`
         });
-        totalDuration += durationMin;
-        totalFareJPY += actualFare;
+        totalDuration += transitDurationMin;
+        totalFareJPY += est.fareJPY;
       } else {
         segments.push({
           from: fromPlace, to: toPlace,
           distanceM: 0, durationMin: 15,
           fareJPY: 200, fareKRW: Math.round(200 * JPY_TO_KRW),
-          mode: 'estimated', estimated: true, tip: ''
+          mode: 'estimated', estimated: true, tip: '거리 정보 없음'
         });
         totalDuration += 15;
         totalFareJPY += 200;
@@ -4447,7 +4457,7 @@ JSON 형식:
     totalDurationMin: totalDuration,
     totalFareJPY,
     totalFareKRW: Math.round(totalFareJPY * JPY_TO_KRW),
-    source: 'directions_api'
+    source: 'distance_estimate'
   };
 }
 
