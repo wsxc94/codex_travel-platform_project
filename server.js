@@ -40,11 +40,17 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const GEMINI_API_MODEL = process.env.GEMINI_API_MODEL || 'gemini-2.5-pro';
-// Fallback model chain: if primary model hits 429, try these in order
+// Fallback priority: 성능순 + 쿼터 분산 (API 키에서 확인된 모델만)
+// 1. gemini-2.5-pro      최상 (env primary, 쿼터 적음 ~20회)
+// 2. gemini-2.5-flash     중상 (최신, 빠름)
+// 3. gemini-2.0-flash     중상 (범용, 빠름)
+// 4. gemini-2.5-flash-lite 중하 (경량)
+// 5. gemini-2.0-flash-lite  하 (초경량)
 const GEMINI_FALLBACK_MODELS = [
+  'gemini-2.5-pro',
   'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
   'gemini-2.0-flash',
+  'gemini-2.5-flash-lite',
   'gemini-2.0-flash-lite'
 ].filter(m => m !== GEMINI_API_MODEL);
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
