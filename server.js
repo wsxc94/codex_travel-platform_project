@@ -1678,6 +1678,7 @@ async function parseTravelChatWithGemini(message, context, history, prevParsed) 
   const text = extractGeminiText(data);
   const parsed = parseJsonFromText(text);
   if (!parsed) throw new Error('Gemini parser returned unexpected format');
+  parsed._aiModel = data._usedModel || GEMINI_API_MODEL;
   return parsed;
 }
 
@@ -1713,6 +1714,7 @@ async function buildTravelChatPlan(payload = {}) {
     try {
       const geminiParsed = await parseTravelChatWithGemini(payload.message, payload.context || {}, history, prevParsed);
       parsed = normalizeTravelChatParsed(geminiParsed, fallback);
+      parsed._aiModel = geminiParsed._aiModel || GEMINI_API_MODEL;
       source = 'gemini_chat_parser_v1';
     } catch (err) {
       aiErrors.push(classifyAiError('Gemini', err));
@@ -1845,6 +1847,7 @@ async function buildTravelChatPlan(payload = {}) {
       theme: parsed.theme
     },
     source,
+    aiModel: parsed._aiModel || null,
     aiNote: summarizeAiErrors(aiErrors),
     aiErrors
   };
@@ -3107,6 +3110,7 @@ async function createItineraryWithGemini(payload, picks) {
     topP: 0.9,
     responseMimeType: 'application/json'
   });
+  const _itinModel = data._usedModel || GEMINI_API_MODEL;
   const text = extractGeminiText(data);
   const json = parseJsonFromText(text);
   if (!json) {
@@ -3123,7 +3127,7 @@ async function createItineraryWithGemini(payload, picks) {
   }));
 
   return {
-    source: 'gemini_itinerary_v1',
+    source: 'gemini_itinerary_v1 (' + _itinModel + ')',
     city: city.label,
     theme: payload.theme || 'mixed',
     summary: json.summary || `${city.label} ${days}일 AI 일정 (Gemini)`,
@@ -3338,6 +3342,7 @@ async function buildTravelPlan(payload) {
     recommendedFoods,
     itinerary: it.itinerary,
     itinerarySource: it.source,
+    itineraryModel: it.source || null,
     tips: it.tips,
     summary: `${rec.city} 추천 ${mergedRecommendations.length}곳 + ${it.itinerary.length}일 일정`,
     aiNote: summarizeAiErrors(aiErrors),
@@ -4387,7 +4392,8 @@ JSON 형식:
           totalFareJPY,
           totalFareKRW: Math.round(totalFareJPY * JPY_TO_KRW),
           routeTip: parsed.routeTip || '',
-          source: 'ai'
+          source: 'ai',
+          aiModel: geminiResp._usedModel || 'gemini'
         };
       }
     } catch (err) {

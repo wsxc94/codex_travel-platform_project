@@ -940,7 +940,10 @@ function buildPlanPayload(extra = {}) {
 function describeEngineSource(source, mode = 'chat') {
   const s = String(source || '').toLowerCase();
   if (!s) return 'ℹ️ 규칙기반 (기본)';
-  if (s.includes('gemini')) return '✨ AI 기반 (Gemini)';
+  // Extract model name from parentheses if present: "gemini_itinerary_v1 (gemini-2.0-flash)"
+  var modelMatch = String(source || '').match(/\(([^)]+)\)/);
+  var modelName = modelMatch ? modelMatch[1] : '';
+  if (s.includes('gemini')) return '✨ AI 기반 (Gemini' + (modelName ? ' - ' + modelName : '') + ')';
   if (s.includes('openai')) return '✨ AI 기반 (OpenAI)';
   if (s.includes('ai_planner')) return '✨ AI 기반 (Planner)';
   if (s.includes('rule')) return '📋 규칙기반 (AI 미응답 시 폴백)';
@@ -977,7 +980,7 @@ async function runPlan(extra = {}, syncAux = false) {
     const src = data.recommendationSource || 'unknown';
     const isFallback = String(src).includes('fallback') || String(src).includes('local_curated');
     var destSrcLabel = String(src).includes('google') ? '✨ AI + Google Places 기반' : isFallback ? '📋 규칙기반 추천 (폴백)' : '✨ AI 기반 추천';
-    destSourceNote.textContent = `추천 여행지: ${destSrcLabel}`;
+    destSourceNote.textContent = `추천 여행지: ${destSrcLabel} [${src}]`;
     destSourceNote.classList.toggle('warn', isFallback);
   }
   renderItinerary({
@@ -1296,9 +1299,10 @@ el('btnAiAssist')?.addEventListener('click', async () => {
     const data = await postJson('/api/ai-travel-chat', { message, context });
     const aiSourceNote = el('aiSourceNote');
     if (aiSourceNote) {
+      var chatModelInfo = data.aiModel ? ' [모델: ' + data.aiModel + ']' : '';
       const sourceLabel = describeEngineSource(data.source, 'chat');
       const extra = data.aiNote ? ` | ${data.aiNote}` : '';
-      aiSourceNote.textContent = `채팅 해석 방식: ${sourceLabel}${extra}`;
+      aiSourceNote.textContent = `채팅 해석 방식: ${sourceLabel}${chatModelInfo}${extra}`;
       aiSourceNote.classList.toggle('warn', sourceLabel.includes('규칙기반') || Boolean(data.aiNote));
     }
     if (data.cityMeta) upsertCityOption(data.cityMeta);
@@ -1355,7 +1359,7 @@ el('btnFlights').addEventListener('click', async () => {
         sourceNote.classList.add('warn');
       } else {
         var flightSrcLabel = String(data.source).includes('mock') ? '📋 더미 데이터 (폴백)' : '✨ ' + data.source;
-        sourceNote.textContent = `항공편 데이터: ${flightSrcLabel}`;
+        sourceNote.textContent = `항공편: ${flightSrcLabel}`;
         sourceNote.classList.remove('warn');
       }
     }
@@ -1571,7 +1575,7 @@ el('btnFood').addEventListener('click', async () => {
       const source = data.source || 'unknown';
       const warning = data.warning ? ` · ${data.warning}` : '';
       var foodSrcLabel = String(source).includes('google') ? '✨ Google Places 기반' : String(source).includes('tabelog') ? '✨ 타베로그 스타일' : String(source).includes('curated') ? '📋 규칙기반 (폴백)' : '✨ ' + source;
-      sourceNote.textContent = `맛집 데이터: ${foodSrcLabel}${warning}`;
+      sourceNote.textContent = `맛집: ${foodSrcLabel}${warning}`;
       sourceNote.classList.toggle('warn', Boolean(data.warning));
     }
   } catch (err) {
@@ -1618,7 +1622,7 @@ el('btnStays').addEventListener('click', async () => {
         sourceNote.classList.add('warn');
       } else {
         var staySrcLabel = String(data.source).includes('mock') ? '📋 더미 데이터 (폴백)' : '✨ ' + data.source;
-        sourceNote.textContent = `숙소 데이터: ${staySrcLabel}`;
+        sourceNote.textContent = `숙소: ${staySrcLabel}`;
         sourceNote.classList.remove('warn');
       }
     }
@@ -2059,7 +2063,8 @@ async function calculateDayRouteCost(dayNum) {
     }
     h += '</div><div class="route-cost-total">합계: ¥' + data.totalFareJPY.toLocaleString() + ' (~' + data.totalFareKRW.toLocaleString() + '원) · 이동 ' + data.totalDurationMin + '분</div>';
     if (data.routeTip) h += '<div class="route-cost-tip">' + escapeHtml(data.routeTip) + '</div>';
-    var routeSourceLabel = data.source === 'ai' ? '✨ AI 기반 계산 (Gemini)' : data.source === 'distance_estimate' ? '📏 거리 기반 추정 (AI 미응답 시 자동 폴백)' : data.source === 'directions_api' ? '🗺 Google 경로 API' : 'ℹ️ 추정치';
+    var routeModelInfo = data.aiModel ? ' [모델: ' + data.aiModel + ']' : '';
+    var routeSourceLabel = data.source === 'ai' ? '✨ AI 기반 계산' + routeModelInfo : data.source === 'distance_estimate' ? '📏 거리 기반 추정 (AI 미응답 시 자동 폴백)' : data.source === 'directions_api' ? '🗺 Google 경로 API' : 'ℹ️ 추정치';
     h += '<div class="route-cost-source">' + routeSourceLabel + '</div>';
     resultEl.innerHTML = h;
     routeCostCache[dayNum] = data;
