@@ -756,9 +756,12 @@ function selectionFlightCard(flight) {
   const route = `${first?.from || '출발 미정'} → ${destAirport}`;
   const dateRange = first?.date === last?.date ? first?.date : `${first?.date || ''} ~ ${last?.date || ''}`;
   const price = flight.totalPriceKRW ? `${flight.totalPriceKRW.toLocaleString()}원` : '요금 미확인';
-  const duration = flight.totalDurationMin ? `${flight.totalDurationMin}분` : '시간 미등록';
-  const stops = flight.totalStops != null ? `${flight.totalStops}회 경유` : '경유 정보 없음';
   const airlines = (flight.airlines || []).join(', ') || (flight.provider || '항공사 정보 없음');
+  var outboundTime = first ? (first.departureTime || '') + ' → ' + (first.arrivalTime || '') : '';
+  var returnTime = '';
+  if (flight.tripType === 'roundtrip' && last && last !== first) {
+    returnTime = last.departureTime ? (last.departureTime || '') + ' → ' + (last.arrivalTime || '') : '';
+  }
   return `
     <article class="selection-card">
       <div class="selection-card-title">선택 항공권
@@ -770,8 +773,9 @@ function selectionFlightCard(flight) {
       <div class="selection-card-body">
         <strong>${route}</strong>
         <span class="selection-card-date">${dateRange}</span>
-        <span>${price} · ${duration}</span>
-        <span>${stops}</span>
+        <span>${price}</span>
+        ${outboundTime ? '<span>✈️ 가는편: ' + outboundTime + '</span>' : ''}
+        ${returnTime ? '<span>✈️ 오는편: ' + returnTime + '</span>' : ''}
         <span>항공사: ${airlines}</span>
       </div>
     </article>`;
@@ -1124,6 +1128,7 @@ function selectStayById(id) {
   }
   renderStayCards();
   renderPlanExtras();
+  renderItineraryTimeline();
 }
 
 function refreshFlightSelection() {
@@ -1160,6 +1165,8 @@ async function selectFlightById(id) {
   selectedFlightId = id;
   selectedFlight = target;
   renderFlightCards(false);
+  renderPlanExtras();
+  renderItineraryTimeline();
   try {
     await runPlan({ flight: buildFlightPayload(target) }, false);
   } catch (err) {
@@ -2227,28 +2234,37 @@ if (el('btnManualFlight')) {
     var airline = (el('manualFlightAirline').value || '').trim();
     var flightNum = (el('manualFlightNumber').value || '').trim();
     var departTime = el('manualFlightDepartTime').value || '09:00';
-    var arriveTime = el('manualFlightArriveTime').value || '12:00';
+    var returnDepartTime = el('manualFlightArriveTime').value || '14:00';
     var price = Number(el('manualFlightPrice').value) || 0;
     if (!airline && !flightNum) { alert('항공사 또는 편명을 입력해주세요.'); return; }
     var fromAirport = el('from') ? el('from').value.split(' ')[0] : 'ICN';
     var toAirport = el('to') ? el('to').value.split(' ')[0] : 'NRT';
     var departDate = el('departDate') ? el('departDate').value : '';
     var returnDate = el('returnDate') ? el('returnDate').value : '';
+    // Estimate arrival = departure + 2.5h (typical short-haul)
+    function estimateArrival(timeStr) {
+      var p = timeStr.split(':'); var h = Number(p[0]) || 0; var m = Number(p[1]) || 0;
+      m += 150; h += Math.floor(m / 60); m = m % 60; h = h % 24;
+      return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+    }
+    var outboundArrival = estimateArrival(departTime);
+    var returnArrival = estimateArrival(returnDepartTime);
     var manualFlight = {
       _id: 'manual_' + Date.now(),
       provider: airline || '직접입력',
       airlines: [airline || '직접입력'],
-      legs: [{ from: fromAirport, to: toAirport, date: departDate, departureTime: departTime, arrivalTime: arriveTime, airline: airline, flightNumber: flightNum }],
+      legs: [{ from: fromAirport, to: toAirport, date: departDate, departureTime: departTime, arrivalTime: outboundArrival, airline: airline, flightNumber: flightNum }],
       tripType: returnDate ? 'roundtrip' : 'oneway',
-      totalPriceKRW: price, totalDurationMin: 0, totalStops: 0, manual: true
+      totalPriceKRW: price, totalDurationMin: 150, totalStops: 0, manual: true
     };
-    if (returnDate) manualFlight.legs.push({ from: toAirport, to: fromAirport, date: returnDate, departureTime: '14:00', arrivalTime: '17:00', airline: airline, flightNumber: '' });
+    if (returnDate) manualFlight.legs.push({ from: toAirport, to: fromAirport, date: returnDate, departureTime: returnDepartTime, arrivalTime: returnArrival, airline: airline, flightNumber: '' });
     flightResults.unshift(manualFlight);
     selectedFlightId = manualFlight._id;
     selectedFlight = manualFlight;
     renderFlightCards(true);
     renderPlanExtras();
     renderBudgetSummary();
+    renderItineraryTimeline();
     // Regenerate itinerary with new flight info
     try { runPlan({ flight: buildFlightPayload(manualFlight) }, false); } catch(e) {}
     el('manualFlightAirline').value = '';
@@ -2283,6 +2299,7 @@ if (el('btnManualStay')) {
     renderStayCards();
     renderPlanExtras();
     renderBudgetSummary();
+    renderItineraryTimeline();
     // Regenerate itinerary with new stay info
     try { runPlan({}, false); } catch(e) {}
     ['manualStayName','manualStayArea','manualStayPrice','manualStayRating','manualStayUrl'].forEach(function(id) { el(id).value = ''; });
