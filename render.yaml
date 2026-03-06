@@ -3,8 +3,9 @@
     name: japantravel-suite
     env: node
     plan: free
-    buildCommand: ""
+    buildCommand: "npm install"
     startCommand: node server.js
+    nodeVersion: "20"
     autoDeploy: true
     envVars:
       - key: APP_ENV

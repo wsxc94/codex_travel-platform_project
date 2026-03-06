@@ -1,8 +1,16 @@
-﻿{
+{
   "name": "JapanTravel AI Prototype",
   "short_name": "JapanTravel",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f4f1ea",
-  "theme_color": "#d43c2f"
+  "theme_color": "#d43c2f",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "64x64",
+      "type": "image/x-icon"
+    }
+  ],
+  "scope": "/"
 }
