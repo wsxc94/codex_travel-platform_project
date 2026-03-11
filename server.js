@@ -36,26 +36,104 @@ const AMADEUS_API_SECRET = process.env.AMADEUS_API_SECRET || '';
 const AMADEUS_ENV = (process.env.AMADEUS_ENV || 'test').toLowerCase();
 const FX_USD_KRW = Number(process.env.FX_USD_KRW || 1350);
 let fxUsdKrw = FX_USD_KRW;
+let fxJpyKrw = Number(process.env.FX_JPY_KRW || 9.5);
+let fxLastUpdate = '';
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '';
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
-const GEMINI_API_MODEL = process.env.GEMINI_API_MODEL || 'gemini-2.5-pro';
-// Fallback priority: 성능순 + 쿼터 분산 (API 키에서 확인된 모델만)
-// 1. gemini-2.5-pro      최상 (env primary, 쿼터 적음 ~20회)
-// 2. gemini-2.5-flash     중상 (최신, 빠름)
-// 3. gemini-2.0-flash     중상 (범용, 빠름)
-// 4. gemini-2.5-flash-lite 중하 (경량)
-// 5. gemini-2.0-flash-lite  하 (초경량)
+const GEMINI_API_MODEL = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+// Fallback priority: 쿼터+속도 우선 (빠른 응답 > 품질)
+// 1. gemini-2.5-flash     (primary, 빠름+쿼터 넉넉)
+// 2. gemini-2.0-flash     (빠름, 쿼터 넉넉)
+// 3. gemini-2.5-flash-lite (경량, 쿼터 많음)
+// 4. gemini-2.0-flash-lite (초경량, 쿼터 많음)
+// 5. gemini-2.5-pro       (최고 품질, 쿼터 적음 ~20회 → 마지막)
 const GEMINI_FALLBACK_MODELS = [
-  'gemini-2.5-pro',
-  'gemini-2.5-flash',
   'gemini-2.0-flash',
   'gemini-2.5-flash-lite',
-  'gemini-2.0-flash-lite'
+  'gemini-2.0-flash-lite',
+  'gemini-2.5-pro'
 ].filter(m => m !== GEMINI_API_MODEL);
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const USE_GEMINI = Boolean(GEMINI_API_KEY);
 const CHAT_PARSE_STRICT_AI = String(process.env.CHAT_PARSE_STRICT_AI || 'false').toLowerCase() === 'true';
+
+// ── OAuth 로그인 설정 ──
+const NAVER_CLIENT_ID = process.env.NAVER_CLIENT_ID || '';
+const NAVER_CLIENT_SECRET = process.env.NAVER_CLIENT_SECRET || '';
+const KAKAO_REST_API_KEY = process.env.KAKAO_REST_API_KEY || '';
+const KAKAO_CLIENT_SECRET = process.env.KAKAO_CLIENT_SECRET || '';
+const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
+const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'japantravel-default-secret-change-me';
+const OAUTH_BASE_URL = process.env.OAUTH_BASE_URL || `http://localhost:${PORT}`;
+
+// ── 세션 저장소 (인메모리) ──
+const sessionStore = new Map();
+const { createHmac } = require('crypto');
+
+function signSession(sid) {
+  return createHmac('sha256', SESSION_SECRET).update(sid).digest('hex').slice(0, 16);
+}
+
+function createSession(userData) {
+  const sid = randomUUID();
+  sessionStore.set(sid, { ...userData, createdAt: Date.now() });
+  const sig = signSession(sid);
+  return { sid, cookie: `sid=${sid}.${sig}; HttpOnly; Path=/; SameSite=Lax; Max-Age=604800` };
+}
+
+function parseSession(req) {
+  const cookie = req.headers.cookie || '';
+  const match = cookie.match(/sid=([^.;]+)\.([^;]+)/);
+  if (!match) return null;
+  const [, sid, sig] = match;
+  if (signSession(sid) !== sig) return null;
+  return sessionStore.get(sid) || null;
+}
+
+function destroySession(req) {
+  const cookie = req.headers.cookie || '';
+  const match = cookie.match(/sid=([^.;]+)\./);
+  if (match) sessionStore.delete(match[1]);
+}
+
+// ── OAuth HTTPS 헬퍼 ──
+async function oauthFetch(url, options = {}) {
+  const resp = await fetch(url, options);
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error(`OAuth fetch ${resp.status}: ${t.slice(0, 200)}`);
+  }
+  return resp.json();
+}
+
+// ── 파일 기반 사용자/일정 저장 (Supabase 없을 때 폴백) ──
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+function readJsonFile(name) {
+  const fp = path.join(DATA_DIR, name);
+  if (!fs.existsSync(fp)) return [];
+  try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return []; }
+}
+function writeJsonFile(name, data) {
+  fs.writeFileSync(path.join(DATA_DIR, name), JSON.stringify(data, null, 2), 'utf8');
+}
+
+function findOrCreateUser(provider, providerId, profile) {
+  const users = readJsonFile('users.json');
+  let user = users.find(u => u.provider === provider && u.providerId === providerId);
+  if (!user) {
+    user = { id: randomUUID(), provider, providerId, ...profile, createdAt: new Date().toISOString() };
+    users.push(user);
+  } else {
+    Object.assign(user, profile, { lastLoginAt: new Date().toISOString() });
+  }
+  writeJsonFile('users.json', users);
+  return user;
+}
+
 const AI_REQUEST_TIMEOUT_MS = Math.max(4000, Number(process.env.AI_REQUEST_TIMEOUT_MS || 15000));
 
 const AI_SYSTEM_MESSAGE = [
@@ -3894,6 +3972,21 @@ const amadeusTokenState = {
 };
 
 async function refreshFxRate() {
+  // Primary: open.er-api.com (free, no key, daily update)
+  try {
+    const res = await fetch('https://open.er-api.com/v6/latest/JPY');
+    if (res.ok) {
+      const data = await res.json();
+      const krwRate = Number(data?.rates?.KRW || 0);
+      const usdRate = Number(data?.rates?.USD || 0);
+      if (krwRate > 0) fxJpyKrw = krwRate;
+      if (usdRate > 0 && krwRate > 0) fxUsdKrw = krwRate / usdRate;
+      fxLastUpdate = data?.time_last_update_utc || new Date().toISOString();
+      console.log(`[FX] JPY/KRW: ${fxJpyKrw.toFixed(2)}, USD/KRW: ${fxUsdKrw.toFixed(0)}, updated: ${fxLastUpdate}`);
+      return;
+    }
+  } catch { /* fallback below */ }
+  // Fallback: exchangerate.host
   try {
     const res = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=KRW');
     if (!res.ok) return;
@@ -4500,6 +4593,201 @@ JSON 형식:
 
 async function handleApi(req, res, parsedUrl) {
   try {
+
+    // ── OAuth 로그인 라우트 ──
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/naver') {
+      if (!NAVER_CLIENT_ID) return sendJson(res, 500, { error: 'Naver OAuth not configured' });
+      const state = randomUUID();
+      const url = `https://nid.naver.com/oauth2.0/authorize?client_id=${NAVER_CLIENT_ID}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/naver/callback')}&response_type=code&state=${state}`;
+      res.writeHead(302, { Location: url });
+      return res.end();
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/naver/callback') {
+      try {
+        const code = parsedUrl.searchParams.get('code');
+        const state = parsedUrl.searchParams.get('state');
+        const tokenData = await oauthFetch(`https://nid.naver.com/oauth2.0/token?grant_type=authorization_code&client_id=${NAVER_CLIENT_ID}&client_secret=${NAVER_CLIENT_SECRET}&code=${code}&state=${state}`);
+        const profileData = await oauthFetch('https://openapi.naver.com/v1/nid/me', {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` }
+        });
+        const p = profileData.response || {};
+        const user = findOrCreateUser('naver', p.id, {
+          nickname: p.nickname || p.name || 'Naver User',
+          email: p.email || '',
+          profileImage: p.profile_image || ''
+        });
+        const sess = createSession({ userId: user.id, provider: 'naver', nickname: user.nickname, profileImage: user.profileImage });
+        res.writeHead(302, { 'Set-Cookie': sess.cookie, Location: '/' });
+        return res.end();
+      } catch (err) {
+        console.error('[Auth/Naver]', err.message);
+        res.writeHead(302, { Location: '/?authError=naver' });
+        return res.end();
+      }
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/kakao') {
+      if (!KAKAO_REST_API_KEY) return sendJson(res, 500, { error: 'Kakao OAuth not configured' });
+      const url = `https://kauth.kakao.com/oauth/authorize?client_id=${KAKAO_REST_API_KEY}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/kakao/callback')}&response_type=code`;
+      res.writeHead(302, { Location: url });
+      return res.end();
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/kakao/callback') {
+      try {
+        const code = parsedUrl.searchParams.get('code');
+        const params = new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: KAKAO_REST_API_KEY,
+          redirect_uri: OAUTH_BASE_URL + '/api/auth/kakao/callback',
+          code: code
+        });
+        if (KAKAO_CLIENT_SECRET) params.append('client_secret', KAKAO_CLIENT_SECRET);
+        const tokenData = await oauthFetch('https://kauth.kakao.com/oauth/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString()
+        });
+        const profileData = await oauthFetch('https://kapi.kakao.com/v2/user/me', {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` }
+        });
+        const kakaoAcct = profileData.kakao_account || {};
+        const kakaoProfile = kakaoAcct.profile || {};
+        const user = findOrCreateUser('kakao', String(profileData.id), {
+          nickname: kakaoProfile.nickname || 'Kakao User',
+          email: kakaoAcct.email || '',
+          profileImage: kakaoProfile.profile_image_url || ''
+        });
+        const sess = createSession({ userId: user.id, provider: 'kakao', nickname: user.nickname, profileImage: user.profileImage });
+        res.writeHead(302, { 'Set-Cookie': sess.cookie, Location: '/' });
+        return res.end();
+      } catch (err) {
+        console.error('[Auth/Kakao]', err.message);
+        res.writeHead(302, { Location: '/?authError=kakao' });
+        return res.end();
+      }
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/google') {
+      if (!GOOGLE_OAUTH_CLIENT_ID) return sendJson(res, 500, { error: 'Google OAuth not configured' });
+      const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/google/callback')}&response_type=code&scope=${encodeURIComponent('openid email profile')}`;
+      res.writeHead(302, { Location: url });
+      return res.end();
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/google/callback') {
+      try {
+        const code = parsedUrl.searchParams.get('code');
+        const tokenData = await oauthFetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code,
+            client_id: GOOGLE_OAUTH_CLIENT_ID,
+            client_secret: GOOGLE_OAUTH_CLIENT_SECRET,
+            redirect_uri: OAUTH_BASE_URL + '/api/auth/google/callback',
+            grant_type: 'authorization_code'
+          })
+        });
+        const profileData = await oauthFetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` }
+        });
+        const user = findOrCreateUser('google', profileData.id, {
+          nickname: profileData.name || 'Google User',
+          email: profileData.email || '',
+          profileImage: profileData.picture || ''
+        });
+        const sess = createSession({ userId: user.id, provider: 'google', nickname: user.nickname, profileImage: user.profileImage });
+        res.writeHead(302, { 'Set-Cookie': sess.cookie, Location: '/' });
+        return res.end();
+      } catch (err) {
+        console.error('[Auth/Google]', err.message);
+        res.writeHead(302, { Location: '/?authError=google' });
+        return res.end();
+      }
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/me') {
+      const session = parseSession(req);
+      if (!session) return sendJson(res, 200, { user: null });
+      return sendJson(res, 200, { user: { userId: session.userId, provider: session.provider, nickname: session.nickname, profileImage: session.profileImage } });
+    }
+
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/auth/logout') {
+      destroySession(req);
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Set-Cookie': 'sid=; HttpOnly; Path=/; Max-Age=0'
+      });
+      return res.end(JSON.stringify({ ok: true }));
+    }
+
+    // ── 일정 저장/불러오기 (로그인 필요) ──
+    if (req.method === 'POST' && parsedUrl.pathname === '/api/my-plans/save') {
+      const session = parseSession(req);
+      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
+      const payload = await readBody(req);
+      const plans = readJsonFile('saved_plans.json');
+      const plan = {
+        id: payload.id || randomUUID(),
+        userId: session.userId,
+        title: payload.title || '',
+        cityKey: payload.cityKey || '',
+        cityLabel: payload.cityLabel || '',
+        startDate: payload.startDate || '',
+        days: payload.days || 0,
+        theme: payload.theme || '',
+        data: payload.data || {},
+        savedAt: new Date().toISOString()
+      };
+      const existIdx = plans.findIndex(p => p.id === plan.id && p.userId === session.userId);
+      if (existIdx >= 0) plans[existIdx] = plan;
+      else plans.push(plan);
+      writeJsonFile('saved_plans.json', plans);
+      return sendJson(res, 200, { saved: plan });
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/my-plans/list') {
+      const session = parseSession(req);
+      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
+      const plans = readJsonFile('saved_plans.json');
+      const myPlans = plans.filter(p => p.userId === session.userId)
+        .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+      return sendJson(res, 200, { plans: myPlans.map(p => ({ id: p.id, title: p.title, cityLabel: p.cityLabel, startDate: p.startDate, days: p.days, theme: p.theme, savedAt: p.savedAt })) });
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/my-plans/load') {
+      const session = parseSession(req);
+      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
+      const planId = parsedUrl.searchParams.get('id');
+      if (!planId) return sendJson(res, 400, { error: 'id is required' });
+      const plans = readJsonFile('saved_plans.json');
+      const plan = plans.find(p => p.id === planId && p.userId === session.userId);
+      if (!plan) return sendJson(res, 404, { error: '일정을 찾을 수 없습니다' });
+      return sendJson(res, 200, { plan });
+    }
+
+    if (req.method === 'DELETE' && parsedUrl.pathname === '/api/my-plans/delete') {
+      const session = parseSession(req);
+      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
+      const planId = parsedUrl.searchParams.get('id');
+      if (!planId) return sendJson(res, 400, { error: 'id is required' });
+      let plans = readJsonFile('saved_plans.json');
+      const before = plans.length;
+      plans = plans.filter(p => !(p.id === planId && p.userId === session.userId));
+      writeJsonFile('saved_plans.json', plans);
+      return sendJson(res, 200, { deleted: plans.length < before });
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/providers') {
+      return sendJson(res, 200, {
+        naver: Boolean(NAVER_CLIENT_ID),
+        kakao: Boolean(KAKAO_REST_API_KEY),
+        google: Boolean(GOOGLE_OAUTH_CLIENT_ID)
+      });
+    }
+
     if (req.method === 'GET' && parsedUrl.pathname === '/api/maps-config') {
       // Return Maps API key for client-side JS loading (key from env, not hardcoded)
       return sendJson(res, 200, { key: GOOGLE_MAPS_API_KEY || '' });
@@ -4719,6 +5007,37 @@ async function handleApi(req, res, parsedUrl) {
       const payload = await readBody(req);
       const result = await calculateRouteCost(payload.places || [], payload.city || 'tokyo');
       return sendJson(res, 200, result);
+    }
+
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/fx-rate') {
+      return sendJson(res, 200, {
+        jpyToKrw: Math.round(fxJpyKrw * 100) / 100,
+        usdToKrw: Math.round(fxUsdKrw),
+        krwToJpy100: Math.round(100 / fxJpyKrw * 100) / 100,
+        yen100toKrw: Math.round(100 * fxJpyKrw),
+        man1wonToYen: Math.round(10000 / fxJpyKrw),
+        lastUpdate: fxLastUpdate || 'N/A'
+      });
+    }
+
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/weather') {
+      const city = parsedUrl.searchParams.get('city') || 'tokyo';
+      const COORDS = {
+        tokyo: [35.68, 139.76], osaka: [34.69, 135.50], kyoto: [35.01, 135.77],
+        sapporo: [43.06, 141.35], fukuoka: [33.59, 130.40], nagoya: [35.18, 136.91],
+        hiroshima: [34.40, 132.46], okinawa: [26.34, 127.77], kanazawa: [36.56, 136.65],
+        sendai: [38.27, 140.87], kobe: [34.69, 135.20]
+      };
+      const [lat, lng] = COORDS[city] || COORDS.tokyo;
+      try {
+        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia/Tokyo&forecast_days=10`;
+        const weatherResp = await fetch(weatherUrl);
+        const weatherData = await weatherResp.json();
+        return sendJson(res, 200, { city, daily: weatherData.daily });
+      } catch (err) {
+        return sendJson(res, 200, { city, error: 'Weather API unavailable' });
+      }
     }
 
     return sendJson(res, 404, { error: 'Not Found' });

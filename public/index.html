@@ -14,6 +14,19 @@
         <h1>JapanTravel Suite</h1>
         <p>AI기반 여행지,항공권,맛집 추천</p>
       </div>
+
+      <div class="travel-toolbar">
+        <button type="button" id="btnExportPlan" class="toolbar-btn" title="일정 내보내기">📋 내보내기</button>
+        <button type="button" id="btnChecklist" class="toolbar-btn" title="여행 체크리스트">✅ 체크리스트</button>
+        <button type="button" id="btnEmergency" class="toolbar-btn" title="긴급 정보">🆘 긴급</button>
+        <button type="button" id="btnPhrases" class="toolbar-btn" title="일본어 회화">🗣 회화</button>
+        <button type="button" id="btnWeather" class="toolbar-btn" title="날씨">🌤 날씨</button>
+      </div>
+
+      <div class="auth-area" id="authArea">
+        <button type="button" id="btnLogin" class="toolbar-btn auth-login-btn" title="로그인"> 로그인</button>
+      </div>
+
     </header>
 
     <main class="layout">
@@ -111,6 +124,11 @@
             <h4 class="itin-map-title">일정 지도</h4>
             <div id="itinMap" class="itin-map"></div>
           </div>
+                    <div id="weatherWidget" class="weather-widget hidden">
+            <h4>여행지 날씨</h4>
+            <div id="weatherContent" class="weather-content"></div>
+          </div>
+          <div id="scheduleAlerts" class="schedule-alerts hidden"></div>
           <div id="budgetSummary" class="budget-summary"></div>
 
         </div>
@@ -318,6 +336,111 @@
         </div>
       </div>
     </div>
+
+
+    <div id="checklistPanel" class="side-panel hidden">
+      <div class="side-panel-inner">
+        <div class="side-panel-header">
+          <h3>✅ 여행 준비 체크리스트</h3>
+          <button type="button" class="side-panel-close" data-close-panel="checklistPanel">✕</button>
+        </div>
+        <div class="checklist-progress"><div class="checklist-bar"><div id="checklistProgressBar" class="checklist-bar-fill"></div></div><span id="checklistProgressText">0/0</span></div>
+        <div id="checklistContent" class="checklist-content"></div>
+      </div>
+    </div>
+
+    <div id="emergencyPanel" class="side-panel hidden">
+      <div class="side-panel-inner">
+        <div class="side-panel-header">
+          <h3>🆘 일본 긴급 정보</h3>
+          <button type="button" class="side-panel-close" data-close-panel="emergencyPanel">✕</button>
+        </div>
+        <div id="emergencyContent" class="emergency-content"></div>
+      </div>
+    </div>
+
+    <div id="phrasesPanel" class="side-panel hidden">
+      <div class="side-panel-inner">
+        <div class="side-panel-header">
+          <h3>🗣 일본어 여행 회화</h3>
+          <button type="button" class="side-panel-close" data-close-panel="phrasesPanel">✕</button>
+        </div>
+        <div class="phrases-search"><input type="text" id="phrasesSearch" placeholder="상황 검색 (예: 주문, 길, 약국)" /></div>
+        <div id="phrasesContent" class="phrases-content"></div>
+      </div>
+    </div>
+
+    <div id="weatherPanel" class="side-panel hidden">
+      <div class="side-panel-inner">
+        <div class="side-panel-header">
+          <h3>🌤 여행지 날씨 예보</h3>
+          <button type="button" class="side-panel-close" data-close-panel="weatherPanel">✕</button>
+        </div>
+        <div id="weatherPanelContent" class="weather-panel-content"></div>
+      </div>
+    </div>
+
+    <div id="exportPanel" class="side-panel hidden">
+      <div class="side-panel-inner">
+        <div class="side-panel-header">
+          <h3>📋 일정 내보내기</h3>
+          <button type="button" class="side-panel-close" data-close-panel="exportPanel">✕</button>
+        </div>
+        <div class="export-actions">
+          <button type="button" id="btnCopyText" class="export-btn">📄 텍스트 복사</button>
+          <button type="button" id="btnCopyMarkdown" class="export-btn">📝 마크다운 복사</button>
+          <button type="button" id="btnShareLink" class="export-btn">🔗 링크 복사</button>
+        </div>
+        <div id="exportPreview" class="export-preview"></div>
+      </div>
+    </div>
+
+    
+    <!-- 로그인 모달 -->
+    <div id="loginModal" class="login-modal-overlay hidden">
+      <div class="login-modal">
+        <h4>로그인</h4>
+        <p class="login-modal-desc">로그인하면 일정을 저장하고 불러올 수 있습니다.</p>
+        <div class="login-buttons">
+          <a href="/api/auth/naver" class="login-btn naver-login" id="loginNaver"><span class="login-icon">N</span> 네이버 로그인</a>
+          <a href="/api/auth/kakao" class="login-btn kakao-login" id="loginKakao"><span class="login-icon"></span> 카카오 로그인</a>
+          <a href="/api/auth/google" class="login-btn google-login" id="loginGoogle"><span class="login-icon">G</span> Google 로그인</a>
+        </div>
+        <button type="button" class="login-modal-close" id="loginModalClose">닫기</button>
+      </div>
+    </div>
+
+    <!-- 내 일정 사이드 패널 -->
+    <div id="myPlansPanel" class="side-panel hidden">
+      <div class="side-panel-inner">
+        <div class="side-panel-header">
+          <h3> 내 저장 일정</h3>
+          <button type="button" class="side-panel-close" data-close-panel="myPlansPanel">✕</button>
+        </div>
+        <div id="myPlansContent" class="my-plans-content">
+          <p class="my-plans-empty">저장된 일정이 없습니다.</p>
+        </div>
+      </div>
+    </div>
+
+    
+    <!-- 일정 저장 모달 -->
+    <div id="saveModal" class="login-modal-overlay hidden">
+      <div class="login-modal save-modal">
+        <h4> 일정 저장</h4>
+        <div class="save-modal-body">
+          <label class="save-label">일정 이름</label>
+          <input type="text" id="saveNameInput" class="save-name-input" placeholder="일정 이름을 입력하세요" />
+          <div id="saveDupNotice" class="save-dup-notice hidden"></div>
+        </div>
+        <div class="save-modal-actions">
+          <button type="button" id="saveConfirmBtn" class="save-confirm-btn">저장</button>
+          <button type="button" id="saveCancelBtn" class="login-modal-close">취소</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="memoToast" class="memo-toast hidden">메모가 저장되었습니다.</div>
 
   </body>
 </html>
