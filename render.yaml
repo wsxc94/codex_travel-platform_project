@@ -1,4 +1,4 @@
-﻿services:
+services:
   - type: web
     name: japantravel-suite
     env: node
@@ -7,6 +7,7 @@
     startCommand: node server.js
     nodeVersion: "20"
     autoDeploy: true
+    healthCheckPath: /api/health
     envVars:
       - key: APP_ENV
         value: production
@@ -15,4 +16,14 @@
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: OAUTH_BASE_URL
         sync: false
