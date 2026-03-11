@@ -586,7 +586,7 @@ function renderItinerary(data) {
     }
   }
   currentItineraryData = data;
-  stripServerMealBlocks();
+  if (!data._skipMealStrip) stripServerMealBlocks();
   renderItineraryTimeline();
   renderPlanExtras();
   updateItinMap();
@@ -2356,3 +2356,1036 @@ if (el('checkOut')) {
   if (el('btnDestSearch')) el('btnDestSearch').click();
   el('btnStays').click();
 })();
+
+
+// ========== TRAVEL FEATURES v2 ==========
+
+// --- Side Panel Toggle ---
+function togglePanel(panelId) {
+  var panel = document.getElementById(panelId);
+  if (!panel) return;
+  var isOpen = panel.classList.contains('show');
+  // Close all open panels
+  document.querySelectorAll('.side-panel.show').forEach(function(p) { p.classList.remove('show'); });
+  var oldBackdrop = document.querySelector('.side-panel-backdrop');
+  if (oldBackdrop) oldBackdrop.remove();
+  if (!isOpen) {
+    panel.classList.remove('hidden');
+    panel.classList.add('show');
+    var backdrop = document.createElement('div');
+    backdrop.className = 'side-panel-backdrop';
+    backdrop.addEventListener('click', function() { togglePanel(panelId); });
+    document.body.appendChild(backdrop);
+  }
+}
+// Use event delegation for close buttons (panels are after <script> in DOM)
+document.addEventListener('click', function(e) {
+  var closeBtn = e.target.closest('.side-panel-close');
+  if (closeBtn && closeBtn.dataset.closePanel) {
+    togglePanel(closeBtn.dataset.closePanel);
+  }
+});
+
+// --- 1. CHECKLIST ---
+var CHECKLIST_DATA = [
+  { group: '\uC5EC\uAD8C/\uBE44\uC790', items: [
+    '\uC5EC\uAD8C \uC720\uD6A8\uAE30\uAC04 \uD655\uC778 (6\uAC1C\uC6D4 \uC774\uC0C1)',
+    '\uC5EC\uAD8C \uC0AC\uBCF8 \uBCF4\uAD00 (\uBCC4\uB3C4 \uBCF4\uAD00)',
+    '\uBE44\uC790 \uBA74\uC81C \uD655\uC778 (90\uC77C \uBB34\uBE44\uC790)',
+    'Visit Japan Web \uB4F1\uB85D (\uC785\uAD6D\uC2EC\uC0AC \uAC04\uC18C\uD654)'
+  ]},
+  { group: '\uD56D\uACF5/\uAD50\uD1B5', items: [
+    '\uD56D\uACF5\uAD8C \uC608\uC57D \uD655\uC778',
+    '\uBAA8\uBC14\uC77C \uD0D1\uC2B9\uAD8C \uC800\uC7A5',
+    '\uACF5\uD56D \uAD50\uD1B5\uD3B8 \uD655\uC778 (\uB9AC\uBB34\uC9C4/\uACF5\uD56D\uBC84\uC2A4)',
+    'IC\uCE74\uB4DC \uC900\uBE44 (Suica/ICOCA/Pasmo)',
+    'JR Pass \uD544\uC694 \uC5EC\uBD80 \uD655\uC778'
+  ]},
+  { group: '\uC219\uC18C', items: [
+    '\uC219\uC18C \uC608\uC57D \uD655\uC778\uC11C \uC800\uC7A5',
+    '\uCCB4\uD06C\uC778/\uCCB4\uD06C\uC544\uC6C3 \uC2DC\uAC04 \uD655\uC778',
+    '\uC219\uC18C \uC8FC\uC18C \uC77C\uBCF8\uC5B4 \uC800\uC7A5 (\uD0DD\uC2DC\uC6A9)'
+  ]},
+  { group: '\uD1B5\uC2E0/\uC7AC\uC815', items: [
+    '\uD3EC\uCF13 WiFi / \uC720\uC2EC \uC608\uC57D',
+    '\uD574\uC678 \uB85C\uBC0D \uD65C\uC131\uD654',
+    '\uD658\uC804 (10\uB9CC\uC6D0 \uBD84 \uC5D4\uD654 \uC900\uBE44)',
+    '\uD574\uC678\uACB0\uC81C \uCE74\uB4DC \uD655\uC778',
+    '\uD574\uC678\uC5EC\uD589\uC790\uBCF4\uD5D8 \uAC00\uC785'
+  ]},
+  { group: '\uC9D0/\uD544\uC218\uD488', items: [
+    '\uC5EC\uD589\uC6A9 \uC5B4\uB311\uD130 (\uC77C\uBCF8 110V/A\uD0C0\uC785)',
+    '\uC0C1\uBE44\uC57D (\uC9C4\uD1B5\uC81C/\uC18C\uD654\uC81C/\uBC18\uCC3D\uACE0 \uB4F1)',
+    '\uC6B0\uC0B0/\uC6B0\uBE44 (3\uC6D4~6\uC6D4 \uD544\uC218)',
+    '\uD3B8\uD55C \uC2E0\uBC1C (\uB9CE\uC774 \uAC78\uC74C!)',
+    '\uBA74\uC138 \uC11C\uB958\uC6A9 \uD30C\uC77C/\uBD09\uD22C'
+  ]},
+  { group: '\uC5B4\uD50C/\uC571 \uC900\uBE44', items: [
+    'Google Maps \uC624\uD504\uB77C\uC778 \uC9C0\uB3C4 \uB2E4\uC6B4\uB85C\uB4DC',
+    '\uD30C\uD30C\uACE0 (\uBC88\uC5ED\uC571) \uC124\uCE58',
+    'Suica/ICOCA \uBAA8\uBC14\uC77C \uB4F1\uB85D (Apple Pay \uB4F1)',
+    'Tabelog/\uD56B\uD398\uD37C \uC571 \uC124\uCE58',
+    '\uAE34\uAE09 \uC5F0\uB77D\uCC98 \uC800\uC7A5'
+  ]}
+];
+
+function renderChecklist() {
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem('travelChecklist') || '{}'); } catch(e) {}
+  var container = document.getElementById('checklistContent');
+  if (!container) return;
+  var totalItems = 0, checkedItems = 0;
+  var html = '';
+  for (var gi = 0; gi < CHECKLIST_DATA.length; gi++) {
+    var grp = CHECKLIST_DATA[gi];
+    html += '<div class="checklist-group"><div class="checklist-group-title">' + grp.group + '</div>';
+    for (var ii = 0; ii < grp.items.length; ii++) {
+      var key = gi + '_' + ii;
+      var isChecked = saved[key] === true;
+      totalItems++;
+      if (isChecked) checkedItems++;
+      html += '<div class="checklist-item' + (isChecked ? ' checked' : '') + '">';
+      html += '<input type="checkbox" id="chk_' + key + '" data-chk-key="' + key + '"' + (isChecked ? ' checked' : '') + ' />';
+      html += '<label for="chk_' + key + '">' + grp.items[ii] + '</label></div>';
+    }
+    html += '</div>';
+  }
+  container.innerHTML = html;
+  var bar = document.getElementById('checklistProgressBar');
+  var text = document.getElementById('checklistProgressText');
+  if (bar) bar.style.width = (totalItems > 0 ? Math.round(checkedItems / totalItems * 100) : 0) + '%';
+  if (text) text.textContent = checkedItems + '/' + totalItems;
+}
+
+document.addEventListener('change', function(e) {
+  if (e.target.dataset && e.target.dataset.chkKey !== undefined) {
+    var saved = {};
+    try { saved = JSON.parse(localStorage.getItem('travelChecklist') || '{}'); } catch(ex) {}
+    saved[e.target.dataset.chkKey] = e.target.checked;
+    localStorage.setItem('travelChecklist', JSON.stringify(saved));
+    renderChecklist();
+  }
+});
+
+// btnChecklist: handled by toolbar delegation below
+
+// --- 2. EMERGENCY INFO ---
+function renderEmergency() {
+  var container = document.getElementById('emergencyContent');
+  if (!container) return;
+  container.innerHTML = '<div class="emergency-card"><h5>\uAE34\uAE09 \uC5F0\uB77D\uCC98</h5><p>' +
+    '\uACBD\uCC30: <a href="tel:110">110</a><br>' +
+    '\uC18C\uBC29/\uAD6C\uAE09: <a href="tel:119">119</a><br>' +
+    '\uC7AC\uD574 \uC548\uB0B4: <a href="tel:171">171</a> (\uC7AC\uD574\uC6A9 \uC804\uC5B8\uB2E4\uC774\uC5BC)<br>' +
+    '\uC678\uAD6D\uC778 \uC548\uB0B4: <a href="tel:0570000911">0570-000-911</a> (Japan Visitor Hotline, 24\uC2DC\uAC04)</p></div>' +
+
+    '<div class="emergency-card"><h5>\uC8FC\uC77C \uD55C\uAD6D \uB300\uC0AC\uAD00/\uC601\uC0AC\uAD00</h5><p>' +
+    '\uB3C4\uCFC4 \uB300\uC0AC\uAD00: <a href="tel:0335520159">03-3452-7611</a><br>' +
+    '\uC624\uC0AC\uCE74 \uCD1D\uC601\uC0AC\uAD00: <a href="tel:0662134127">06-6213-1401</a><br>' +
+    '\uD6C4\uCFE0\uC624\uCE74 \uCD1D\uC601\uC0AC\uAD00: <a href="tel:0922717581">092-771-0461</a><br>' +
+    '\uC0AD\uD3EC\uB85C \uCD1D\uC601\uC0AC\uAD00: <a href="tel:0112187581">011-218-0288</a><br>' +
+    '\uAE34\uAE09 \uC601\uC0AC\uCF5C: <a href="tel:+82-2-3210-0404">+82-2-3210-0404</a> (24h)</p></div>' +
+
+    '<div class="emergency-card"><h5>\uC758\uB8CC \uC815\uBCF4</h5><p>' +
+    '\uC57D\uAD6D: \u300C\u85AC\u5C40\u300D(\uC57C\uD050\uCFE0) \uAC04\uD310 \uCC3E\uAE30<br>' +
+    '\uBCD1\uC6D0: \u300C\u75C5\u9662\u300D(\uBE6C\uC778) \uAC04\uD310 \uCC3E\uAE30<br>' +
+    'AMDA \uAD6D\uC81C\uC758\uB8CC\uC815\uBCF4\uC13C\uD130: <a href="tel:0362331199">03-6233-9266</a><br>' +
+    '\u203B \uD574\uC678\uC5EC\uD589\uBCF4\uD5D8 \uC5C6\uC774 \uC9C4\uB8CC \uC2DC 100% \uC790\uBE44 (\uAC10\uAE30 \uC9C4\uB8CC \uC57D 5,000~15,000\uC5D4)</p></div>' +
+
+    '<div class="emergency-card"><h5>\uBD84\uC2E4\uBB3C/\uB3C4\uB09C</h5><p>' +
+    '\uACBD\uCC30 \uBD84\uC2E4\uBB3C \uC2E0\uACE0: \uAC00\uAE4C\uC6B4 \u300C\u4EA4\u756A\u300D(\uCF54\uBC18, \uD30C\uCD9C\uC18C)<br>' +
+    '\uC5ED \uBD84\uC2E4\uBB3C: \u300C\u304A\u5FD8\u308C\u7269\u300D(\uC624\uC640\uC2A4\uB808\uBAA8\uB178, \uBD84\uC2E4\uBB3C\uC13C\uD130)<br>' +
+    '\uC5EC\uAD8C \uBD84\uC2E4: \uB300\uC0AC\uAD00 \uC989\uC2DC \uC5F0\uB77D \u2192 \uC5EC\uD589\uC99D\uBA85\uC11C \uBC1C\uAE09</p></div>' +
+
+    '<div class="emergency-card"><h5>\uC790\uC5F0\uC7AC\uD574 \uB300\uBE44</h5><p>' +
+    '\uC9C0\uC9C4 \uC2DC: \uD14C\uC774\uBE14 \uC544\uB798 \uB300\uD53C \u2192 \uD754\uB4E4\uB9BC \uBA48\uCD94\uBA74 \uCD9C\uAD6C \uD655\uBCF4<br>' +
+    '\uC4F0\uB098\uBBF8 \uACBD\uBCF4 \uC2DC: \uC989\uC2DC \uB192\uC740 \uACF3\uC73C\uB85C \uB300\uD53C<br>' +
+    'NHK World: \uC601\uC5B4 \uC7AC\uD574\uC815\uBCF4 \uC571<br>' +
+    'Safety Tips \uC571: \uB2E4\uAD6D\uC5B4 \uC7AC\uD574\uC815\uBCF4 (\uD55C\uAD6D\uC5B4 \uC9C0\uC6D0)</p></div>';
+}
+
+// btnEmergency: handled by toolbar delegation below
+
+// --- 3. JAPANESE PHRASES ---
+var PHRASES_DATA = [
+  { category: '\uAE30\uBCF8 \uC778\uC0AC', tags: '\uC778\uC0AC \uAE30\uBCF8 \uAC10\uC0AC', items: [
+    { ko: '\uC548\uB155\uD558\uC138\uC694', ja: '\u3053\u3093\u306B\u3061\u306F', roma: 'Konnichiwa' },
+    { ko: '\uAC10\uC0AC\uD569\uB2C8\uB2E4', ja: '\u3042\u308A\u304C\u3068\u3046\u3054\u3056\u3044\u307E\u3059', roma: 'Arigatou gozaimasu' },
+    { ko: '\uC8C4\uC1A1\uD569\uB2C8\uB2E4 / \uC2E4\uB840\uD569\uB2C8\uB2E4', ja: '\u3059\u307F\u307E\u305B\u3093', roma: 'Sumimasen' },
+    { ko: '\uC798 \uBD80\uD0C1\uB4DC\uB9BD\uB2C8\uB2E4', ja: '\u304A\u306D\u304C\u3044\u3057\u307E\u3059', roma: 'Onegaishimasu' },
+    { ko: '\uC608/\uC544\uB2C8\uC694', ja: '\u306F\u3044/\u3044\u3044\u3048', roma: 'Hai / Iie' }
+  ]},
+  { category: '\uC2DD\uB2F9 \uC8FC\uBB38', tags: '\uC2DD\uB2F9 \uC8FC\uBB38 \uBA54\uB274 \uC74C\uC2DD \uB9DB\uC9D1 \uC608\uC57D', items: [
+    { ko: 'OO\uBA85\uC785\uB2C8\uB2E4', ja: 'OO\u540D\u3067\u3059', roma: 'OO-mei desu' },
+    { ko: '\uBA54\uB274 \uC8FC\uC138\uC694', ja: '\u30E1\u30CB\u30E5\u30FC\u3092\u304F\u3060\u3055\u3044', roma: 'Menyuu wo kudasai' },
+    { ko: '\uC774\uAC83 \uC8FC\uC138\uC694', ja: '\u3053\u308C\u3092\u304F\u3060\u3055\u3044', roma: 'Kore wo kudasai' },
+    { ko: '\uCD94\uCC9C \uBA54\uB274\uAC00 \uBB50\uC608\uC694?', ja: '\u304A\u3059\u3059\u3081\u306F\u4F55\u3067\u3059\u304B\uFF1F', roma: 'Osusume wa nan desu ka?' },
+    { ko: '\uACC4\uC0B0\uC11C \uC8FC\uC138\uC694', ja: '\u304A\u4F1A\u8A08\u304A\u306D\u304C\u3044\u3057\u307E\u3059', roma: 'Okaikei onegaishimasu' },
+    { ko: '\uCE74\uB4DC \uB418\uB098\uC694?', ja: '\u30AB\u30FC\u30C9\u306F\u4F7F\u3048\u307E\u3059\u304B\uFF1F', roma: 'Kaado wa tsukaemasu ka?' },
+    { ko: '\uC798 \uBA39\uACA0\uC2B5\uB2C8\uB2E4', ja: '\u3044\u305F\u3060\u304D\u307E\u3059', roma: 'Itadakimasu' },
+    { ko: '\uC798 \uBA39\uC5C8\uC2B5\uB2C8\uB2E4', ja: '\u3054\u3061\u305D\u3046\u3055\u307E\u3067\u3057\u305F', roma: 'Gochisousama deshita' }
+  ]},
+  { category: '\uAE38 \uBB3B\uAE30/\uAD50\uD1B5', tags: '\uAE38 \uAD50\uD1B5 \uC5ED \uBC84\uC2A4 \uD0DD\uC2DC \uC9C0\uD558\uCCA0', items: [
+    { ko: 'OO\uC5ED\uC740 \uC5B4\uB514\uC5D0\uC694?', ja: 'OO\u99C5\u306F\u3069\u3053\u3067\u3059\u304B\uFF1F', roma: 'OO-eki wa doko desu ka?' },
+    { ko: 'OO\uAE4C\uC9C0 \uC5B4\uB5BB\uAC8C \uAC00\uC694?', ja: 'OO\u307E\u3067\u3069\u3046\u884C\u3051\u3070\u3044\u3044\u3067\u3059\u304B\uFF1F', roma: 'OO made dou ikeba ii desu ka?' },
+    { ko: '\uC5EC\uAE30\uC11C \uBA40\uC5B4\uC694?', ja: '\u3053\u3053\u304B\u3089\u9060\u3044\u3067\u3059\u304B\uFF1F', roma: 'Koko kara tooi desu ka?' },
+    { ko: 'OO\uAE4C\uC9C0 \uD0DD\uC2DC \uBD80\uD0C1\uD569\uB2C8\uB2E4', ja: 'OO\u307E\u3067\u304A\u306D\u304C\u3044\u3057\u307E\u3059', roma: 'OO made onegaishimasu' },
+    { ko: '\uD658\uC2B9\uC774 \uD544\uC694\uD574\uC694?', ja: '\u4E57\u308A\u63DB\u3048\u306F\u5FC5\u8981\u3067\u3059\u304B\uFF1F', roma: 'Norikae wa hitsuyou desu ka?' }
+  ]},
+  { category: '\uC1FC\uD551/\uBA74\uC138', tags: '\uC1FC\uD551 \uBA74\uC138 \uACB0\uC81C \uAC00\uACA9 \uD560\uC778', items: [
+    { ko: '\uBA74\uC138 \uB418\uB098\uC694?', ja: '\u514D\u7A0E\u3067\u304D\u307E\u3059\u304B\uFF1F', roma: 'Menzei dekimasu ka?' },
+    { ko: '\uB2E4\uB978 \uC0C9\uC0C1 \uC788\uB098\uC694?', ja: '\u4ED6\u306E\u8272\u306F\u3042\u308A\u307E\u3059\u304B\uFF1F', roma: 'Hoka no iro wa arimasu ka?' },
+    { ko: '\uC785\uC5B4\uBD10\uB3C4 \uB418\uB098\uC694?', ja: '\u8A66\u7740\u3057\u3066\u3082\u3044\u3044\u3067\u3059\u304B\uFF1F', roma: 'Shichaku shitemo ii desu ka?' },
+    { ko: '\uC880 \uAE4E\uC544\uC8FC\uC138\uC694', ja: '\u5C11\u3057\u5B89\u304F\u3057\u3066\u304F\u3060\u3055\u3044', roma: 'Sukoshi yasuku shite kudasai' },
+    { ko: '\uBCF4\uAD00\uD574\uC8FC\uC138\uC694 (\uCF54\uC778\uB77D\uCEE4)', ja: '\u30B3\u30A4\u30F3\u30ED\u30C3\u30AB\u30FC\u306F\u3042\u308A\u307E\u3059\u304B\uFF1F', roma: 'Coin rokkaa wa arimasu ka?' }
+  ]},
+  { category: '\uC219\uC18C/\uD638\uD154', tags: '\uC219\uC18C \uD638\uD154 \uCCB4\uD06C\uC778 \uCCB4\uD06C\uC544\uC6C3 \uBC29', items: [
+    { ko: '\uCCB4\uD06C\uC778 \uBD80\uD0C1\uD569\uB2C8\uB2E4', ja: '\u30C1\u30A7\u30C3\u30AF\u30A4\u30F3\u304A\u306D\u304C\u3044\u3057\u307E\u3059', roma: 'Chekkuin onegaishimasu' },
+    { ko: '\uC9D0\uC744 \uB9E1\uACA8\uB3C4 \uB418\uB098\uC694?', ja: '\u8377\u7269\u3092\u9810\u3051\u307E\u3059\u304B\uFF1F', roma: 'Nimotsu wo azukemasu ka?' },
+    { ko: 'WiFi \uBE44\uBC00\uBC88\uD638\uAC00 \uBB50\uC608\uC694?', ja: 'WiFi\u306E\u30D1\u30B9\u30EF\u30FC\u30C9\u306F\u4F55\u3067\u3059\u304B\uFF1F', roma: 'WiFi no pasuwaado wa nan desu ka?' },
+    { ko: '\uADFC\uCC98 \uD3B8\uC758\uC810 \uC5B4\uB514\uC5D0\uC694?', ja: '\u8FD1\u304F\u306E\u30B3\u30F3\u30D3\u30CB\u306F\u3069\u3053\u3067\u3059\u304B\uFF1F', roma: 'Chikaku no konbini wa doko desu ka?' }
+  ]},
+  { category: '\uAE34\uAE09 \uC0C1\uD669', tags: '\uAE34\uAE09 \uBCD1\uC6D0 \uC57D\uAD6D \uACBD\uCC30 \uB3C4\uC6C0', items: [
+    { ko: '\uB3C4\uC640\uC8FC\uC138\uC694!', ja: '\u52A9\u3051\u3066\u304F\u3060\u3055\u3044\uFF01', roma: 'Tasukete kudasai!' },
+    { ko: '\uBCD1\uC6D0\uC5D0 \uAC00\uACE0 \uC2F6\uC5B4\uC694', ja: '\u75C5\u9662\u306B\u884C\u304D\u305F\u3044\u3067\u3059', roma: 'Byouin ni ikitai desu' },
+    { ko: '\uC57D\uAD6D\uC740 \uC5B4\uB514\uC5D0\uC694?', ja: '\u85AC\u5C40\u306F\u3069\u3053\u3067\u3059\u304B\uFF1F', roma: 'Yakkyoku wa doko desu ka?' },
+    { ko: 'OO \uC54C\uB808\uB974\uAE30\uAC00 \uC788\uC5B4\uC694', ja: 'OO\u30A2\u30EC\u30EB\u30AE\u30FC\u304C\u3042\u308A\u307E\u3059', roma: 'OO arerugii ga arimasu' },
+    { ko: '\uD55C\uAD6D\uC5B4 \uB418\uB294 \uBD84 \uC788\uB098\uC694?', ja: '\u97D3\u56FD\u8A9E\u304C\u3067\u304D\u308B\u4EBA\u306F\u3044\u307E\u3059\u304B\uFF1F', roma: 'Kankokugo ga dekiru hito wa imasu ka?' }
+  ]},
+  { category: '\uC54C\uB808\uB974\uAE30/\uC2DD\uC774\uC81C\uD55C', tags: '\uC54C\uB808\uB974\uAE30 \uC2DD\uC774\uC81C\uD55C \uCC44\uC2DD \uD560\uB784', items: [
+    { ko: '\uB545\uCF69 \uC54C\uB808\uB974\uAE30', ja: '\u30D4\u30FC\u30CA\u30C3\u30C4\u30A2\u30EC\u30EB\u30AE\u30FC', roma: 'Piinattsu arerugii' },
+    { ko: '\uACC4\uB780 \uC54C\uB808\uB974\uAE30', ja: '\u5375\u30A2\u30EC\u30EB\u30AE\u30FC', roma: 'Tamago arerugii' },
+    { ko: '\uAC11\uAC01\uB958 \uC54C\uB808\uB974\uAE30', ja: '\u7532\u6BBB\u985E\u30A2\u30EC\u30EB\u30AE\u30FC', roma: 'Koukakurui arerugii' },
+    { ko: '\uCC44\uC2DD\uC8FC\uC758\uC790\uC785\uB2C8\uB2E4', ja: '\u30D9\u30B8\u30BF\u30EA\u30A2\u30F3\u3067\u3059', roma: 'Bejitarian desu' },
+    { ko: '\uB3FC\uC9C0\uACE0\uAE30 \uBABB \uBA39\uC5B4\uC694 (\uD560\uB784)', ja: '\u8C5A\u8089\u306F\u98DF\u3079\u3089\u308C\u307E\u305B\u3093\uFF08\u30CF\u30E9\u30EB\uFF09', roma: 'Butaniku wa taberaremasen (hararu)' }
+  ]}
+];
+
+function renderPhrases(filter) {
+  var container = document.getElementById('phrasesContent');
+  if (!container) return;
+  var q = (filter || '').toLowerCase();
+  var html = '';
+  for (var ci = 0; ci < PHRASES_DATA.length; ci++) {
+    var cat = PHRASES_DATA[ci];
+    if (q && cat.tags.toLowerCase().indexOf(q) < 0 && cat.category.toLowerCase().indexOf(q) < 0) {
+      var hasMatch = false;
+      for (var pi = 0; pi < cat.items.length; pi++) {
+        if (cat.items[pi].ko.toLowerCase().indexOf(q) >= 0) { hasMatch = true; break; }
+      }
+      if (!hasMatch) continue;
+    }
+    html += '<div class="phrase-category"><div class="phrase-category-title">' + cat.category + '</div>';
+    for (var pi2 = 0; pi2 < cat.items.length; pi2++) {
+      var p = cat.items[pi2];
+      if (q && cat.tags.toLowerCase().indexOf(q) < 0 && p.ko.toLowerCase().indexOf(q) < 0) continue;
+      html += '<div class="phrase-item"><button class="phrase-copy" data-copy="' + escapeHtml(p.ja) + '">\u{1F4CB}\uBCF5\uC0AC</button>';
+      html += '<div class="phrase-ko">' + escapeHtml(p.ko) + '</div>';
+      html += '<div class="phrase-ja">' + escapeHtml(p.ja) + '</div>';
+      html += '<div class="phrase-roma">' + escapeHtml(p.roma) + '</div></div>';
+    }
+    html += '</div>';
+  }
+  container.innerHTML = html || '<div>\uAC80\uC0C9 \uACB0\uACFC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.</div>';
+}
+
+document.addEventListener('click', function(e) {
+  if (e.target.classList.contains('phrase-copy')) {
+    var text = e.target.dataset.copy;
+    if (text && navigator.clipboard) navigator.clipboard.writeText(text);
+  }
+});
+
+// btnPhrases: handled by toolbar delegation below
+
+// Phrases search - use event delegation (element is after <script>)
+document.addEventListener('input', function(e) {
+  if (e.target && e.target.id === 'phrasesSearch') {
+    renderPhrases(e.target.value);
+  }
+});
+
+// --- 4. WEATHER ---
+var CITY_COORDS = {
+  tokyo: { lat: 35.68, lng: 139.76 }, osaka: { lat: 34.69, lng: 135.50 }, kyoto: { lat: 35.01, lng: 135.77 },
+  sapporo: { lat: 43.06, lng: 141.35 }, fukuoka: { lat: 33.59, lng: 130.40 }, nagoya: { lat: 35.18, lng: 136.91 },
+  hiroshima: { lat: 34.40, lng: 132.46 }, okinawa: { lat: 26.34, lng: 127.77 }, kanazawa: { lat: 36.56, lng: 136.65 },
+  sendai: { lat: 38.27, lng: 140.87 }, kobe: { lat: 34.69, lng: 135.20 }, nagasaki: { lat: 32.75, lng: 129.87 },
+  kumamoto: { lat: 32.80, lng: 130.71 }, kagoshima: { lat: 31.60, lng: 130.56 }, matsuyama: { lat: 33.84, lng: 132.77 },
+  takamatsu: { lat: 34.34, lng: 134.05 }, okayama: { lat: 34.66, lng: 133.93 }, shizuoka: { lat: 34.98, lng: 138.38 },
+  niigata: { lat: 37.90, lng: 139.02 }, toyama: { lat: 36.70, lng: 137.21 }, hakodate: { lat: 41.77, lng: 140.73 }
+};
+
+var WMO_ICONS = { 0: '\u2600\uFE0F', 1: '\U0001f324', 2: '\u26C5', 3: '\u2601\uFE0F', 45: '\U0001f32b', 48: '\U0001f32b',
+  51: '\U0001f326', 53: '\U0001f326', 55: '\U0001f327', 61: '\U0001f327', 63: '\U0001f327', 65: '\U0001f327',
+  71: '\u2744\uFE0F', 73: '\u2744\uFE0F', 75: '\u2744\uFE0F', 77: '\u2744\uFE0F',
+  80: '\U0001f326', 81: '\U0001f327', 82: '\U0001f327', 85: '\u2744\uFE0F', 86: '\u2744\uFE0F',
+  95: '\u26C8', 96: '\u26C8', 99: '\u26C8' };
+
+async function fetchWeather(cityKey) {
+  var coords = CITY_COORDS[cityKey];
+  if (!coords) {
+    for (var k in CITY_COORDS) { coords = CITY_COORDS[k]; break; }
+  }
+  if (!coords) return null;
+  try {
+    var url = 'https://api.open-meteo.com/v1/forecast?latitude=' + coords.lat + '&longitude=' + coords.lng +
+      '&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia/Tokyo&forecast_days=10';
+    var resp = await fetch(url);
+    var data = await resp.json();
+    return data.daily;
+  } catch(e) { return null; }
+}
+
+function renderWeatherWidget(daily, cityLabel) {
+  if (!daily || !daily.time) return;
+  var startDate = el('startDate') ? el('startDate').value : '';
+  var days = Number(el('days') ? el('days').value : 4);
+
+  var html = '<div class="weather-days">';
+  for (var i = 0; i < daily.time.length; i++) {
+    var d = daily.time[i];
+    var code = daily.weathercode[i];
+    var icon = WMO_ICONS[code] || '\u2601\uFE0F';
+    var hi = Math.round(daily.temperature_2m_max[i]);
+    var lo = Math.round(daily.temperature_2m_min[i]);
+    var rain = daily.precipitation_probability_max ? daily.precipitation_probability_max[i] : 0;
+    var isTrip = startDate && d >= startDate && d < addDays(startDate, days);
+    html += '<div class="weather-day" style="' + (isTrip ? 'border-color:var(--primary);border-width:2px;background:#f0fdf4' : '') + '">';
+    html += '<div class="weather-day-date">' + d.slice(5) + '</div>';
+    html += '<div class="weather-day-icon">' + icon + '</div>';
+    html += '<div class="weather-day-temp"><span class="hi">' + hi + '\u00B0</span>/<span class="lo">' + lo + '\u00B0</span></div>';
+    if (rain > 0) html += '<div class="weather-day-rain">\U0001f4a7' + rain + '%</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  // Weather advice
+  var tripDays = [];
+  if (startDate) {
+    for (var j = 0; j < daily.time.length; j++) {
+      if (daily.time[j] >= startDate && daily.time[j] < addDays(startDate, days)) tripDays.push(j);
+    }
+  }
+  if (tripDays.length > 0) {
+    var rainyDays = tripDays.filter(function(idx) { return (daily.precipitation_probability_max || [])[idx] > 50; });
+    var coldDays = tripDays.filter(function(idx) { return daily.temperature_2m_min[idx] < 5; });
+    var hotDays = tripDays.filter(function(idx) { return daily.temperature_2m_max[idx] > 30; });
+    var advice = [];
+    if (rainyDays.length > 0) advice.push('\u2614 \uC5EC\uD589 \uAE30\uAC04 \uC911 ' + rainyDays.length + '\uC77C \uBE44 \uC608\uC0C1 - \uC6B0\uC0B0 \uD544\uC218! \uC2E4\uB0B4 \uAD00\uAD11\uC9C0 \uB300\uC548\uC744 \uC900\uBE44\uD558\uC138\uC694.');
+    if (coldDays.length > 0) advice.push('\u2744\uFE0F \uCD94\uC6B4 \uB0A0\uC774 \uC788\uC2B5\uB2C8\uB2E4 - \uB530\uB73B\uD55C \uC637 \uCC59\uACA8\uC624\uC138\uC694.');
+    if (hotDays.length > 0) advice.push('\U0001f525 \uB354\uC6B4 \uB0A0\uC774 \uC788\uC2B5\uB2C8\uB2E4 - \uC218\uBD84 \uBCF4\uCDA9\uACFC \uC790\uC678\uC120 \uCC28\uB2E8\uC744 \uC900\uBE44\uD558\uC138\uC694.');
+    if (advice.length > 0) html += '<div class="weather-advice">' + advice.join('<br>') + '</div>';
+  }
+
+  // Update widget and panel
+  var widget = document.getElementById('weatherContent');
+  if (widget) widget.innerHTML = '<strong>' + (cityLabel || '') + '</strong> ' + html;
+  var widgetWrap = document.getElementById('weatherWidget');
+  if (widgetWrap) widgetWrap.classList.remove('hidden');
+
+  var panelContent = document.getElementById('weatherPanelContent');
+  if (panelContent) panelContent.innerHTML = '<h4>' + (cityLabel || '') + ' 10\uC77C \uC608\uBCF4</h4>' + html;
+}
+
+// btnWeather: handled by toolbar delegation below
+
+// --- 5. EXPORT / SHARE ---
+function buildItineraryText(format) {
+  if (!currentItineraryData || !currentItineraryData.itinerary) return '\uC77C\uC815\uC774 \uC5C6\uC2B5\uB2C8\uB2E4. \uBA3C\uC800 AI \uC77C\uC815\uC744 \uC0DD\uC131\uD574\uC8FC\uC138\uC694.';
+  var md = format === 'markdown';
+  var lines = [];
+  lines.push(md ? '# JapanTravel \uC5EC\uD589 \uC77C\uC815' : '=== JapanTravel \uC5EC\uD589 \uC77C\uC815 ===');
+  if (currentItineraryData.summary) lines.push(md ? '> ' + currentItineraryData.summary : currentItineraryData.summary);
+  lines.push('');
+
+  if (selectedFlight) {
+    lines.push(md ? '## \u2708\uFE0F \uD56D\uACF5\uAD8C' : '[ \uD56D\uACF5\uAD8C ]');
+    lines.push(describeFlightSummary(selectedFlight));
+    lines.push('');
+  }
+  if (selectedStay) {
+    lines.push(md ? '## \U0001f3e8 \uC219\uC18C' : '[ \uC219\uC18C ]');
+    lines.push(describeStaySummary(selectedStay));
+    lines.push('');
+  }
+
+  for (var di = 0; di < currentItineraryData.itinerary.length; di++) {
+    var day = currentItineraryData.itinerary[di];
+    lines.push(md ? '## Day ' + day.day + ' (' + (day.date || '') + ')' : '--- Day ' + day.day + ' (' + (day.date || '') + ') ---');
+    var groups = groupItineraryBlocks(day.blocks || []);
+    for (var gi = 0; gi < groups.length; gi++) {
+      var g = groups[gi];
+      if (g.type === 'main') {
+        var info = parsePlaceInfo(g.place);
+        var prefix = md ? '- **' + g.period + '** ' : '  [' + g.period + '] ';
+        var suffix = md ? info.name + (info.info ? ' _(' + info.info + ')_' : '') : info.name + (info.info ? ' (' + info.info + ')' : '');
+        lines.push(prefix + suffix);
+      }
+    }
+    lines.push('');
+  }
+
+  // Budget
+  if (selectedFlight || selectedStay) {
+    lines.push(md ? '## \U0001f4b0 \uC608\uC0C1 \uBE44\uC6A9' : '[ \uC608\uC0C1 \uBE44\uC6A9 ]');
+    var days = Number(el('days') ? el('days').value : 4);
+    var fc = selectedFlight ? selectedFlight.totalPriceKRW : 0;
+    var sc = selectedStay ? (selectedStay.totalPriceKRW || 0) : 0;
+    if (fc) lines.push('\uD56D\uACF5\uAD8C: ' + fc.toLocaleString() + '\uC6D0');
+    if (sc) lines.push('\uC219\uC18C: ' + sc.toLocaleString() + '\uC6D0');
+    lines.push('\uC2DD\uBE44(\uC608\uC0C1): ~' + (55000 * days).toLocaleString() + '\uC6D0');
+    lines.push('\uAD50\uD1B5\uBE44(\uC608\uC0C1): ~' + (22000 * days).toLocaleString() + '\uC6D0');
+  }
+
+  return lines.join('\n');
+}
+
+// Export/Share - event delegation (these elements are after <script> in DOM)
+document.addEventListener('click', function(e) {
+  var tgt = e.target.closest('#btnExportPlan, #btnCopyText, #btnCopyMarkdown, #btnShareLink, #btnChecklist, #btnEmergency, #btnPhrases, #btnWeather');
+  if (!tgt) return;
+
+  if (tgt.id === 'btnExportPlan') {
+    var preview = document.getElementById('exportPreview');
+    if (preview) preview.textContent = buildItineraryText('text');
+    togglePanel('exportPanel');
+    return;
+  }
+  if (tgt.id === 'btnCopyText') {
+    var text = buildItineraryText('text');
+    if (navigator.clipboard) navigator.clipboard.writeText(text);
+    showMemoToast('텍스트가 클립보드에 복사되었습니다!');
+    var p2 = document.getElementById('exportPreview');
+    if (p2) p2.textContent = text;
+    return;
+  }
+  if (tgt.id === 'btnCopyMarkdown') {
+    var md = buildItineraryText('markdown');
+    if (navigator.clipboard) navigator.clipboard.writeText(md);
+    showMemoToast('마크다운이 복사되었습니다!');
+    var p3 = document.getElementById('exportPreview');
+    if (p3) p3.textContent = md;
+    return;
+  }
+  if (tgt.id === 'btnShareLink') {
+    var st = buildItineraryText('text');
+    if (navigator.share) {
+      navigator.share({ title: 'JapanTravel 여행 일정', text: st });
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(st);
+      showMemoToast('일정이 클립보드에 복사되었습니다!');
+    }
+    return;
+  }
+  if (tgt.id === 'btnChecklist') {
+    renderChecklist();
+    togglePanel('checklistPanel');
+    return;
+  }
+  if (tgt.id === 'btnEmergency') {
+    renderEmergency();
+    togglePanel('emergencyPanel');
+    return;
+  }
+  if (tgt.id === 'btnPhrases') {
+    renderPhrases('');
+    togglePanel('phrasesPanel');
+    return;
+  }
+  if (tgt.id === 'btnWeather') {
+    var cityKey = el('city') ? el('city').value : 'tokyo';
+    var cityLabel = '';
+    if (cityCatalog) {
+      var found = cityCatalog.find(function(c) { return c.key === cityKey; });
+      if (found) cityLabel = found.label;
+    }
+    togglePanel('weatherPanel');
+    var panelContent = document.getElementById('weatherPanelContent');
+    if (panelContent) panelContent.innerHTML = '날씨 정보 로딩 중...';
+    fetchWeather(cityKey).then(function(daily) {
+      if (daily) {
+        renderWeatherWidget(daily, cityLabel);
+      } else {
+        if (panelContent) panelContent.innerHTML = '날씨 정보를 불러올 수 없습니다.';
+      }
+    });
+    return;
+  }
+});
+
+function showMemoToast(msg) {
+  var toast = document.getElementById('memoToast');
+  if (!toast) return;
+  toast.textContent = msg || '\uC800\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4.';
+  toast.classList.remove('hidden');
+  toast.classList.add('show');
+  setTimeout(function() { toast.classList.remove('show'); toast.classList.add('hidden'); }, 2000);
+}
+
+// --- 6. SCHEDULE OPTIMIZATION ALERTS ---
+function analyzeSchedule() {
+  if (!currentItineraryData || !currentItineraryData.itinerary) return;
+  var alertsEl = document.getElementById('scheduleAlerts');
+  if (!alertsEl) return;
+
+  var alerts = [];
+  var cityKey = el('city') ? el('city').value : 'tokyo';
+  var cityData = null;
+  // Try to get CITY_DATA from server-side data (we have it in recommend results)
+  // For now, use basic heuristics
+
+  for (var di = 0; di < currentItineraryData.itinerary.length; di++) {
+    var day = currentItineraryData.itinerary[di];
+    var groups = groupItineraryBlocks(day.blocks || []);
+    var mainBlocks = groups.filter(function(g) { return g.type === 'main' && !isMealPeriod(g.period); });
+    var mealBlocks = groups.filter(function(g) { return g.type === 'main' && isMealPeriod(g.period); });
+
+    // Too many spots
+    if (mainBlocks.length > 3) {
+      alerts.push({ type: 'warn', text: 'Day ' + day.day + ': \uC5EC\uD589\uC9C0 ' + mainBlocks.length + '\uACF3\uC740 \uB2E4\uC18C \uBE61\uBE61\uD560 \uC218 \uC788\uC5B4\uC694. \uC774\uB3D9\uC2DC\uAC04\uC744 \uACE0\uB824\uD574 3\uACF3 \uC774\uD558\uB97C \uCD94\uCC9C\uD569\uB2C8\uB2E4.' });
+    }
+
+    // Missing meals
+    if (mainBlocks.length > 0 && mealBlocks.length === 0) {
+      alerts.push({ type: 'info', text: 'Day ' + day.day + ': \uB9DB\uC9D1\uC774 \uC544\uC9C1 \uCD94\uAC00\uB418\uC9C0 \uC54A\uC558\uC5B4\uC694. \uB9DB\uC9D1 \uCD94\uAC00\uB97C \uCD94\uCC9C\uD569\uB2C8\uB2E4!' });
+    }
+
+    // Allday + other spots
+    var hasAllday = mainBlocks.some(function(b) { return b.period === '\uC885\uC77C'; });
+    if (hasAllday && mainBlocks.length > 1) {
+      alerts.push({ type: 'warn', text: 'Day ' + day.day + ': \uC885\uC77C \uC77C\uC815\uACFC \uB2E4\uB978 \uC5EC\uD589\uC9C0\uAC00 \uAC19\uC740 \uB0A0\uC5D0 \uC788\uC2B5\uB2C8\uB2E4. \uC2DC\uAC04 \uCDA9\uB3CC\uC744 \uD655\uC778\uD558\uC138\uC694.' });
+    }
+
+    // Duplicate places across days
+    for (var di2 = di + 1; di2 < currentItineraryData.itinerary.length; di2++) {
+      var day2 = currentItineraryData.itinerary[di2];
+      var groups2 = groupItineraryBlocks(day2.blocks || []);
+      var names2 = groups2.filter(function(g) { return g.type === 'main'; }).map(function(g) { return parsePlaceInfo(g.place).name; });
+      for (var mi = 0; mi < mainBlocks.length; mi++) {
+        var pname = parsePlaceInfo(mainBlocks[mi].place).name;
+        if (names2.indexOf(pname) >= 0) {
+          alerts.push({ type: 'info', text: '"' + pname + '"\uC774(\uAC00) Day ' + day.day + '\uACFC Day ' + day2.day + '\uC5D0 \uC911\uBCF5\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.' });
+        }
+      }
+    }
+  }
+
+  // Flight timing check
+  if (selectedFlight && selectedFlight.legs) {
+    var firstLeg = selectedFlight.legs[0];
+    if (firstLeg && firstLeg.arrivalTime) {
+      var arrH = parseInt(firstLeg.arrivalTime.split(':')[0]);
+      if (arrH >= 18) {
+        alerts.push({ type: 'tip', text: 'Day 1 \uB3C4\uCC29\uC774 \uC800\uB141\uC785\uB2C8\uB2E4. \uCCAB\uB0A0\uC740 \uC219\uC18C \uCCB4\uD06C\uC778 + \uADFC\uCC98 \uC0B0\uCC45 \uC815\uB3C4\uAC00 \uC801\uB2F9\uD569\uB2C8\uB2E4.' });
+      }
+    }
+    if (selectedFlight.tripType === 'roundtrip' && selectedFlight.legs.length > 1) {
+      var lastLeg = selectedFlight.legs[selectedFlight.legs.length - 1];
+      if (lastLeg && lastLeg.departureTime) {
+        var depH = parseInt(lastLeg.departureTime.split(':')[0]);
+        if (depH <= 10) {
+          alerts.push({ type: 'tip', text: '\uB9C8\uC9C0\uB9C9 \uB0A0 \uCD9C\uBC1C\uC774 \uC624\uC804\uC785\uB2C8\uB2E4. \uACF5\uD56D 2\uC2DC\uAC04 \uC804 \uB3C4\uCC29\uC744 \uACE0\uB824\uD574 \uC804\uB0A0 \uC9D0 \uC815\uB9AC\uB97C \uCD94\uCC9C\uD569\uB2C8\uB2E4.' });
+        }
+      }
+    }
+  }
+
+  if (alerts.length === 0) {
+    alertsEl.classList.add('hidden');
+    return;
+  }
+
+  var typeIcons = { warn: '\u26A0\uFE0F', info: '\u2139\uFE0F', tip: '\U0001f4a1' };
+  var typeClasses = { warn: 'schedule-alert-warn', info: 'schedule-alert-info', tip: 'schedule-alert-tip' };
+  var html = '<h4>\U0001f4CA \uC77C\uC815 \uBD84\uC11D</h4>';
+  for (var ai = 0; ai < alerts.length; ai++) {
+    var a = alerts[ai];
+    html += '<div class="schedule-alert ' + (typeClasses[a.type] || '') + '">';
+    html += '<span class="schedule-alert-icon">' + (typeIcons[a.type] || '') + '</span>';
+    html += '<span>' + escapeHtml(a.text) + '</span></div>';
+  }
+  alertsEl.innerHTML = html;
+  alertsEl.classList.remove('hidden');
+}
+
+// Hook into renderItineraryTimeline
+var _origRenderItineraryTimeline = renderItineraryTimeline;
+renderItineraryTimeline = function() {
+  _origRenderItineraryTimeline();
+  try { analyzeSchedule(); } catch(e) {}
+  try { addMemoButtons(); } catch(e) {}
+};
+
+// --- 7. PLACE MEMO ---
+function getPlaceMemos() {
+  try { return JSON.parse(localStorage.getItem('placeMemos') || '{}'); } catch(e) { return {}; }
+}
+
+function savePlaceMemo(placeName, memo) {
+  var memos = getPlaceMemos();
+  if (memo) memos[placeName] = memo;
+  else delete memos[placeName];
+  localStorage.setItem('placeMemos', JSON.stringify(memos));
+}
+
+function addMemoButtons() {
+  var slots = document.querySelectorAll('.itin-slot-place');
+  var memos = getPlaceMemos();
+  for (var i = 0; i < slots.length; i++) {
+    var slot = slots[i];
+    if (slot.querySelector('.itin-memo-btn')) continue;
+    var placeName = slot.textContent.replace(/MAP$/, '').trim().split('(')[0].trim();
+    if (!placeName) continue;
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'itin-memo-btn';
+    btn.dataset.memoPlace = placeName;
+    btn.textContent = memos[placeName] ? '\u270F\uFE0F' : '\U0001f4dd';
+    btn.title = '\uBA54\uBAA8 \uCD94\uAC00/\uC218\uC815';
+    slot.appendChild(btn);
+
+    if (memos[placeName]) {
+      var memoText = document.createElement('div');
+      memoText.className = 'itin-memo-text';
+      memoText.textContent = memos[placeName];
+      slot.parentElement.appendChild(memoText);
+    }
+  }
+}
+
+document.addEventListener('click', function(e) {
+  if (e.target.classList.contains('itin-memo-btn')) {
+    var place = e.target.dataset.memoPlace;
+    var current = getPlaceMemos()[place] || '';
+    var newMemo = prompt('\U0001f4dd ' + place + ' \uBA54\uBAA8:', current);
+    if (newMemo !== null) {
+      savePlaceMemo(place, newMemo);
+      renderItineraryTimeline();
+      showMemoToast(newMemo ? '\uBA54\uBAA8 \uC800\uC7A5\uB428' : '\uBA54\uBAA8 \uC0AD\uC81C\uB428');
+    }
+  }
+});
+
+// --- 8. EXCHANGE RATE (realtime from server) ---
+(async function showExchangeRate() {
+  var toolbar = document.querySelector('.travel-toolbar');
+  if (!toolbar) return;
+  var chip = document.createElement('span');
+  chip.className = 'exchange-rate-chip';
+  chip.textContent = '¥/₩ 로딩...';
+  toolbar.appendChild(chip);
+  try {
+    var resp = await fetch('/api/fx-rate');
+    var data = await resp.json();
+    if (data && data.yen100toKrw) {
+      chip.textContent = '100¥≈' + data.yen100toKrw.toLocaleString() + '원 | 1만원≈¥' + data.man1wonToYen.toLocaleString();
+      chip.title = '실시간 환율 (1엔=' + data.jpyToKrw + '원) · ' + (data.lastUpdate || '').slice(0, 10);
+    }
+  } catch(e) {
+    chip.textContent = '100¥≈950원';
+  }
+})();
+
+// ═══════════════════════════════════════════════
+// 9. 로그인 / 일정 저장 · 불러오기
+// ═══════════════════════════════════════════════
+
+var currentUser = null;
+
+// 로그인 상태 확인
+(async function checkAuth() {
+  try {
+    var resp = await fetch('/api/auth/me');
+    var data = await resp.json();
+    currentUser = data.user;
+    renderAuthUI();
+  } catch(e) {
+    currentUser = null;
+    renderAuthUI();
+  }
+
+  // 미설정 프로바이더 로그인 버튼 숨기기
+  try {
+    var pResp = await fetch('/api/auth/providers');
+    var providers = await pResp.json();
+    var navBtn = document.getElementById('loginNaver');
+    var kakBtn = document.getElementById('loginKakao');
+    var gooBtn = document.getElementById('loginGoogle');
+    if (navBtn) navBtn.style.display = providers.naver ? '' : 'none';
+    if (kakBtn) kakBtn.style.display = providers.kakao ? '' : 'none';
+    if (gooBtn) gooBtn.style.display = providers.google ? '' : 'none';
+    if (!providers.naver && !providers.kakao && !providers.google) {
+      var btns = document.querySelector('#loginModal .login-buttons');
+      if (btns) btns.innerHTML = '<p class="login-none-msg">현재 로그인 서비스가 설정되지 않았습니다.<br>.env 파일에 OAuth 키를 추가해주세요.</p>';
+    }
+  } catch(e) {}
+})();
+
+function renderAuthUI() {
+  var authArea = document.getElementById('authArea');
+  if (!authArea) return;
+
+  if (currentUser) {
+    var providerLabel = { naver: '네이버', kakao: '카카오', google: 'Google' }[currentUser.provider] || '';
+    var imgHtml = currentUser.profileImage
+      ? '<img src="' + currentUser.profileImage + '" class="auth-avatar" alt="" />'
+      : '<span class="auth-avatar-placeholder">👤</span>';
+    authArea.innerHTML =
+      '<div class="auth-user-info">' +
+        imgHtml +
+        '<span class="auth-nickname">' + (currentUser.nickname || providerLabel) + '</span>' +
+        '<button type="button" id="btnSavePlan" class="toolbar-btn auth-save-btn" title="현재 일정 저장">💾 저장</button>' +
+        '<button type="button" id="btnMyPlans" class="toolbar-btn auth-plans-btn" title="내 저장 일정">📂 내 일정</button>' +
+        '<button type="button" id="btnLogout" class="toolbar-btn auth-logout-btn" title="로그아웃">로그아웃</button>' +
+      '</div>';
+  } else {
+    authArea.innerHTML =
+      '<button type="button" id="btnLogin" class="toolbar-btn auth-login-btn" title="로그인">👤 로그인</button>';
+  }
+}
+
+// 로그인 모달 열기/닫기 + 저장/불러오기/로그아웃 — event delegation
+document.addEventListener('click', function(e) {
+  // 로그인 버튼
+  if (e.target.closest('#btnLogin')) {
+    var modal = document.getElementById('loginModal');
+    if (modal) modal.classList.remove('hidden');
+    return;
+  }
+
+  // 모달 닫기
+  if (e.target.closest('#loginModalClose') || (e.target.classList && e.target.classList.contains('login-modal-overlay'))) {
+    var modal = document.getElementById('loginModal');
+    if (modal) modal.classList.add('hidden');
+    return;
+  }
+
+  // 로그아웃
+  if (e.target.closest('#btnLogout')) {
+    if (!confirm('로그아웃 하시겠습니까?')) return;
+    fetch('/api/auth/logout', { method: 'POST' }).then(function() {
+      currentUser = null;
+      renderAuthUI();
+      showMemoToast('로그아웃 되었습니다.');
+    });
+    return;
+  }
+
+  // 일정 저장
+  if (e.target.closest('#btnSavePlan')) {
+    savePlanToServer();
+    return;
+  }
+
+  // 내 일정 열기
+  if (e.target.closest('#btnMyPlans')) {
+    loadMyPlansList();
+    togglePanel('myPlansPanel');
+    return;
+  }
+
+  // 내 일정 목록에서 불러오기
+  if (e.target.closest('.my-plan-load')) {
+    var planId = e.target.closest('.my-plan-load').dataset.planId;
+    if (planId) loadPlanFromServer(planId);
+    return;
+  }
+
+  // 내 일정 목록에서 삭제
+  if (e.target.closest('.my-plan-delete')) {
+    var planId = e.target.closest('.my-plan-delete').dataset.planId;
+    if (planId) deletePlanFromServer(planId);
+    return;
+  }
+});
+
+// 일정 저장
+async function savePlanToServer() {
+  if (!currentUser) {
+    showMemoToast('로그인이 필요합니다.');
+    return;
+  }
+  if (!currentItineraryData) {
+    showMemoToast('저장할 일정이 없습니다. 먼저 일정을 생성해주세요.');
+    return;
+  }
+
+  var cityEl = el('city');
+  var cityLabel = '';
+  if (cityEl && cityEl.selectedOptions && cityEl.selectedOptions[0]) {
+    cityLabel = cityEl.selectedOptions[0].textContent;
+  }
+  var startDate = el('startDate') ? el('startDate').value : '';
+  var days = el('days') ? Number(el('days').value) : 0;
+  var theme = el('theme') ? el('theme').value : '';
+
+  var defaultTitle = (cityLabel || '일본') + ' ' + days + '일 여행';
+  if (startDate) defaultTitle += ' (' + startDate + ')';
+
+  // 모달 표시
+  var modal = document.getElementById('saveModal');
+  var nameInput = document.getElementById('saveNameInput');
+  var dupNotice = document.getElementById('saveDupNotice');
+  var confirmBtn = document.getElementById('saveConfirmBtn');
+  if (!modal || !nameInput) return;
+
+  nameInput.value = defaultTitle;
+  dupNotice.classList.add('hidden');
+  dupNotice.innerHTML = '';
+  confirmBtn.textContent = '저장';
+  confirmBtn.classList.remove('overwrite');
+  modal.classList.remove('hidden');
+  nameInput.focus();
+  nameInput.select();
+
+  // 기존 일정 목록 가져오기
+  var existingPlans = [];
+  try {
+    var listResp = await fetch('/api/my-plans/list');
+    var listData = await listResp.json();
+    existingPlans = listData.plans || [];
+  } catch(e) {}
+
+  // 중복 확인 함수
+  function checkDup() {
+    var name = nameInput.value.trim();
+    var dup = existingPlans.find(function(p) { return p.title === name; });
+    if (dup) {
+      var savedDate = dup.savedAt ? new Date(dup.savedAt).toLocaleDateString('ko-KR') : '';
+      dupNotice.innerHTML = '⚠️ <strong>"' + name + '"</strong> 이름의 일정이 이미 있습니다. (' + savedDate + ' 저장)<br>저장하면 기존 일정을 덮어씁니다.';
+      dupNotice.className = 'save-dup-notice warn';
+      confirmBtn.textContent = '덮어쓰기';
+      confirmBtn.classList.add('overwrite');
+      return dup.id;
+    } else {
+      dupNotice.classList.add('hidden');
+      confirmBtn.textContent = '저장';
+      confirmBtn.classList.remove('overwrite');
+      return null;
+    }
+  }
+
+  nameInput.addEventListener('input', checkDup);
+  var dupId = checkDup();
+
+  // 저장 실행을 Promise로 처리
+  return new Promise(function(resolve) {
+    function cleanup() {
+      modal.classList.add('hidden');
+      nameInput.removeEventListener('input', checkDup);
+      confirmBtn.replaceWith(confirmBtn.cloneNode(true));
+      document.getElementById('saveCancelBtn').replaceWith(
+        document.getElementById('saveCancelBtn').cloneNode(true)
+      );
+      resolve();
+    }
+
+    document.getElementById('saveCancelBtn').addEventListener('click', cleanup, { once: true });
+    modal.addEventListener('click', function(ev) {
+      if (ev.target === modal) cleanup();
+    }, { once: true });
+
+    document.getElementById('saveConfirmBtn').addEventListener('click', async function() {
+      var title = nameInput.value.trim() || defaultTitle;
+      var overwriteId = checkDup();
+
+      var saveData = {
+        id: overwriteId || undefined,
+        title: title,
+        cityKey: cityEl ? cityEl.value : '',
+        cityLabel: cityLabel,
+        startDate: startDate,
+        days: days,
+        theme: theme,
+        data: {
+          itinerary: currentItineraryData,
+          flight: selectedFlight || null,
+          flightId: selectedFlightId || '',
+          stay: selectedStay || null,
+          stayId: selectedStayId || '',
+          flightResults: flightResults || [],
+          stayResults: stayResults || [],
+          latestDestList: latestDestList || [],
+          latestRecFoodList: latestRecFoodList || [],
+          latestFoodList: latestFoodList || [],
+          latestDestSearchList: latestDestSearchList || [],
+          formValues: {
+            city: cityEl ? cityEl.value : '',
+            startDate: startDate,
+            days: days,
+            theme: theme,
+            budget: el('budget') ? el('budget').value : 'mid',
+            pace: el('pace') ? el('pace').value : 'normal',
+            from: el('from') ? el('from').value : '',
+            to: el('to') ? el('to').value : '',
+            departDate: el('departDate') ? el('departDate').value : '',
+            returnDate: el('returnDate') ? el('returnDate').value : '',
+            checkIn: el('checkIn') ? el('checkIn').value : '',
+            stayArea: el('stayArea') ? el('stayArea').value : '',
+            foodCity: el('foodCity') ? el('foodCity').value : ''
+          }
+        }
+      };
+
+      try {
+        var resp = await fetch('/api/my-plans/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(saveData)
+        });
+        var result = await resp.json();
+        if (resp.ok) {
+          showMemoToast(overwriteId ? '기존 일정을 덮어썼습니다!' : '일정이 저장되었습니다!');
+        } else {
+          showMemoToast(result.error || '저장 실패');
+        }
+      } catch(e) {
+        showMemoToast('저장 중 오류가 발생했습니다.');
+      }
+      cleanup();
+    }, { once: true });
+  });
+}
+
+// 내 일정 목록 불러오기
+async function loadMyPlansList() {
+  var container = document.getElementById('myPlansContent');
+  if (!container) return;
+  container.innerHTML = '<p class="my-plans-loading">불러오는 중...</p>';
+
+  try {
+    var resp = await fetch('/api/my-plans/list');
+    var data = await resp.json();
+    if (!resp.ok) {
+      container.innerHTML = '<p class="my-plans-empty">' + (data.error || '오류') + '</p>';
+      return;
+    }
+    if (!data.plans || data.plans.length === 0) {
+      container.innerHTML = '<p class="my-plans-empty">저장된 일정이 없습니다.</p>';
+      return;
+    }
+
+    var html = '';
+    data.plans.forEach(function(p) {
+      var dateStr = p.savedAt ? new Date(p.savedAt).toLocaleDateString('ko-KR') : '';
+      html += '<div class="my-plan-card">' +
+        '<div class="my-plan-info">' +
+          '<strong>' + (p.title || p.cityLabel || '일정') + '</strong>' +
+          '<small>' + (p.startDate || '') + ' · ' + (p.days || 0) + '일 · ' + dateStr + ' 저장</small>' +
+        '</div>' +
+        '<div class="my-plan-actions">' +
+          '<button type="button" class="my-plan-load" data-plan-id="' + p.id + '">불러오기</button>' +
+          '<button type="button" class="my-plan-delete" data-plan-id="' + p.id + '">삭제</button>' +
+        '</div>' +
+      '</div>';
+    });
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = '<p class="my-plans-empty">목록을 불러올 수 없습니다.</p>';
+  }
+}
+
+// 일정 불러오기
+async function loadPlanFromServer(planId) {
+  try {
+    var resp = await fetch('/api/my-plans/load?id=' + encodeURIComponent(planId));
+    var data = await resp.json();
+    if (!resp.ok || !data.plan) {
+      showMemoToast(data.error || '불러오기 실패');
+      return;
+    }
+
+    var plan = data.plan;
+    var d = plan.data || {};
+
+    // 1. 폼 값 복원
+    if (d.formValues) {
+      var fv = d.formValues;
+      if (fv.city && el('city')) el('city').value = fv.city;
+      if (fv.startDate && el('startDate')) el('startDate').value = fv.startDate;
+      if (fv.days && el('days')) el('days').value = fv.days;
+      if (fv.theme && el('theme')) el('theme').value = fv.theme;
+      if (fv.budget && el('budget')) el('budget').value = fv.budget;
+      if (fv.pace && el('pace')) el('pace').value = fv.pace;
+      if (fv.from && el('from')) el('from').value = fv.from;
+      if (fv.to && el('to')) el('to').value = fv.to;
+      if (fv.departDate && el('departDate')) el('departDate').value = fv.departDate;
+      if (fv.returnDate && el('returnDate')) el('returnDate').value = fv.returnDate;
+      if (fv.checkIn && el('checkIn')) el('checkIn').value = fv.checkIn;
+      if (fv.stayArea && el('stayArea')) el('stayArea').value = fv.stayArea;
+      if (fv.foodCity && el('foodCity')) el('foodCity').value = fv.foodCity;
+    }
+
+    // 2. 항공권 복원
+    if (d.flight) {
+      selectedFlight = d.flight;
+      selectedFlightId = d.flightId || '';
+    }
+    if (d.flightResults && d.flightResults.length > 0) {
+      flightResults = d.flightResults;
+      try { renderFlightCards(true); } catch(e) {}
+    }
+
+    // 3. 숙소 복원
+    if (d.stay) {
+      selectedStay = d.stay;
+      selectedStayId = d.stayId || '';
+    }
+    if (d.stayResults && d.stayResults.length > 0) {
+      stayResults = d.stayResults;
+      try { renderStayCards(); } catch(e) {}
+    }
+
+    // 4. 추천 목록 복원
+    if (d.latestDestList && d.latestDestList.length > 0) {
+      latestDestList = d.latestDestList;
+      try { renderCards('destCards', latestDestList, 'dest'); } catch(e) {}
+    }
+    if (d.latestRecFoodList && d.latestRecFoodList.length > 0) {
+      latestRecFoodList = d.latestRecFoodList;
+      try { renderRecFoodCards(latestRecFoodList); } catch(e) {}
+    }
+    if (d.latestFoodList && d.latestFoodList.length > 0) {
+      latestFoodList = d.latestFoodList;
+      try { renderCards('foodCards', latestFoodList, 'food'); } catch(e) {}
+    }
+    if (d.latestDestSearchList && d.latestDestSearchList.length > 0) {
+      latestDestSearchList = d.latestDestSearchList;
+      try { renderCards('destSearchCards', latestDestSearchList, 'dest'); } catch(e) {}
+    }
+
+    // 5. 일정 데이터 복원 및 렌더링 (저장된 데이터는 이미 사용자 편집 반영됨 → 저녁 블록 삭제 방지)
+    if (d.itinerary) {
+      d.itinerary._skipMealStrip = true;
+      currentItineraryData = d.itinerary;
+      if (typeof renderItinerary === 'function') renderItinerary(d.itinerary);
+    }
+
+    // 6. 선택 카드 + 예산 요약 렌더링
+    try { renderPlanExtras(); } catch(e) {}
+
+    togglePanel('myPlansPanel');
+    showMemoToast('일정을 불러왔습니다!');
+  } catch(e) {
+    showMemoToast('불러오기 중 오류가 발생했습니다.');
+  }
+}
+
+// 일정 삭제
+async function deletePlanFromServer(planId) {
+  if (!confirm('이 일정을 삭제하시겠습니까?')) return;
+  try {
+    var resp = await fetch('/api/my-plans/delete?id=' + encodeURIComponent(planId), { method: 'DELETE' });
+    var data = await resp.json();
+    if (resp.ok && data.deleted) {
+      showMemoToast('일정이 삭제되었습니다.');
+      loadMyPlansList();
+    } else {
+      showMemoToast('삭제 실패');
+    }
+  } catch(e) {
+    showMemoToast('삭제 중 오류가 발생했습니다.');
+  }
+}

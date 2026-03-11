@@ -32,8 +32,8 @@ project-root/
   server.js            # Node.js HTTP 서버 (전체 백엔드 로직, ~5000줄)
   public/
     index.html          # 메인 HTML (~296줄)
-    app.js              # 프론트엔드 JS (~1800줄)
-    styles.css           # 전체 스타일 (~1500줄)
+    app.js              # 프론트엔드 JS (~2200줄)
+    styles.css           # 전체 스타일 (~1700줄)
     manifest.webmanifest # PWA 매니페스트
   deploy/
     DEPLOY.md           # 배포 가이드
@@ -596,6 +596,45 @@ Google Places API의 `primaryType` (영문)을 한국어로 변환하는 사전 
 
 ---
 
+## 11-1. 여행자 편의 기능 (v2)
+
+### 일정 내보내기/공유
+- 텍스트 복사 / 마크다운 복사 / Web Share API 링크 공유
+- 항공권/숙소/일정/예산 통합 포맷팅
+
+### 여행 준비 체크리스트 (Checklist)
+- 6개 그룹 25+ 항목 (여권, 교통, 숙소, 통신, 짐, 앱)
+- localStorage 저장 (세션 간 유지)
+- 진행률 바 표시
+
+### 긴급 정보 패널 (Emergency)
+- 긴급 연락처 (경찰 110, 소방 119, Visitor Hotline)
+- 주일 한국 대사관/영사관 4곳 연락처
+- 의료/분실물/자연재해 대응 가이드
+
+### 일본어 여행 회화 (Phrases)
+- 7개 카테고리 40+개 표현 (인사, 식당, 길, 쇼핑, 숙소, 긴급, 알레르기)
+- 일본어 + 로마지 발음 + 한국어 병기
+- 클립보드 복사 / 키워드 검색
+
+### 날씨 예보 (Weather)
+- Open-Meteo API 10일 예보 (무료)
+- 여행 기간 강조 표시
+- 우천/추위/더위 조언 자동 생성
+
+### 일정 최적화 분석 (Schedule Analysis)
+- 매 렌더링 시 자동 분석
+- 경고: 하루 3곳 초과, 종일+다른 일정 충돌, 장소 중복
+- 팁: 야간도착/오전출발 시 일정 조언
+
+### 장소 메모 (Place Memo)
+- 일정 내 각 장소에 개인 메모 추가/수정/삭제
+- localStorage 저장
+
+### 환율 참고 표시
+- 헤더에 엔화 환산 참고치 표시
+
+
 ## 11. 멀티턴 AI 채팅 (Multi-turn Chat)
 
 ### 개요
@@ -627,6 +666,46 @@ Google Places API의 `primaryType` (영문)을 한국어로 변환하는 사전 
 → 도쿄+교토 병합된 일정 생성
 ```
 
+
+## 11-1. 여행자 편의 기능 (v2)
+
+### 일정 내보내기/공유
+- 텍스트 복사 / 마크다운 복사 / Web Share API 링크 공유
+- 항공권/숙소/일정/예산 통합 포맷팅
+
+### 여행 준비 체크리스트 (Checklist)
+- 6개 그룹 25+ 항목 (여권, 교통, 숙소, 통신, 짐, 앱)
+- localStorage 저장 (세션 간 유지)
+- 진행률 바 표시
+
+### 긴급 정보 패널 (Emergency)
+- 긴급 연락처 (경찰 110, 소방 119, Visitor Hotline)
+- 주일 한국 대사관/영사관 4곳 연락처
+- 의료/분실물/자연재해 대응 가이드
+
+### 일본어 여행 회화 (Phrases)
+- 7개 카테고리 40+개 표현 (인사, 식당, 길, 쇼핑, 숙소, 긴급, 알레르기)
+- 일본어 + 로마지 발음 + 한국어 병기
+- 클립보드 복사 / 키워드 검색
+
+### 날씨 예보 (Weather)
+- Open-Meteo API 10일 예보 (무료)
+- 여행 기간 강조 표시
+- 우천/추위/더위 조언 자동 생성
+
+### 일정 최적화 분석 (Schedule Analysis)
+- 매 렌더링 시 자동 분석
+- 경고: 하루 3곳 초과, 종일+다른 일정 충돌, 장소 중복
+- 팁: 야간도착/오전출발 시 일정 조언
+
+### 장소 메모 (Place Memo)
+- 일정 내 각 장소에 개인 메모 추가/수정/삭제
+- localStorage 저장
+
+### 환율 참고 표시
+- 헤더에 엔화 환산 참고치 표시
+
+
 ## 11. 변경 이력
 
 | 날짜 | 변경 내용 |
@@ -655,3 +734,47 @@ Google Places API의 `primaryType` (영문)을 한국어로 변환하는 사전 
 | 2026-03 | 80개 테스트 케이스 풀테스트 통과 (TestList.txt) |
 | 2026-03 | 추천 맛집 카드 중복 X 버튼 제거, 탐색→추천 추가/삭제 시 버튼 상태 동기화 |
 | 2026-03 | 여행지/맛집 탐색 결과 수 대폭 확대 (10→20/30), 해외 장소 필터링 강화 |
+| 2026-03 | 여행자 편의 기능 v2 추가: 일정 내보내기, 체크리스트, 긴급정보, 일본어회화, 날씨예보, 일정분석, 장소메모, 환율표시 |
+
+
+## 12. OAuth 로그인 및 일정 저장 기능
+
+### 12-1. 소셜 로그인 (Naver / Kakao / Google)
+- **OAuth 2.0 Authorization Code Flow** 사용
+- 각 프로바이더별 `/api/auth/{provider}` (리다이렉트) + `/api/auth/{provider}/callback` (콜백) 엔드포인트
+- 서버사이드에서 code → access_token → profile 교환
+- 세션: HMAC 서명된 쿠키 (`sid=uuid.signature`) + 인메모리 Map 저장
+- 사용자 정보: `data/users.json` 파일 기반 저장
+
+### 12-2. 일정 저장/불러오기
+| 엔드포인트 | 메서드 | 설명 |
+|---|---|---|
+| `/api/my-plans/save` | POST | 현재 일정 저장 (로그인 필요) |
+| `/api/my-plans/list` | GET | 내 저장 일정 목록 |
+| `/api/my-plans/load?id=` | GET | 특정 일정 불러오기 |
+| `/api/my-plans/delete?id=` | DELETE | 일정 삭제 |
+| `/api/auth/me` | GET | 현재 로그인 상태 |
+| `/api/auth/logout` | POST | 로그아웃 |
+| `/api/auth/providers` | GET | 활성화된 OAuth 프로바이더 목록 |
+
+- 저장 데이터: 일정(itinerary) + 항공권(flight) + 숙소(stay) + 폼 값
+- 파일 기반: `data/saved_plans.json` (userId로 필터링)
+- 프론트엔드: event delegation으로 로그인/저장/불러오기/삭제 처리
+
+### 12-3. 환경 변수 (.env)
+```
+NAVER_CLIENT_ID / NAVER_CLIENT_SECRET
+KAKAO_REST_API_KEY / KAKAO_CLIENT_SECRET
+GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET
+SESSION_SECRET
+OAUTH_BASE_URL (배포시)
+```
+
+### 12-4. UI 구성
+- 헤더 우측: 로그인/로그아웃 버튼 + 프로필 아바타
+- 로그인 모달: 네이버(초록)/카카오(노랑)/구글(흰색) 브랜드 버튼
+- 로그인 시: 💾저장 / 📂내 일정 버튼 노출
+- 내 일정 사이드 패널: 저장된 일정 카드 목록 (불러오기/삭제)
+
+---
+**변경 이력**: 2026-03-11 소셜 로그인(Naver/Kakao/Google) + 일정 저장/불러오기 기능 추가

@@ -8,3 +8,6 @@ Thumbs.db
 dist/
 build/
 .cache/
+
+# User data (OAuth sessions, saved plans)
+data/
