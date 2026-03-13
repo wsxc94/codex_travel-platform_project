@@ -100,6 +100,71 @@ let aiRouteCities = [];
 let aiRegionDayPlan = [];
 let aiSpecialPrefs = {};
 
+// -- Undo/Redo History Stack --
+const _itinHistory = [];
+let _itinHistoryIdx = -1;
+const ITIN_HISTORY_MAX = 30;
+
+function pushItinHistory() {
+  if (!currentItineraryData || _itinRestoringHistory) return;
+  var snapData = Object.assign({}, currentItineraryData);
+  delete snapData._skipMealStrip;
+  const snapshot = JSON.stringify(snapData);
+  if (_itinHistoryIdx >= 0 && _itinHistory[_itinHistoryIdx] === snapshot) return;
+  _itinHistory.splice(_itinHistoryIdx + 1);
+  _itinHistory.push(snapshot);
+  if (_itinHistory.length > ITIN_HISTORY_MAX) _itinHistory.shift();
+  _itinHistoryIdx = _itinHistory.length - 1;
+}
+
+var _itinRestoringHistory = false;
+
+function undoItinerary() {
+  if (_itinHistoryIdx <= 0) return false;
+  _itinHistoryIdx--;
+  currentItineraryData = JSON.parse(_itinHistory[_itinHistoryIdx]);
+  currentItineraryData._skipMealStrip = true;
+  _itinRestoringHistory = true;
+  renderItineraryTimeline();
+  _itinRestoringHistory = false;
+  updateItinMap();
+  return true;
+}
+
+function redoItinerary() {
+  if (_itinHistoryIdx >= _itinHistory.length - 1) return false;
+  _itinHistoryIdx++;
+  currentItineraryData = JSON.parse(_itinHistory[_itinHistoryIdx]);
+  currentItineraryData._skipMealStrip = true;
+  _itinRestoringHistory = true;
+  renderItineraryTimeline();
+  _itinRestoringHistory = false;
+  updateItinMap();
+  return true;
+}
+
+// -- Client-side Cache --
+const _apiCache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
+function getCachedOrFetch(url, options, cacheKey) {
+  const key = cacheKey || url;
+  const cached = _apiCache.get(key);
+  if (cached && Date.now() - cached.time < CACHE_TTL_MS) {
+    return Promise.resolve(cached.data);
+  }
+  return fetch(url, options).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(function(data) {
+    _apiCache.set(key, { data: data, time: Date.now() });
+    return data;
+  }).catch(function(err) {
+    console.warn('[cache] fetch error:', err.message);
+    return {};
+  });
+}
+
 function parseCsv(text) {
   return String(text || '').split(',').map((x) => x.trim()).filter(Boolean);
 }
@@ -186,13 +251,19 @@ async function postJson(url, payload) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) {
+    if (res.status === 429) throw new Error('요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.');
+    if (res.status === 400) {
+      try { var errData = await res.json(); throw new Error(errData.error || '입력값이 올바르지 않습니다.'); }
+      catch(e) { if (e.message) throw e; throw new Error('입력값이 올바르지 않습니다.'); }
+    }
+    throw new Error(await res.text());
+  }
   return res.json();
 }
 
 async function initCityOptions() {
-  const res = await fetch('/api/cities');
-  const data = await res.json();
+  const data = await getCachedOrFetch('/api/cities');
   const cities = (data.cities || []).sort((a, b) => a.label.localeCompare(b.label, 'ko'));
   cityCatalog = cities;
   for (const c of cities) {
@@ -283,9 +354,9 @@ function categoryIcon(cat) {
 }
 
 function cardPhoto(url, name) {
-  if (url) return '<div class="card-photo" style="background-image:url(' + escapeHtml(url) + ')"></div>';
+  if (url) return '<div class="card-photo" role="img" aria-label="' + escapeHtml(name || '') + '" style="background-image:url(' + escapeHtml(url) + ')"></div>';
   var letter = (name || '?').charAt(0);
-  return '<div class="card-photo card-photo-none">' + escapeHtml(letter) + '</div>';
+  return '<div class="card-photo card-photo-none" role="img" aria-label="' + escapeHtml(name || '') + '">' + escapeHtml(letter) + '</div>';
 }
 
 function appendAiChat(role, text) {
@@ -438,32 +509,32 @@ function flightCardTemplate(x) {
           s.cabinLabel || '',
           s.baggageLabel || ''
         ].filter(Boolean);
-        return `<div class="flight-leg-row"><span class="airline-badge" title="${s.airline || ''}">${s.airlineCode || ''}</span>${parts.join(' · ')}</div>`;
+        return `<div class="flight-leg-row"><span class="airline-badge" title="${escapeHtml(s.airline || '')}">${escapeHtml(s.airlineCode || '')}</span>${escapeHtml(parts.join(' · '))}</div>`;
       });
     }
-    return [`<div class="flight-leg-row"><span class="airline-badge" title="${l.airline || ''}">${l.airlineCode || ''}</span>${l.departureTime} → ${l.arrivalTime} ${l.from}(${airportCityByCode(l.from)}) ~ ${l.to}(${airportCityByCode(l.to)}) ${l.airline}</div>`];
+    return [`<div class="flight-leg-row"><span class="airline-badge" title="${escapeHtml(l.airline || '')}">${escapeHtml(l.airlineCode || '')}</span>${escapeHtml(l.departureTime || '')} → ${escapeHtml(l.arrivalTime || '')} ${escapeHtml(l.from || '')}(${escapeHtml(airportCityByCode(l.from))}) ~ ${escapeHtml(l.to || '')}(${escapeHtml(airportCityByCode(l.to))}) ${escapeHtml(l.airline || '')}</div>`];
   }).join('');
   const selectedClass = x._id && x._id === selectedFlightId ? ' selected' : '';
   const selectedLabel = x._id && x._id === selectedFlightId ? '선택됨 (AI 일정 반영)' : 'AI 일정에 포함';
 
   return `<article class="card flight-card${selectedClass}">
     <div class="flight-top">
-      <div class="flight-route">${route}</div>
+      <div class="flight-route">${escapeHtml(route)}</div>
       <div class="flight-price">${x.totalPriceKRW.toLocaleString()}원</div>
     </div>
-    <div class="flight-sub">${dateRange}</div>
+    <div class="flight-sub">${escapeHtml(dateRange)}</div>
     <div class="flight-line">${legRows}</div>
     <div class="flight-meta">
-      <span class="chip">${x.provider}</span>
+      <span class="chip">${escapeHtml(x.provider || '')}</span>
       <span class="chip">총 ${x.totalDurationMin}분</span>
       <span class="chip">경유 ${x.totalStops}회</span>
     </div>
-    <div class="flight-sub">항공사: ${(x.airlines || []).join(', ') || 'N/A'}</div>
+    <div class="flight-sub">항공사: ${escapeHtml((x.airlines || []).join(', ') || 'N/A')}</div>
     ${x.priceBreakdown ? `<div class="flight-sub">요금: 기본 ${x.priceBreakdown.baseKRW.toLocaleString()}원 · 세금 ${x.priceBreakdown.taxesKRW.toLocaleString()}원 · 수수료 ${x.priceBreakdown.feesKRW.toLocaleString()}원</div>` : ''}
     <div class="link-row">
-      <button type="button" class="stay-select-btn flight-select-btn" data-flight-id="${x._id || ''}">${selectedLabel}</button>
-      <a href="${x.deeplinkSkyscanner || x.deeplink || (x.legs[0] && x.legs[0].deeplink) || '#'}" target="_blank" rel="noreferrer">스카이스캐너</a>
-      <a href="${x.deeplinkKayak || x.deeplink || (x.legs[0] && x.legs[0].deeplink) || '#'}" target="_blank" rel="noreferrer">카약</a>
+      <button type="button" class="stay-select-btn flight-select-btn" data-flight-id="${escapeHtml(x._id || '')}">${selectedLabel}</button>
+      <a href="${escapeHtml(x.deeplinkSkyscanner || x.deeplink || (x.legs[0] && x.legs[0].deeplink) || '#')}" target="_blank" rel="noreferrer">스카이스캐너</a>
+      <a href="${escapeHtml(x.deeplinkKayak || x.deeplink || (x.legs[0] && x.legs[0].deeplink) || '#')}" target="_blank" rel="noreferrer">카약</a>
     </div>
   </article>`;
 }
@@ -827,15 +898,17 @@ function renderBudgetSummary() {
   var flightCost = selectedFlight ? selectedFlight.totalPriceKRW : 0;
   var stayCost = selectedStay ? (selectedStay.totalPriceKRW || selectedStay.totalKRW || 0) : 0;
   var days = Number(el('days').value) || 4;
-  var mealPerDay = 55000;
-  var transportPerDay = 22000;
-  var activityPerDay = 25000;
+  var bb = (currentItineraryData && currentItineraryData.budgetBreakdown) || null;
+  var mealPerDay = bb ? bb.meal.perDay : 55000;
+  var transportPerDay = bb ? bb.transport.perDay : 22000;
+  var activityPerDay = bb ? bb.activity.perDay : 25000;
   var mealTotal = mealPerDay * days;
   var transportTotal = transportPerDay * days;
   var activityTotal = activityPerDay * days;
   var total = flightCost + stayCost + mealTotal + transportTotal + activityTotal;
   var fmt = function(n) { return n.toLocaleString() + '원'; };
-  var budgetLabel = '표준';
+  var tierLabels = { low: '절약', mid: '표준', high: '프리미엄' };
+  var budgetLabel = bb ? (tierLabels[bb.budgetTier] || '표준') : '표준';
   wrap.innerHTML =
     '<h4>예상 비용 요약</h4>' +
     '<div class="budget-rows">' +
@@ -1005,7 +1078,8 @@ async function runPlan(extra = {}, syncAux = false) {
     summary: data.summary,
     itinerary: data.itinerary,
     tips: data.tips,
-    itinerarySource: data.itinerarySource
+    itinerarySource: data.itinerarySource,
+    budgetBreakdown: data.budgetBreakdown || null
   });
 
   if (!syncAux) return;
@@ -1192,37 +1266,37 @@ function stayCardTemplate(x) {
   const priceNight = `${x.pricePerNightKRW.toLocaleString()}원/박`;
   const totalPrice = `${x.totalPriceKRW.toLocaleString()}원`;
   const meta = `${x.typeLabel} · 평점 ${x.rating} · ${x.area}`;
-  const amenityChips = (x.amenities || []).slice(0, 4).map((a) => `<span class="chip">${a}</span>`).join('');
-  const offerLine = x.offerId ? `오퍼 ${x.offerId}` : '';
-  const roomLine = x.roomType ? `객실 ${x.roomType}` : '';
-  const boardLine = x.boardType ? `식사 ${x.boardType}` : '';
-  const cancelLine = x.cancellation ? `취소 ${x.cancellation}` : '';
+  const amenityChips = (x.amenities || []).slice(0, 4).map((a) => `<span class="chip">${escapeHtml(a)}</span>`).join('');
+  const offerLine = x.offerId ? `오퍼 ${escapeHtml(x.offerId)}` : '';
+  const roomLine = x.roomType ? `객실 ${escapeHtml(x.roomType)}` : '';
+  const boardLine = x.boardType ? `식사 ${escapeHtml(x.boardType)}` : '';
+  const cancelLine = x.cancellation ? `취소 ${escapeHtml(x.cancellation)}` : '';
   const detailLine = [offerLine, roomLine, boardLine, cancelLine].filter(Boolean).join(' · ');
   const priceLine = x.priceBreakdown
     ? `요금: 기본 ${x.priceBreakdown.baseKRW.toLocaleString()}원 · 세금 ${x.priceBreakdown.taxesKRW.toLocaleString()}원 · 수수료 ${x.priceBreakdown.feesKRW.toLocaleString()}원`
     : '';
   const selectedClass = x.id === selectedStayId ? ' selected' : '';
-  return `<article class="card stay-card${selectedClass}" data-stay-id="${x.id}">
+  return `<article class="card stay-card${selectedClass}" data-stay-id="${escapeHtml(String(x.id || ''))}">
     <div class="stay-top">
       <div>
-        <div class="stay-name">${x.name}</div>
-        <div class="stay-meta">${meta}</div>
+        <div class="stay-name">${escapeHtml(x.name)}</div>
+        <div class="stay-meta">${escapeHtml(meta)}</div>
       </div>
       <div class="stay-price">
         <div class="stay-night">${priceNight}</div>
         <div class="stay-total">총 ${totalPrice}</div>
       </div>
     </div>
-    <div class="stay-meta-row">${x.provider} · ${x.checkIn} ~ ${x.checkOut}</div>
-    <div class="stay-meta-row">객실 ${x.rooms} · 인원 ${x.guests}</div>
+    <div class="stay-meta-row">${escapeHtml(x.provider || '')} · ${escapeHtml(x.checkIn || '')} ~ ${escapeHtml(x.checkOut || '')}</div>
+    <div class="stay-meta-row">객실 ${escapeHtml(String(x.rooms || ''))} · 인원 ${escapeHtml(String(x.guests || ''))}</div>
     ${detailLine ? `<div class="stay-meta-row">${detailLine}</div>` : ''}
     ${priceLine ? `<div class="stay-meta-row">${priceLine}</div>` : ''}
     <div class="stay-meta-row stay-amenities">${amenityChips}</div>
     <div class="link-row">
-      <button type="button" class="stay-select-btn" data-stay-id="${x.id}">
+      <button type="button" class="stay-select-btn" data-stay-id="${escapeHtml(String(x.id || ''))}">
         ${x.id === selectedStayId ? '선택됨 (AI 일정 반영)' : 'AI 일정에 포함'}
       </button>
-      <a href="${x.deeplink}" target="_blank" rel="noreferrer">예약 페이지</a>
+      <a href="${escapeHtml(x.deeplink || '#')}" target="_blank" rel="noreferrer">예약 페이지</a>
     </div>
   </article>`;
 }
@@ -1379,7 +1453,7 @@ el('btnFlights').addEventListener('click', async () => {
         sourceNote.textContent = data.note || '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
         sourceNote.classList.add('warn');
       } else {
-        var flightSrcLabel = String(data.source).includes('mock') ? '📋 더미 데이터 (폴백)' : '✨ ' + data.source;
+        var flightSrcLabel = data.source === 'kiwi_live' ? '✨ Kiwi.com 실시간' : String(data.source).includes('amadeus') ? '✨ Amadeus' : '✨ ' + data.source;
         sourceNote.textContent = `항공편: ${flightSrcLabel}`;
         sourceNote.classList.remove('warn');
       }
@@ -1642,7 +1716,7 @@ el('btnStays').addEventListener('click', async () => {
         sourceNote.textContent = data.note || '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
         sourceNote.classList.add('warn');
       } else {
-        var staySrcLabel = String(data.source).includes('mock') ? '📋 더미 데이터 (폴백)' : '✨ ' + data.source;
+        var staySrcLabel = data.source === 'rakuten_live' ? '✨ Rakuten Travel 실시간' : String(data.source).includes('amadeus') ? '✨ Amadeus' : '✨ ' + data.source;
         sourceNote.textContent = `숙소: ${staySrcLabel}`;
         sourceNote.classList.remove('warn');
       }
@@ -2343,6 +2417,24 @@ if (el('checkOut')) {
   });
 }
 
+// -- Undo/Redo button bindings --
+if (el('btnItinUndo')) el('btnItinUndo').addEventListener('click', function() { undoItinerary(); });
+if (el('btnItinRedo')) el('btnItinRedo').addEventListener('click', function() { redoItinerary(); });
+
+// -- Undo/Redo keyboard shortcuts --
+document.addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+    if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'SELECT' || document.activeElement.isContentEditable)) return;
+    e.preventDefault();
+    undoItinerary();
+  }
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+    if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'SELECT' || document.activeElement.isContentEditable)) return;
+    e.preventDefault();
+    redoItinerary();
+  }
+});
+
 (async () => {
   await initCityOptions();
   appendAiChat('assistant', '가고 싶은 장소를 채팅으로 입력하면 공항 기준 지역과 여행 조건을 자동으로 맞춰드릴게요.');
@@ -2616,10 +2708,10 @@ var CITY_COORDS = {
   niigata: { lat: 37.90, lng: 139.02 }, toyama: { lat: 36.70, lng: 137.21 }, hakodate: { lat: 41.77, lng: 140.73 }
 };
 
-var WMO_ICONS = { 0: '\u2600\uFE0F', 1: '\U0001f324', 2: '\u26C5', 3: '\u2601\uFE0F', 45: '\U0001f32b', 48: '\U0001f32b',
-  51: '\U0001f326', 53: '\U0001f326', 55: '\U0001f327', 61: '\U0001f327', 63: '\U0001f327', 65: '\U0001f327',
+var WMO_ICONS = { 0: '\u2600\uFE0F', 1: '\uD83C\uDF24', 2: '\u26C5', 3: '\u2601\uFE0F', 45: '\uD83C\uDF2B', 48: '\uD83C\uDF2B',
+  51: '\uD83C\uDF26', 53: '\uD83C\uDF26', 55: '\uD83C\uDF27', 61: '\uD83C\uDF27', 63: '\uD83C\uDF27', 65: '\uD83C\uDF27',
   71: '\u2744\uFE0F', 73: '\u2744\uFE0F', 75: '\u2744\uFE0F', 77: '\u2744\uFE0F',
-  80: '\U0001f326', 81: '\U0001f327', 82: '\U0001f327', 85: '\u2744\uFE0F', 86: '\u2744\uFE0F',
+  80: '\uD83C\uDF26', 81: '\uD83C\uDF27', 82: '\uD83C\uDF27', 85: '\u2744\uFE0F', 86: '\u2744\uFE0F',
   95: '\u26C8', 96: '\u26C8', 99: '\u26C8' };
 
 async function fetchWeather(cityKey) {
@@ -2655,7 +2747,7 @@ function renderWeatherWidget(daily, cityLabel) {
     html += '<div class="weather-day-date">' + d.slice(5) + '</div>';
     html += '<div class="weather-day-icon">' + icon + '</div>';
     html += '<div class="weather-day-temp"><span class="hi">' + hi + '\u00B0</span>/<span class="lo">' + lo + '\u00B0</span></div>';
-    if (rain > 0) html += '<div class="weather-day-rain">\U0001f4a7' + rain + '%</div>';
+    if (rain > 0) html += '<div class="weather-day-rain">\uD83D\uDCA7' + rain + '%</div>';
     html += '</div>';
   }
   html += '</div>';
@@ -2674,7 +2766,7 @@ function renderWeatherWidget(daily, cityLabel) {
     var advice = [];
     if (rainyDays.length > 0) advice.push('\u2614 \uC5EC\uD589 \uAE30\uAC04 \uC911 ' + rainyDays.length + '\uC77C \uBE44 \uC608\uC0C1 - \uC6B0\uC0B0 \uD544\uC218! \uC2E4\uB0B4 \uAD00\uAD11\uC9C0 \uB300\uC548\uC744 \uC900\uBE44\uD558\uC138\uC694.');
     if (coldDays.length > 0) advice.push('\u2744\uFE0F \uCD94\uC6B4 \uB0A0\uC774 \uC788\uC2B5\uB2C8\uB2E4 - \uB530\uB73B\uD55C \uC637 \uCC59\uACA8\uC624\uC138\uC694.');
-    if (hotDays.length > 0) advice.push('\U0001f525 \uB354\uC6B4 \uB0A0\uC774 \uC788\uC2B5\uB2C8\uB2E4 - \uC218\uBD84 \uBCF4\uCDA9\uACFC \uC790\uC678\uC120 \uCC28\uB2E8\uC744 \uC900\uBE44\uD558\uC138\uC694.');
+    if (hotDays.length > 0) advice.push('\uD83D\uDD25 \uB354\uC6B4 \uB0A0\uC774 \uC788\uC2B5\uB2C8\uB2E4 - \uC218\uBD84 \uBCF4\uCDA9\uACFC \uC790\uC678\uC120 \uCC28\uB2E8\uC744 \uC900\uBE44\uD558\uC138\uC694.');
     if (advice.length > 0) html += '<div class="weather-advice">' + advice.join('<br>') + '</div>';
   }
 
@@ -2705,7 +2797,7 @@ function buildItineraryText(format) {
     lines.push('');
   }
   if (selectedStay) {
-    lines.push(md ? '## \U0001f3e8 \uC219\uC18C' : '[ \uC219\uC18C ]');
+    lines.push(md ? '## \uD83C\uDFE8 \uC219\uC18C' : '[ \uC219\uC18C ]');
     lines.push(describeStaySummary(selectedStay));
     lines.push('');
   }
@@ -2728,7 +2820,7 @@ function buildItineraryText(format) {
 
   // Budget
   if (selectedFlight || selectedStay) {
-    lines.push(md ? '## \U0001f4b0 \uC608\uC0C1 \uBE44\uC6A9' : '[ \uC608\uC0C1 \uBE44\uC6A9 ]');
+    lines.push(md ? '## \uD83D\uDCB0 \uC608\uC0C1 \uBE44\uC6A9' : '[ \uC608\uC0C1 \uBE44\uC6A9 ]');
     var days = Number(el('days') ? el('days').value : 4);
     var fc = selectedFlight ? selectedFlight.totalPriceKRW : 0;
     var sc = selectedStay ? (selectedStay.totalPriceKRW || 0) : 0;
@@ -2896,9 +2988,9 @@ function analyzeSchedule() {
     return;
   }
 
-  var typeIcons = { warn: '\u26A0\uFE0F', info: '\u2139\uFE0F', tip: '\U0001f4a1' };
+  var typeIcons = { warn: '\u26A0\uFE0F', info: '\u2139\uFE0F', tip: '\uD83D\uDCA1' };
   var typeClasses = { warn: 'schedule-alert-warn', info: 'schedule-alert-info', tip: 'schedule-alert-tip' };
-  var html = '<h4>\U0001f4CA \uC77C\uC815 \uBD84\uC11D</h4>';
+  var html = '<h4>\uD83D\uDCCA \uC77C\uC815 \uBD84\uC11D</h4>';
   for (var ai = 0; ai < alerts.length; ai++) {
     var a = alerts[ai];
     html += '<div class="schedule-alert ' + (typeClasses[a.type] || '') + '">';
@@ -2913,6 +3005,8 @@ function analyzeSchedule() {
 var _origRenderItineraryTimeline = renderItineraryTimeline;
 renderItineraryTimeline = function() {
   _origRenderItineraryTimeline();
+  // Auto-push undo history on every itinerary re-render (covers all edits)
+  try { pushItinHistory(); } catch(e) {}
   try { analyzeSchedule(); } catch(e) {}
   try { addMemoButtons(); } catch(e) {}
 };
@@ -2942,7 +3036,7 @@ function addMemoButtons() {
     btn.type = 'button';
     btn.className = 'itin-memo-btn';
     btn.dataset.memoPlace = placeName;
-    btn.textContent = memos[placeName] ? '\u270F\uFE0F' : '\U0001f4dd';
+    btn.textContent = memos[placeName] ? '\u270F\uFE0F' : '\uD83D\uDCDD';
     btn.title = '\uBA54\uBAA8 \uCD94\uAC00/\uC218\uC815';
     slot.appendChild(btn);
 
@@ -2959,7 +3053,7 @@ document.addEventListener('click', function(e) {
   if (e.target.classList.contains('itin-memo-btn')) {
     var place = e.target.dataset.memoPlace;
     var current = getPlaceMemos()[place] || '';
-    var newMemo = prompt('\U0001f4dd ' + place + ' \uBA54\uBAA8:', current);
+    var newMemo = prompt('\uD83D\uDCDD ' + place + ' \uBA54\uBAA8:', current);
     if (newMemo !== null) {
       savePlaceMemo(place, newMemo);
       renderItineraryTimeline();
@@ -3360,6 +3454,9 @@ async function loadPlanFromServer(planId) {
     if (d.itinerary) {
       d.itinerary._skipMealStrip = true;
       currentItineraryData = d.itinerary;
+      // Reset undo history with loaded state as baseline
+      _itinHistory.length = 0;
+      _itinHistoryIdx = -1;
       if (typeof renderItinerary === 'function') renderItinerary(d.itinerary);
     }
 

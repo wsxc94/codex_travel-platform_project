@@ -6,6 +6,15 @@
     <title>JapanTravel Suite</title>
     <link rel="stylesheet" href="/styles.css" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- Travelpayouts verification -->
+    <script data-noptimize="1" data-cfasync="false" data-wpfc-render="false">
+      (function () {
+          var script = document.createElement("script");
+          script.async = 1;
+          script.src = 'https://tp-em.com/NTA3NDQ3.js?t=507447';
+          document.head.appendChild(script);
+      })();
+    </script>
   </head>
   <body>
     <div class="bg-layer"></div>
@@ -16,22 +25,22 @@
       </div>
 
       <div class="travel-toolbar">
-        <button type="button" id="btnExportPlan" class="toolbar-btn" title="일정 내보내기">📋 내보내기</button>
-        <button type="button" id="btnChecklist" class="toolbar-btn" title="여행 체크리스트">✅ 체크리스트</button>
-        <button type="button" id="btnEmergency" class="toolbar-btn" title="긴급 정보">🆘 긴급</button>
-        <button type="button" id="btnPhrases" class="toolbar-btn" title="일본어 회화">🗣 회화</button>
-        <button type="button" id="btnWeather" class="toolbar-btn" title="날씨">🌤 날씨</button>
+        <button type="button" id="btnExportPlan" class="toolbar-btn" title="일정 내보내기" aria-label="일정 내보내기">📋 내보내기</button>
+        <button type="button" id="btnChecklist" class="toolbar-btn" title="여행 체크리스트" aria-label="여행 체크리스트">✅ 체크리스트</button>
+        <button type="button" id="btnEmergency" class="toolbar-btn" title="긴급 정보" aria-label="긴급 정보">🆘 긴급</button>
+        <button type="button" id="btnPhrases" class="toolbar-btn" title="일본어 회화" aria-label="일본어 회화">🗣 회화</button>
+        <button type="button" id="btnWeather" class="toolbar-btn" title="날씨" aria-label="날씨 예보">🌤 날씨</button>
       </div>
 
       <div class="auth-area" id="authArea">
-        <button type="button" id="btnLogin" class="toolbar-btn auth-login-btn" title="로그인"> 로그인</button>
+        <button type="button" id="btnLogin" class="toolbar-btn auth-login-btn" title="로그인" aria-label="로그인"> 로그인</button>
       </div>
 
     </header>
 
-    <main class="layout">
-      <section class="panel">
-        <h2>여행 조건</h2>
+    <main class="layout" role="main">
+      <section class="panel" aria-labelledby="section-conditions">
+        <h2 id="section-conditions">여행 조건</h2>
         <div class="fields two">
           <label class="form-item"><span>여행 지역</span>
             <select id="city"></select>
@@ -48,27 +57,27 @@
             </select>
           </label>
           <input type="hidden" id="budget" value="mid">
-          <button id="btnPlan">추천+AI일정 통합 생성</button>
+          <button id="btnPlan" aria-label="추천과 AI 일정 통합 생성">추천+AI일정 통합 생성</button>
         </div>
         <div class="ai-chat-wrap">
           <h3>AI 여행 조건 채팅</h3>
           <p class="note">가고 싶은 장소를 자연어로 입력하면 공항 기준 지역/조건을 자동 설정하고 추천을 생성합니다.</p>
           <div id="aiSourceNote" class="source-note"></div>
           <div class="ai-chat-input">
-            <textarea id="aiRequest" placeholder="예: 유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고, 3박 4일로 이동 편한 숙소 추천해줘"></textarea>
+            <textarea id="aiRequest" aria-label="AI 여행 조건 입력" placeholder="예: 유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고, 3박 4일로 이동 편한 숙소 추천해줘"></textarea>
             <button id="btnAiAssist" type="button">AI로 조건 적용</button>
           </div>
           <div id="aiChatLog" class="ai-chat-log"></div>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>추천 결과</h2>
+      <section class="panel" aria-labelledby="section-results">
+        <h2 id="section-results">추천 결과</h2>
         <div class="split">
           <div>
-            <div class="rec-tabs">
-              <button type="button" class="rec-tab active" data-rec-tab="dest">추천 여행지</button>
-              <button type="button" class="rec-tab" data-rec-tab="food">추천 맛집</button>
+            <div class="rec-tabs" role="tablist" aria-label="추천 유형 선택">
+              <button type="button" class="rec-tab active" data-rec-tab="dest" role="tab" aria-selected="true">추천 여행지</button>
+              <button type="button" class="rec-tab" data-rec-tab="food" role="tab" aria-selected="false">추천 맛집</button>
             </div>
             <div id="recDestPanel" class="rec-panel">
               <div id="destSourceNote" class="source-note"></div>
@@ -85,6 +94,8 @@
           <div id="planSourceNote" class="source-note warn"></div>
           <div class="plan-controls">
             <button id="btnPlanRefresh" type="button" class="ghost-btn">AI 일정 새로고침</button>
+            <button id="btnItinUndo" type="button" class="ghost-btn" aria-label="일정 되돌리기 (Ctrl+Z)">↩ 되돌리기</button>
+            <button id="btnItinRedo" type="button" class="ghost-btn" aria-label="일정 다시 실행 (Ctrl+Y)">↪ 다시</button>
             <div class="plan-control-copy">선택된 항공·숙소를 유지하고 싶다면 버튼으로 AI 일정만 다시 요청하세요.</div>
           </div>
           <div id="planSelectionCards" class="selection-card-grid"></div>
@@ -135,8 +146,8 @@
         </div>
       </section>
 
-      <section class="panel">
-        <h2>탐색</h2>
+      <section class="panel" aria-labelledby="section-explore">
+        <h2 id="section-explore">탐색</h2>
         <div class="search-tabs">
           <button type="button" class="search-tab active" data-search-tab="dest">여행지</button>
           <button type="button" class="search-tab" data-search-tab="food">맛집</button>
@@ -154,7 +165,7 @@
                 <option value="shopping">쇼핑</option>
               </select>
             </label>
-            <button id="btnDestSearch">검색</button>
+            <button id="btnDestSearch" aria-label="여행지 검색">검색</button>
           </div>
           <div id="destSearchSourceNote" class="source-note"></div>
           <div id="destSearchCards" class="cards"></div>
@@ -166,20 +177,20 @@
             </label>
             <label class="form-item"><span>장르</span><input id="foodGenre" placeholder="장르 (예: 라멘)" /></label>
 
-            <button id="btnFood">검색</button>
+            <button id="btnFood" aria-label="맛집 검색">검색</button>
           </div>
           <div id="foodSourceNote" class="source-note"></div>
           <div id="foodCards" class="cards"></div>
         </div>
       </section>
 
-      <section class="panel">
-        <h2>항공권 탐색</h2>
+      <section class="panel" aria-labelledby="section-flights">
+        <h2 id="section-flights">항공권 탐색</h2>
         <p class="note">실시간 데이터가 아닌 참고용 데이터 입니다.</p>
-        <div class="tabs" id="tripTabs">
-          <button type="button" class="tab active" data-trip="oneway">편도</button>
-          <button type="button" class="tab" data-trip="roundtrip">왕복</button>
-          <button type="button" class="tab" data-trip="multicity">다구간</button>
+        <div class="tabs" id="tripTabs" role="tablist" aria-label="항공권 유형 선택">
+          <button type="button" class="tab active" data-trip="oneway" role="tab" aria-selected="true">편도</button>
+          <button type="button" class="tab" data-trip="roundtrip" role="tab" aria-selected="false">왕복</button>
+          <button type="button" class="tab" data-trip="multicity" role="tab" aria-selected="false">다구간</button>
         </div>
         <div class="fields three">
           <label class="form-item basic-route"><span>출발 공항</span><div class="airport-wrap">
@@ -197,7 +208,7 @@
               <option value="cheap">최저가 우선</option>
               <option value="fast">최단시간 우선</option>
             </select></label>
-          <button id="btnFlights">항공권 검색</button>
+          <button id="btnFlights" aria-label="항공권 검색">항공권 검색</button>
         </div>
         <div id="multiWrap" class="multi-wrap hidden">
           <p class="multi-help">다구간은 아래 구간을 직접 편집해서 검색합니다. 최소 2개 구간이 필요합니다.</p>
@@ -246,8 +257,8 @@
         </div>
       </section>
 
-      <section class="panel">
-        <h2>숙소 탐색</h2>
+      <section class="panel" aria-labelledby="section-stays">
+        <h2 id="section-stays">숙소 탐색</h2>
         <p class="note">실시간 데이터가 아닌 참고용 데이터 입니다.</p>
         <div class="fields three">
           <label class="form-item"><span>도시</span>
@@ -262,7 +273,7 @@
               <option value="price">최저가순</option>
               <option value="rating">평점순</option>
             </select></label>
-          <button id="btnStays">숙소 검색</button>
+          <button id="btnStays" aria-label="숙소 검색">숙소 검색</button>
         </div>
         <details class="filter-tab">
           <summary>필터 탭</summary>
