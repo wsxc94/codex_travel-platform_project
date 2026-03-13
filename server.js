@@ -34,6 +34,8 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const AMADEUS_API_KEY = process.env.AMADEUS_API_KEY || '';
 const AMADEUS_API_SECRET = process.env.AMADEUS_API_SECRET || '';
 const AMADEUS_ENV = (process.env.AMADEUS_ENV || 'test').toLowerCase();
+const KIWI_API_KEY = process.env.KIWI_API_KEY || '';
+const RAKUTEN_APP_ID = process.env.RAKUTEN_APP_ID || '';
 const FX_USD_KRW = Number(process.env.FX_USD_KRW || 1350);
 let fxUsdKrw = FX_USD_KRW;
 let fxJpyKrw = Number(process.env.FX_JPY_KRW || 9.5);
@@ -56,6 +58,123 @@ const GEMINI_FALLBACK_MODELS = [
 ].filter(m => m !== GEMINI_API_MODEL);
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 const USE_GEMINI = Boolean(GEMINI_API_KEY);
+
+// -- AI Model Circuit Breaker --
+// 429/503 에러 발생 모델을 일정 시간 스킵하여 불필요한 API 호출 방지
+const MODEL_COOLDOWN_MS = 60_000; // 60초 쿨다운
+const _modelFailures = new Map(); // key: modelName, value: { failedAt, status, cooldownMs }
+
+function recordModelFailure(model, status = 429) {
+  // 연속 실패 시 쿨다운 점진 증가 (60s -> 120s -> 240s, 최대 5분)
+  const prev = _modelFailures.get(model);
+  const baseCooldown = (prev && (Date.now() - prev.failedAt) < prev.cooldownMs * 2)
+    ? Math.min(prev.cooldownMs * 2, 300_000)
+    : MODEL_COOLDOWN_MS;
+  _modelFailures.set(model, { failedAt: Date.now(), status, cooldownMs: baseCooldown });
+  console.log(`[circuit-breaker] ${model} marked failed (${status}), cooldown ${baseCooldown / 1000}s`);
+}
+
+function isModelAvailable(model) {
+  const entry = _modelFailures.get(model);
+  if (!entry) return true;
+  if (Date.now() - entry.failedAt >= entry.cooldownMs) {
+    _modelFailures.delete(model);
+    console.log(`[circuit-breaker] ${model} cooldown expired, re-enabling`);
+    return true;
+  }
+  return false;
+}
+
+function getAvailableModels(models) {
+  const available = models.filter(m => isModelAvailable(m));
+  // 모든 모델이 쿨다운이면 가장 오래전 실패한 모델 하나라도 시도
+  if (available.length === 0 && models.length > 0) {
+    let oldest = models[0];
+    let oldestTime = Infinity;
+    for (const m of models) {
+      const entry = _modelFailures.get(m);
+      if (entry && entry.failedAt < oldestTime) {
+        oldestTime = entry.failedAt;
+        oldest = m;
+      }
+    }
+    console.log(`[circuit-breaker] All models in cooldown, forcing oldest: ${oldest}`);
+    _modelFailures.delete(oldest);
+    return [oldest];
+  }
+  return available;
+}
+
+// -- Request Validation & Rate Limiting --
+const MAX_REQUEST_BODY_BYTES = 512_000; // 500KB max
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 60;
+const _rateLimitMap = new Map();
+
+function checkRateLimit(ip) {
+  const now = Date.now();
+  let entry = _rateLimitMap.get(ip);
+  if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
+    entry = { windowStart: now, count: 0 };
+    _rateLimitMap.set(ip, entry);
+  }
+  entry.count++;
+  if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
+    return false;
+  }
+  return true;
+}
+
+// Clean up rate limit map periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of _rateLimitMap) {
+    if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) _rateLimitMap.delete(ip);
+  }
+  // Clean up expired OAuth state tokens (max 10 min lifetime)
+  for (const [key, val] of sessionStore) {
+    if (key.startsWith('oauth_state_') && now - (val.createdAt || 0) > 600_000) {
+      sessionStore.delete(key);
+    }
+  }
+}, 120_000);
+
+function validatePayload(payload, schema) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'Invalid request body';
+  for (const [key, rule] of Object.entries(schema)) {
+    const val = payload[key];
+    if (rule.required && (val === undefined || val === null || val === '')) return `Missing required field: ${key}`;
+    if (val !== undefined && val !== null) {
+      if (rule.type === 'string' && typeof val !== 'string') return `${key} must be a string`;
+      if (rule.type === 'number' && (typeof val !== 'number' || !Number.isFinite(val))) return `${key} must be a number`;
+      if (rule.enum && !rule.enum.includes(val)) return `${key} must be one of: ${rule.enum.join(', ')}`;
+      if (rule.max !== undefined && typeof val === 'number' && val > rule.max) return `${key} exceeds maximum ${rule.max}`;
+      if (rule.min !== undefined && typeof val === 'number' && val < rule.min) return `${key} must be at least ${rule.min}`;
+      if (rule.maxLength && typeof val === 'string' && val.length > rule.maxLength) return `${key} exceeds max length ${rule.maxLength}`;
+    }
+  }
+  return null;
+}
+
+const API_SCHEMAS = {
+  'travel-plan': {
+    city: { type: 'string', maxLength: 50 },
+    theme: { type: 'string', enum: ['mixed', 'foodie', 'culture', 'shopping', 'nature'] },
+    days: { type: 'number', min: 1, max: 10 },
+    budget: { type: 'string', enum: ['low', 'mid', 'high'] }
+  },
+  'ai-travel-chat': {
+    message: { type: 'string', required: true, maxLength: 2000 }
+  },
+  flights: {
+    tripType: { type: 'string', enum: ['oneway', 'roundtrip', 'multicity'] }
+  },
+  stays: {
+    guests: { type: 'number', min: 1, max: 20 },
+    rooms: { type: 'number', min: 1, max: 10 }
+  }
+};
+
 const CHAT_PARSE_STRICT_AI = String(process.env.CHAT_PARSE_STRICT_AI || 'false').toLowerCase() === 'true';
 
 // ── OAuth 로그인 설정 ──
@@ -524,19 +643,19 @@ async function supabaseRequest(method, route, body) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
+    let size = 0;
     req.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 1e6) {
+      size += chunk.length;
+      if (size > MAX_REQUEST_BODY_BYTES) {
         req.destroy();
-        reject(new Error('Payload too large'));
+        reject(new Error('Request body too large'));
+        return;
       }
+      body += chunk;
     });
     req.on('end', () => {
-      try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch {
-        reject(new Error('Invalid JSON body'));
-      }
+      try { resolve(body ? JSON.parse(body) : {}); }
+      catch { reject(new Error('Invalid JSON body')); }
     });
     req.on('error', reject);
   });
@@ -2297,7 +2416,7 @@ async function fetchGoogleAttractions(cityLabel, theme) {
 
   const results = await Promise.all(queries.map(async (q) => {
     const body = { textQuery: q, maxResultCount: 20, languageCode: 'ko', regionCode: 'JP' };
-    const r = await fetch(endpoint, {
+    const r = await fetchWithTimeout(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -2305,7 +2424,7 @@ async function fetchGoogleAttractions(cityLabel, theme) {
         'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.currentOpeningHours.openNow,places.regularOpeningHours,places.location,places.photos'
       },
       body: JSON.stringify(body)
-    });
+    }, AI_REQUEST_TIMEOUT_MS);
     if (!r.ok) return [];
     const data = await r.json();
     return data.places || [];
@@ -2336,22 +2455,41 @@ async function fetchGoogleAttractions(cityLabel, theme) {
   return Array.from(uniq.values());
 }
 
+function seasonalBonus(primaryType, startDate) {
+  if (!startDate) return 0.5;
+  const month = new Date(startDate).getMonth() + 1; // 1-12
+  const type = String(primaryType || '').toLowerCase();
+  // Cherry blossom season (Mar-Apr): parks, gardens, temples
+  if ((month === 3 || month === 4) && (type.includes('park') || type.includes('garden') || type.includes('temple') || type.includes('shrine'))) return 1.0;
+  // Autumn foliage (Oct-Nov): same outdoor spots
+  if ((month === 10 || month === 11) && (type.includes('park') || type.includes('garden') || type.includes('temple'))) return 0.95;
+  // Summer (Jul-Aug): aquariums, indoor, shopping
+  if ((month === 7 || month === 8) && (type.includes('aquarium') || type.includes('museum') || type.includes('shopping'))) return 0.9;
+  // Winter (Dec-Feb): hot springs, ski, illumination
+  if ((month === 12 || month === 1 || month === 2) && (type.includes('spa') || type.includes('resort') || type.includes('hot_spring'))) return 0.95;
+  // Snow festival in Sapporo (Feb)
+  if (month === 2 && type.includes('park')) return 0.85;
+  return 0.5; // neutral
+}
+
 function scoreExternalPlace(place, ctx) {
   const rating = Number(place.rating || 0);
   const reviewCount = Number(place.userRatingCount || 0);
   const reviewScore = clamp(Math.log1p(reviewCount) / Math.log1p(5000), 0, 1);
   const ratingScore = clamp(rating / 5, 0, 1);
-  const recentnessScore = clamp(0.35 + reviewScore * 0.65, 0, 1);
   const preferenceScore = categoryFit(ctx.theme, place.primaryType);
   const budgetScore = budgetFit(ctx.budget, place.primaryType);
   const centerDistKm = ctx.center && place.location ? haversineKm(ctx.center, { lat: place.location.latitude, lng: place.location.longitude }) : 5;
   const mobilityScore = clamp(1 - (centerDistKm / 20), 0.1, 1);
   const congestion = congestionPenalty(reviewCount, place.currentOpeningHours?.openNow);
+  const seasonBonus = seasonalBonus(place.primaryType, ctx.startDate);
   const composite = (
-    ratingScore * 0.40 +
-    reviewScore * 0.30 +
-    mobilityScore * 0.20 +
-    preferenceScore * 0.10
+    ratingScore * 0.35 +
+    reviewScore * 0.25 +
+    mobilityScore * 0.15 +
+    preferenceScore * 0.10 +
+    budgetScore * 0.05 +
+    seasonBonus * 0.10
   ) * 100;
 
   return Math.round(clamp(composite - (congestion * 10), 0, 100));
@@ -2383,7 +2521,7 @@ async function recommendDestinations(payload) {
             crowdScore: 3,
             mapUrl: p.googleMapsUri || mapUrl(`${p.displayName?.text || city.label} ${city.label}`),
             photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null,
-            aiScore: scoreExternalPlace(p, { theme, budget, center }),
+            aiScore: scoreExternalPlace(p, { theme, budget, center, startDate: payload.startDate }),
             rating: p.rating || null,
             reviewCount: p.userRatingCount || 0,
             lat: p.location?.latitude || null,
@@ -2675,7 +2813,9 @@ function createItinerary(payload) {
         bestTime: String(place.bestTime || '09:00-17:00'),
         stayMin: Math.max(30, Number(place.stayMin || 90)),
         mapUrl: place.mapUrl || mapUrl(`${place.name} ${place.city || cityLabelForDay || city.label}`),
-        aiScore: Math.max(60, Number(place.aiScore || 85))
+        aiScore: Math.max(60, Number(place.aiScore || 85)),
+        lat: place.lat || null,
+        lng: place.lng || null
       });
     };
     pushExtra(a, dayCity);
@@ -2728,7 +2868,7 @@ function createItinerary(payload) {
     summary: `${city.label} ${days}일 맞춤 일정${flightLegs.length ? ' (항공권 시간 반영)' : ''}`,
     itinerary,
     tips,
-    extraRecommendations: extraDedup
+    extraRecommendations: optimizeDayRoute(extraDedup)
   };
 }
 
@@ -3020,8 +3160,13 @@ async function callGeminiGenerateContent(prompt, opts = {}) {
     }
   };
 
-  // Try primary model first, then fallbacks on 429
-  const modelsToTry = [opts.model || GEMINI_API_MODEL, ...GEMINI_FALLBACK_MODELS];
+  // Try primary model first, then fallbacks on 429 (with circuit breaker)
+  const allModels = [opts.model || GEMINI_API_MODEL, ...GEMINI_FALLBACK_MODELS];
+  const modelsToTry = getAvailableModels(allModels);
+  if (modelsToTry.length < allModels.length) {
+    const skipped = allModels.filter(m => !modelsToTry.includes(m));
+    console.log(`[circuit-breaker] Skipping cooled-down models: ${skipped.join(', ')}`);
+  }
   const tried = new Set();
   let lastError = null;
 
@@ -3052,6 +3197,7 @@ async function callGeminiGenerateContent(prompt, opts = {}) {
 
       // Retry on 429 (rate limit), 503 (overloaded), 404 (model not found)
       if (res.status === 429 || res.status === 503 || res.status === 404) {
+        recordModelFailure(model, res.status);
         console.log(`[gemini] Model ${model} unavailable (${res.status}), trying next...`);
       } else {
         throw new Error(lastError);
@@ -3278,7 +3424,7 @@ async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo) 
       if (!r.ok) continue;
       const data = await r.json();
       if (data.places) allPlaces.push(...data.places);
-    } catch (err) { /* skip */ }
+    } catch (err) { console.warn('[api] Suppressed error:', err.message); }
   }
 
 
@@ -3318,6 +3464,47 @@ async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo) 
     .filter((f) => f.score >= 3.0 || f.score === null)
     .sort((a, b) => b.aiFit - a.aiFit)
     .slice(0, 20);
+}
+
+// -- Nearest-neighbor route optimization (per-city grouping + haversine) --
+function optimizeDayRoute(places) {
+  if (!places || places.length <= 2) return places;
+
+  // Group by city to avoid cross-city nearest-neighbor
+  const cityGroups = new Map();
+  const noCity = [];
+  for (const p of places) {
+    const c = String(p.city || '').toLowerCase();
+    if (!c) { noCity.push(p); continue; }
+    if (!cityGroups.has(c)) cityGroups.set(c, []);
+    cityGroups.get(c).push(p);
+  }
+
+  const result = [];
+  for (const group of cityGroups.values()) {
+    const withCoords = group.filter(p => p.lat && p.lng);
+    const withoutCoords = group.filter(p => !p.lat || !p.lng);
+    if (withCoords.length <= 2) {
+      result.push(...group);
+      continue;
+    }
+    // Nearest neighbor with haversine
+    const ordered = [withCoords[0]];
+    const remaining = withCoords.slice(1);
+    while (remaining.length > 0) {
+      const last = ordered[ordered.length - 1];
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < remaining.length; i++) {
+        const d = haversineKm(last, remaining[i]);
+        if (d < bestDist) { bestDist = d; bestIdx = i; }
+      }
+      ordered.push(remaining.splice(bestIdx, 1)[0]);
+    }
+    result.push(...ordered, ...withoutCoords);
+  }
+  result.push(...noCity);
+  return result;
 }
 
 async function buildTravelPlan(payload) {
@@ -3416,7 +3603,7 @@ async function buildTravelPlan(payload) {
     }
     recommendedFoods.sort((a, b) => (b.aiFit || 0) - (a.aiFit || 0));
     recommendedFoods = recommendedFoods.slice(0, 20);
-  } catch (err) { /* non-critical */ }
+  } catch (err) { console.warn('[api] Non-critical error:', err.message); }
 
   return {
     source: 'integrated_travel_planner_v1',
@@ -3498,7 +3685,378 @@ function convertToKRW(amount, currency) {
   const cur = String(currency || 'KRW').toUpperCase();
   if (cur === 'KRW') return num;
   if (cur === 'USD') return num * fxUsdKrw;
+  if (cur === 'JPY') return num * fxJpyKrw;
+  if (cur === 'EUR') return num * fxUsdKrw * 1.08;
   return num;
+}
+
+// ── Kiwi.com Tequila API (항공권) ──
+const KIWI_BASE = 'https://tequila-api.kiwi.com';
+
+function formatDateKiwi(isoDate) {
+  if (!isoDate) return '';
+  const [y, m, d] = isoDate.split('-');
+  return `${d}/${m}/${y}`;
+}
+
+async function fetchKiwiFlights(payload) {
+  if (!KIWI_API_KEY) return [];
+  const from = payload.from || 'ICN';
+  const tripType = payload.tripType || 'oneway';
+  const legs = payload.legs || [];
+  const headers = { 'apikey': KIWI_API_KEY };
+
+  // Multi-city
+  if (tripType === 'multicity' && legs.length >= 2) {
+    try {
+      const requests = legs.map(l => ({
+        fly_from: l.from || 'ICN',
+        fly_to: l.to || 'NRT',
+        date_from: formatDateKiwi(l.date),
+        date_to: formatDateKiwi(l.date)
+      }));
+      const res = await fetchWithTimeout(`${KIWI_BASE}/v2/flights_multi`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requests, curr: 'KRW', locale: 'ko', adults: Number(payload.adults) || 1, limit: 15 })
+      }, AI_REQUEST_TIMEOUT_MS);
+      if (!res.ok) { console.warn('[kiwi] multi-city error:', res.status); return []; }
+      const data = await res.json();
+      return (data || []).map((item, idx) => normalizeKiwiFlight(item, idx, tripType));
+    } catch (err) { console.warn('[kiwi] multi-city error:', err.message); return []; }
+  }
+
+  // One-way or round-trip
+  const params = new URLSearchParams({
+    fly_from: from,
+    fly_to: payload.to || legs[0]?.to || 'NRT',
+    date_from: formatDateKiwi(payload.departDate || legs[0]?.date),
+    date_to: formatDateKiwi(payload.departDate || legs[0]?.date),
+    flight_type: tripType === 'roundtrip' ? 'round' : 'oneway',
+    adults: String(Number(payload.adults) || 1),
+    curr: 'KRW',
+    locale: 'ko',
+    max_stopovers: '2',
+    sort: 'quality',
+    limit: '20'
+  });
+  if (tripType === 'roundtrip' && payload.returnDate) {
+    params.set('return_from', formatDateKiwi(payload.returnDate));
+    params.set('return_to', formatDateKiwi(payload.returnDate));
+  }
+  if (tripType === 'roundtrip' && legs[1]?.date) {
+    params.set('return_from', formatDateKiwi(legs[1].date));
+    params.set('return_to', formatDateKiwi(legs[1].date));
+  }
+
+  try {
+    const res = await fetchWithTimeout(`${KIWI_BASE}/v2/search?${params}`, { headers }, AI_REQUEST_TIMEOUT_MS);
+    if (!res.ok) { console.warn('[kiwi] search error:', res.status); return []; }
+    const data = await res.json();
+    return (data.data || []).map((item, idx) => normalizeKiwiFlight(item, idx, tripType));
+  } catch (err) { console.warn('[kiwi] search error:', err.message); return []; }
+}
+
+function normalizeKiwiFlight(item, idx, tripType) {
+  const outboundRoutes = (item.route || []).filter(r => r.return === 0);
+  const returnRoutes = (item.route || []).filter(r => r.return === 1);
+  const allRoutes = item.route || [];
+
+  const buildLeg = (routes, legIdx) => {
+    if (!routes.length) return null;
+    const first = routes[0];
+    const last = routes[routes.length - 1];
+    const segments = routes.map(r => ({
+      from: r.flyFrom,
+      to: r.flyTo,
+      departureTime: (r.local_departure || '').slice(11, 16),
+      arrivalTime: (r.local_arrival || '').slice(11, 16),
+      airline: r.airline || '',
+      airlineCode: r.airline || '',
+      flightNumber: `${r.airline || ''}${r.flight_no || ''}`,
+      cabin: 'ECONOMY',
+      cabinLabel: '\uC774\uCF54\uB178\uBBF8',
+      baggageLabel: item.bags_price && item.bags_price['1'] != null ? `\uC704\uD0C1 1\uAC1C ${Math.round(item.bags_price['1']).toLocaleString()}\uC6D0` : '\uC218\uD558\uBB3C \uC815\uBCF4 \uC5C6\uC74C'
+    }));
+    const depTime = (first.local_departure || '').slice(11, 16);
+    const arrTime = (last.local_arrival || '').slice(11, 16);
+    const durationSec = tripType === 'roundtrip'
+      ? (legIdx === 0 ? item.duration?.departure : item.duration?.return) || 0
+      : (item.duration?.departure || item.duration?.total || 0);
+    return {
+      legIndex: legIdx,
+      from: first.flyFrom,
+      to: last.flyTo,
+      date: (first.local_departure || '').slice(0, 10),
+      departureTime: depTime,
+      arrivalTime: arrTime,
+      durationMin: Math.round(durationSec / 60),
+      stops: Math.max(0, routes.length - 1),
+      airline: first.airline || '',
+      airlineCode: first.airline || '',
+      segments,
+      deeplink: item.deep_link || '#'
+    };
+  };
+
+  const legs = [];
+  if (outboundRoutes.length > 0) legs.push(buildLeg(outboundRoutes, 0));
+  else if (allRoutes.length > 0) legs.push(buildLeg(allRoutes, 0));
+  if (returnRoutes.length > 0) legs.push(buildLeg(returnRoutes, 1));
+  const validLegs = legs.filter(Boolean);
+
+  const allAirlines = [...new Set(allRoutes.map(r => r.airline).filter(Boolean))];
+  const allAirports = [...new Set(allRoutes.flatMap(r => [r.flyFrom, r.flyTo]).filter(Boolean))];
+  const totalStops = validLegs.reduce((s, l) => s + l.stops, 0);
+  const totalDurMin = validLegs.reduce((s, l) => s + l.durationMin, 0);
+  const depMinute = validLegs[0] ? toMinutes(validLegs[0].departureTime) : 0;
+
+  const firstLeg = validLegs[0] || {};
+  const kayakUrl = `https://www.kayak.com/flights/${firstLeg.from || ''}-${firstLeg.to || ''}/${firstLeg.date || ''}/`;
+  const ssUrl = `https://www.skyscanner.co.kr/transport/flights/${(firstLeg.from || '').toLowerCase()}/${(firstLeg.to || '').toLowerCase()}/${(firstLeg.date || '').replace(/-/g, '').slice(2)}/`;
+
+  return {
+    id: `kiwi_${idx}`,
+    tripType,
+    provider: 'Kiwi.com',
+    airlines: allAirlines,
+    airports: allAirports,
+    totalPriceKRW: Math.round(Number(item.price || 0)),
+    totalDurationMin: totalDurMin,
+    totalStops,
+    departureMinute: depMinute,
+    deeplinkKayak: kayakUrl,
+    deeplinkSkyscanner: ssUrl,
+    deeplink: item.deep_link || '#',
+    legs: validLegs
+  };
+}
+
+// ── Rakuten Travel API (숙소) ──
+const RAKUTEN_BASE = 'https://openapi.rakuten.co.jp/engine/api/Travel';
+
+// 도시키 → 라쿠텐 지역코드 매핑
+const RAKUTEN_AREA_MAP = {
+  tokyo:     { middle: 'tokyo',    small: 'tokyo' },
+  osaka:     { middle: 'osaka',    small: 'osaka' },
+  kyoto:     { middle: 'kyoto',    small: 'shi' },
+  sapporo:   { middle: 'hokkaido', small: 'sapporo' },
+  hakodate:  { middle: 'hokkaido', small: 'hakodate' },
+  nagoya:    { middle: 'aichi',    small: 'nagoya' },
+  fukuoka:   { middle: 'fukuoka',  small: 'fukuoka' },
+  hiroshima: { middle: 'hiroshima', small: 'hiroshima' },
+  sendai:    { middle: 'miyagi',   small: 'sendai' },
+  okinawa:   { middle: 'okinawa',  small: 'naha' },
+  kanazawa:  { middle: 'ishikawa', small: 'kanazawa' },
+  kobe:      { middle: 'hyogo',    small: 'kobe' },
+  nagasaki:  { middle: 'nagasaki', small: 'nagasaki' },
+  kumamoto:  { middle: 'kumamoto', small: 'kumamoto' },
+  kagoshima: { middle: 'kagoshima', small: 'kagoshima' },
+  oita:      { middle: 'oita',     small: 'beppu' },
+  matsuyama: { middle: 'ehime',    small: 'matsuyama' },
+  takamatsu: { middle: 'kagawa',   small: 'takamatsu' },
+  niigata:   { middle: 'niigata',  small: 'niigata' },
+  okayama:   { middle: 'okayama',  small: 'okayama' },
+  toyama:    { middle: 'toyama',   small: 'toyama' },
+  shizuoka:  { middle: 'shizuoka', small: 'shizuoka' },
+  kochi:     { middle: 'kochi',    small: 'kochi' },
+  tokushima: { middle: 'tokushima', small: 'tokushima' },
+  yamagata:  { middle: 'yamagata', small: 'yamagata' },
+  akita:     { middle: 'akita',    small: 'akita' },
+  aomori:    { middle: 'aomori',   small: 'aomori' },
+  fukushima: { middle: 'fukushima', small: 'fukushima' },
+  miyazaki:  { middle: 'miyazaki', small: 'miyazaki' },
+  obihiro:   { middle: 'hokkaido', small: 'obihiro' }
+};
+
+let _rakutenLastCall = 0;
+
+async function fetchRakutenHotels(payload) {
+  if (!RAKUTEN_APP_ID) return [];
+  const cityKey = cityKeyByInput(payload.city);
+  const areaMap = RAKUTEN_AREA_MAP[cityKey];
+
+  // Rate limit: 1 req/sec
+  const now = Date.now();
+  const wait = Math.max(0, 1100 - (now - _rakutenLastCall));
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  _rakutenLastCall = Date.now();
+
+  const checkIn = payload.checkIn || new Date().toISOString().slice(0, 10);
+  const checkOut = payload.checkOut || (() => { const d = new Date(checkIn); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })();
+  const adults = Number(payload.guests) || 2;
+  const rooms = Number(payload.rooms) || 1;
+
+  const params = new URLSearchParams({
+    applicationId: RAKUTEN_APP_ID,
+    format: 'json',
+    formatVersion: '2',
+    checkinDate: checkIn,
+    checkoutDate: checkOut,
+    adultNum: String(Math.min(adults, 10)),
+    roomNum: String(Math.min(rooms, 10)),
+    hits: '20',
+    sort: '+roomCharge',
+    responseType: 'large'
+  });
+
+  // Use area code if available, otherwise try coordinates
+  if (areaMap) {
+    params.set('largeClassCode', 'japan');
+    params.set('middleClassCode', areaMap.middle);
+    params.set('smallClassCode', areaMap.small);
+  } else {
+    // Fallback: use city coordinates from CITY_DATA
+    const city = CITY_DATA[cityKey] || buildGenericCity(cityKey);
+    if (city && city.airport) {
+      const airportCoord = JAPAN_AIRPORT_COORDS.find(a => a.code === city.airport);
+      if (airportCoord) {
+        params.set('datumType', '1');
+        params.set('latitude', String(airportCoord.lat));
+        params.set('longitude', String(airportCoord.lng));
+        params.set('searchRadius', '3');
+      } else {
+        return [];
+      }
+    } else {
+      return [];
+    }
+  }
+
+  try {
+    const res = await fetchWithTimeout(`${RAKUTEN_BASE}/VacantHotelSearch/20170426?${params}`, {}, AI_REQUEST_TIMEOUT_MS);
+    if (!res.ok) {
+      console.warn('[rakuten] search error:', res.status);
+      // Fallback to SimpleHotelSearch if VacantHotelSearch fails
+      params.delete('checkinDate');
+      params.delete('checkoutDate');
+      params.delete('adultNum');
+      params.delete('roomNum');
+      const res2 = await fetchWithTimeout(`${RAKUTEN_BASE}/SimpleHotelSearch/20170426?${params}`, {}, AI_REQUEST_TIMEOUT_MS);
+      if (!res2.ok) return [];
+      const data2 = await res2.json();
+      return normalizeRakutenSimple(data2, payload);
+    }
+    const data = await res.json();
+    return normalizeRakutenVacant(data, payload);
+  } catch (err) { console.warn('[rakuten] error:', err.message); return []; }
+}
+
+function normalizeRakutenVacant(data, payload) {
+  const hotels = data.hotels || [];
+  const checkIn = payload.checkIn || new Date().toISOString().slice(0, 10);
+  const checkOut = payload.checkOut || (() => { const d = new Date(checkIn); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })();
+  const nights = Math.max(1, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000));
+  const rooms = Number(payload.rooms) || 1;
+  const guests = Number(payload.guests) || 2;
+  const cityKey = cityKeyByInput(payload.city);
+  const city = CITY_DATA[cityKey] || buildGenericCity(cityKey);
+
+  return hotels.map((h, idx) => {
+    const basic = h.hotel?.[0]?.hotelBasicInfo || h.hotelBasicInfo || {};
+    const roomInfoArr = h.hotel?.slice(1) || [];
+    let cheapestCharge = Infinity;
+    let cheapestRoom = null;
+    let breakfastFlag = false;
+    let dinnerFlag = false;
+    let reserveUrl = '';
+
+    for (const ri of roomInfoArr) {
+      const rBasic = ri.roomInfo?.[0]?.roomBasicInfo;
+      const rCharge = ri.roomInfo?.[1]?.dailyCharge;
+      if (rBasic && rCharge) {
+        const total = Number(rCharge.total || rCharge.rakutenCharge || Infinity);
+        if (total < cheapestCharge) {
+          cheapestCharge = total;
+          cheapestRoom = rBasic;
+          breakfastFlag = rBasic.withBreakfastFlag === 1;
+          dinnerFlag = rBasic.withDinnerFlag === 1;
+          reserveUrl = rBasic.reserveUrl || '';
+        }
+      }
+    }
+
+    const priceJPY = cheapestCharge < Infinity ? cheapestCharge : (basic.hotelMinCharge || 8000);
+    const pricePerNightKRW = Math.round(convertToKRW(priceJPY, 'JPY'));
+    const totalPriceKRW = pricePerNightKRW * nights * rooms;
+
+    const amenities = [];
+    if (breakfastFlag) amenities.push('\uC870\uC2DD \uD3EC\uD568');
+    if (dinnerFlag) amenities.push('\uC11D\uC2DD \uD3EC\uD568');
+    if (basic.parkingInformation && !/\u306A\u3057|\u7121/.test(basic.parkingInformation)) amenities.push('\uC8FC\uCC28 \uAC00\uB2A5');
+    amenities.push('\uBB34\uB8CC Wi-Fi');
+
+    const nameKo = basic.hotelName || '\uC774\uB984 \uC5C6\uC74C';
+    const isRyokan = /\u65C5\u9928|\u6E29\u6CC9|\u308A\u3087\u304B\u3093|\u304A\u5BBF/.test(nameKo) || dinnerFlag;
+    const typeKey = isRyokan ? 'ryokan' : 'hotel';
+    const typeLabel = isRyokan ? '\uB8CC\uCE78' : '\uD638\uD154';
+    const rating = Number(basic.reviewAverage || 0);
+    const area = koreanizeAddress(basic.address1 + (basic.address2 || ''), city?.label || '') || city?.areas?.[0] || '';
+
+    return {
+      id: `rakuten_${basic.hotelNo || idx}`,
+      name: nameKo,
+      provider: 'Rakuten',
+      type: typeKey,
+      typeLabel,
+      area,
+      rating: rating > 0 ? rating : 7.5,
+      guests,
+      rooms,
+      checkIn,
+      checkOut,
+      nights,
+      pricePerNightKRW,
+      totalPriceKRW,
+      amenities,
+      aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
+      deeplink: reserveUrl || basic.hotelInformationUrl || basic.planListUrl || '#',
+      imageUrl: basic.hotelImageUrl || basic.hotelThumbnailUrl || null,
+      nearestStation: basic.nearestStation || '',
+      access: basic.access || ''
+    };
+  }).filter(h => h.pricePerNightKRW > 0);
+}
+
+function normalizeRakutenSimple(data, payload) {
+  const hotels = data.hotels || [];
+  const checkIn = payload.checkIn || new Date().toISOString().slice(0, 10);
+  const checkOut = payload.checkOut || (() => { const d = new Date(checkIn); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })();
+  const nights = Math.max(1, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000));
+  const rooms = Number(payload.rooms) || 1;
+  const guests = Number(payload.guests) || 2;
+  const cityKey = cityKeyByInput(payload.city);
+  const city = CITY_DATA[cityKey] || buildGenericCity(cityKey);
+
+  return hotels.map((h, idx) => {
+    const basic = h.hotel?.[0]?.hotelBasicInfo || h.hotelBasicInfo || {};
+    const priceJPY = basic.hotelMinCharge || 8000;
+    const pricePerNightKRW = Math.round(convertToKRW(priceJPY, 'JPY'));
+    const totalPriceKRW = pricePerNightKRW * nights * rooms;
+    const nameKo = basic.hotelName || '\uC774\uB984 \uC5C6\uC74C';
+    const isRyokan = /\u65C5\u9928|\u6E29\u6CC9|\u308A\u3087\u304B\u3093|\u304A\u5BBF/.test(nameKo);
+    const rating = Number(basic.reviewAverage || 0);
+    const area = koreanizeAddress(basic.address1 + (basic.address2 || ''), city?.label || '') || city?.areas?.[0] || '';
+
+    return {
+      id: `rakuten_${basic.hotelNo || idx}`,
+      name: nameKo,
+      provider: 'Rakuten',
+      type: isRyokan ? 'ryokan' : 'hotel',
+      typeLabel: isRyokan ? '\uB8CC\uCE78' : '\uD638\uD154',
+      area,
+      rating: rating > 0 ? rating : 7.5,
+      guests, rooms, checkIn, checkOut, nights,
+      pricePerNightKRW,
+      totalPriceKRW,
+      amenities: ['\uBB34\uB8CC Wi-Fi'],
+      aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
+      deeplink: basic.hotelInformationUrl || basic.planListUrl || '#',
+      imageUrl: basic.hotelImageUrl || null,
+      nearestStation: basic.nearestStation || '',
+      access: basic.access || ''
+    };
+  }).filter(h => h.pricePerNightKRW > 0);
 }
 
 function buildLegCandidates(leg, index) {
@@ -3985,7 +4543,7 @@ async function refreshFxRate() {
       console.log(`[FX] JPY/KRW: ${fxJpyKrw.toFixed(2)}, USD/KRW: ${fxUsdKrw.toFixed(0)}, updated: ${fxLastUpdate}`);
       return;
     }
-  } catch { /* fallback below */ }
+  } catch (err) { console.warn('[api] Fallback triggered:', err?.message || err); }
   // Fallback: exchangerate.host
   try {
     const res = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=KRW');
@@ -3995,8 +4553,8 @@ async function refreshFxRate() {
     if (Number.isFinite(rate) && rate > 0) {
       fxUsdKrw = rate;
     }
-  } catch {
-    // ignore and keep last known rate
+  } catch (err) {
+    console.warn('[api] Exchange rate fetch error:', err?.message || err);
   }
 }
 
@@ -4285,15 +4843,15 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
     };
   }
 
-  const response = await fetch(endpoint, {
+  const response = await fetchWithTimeout(endpoint, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.googleMapsUri,places.priceLevel,places.photos'
+      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos'
     },
     body: JSON.stringify(body)
-  });
+  }, AI_REQUEST_TIMEOUT_MS);
 
   if (!response.ok) throw new Error(`Google Places API error: ${response.status}`);
 
@@ -4593,6 +5151,11 @@ JSON 형식:
 
 async function handleApi(req, res, parsedUrl) {
   try {
+    // Rate limiting
+    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
+    if (!checkRateLimit(clientIp)) {
+      return sendJson(res, 429, { error: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.' });
+    }
 
     // ── OAuth 로그인 라우트 ──
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/naver') {
@@ -4671,7 +5234,9 @@ async function handleApi(req, res, parsedUrl) {
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/google') {
       if (!GOOGLE_OAUTH_CLIENT_ID) return sendJson(res, 500, { error: 'Google OAuth not configured' });
-      const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/google/callback')}&response_type=code&scope=${encodeURIComponent('openid email profile')}`;
+      const oauthState = randomUUID();
+      sessionStore.set('oauth_state_' + oauthState, { createdAt: Date.now() });
+      const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/google/callback')}&response_type=code&scope=${encodeURIComponent('openid email profile')}&state=${oauthState}`;
       res.writeHead(302, { Location: url });
       return res.end();
     }
@@ -4679,6 +5244,12 @@ async function handleApi(req, res, parsedUrl) {
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/google/callback') {
       try {
         const code = parsedUrl.searchParams.get('code');
+        const oauthState = parsedUrl.searchParams.get('state');
+        if (!oauthState || !sessionStore.has('oauth_state_' + oauthState)) {
+          res.writeHead(302, { Location: '/?authError=invalid_state' });
+          return res.end();
+        }
+        sessionStore.delete('oauth_state_' + oauthState);
         const tokenData = await oauthFetch('https://oauth2.googleapis.com/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -4825,6 +5396,8 @@ async function handleApi(req, res, parsedUrl) {
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/ai-travel-chat') {
       const payload = await readBody(req);
+      const vErr = validatePayload(payload, API_SCHEMAS['ai-travel-chat']);
+      if (vErr) return sendJson(res, 400, { error: vErr });
       return sendJson(res, 200, await buildTravelChatPlan(payload));
     }
 
@@ -4841,7 +5414,24 @@ async function handleApi(req, res, parsedUrl) {
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/travel-plan') {
       const payload = await readBody(req);
-      return sendJson(res, 200, await buildTravelPlan(payload));
+      const vErr = validatePayload(payload, API_SCHEMAS['travel-plan']);
+      if (vErr) return sendJson(res, 400, { error: vErr });
+      const planResult = await buildTravelPlan(payload);
+      // Add budget breakdown
+      const days = Number(payload.days || planResult.itinerary?.length || 3);
+      const budgetTier = payload.budget || 'mid';
+      const dailyRates = { low: { meal: 35000, transport: 15000, activity: 15000 }, mid: { meal: 55000, transport: 22000, activity: 25000 }, high: { meal: 90000, transport: 30000, activity: 45000 } };
+      const rates = dailyRates[budgetTier] || dailyRates.mid;
+      planResult.budgetBreakdown = {
+        meal: { perDay: rates.meal, total: rates.meal * days, label: '\uc2dd\ube44' },
+        transport: { perDay: rates.transport, total: rates.transport * days, label: '\uad50\ud1b5\ube44' },
+        activity: { perDay: rates.activity, total: rates.activity * days, label: '\ud65c\ub3d9\ube44' },
+        days,
+        budgetTier,
+        estimatedDailyTotal: rates.meal + rates.transport + rates.activity,
+        estimatedTotal: (rates.meal + rates.transport + rates.activity) * days
+      };
+      return sendJson(res, 200, planResult);
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/travel-plan/save') {
@@ -4888,16 +5478,28 @@ async function handleApi(req, res, parsedUrl) {
       let source = 'mock';
       let sourceNote = '';
 
-      if (AMADEUS_API_KEY && AMADEUS_API_SECRET) {
+      // 1순위: Kiwi.com Tequila API (무료)
+      if (KIWI_API_KEY) {
         try {
-          allCandidates = await fetchAmadeusFlights(payload);
-          source = AMADEUS_ENV === 'prod' ? 'amadeus_live' : 'amadeus_test';
+          allCandidates = await fetchKiwiFlights(payload);
+          if (allCandidates.length > 0) source = 'kiwi_live';
         } catch (err) {
-          allCandidates = [];
-          sourceNote = `Amadeus 항공 조회 실패: ${err.message}`;
+          console.warn('[kiwi] flight fetch error:', err.message);
+          sourceNote = `Kiwi 항공 조회 실패: ${err.message}`;
         }
       }
 
+      // 2순위: Amadeus API (폴백)
+      if (allCandidates.length === 0 && AMADEUS_API_KEY && AMADEUS_API_SECRET) {
+        try {
+          allCandidates = await fetchAmadeusFlights(payload);
+          if (allCandidates.length > 0) source = AMADEUS_ENV === 'prod' ? 'amadeus_live' : 'amadeus_test';
+        } catch (err) {
+          sourceNote += (sourceNote ? ' / ' : '') + `Amadeus 항공 조회 실패: ${err.message}`;
+        }
+      }
+
+      // 3순위: Mock 데이터
       if (allCandidates.length === 0) {
         allCandidates = flightCandidates(payload);
         source = 'mock';
@@ -4924,16 +5526,29 @@ async function handleApi(req, res, parsedUrl) {
       let all = [];
       let source = 'mock';
       let sourceNote = '';
-      if (AMADEUS_API_KEY && AMADEUS_API_SECRET) {
+
+      // 1순위: Rakuten Travel API (무료, 일본 특화)
+      if (RAKUTEN_APP_ID) {
         try {
-          all = await fetchAmadeusHotelOffers(payload);
-          source = AMADEUS_ENV === 'prod' ? 'amadeus_live' : 'amadeus_test';
+          all = await fetchRakutenHotels(payload);
+          if (all.length > 0) source = 'rakuten_live';
         } catch (err) {
-          all = [];
-          sourceNote = `Amadeus 호텔 조회 실패: ${err.message}`;
+          console.warn('[rakuten] hotel fetch error:', err.message);
+          sourceNote = `Rakuten 호텔 조회 실패: ${err.message}`;
         }
       }
 
+      // 2순위: Amadeus API (폴백)
+      if (all.length === 0 && AMADEUS_API_KEY && AMADEUS_API_SECRET) {
+        try {
+          all = await fetchAmadeusHotelOffers(payload);
+          if (all.length > 0) source = AMADEUS_ENV === 'prod' ? 'amadeus_live' : 'amadeus_test';
+        } catch (err) {
+          sourceNote += (sourceNote ? ' / ' : '') + `Amadeus 호텔 조회 실패: ${err.message}`;
+        }
+      }
+
+      // 3순위: Mock 데이터
       if (all.length === 0) {
         all = stayCandidates(payload);
         source = 'mock';
