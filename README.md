@@ -4,11 +4,12 @@
 여행지 추천, 일정 생성, 항공권/숙소/맛집 탐색, 저장 기능까지 포함합니다.
 
 ## 최근 반영 내용 요약
-- AI 일정 생성 경로 보강 (모델 기반/규칙 기반 소스 구분 표시)
-- 항공권 왕복 라벨 표시 보정
-- 모바일 레이아웃/오버플로우/날짜 입력 UI 개선
-- `.env` 파일 Git 제외 설정
-- 배포 설정 파일 추가 (`render.yaml`, `deploy/`)
+- **숙소**: Rakuten Travel API 좌표 기반 검색 전환 (34개 도시), Origin 헤더 추가로 403 해결
+- **투어**: Klook 위젯 타임아웃 폴백 (Klook/Viator/GetYourGuide 링크)
+- **항공권**: Travelpayouts 실시간 API → Amadeus 폴백 → Mock 3단계
+- Google OAuth 소셜 로그인 + 일정 저장/불러오기
+- AI 서킷 브레이커 + 보안 강화 (레이트 리밋, XSS/CSRF 방지)
+- 일정 Undo/Redo + 계절 추천 + 경로 최적화
 
 ## 현재 기능
 - 통합 여행 플랜 생성: `POST /api/travel-plan`
@@ -23,6 +24,7 @@
   - 선호도: `balanced`, `cheap`, `fast`
   - 딥링크: Skyscanner, KAYAK
 - 숙소 탐색: `POST /api/stays`
+  - 데이터: Rakuten Travel 실시간 (좌표 기반) → Amadeus 폴백 → Mock
   - 가격/성급/평점/편의시설 기반 필터
 - 맛집 탐색: `GET /api/foods`
   - 도시/장르/예산 기반 큐레이션
@@ -81,6 +83,12 @@ GEMINI_API_KEY=
 GEMINI_API_MODEL=
 OPENAI_API_KEY=
 OPENAI_MODEL=
+TRAVELPAYOUTS_TOKEN=
+RAKUTEN_APP_ID=
+RAKUTEN_ACCESS_KEY=
+AMADEUS_API_KEY=
+AMADEUS_API_SECRET=
+AMADEUS_ENV=test
 ```
 
 AI 연결 체크 예시:
