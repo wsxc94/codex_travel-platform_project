@@ -610,6 +610,29 @@ button:hover {
   color: #fff;
   background: linear-gradient(135deg, #f97316, #f59e0b);
 }
+/* 탐색 카드 버튼 가로 배치 */
+.add-to-plan-btn, .promote-to-rec-btn {
+  flex: 1 1 0;
+  padding: 7px 8px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  text-align: center;
+  white-space: nowrap;
+}
+.add-to-plan-btn {
+  background: linear-gradient(135deg, var(--primary), #10b981);
+  color: #fff;
+}
+.promote-to-rec-btn {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+}
+.add-to-plan-btn:hover { opacity: 0.85; }
+.promote-to-rec-btn:hover { opacity: 0.85; }
+
 
 .plan-controls {
   display: flex;
