@@ -1711,21 +1711,11 @@ el('btnStays').addEventListener('click', async () => {
       }
     };
 
-    // 1순위: Rakuten 브라우저 직접 호출
-    var rakutenResults = await fetchRakutenClient(
-      payload.city, payload.checkIn, payload.checkOut, payload.guests, payload.rooms
-    );
-    var staySource = '';
-    if (rakutenResults.length > 0) {
-      stayResults = rakutenResults;
-      staySource = 'rakuten_live';
-    } else {
-      // 2순위: 서버 API (Amadeus / Mock 폴백)
-      var data = await postJson('/api/stays', payload);
-      stayResults = data.stays || [];
-      staySource = data.source || 'mock';
-      renderStayFilterChecks(data.filterOptions);
-    }
+    // 서버 API 호출 (Rakuten → Amadeus → Mock 폴백)
+    var data = await postJson('/api/stays', payload);
+    stayResults = data.stays || [];
+    var staySource = data.source || 'mock';
+    renderStayFilterChecks(data.filterOptions);
     renderStayCards();
     var sourceNote = el('staySourceNote');
     if (sourceNote) {
@@ -3738,7 +3728,7 @@ function loadKlookWidget(cityKey) {
   var wrap = document.getElementById('klookWidgetWrap');
   if (!wrap) return;
   var cityName = KLOOK_CITY_MAP[cityKey] || KLOOK_CITY_MAP.tokyo;
-  wrap.innerHTML = '<div id="tp-klook-widget"></div>';
+  wrap.innerHTML = '<div id="tp-klook-widget" style="min-height:120px;display:flex;align-items:center;justify-content:center;color:#888;font-size:14px;">' + cityName + ' \ud22c\uc5b4 \ub85c\ub529 \uc911...</div>';
   var oldScripts = wrap.querySelectorAll('script');
   oldScripts.forEach(function(s) { s.remove(); });
   var sc = document.createElement('script');
@@ -3746,6 +3736,22 @@ function loadKlookWidget(cityKey) {
   sc.charset = 'utf-8';
   sc.src = 'https://tpwgt.com/content?currency=KRW&trs=507447&shmarker=710362&locale=ko&city=' + encodeURIComponent(cityName) + '&category=3&amount=6&powered_by=true&campaign_id=137&promo_id=4497';
   wrap.appendChild(sc);
+
+  // Fallback: 8s timeout -> show direct links
+  setTimeout(function() {
+    var widget = document.getElementById('tp-klook-widget');
+    if (!widget) return;
+    var hasContent = widget.querySelector('ins, iframe, .klook-widget, a[href*="klook"]');
+    if (!hasContent) {
+      widget.innerHTML = '<div style="text-align:center;padding:24px 16px;">' +
+        '<p style="margin:0 0 12px;font-size:15px;color:#555;">' + cityName + ' \uc778\uae30 \ud22c\uc5b4 & \uc561\ud2f0\ube44\ud2f0</p>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:center;">' +
+        '<a href="https://www.klook.com/ko/search/result/?query=' + encodeURIComponent(cityName + ' tour') + '" target="_blank" rel="noopener" style="display:inline-block;padding:10px 20px;background:#ff5722;color:#fff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">Klook \ud22c\uc5b4 \ubcf4\uae30</a>' +
+        '<a href="https://www.viator.com/searchResults/all?text=' + encodeURIComponent(cityName) + '&destId=&tags=alltrips" target="_blank" rel="noopener" style="display:inline-block;padding:10px 20px;background:#2d9b4e;color:#fff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">Viator \ud22c\uc5b4 \ubcf4\uae30</a>' +
+        '<a href="https://www.getyourguide.com/s/?q=' + encodeURIComponent(cityName + ', Japan') + '&searchSource=1" target="_blank" rel="noopener" style="display:inline-block;padding:10px 20px;background:#1a73e8;color:#fff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">GetYourGuide</a>' +
+        '</div></div>';
+    }
+  }, 8000);
 }
 
 // Load widget on city change
