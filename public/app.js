@@ -1453,7 +1453,7 @@ el('btnFlights').addEventListener('click', async () => {
         sourceNote.textContent = data.note || '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
         sourceNote.classList.add('warn');
       } else {
-        var flightSrcLabel = data.source === 'kiwi_live' ? '✨ Kiwi.com 실시간' : String(data.source).includes('amadeus') ? '✨ Amadeus' : '✨ ' + data.source;
+        var flightSrcLabel = data.source === 'travelpayouts_live' ? '✨ Travelpayouts 실시간' : String(data.source).includes('amadeus') ? '✨ Amadeus' : '✨ ' + data.source;
         sourceNote.textContent = `항공편: ${flightSrcLabel}`;
         sourceNote.classList.remove('warn');
       }
