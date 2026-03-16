@@ -51,7 +51,9 @@ project-root/
 | 프론트엔드 | Vanilla JS + CSS (프레임워크 없음) |
 | 지도 | Google Maps JavaScript API |
 | 장소 데이터 | Google Places API (New) |
-| 항공권/숙소 | Amadeus API (test/prod) + Mock 데이터 |
+| 항공권 | Travelpayouts API → Amadeus 폴백 → Mock |
+| 숙소 | Rakuten Travel API (좌표 기반) → Amadeus 폴백 → Mock |
+| 투어/액티비티 | Klook 위젯 + Viator/GetYourGuide 폴백 링크 |
 | AI 일정 생성 | Google Gemini 2.5-pro / OpenAI GPT-4o-mini |
 | AI 채팅 파싱 | Gemini / OpenAI (폴백 체인) |
 | 저장 | Supabase (PostgreSQL) |
@@ -789,8 +791,11 @@ Google Places API의 `primaryType` (영문)을 한국어로 변환하는 사전 
 | 2026-03 | 에러 로깅 개선: 사일런트 catch 블록 console.warn 로 교체 |
 | 2026-03 | 항공권 API Kiwi.com Tequila 연동 (Kiwi → Amadeus → Mock 3단계 폴백) |
 | 2026-03 | 숙소 API Rakuten Travel 연동 (일본 특화, VacantHotelSearch + SimpleHotelSearch 폴백) |
-| 2026-03 | 도시별 Rakuten 지역코드 매핑 30개 도시, 좌표 기반 폴백 |
+| 2026-03 | 도시별 Rakuten 좌표 기반 검색 34개 도시 (CITY_CENTER_COORDS) |
 | 2026-03 | convertToKRW에 JPY/EUR 환율 지원 추가 |
+| 2026-03 | Rakuten API 좌표 기반 검색 전환 + Origin 헤더 추가 (403 해결) |
+| 2026-03 | 숙소 검색: 브라우저 직접 호출 제거 (CORS), 서버 API 전용 |
+| 2026-03 | Klook 위젯 8초 타임아웃 + Viator/GetYourGuide 폴백 링크 |
 
 
 ## 12. OAuth 로그인 및 일정 저장 기능

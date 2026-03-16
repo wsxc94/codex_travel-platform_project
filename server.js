@@ -3864,38 +3864,42 @@ function normalizeTravelpayoutsFlight(item, idx, tripType) {
 // ── Rakuten Travel API (숙소) ──
 const RAKUTEN_BASE = 'https://openapi.rakuten.co.jp/engine/api/Travel';
 
-// 도시키 → 라쿠텐 지역코드 매핑
-const RAKUTEN_AREA_MAP = {
-  tokyo:     { middle: 'tokyo',    small: 'tokyo' },
-  osaka:     { middle: 'osaka',    small: 'osaka' },
-  kyoto:     { middle: 'kyoto',    small: 'shi' },
-  sapporo:   { middle: 'hokkaido', small: 'sapporo' },
-  hakodate:  { middle: 'hokkaido', small: 'hakodate' },
-  nagoya:    { middle: 'aichi',    small: 'nagoya' },
-  fukuoka:   { middle: 'fukuoka',  small: 'fukuoka' },
-  hiroshima: { middle: 'hiroshima', small: 'hiroshima' },
-  sendai:    { middle: 'miyagi',   small: 'sendai' },
-  okinawa:   { middle: 'okinawa',  small: 'naha' },
-  kanazawa:  { middle: 'ishikawa', small: 'kanazawa' },
-  kobe:      { middle: 'hyogo',    small: 'kobe' },
-  nagasaki:  { middle: 'nagasaki', small: 'nagasaki' },
-  kumamoto:  { middle: 'kumamoto', small: 'kumamoto' },
-  kagoshima: { middle: 'kagoshima', small: 'kagoshima' },
-  oita:      { middle: 'oita',     small: 'beppu' },
-  matsuyama: { middle: 'ehime',    small: 'matsuyama' },
-  takamatsu: { middle: 'kagawa',   small: 'takamatsu' },
-  niigata:   { middle: 'niigata',  small: 'niigata' },
-  okayama:   { middle: 'okayama',  small: 'okayama' },
-  toyama:    { middle: 'toyama',   small: 'toyama' },
-  shizuoka:  { middle: 'shizuoka', small: 'shizuoka' },
-  kochi:     { middle: 'kochi',    small: 'kochi' },
-  tokushima: { middle: 'tokushima', small: 'tokushima' },
-  yamagata:  { middle: 'yamagata', small: 'yamagata' },
-  akita:     { middle: 'akita',    small: 'akita' },
-  aomori:    { middle: 'aomori',   small: 'aomori' },
-  fukushima: { middle: 'fukushima', small: 'fukushima' },
-  miyazaki:  { middle: 'miyazaki', small: 'miyazaki' },
-  obihiro:   { middle: 'hokkaido', small: 'obihiro' }
+// 도시 중심 좌표 (Rakuten 좌표 기반 검색용)
+const CITY_CENTER_COORDS = {
+  tokyo:     { lat: 35.6812, lng: 139.7671 },
+  osaka:     { lat: 34.7025, lng: 135.4959 },
+  kyoto:     { lat: 35.0116, lng: 135.7681 },
+  sapporo:   { lat: 43.0621, lng: 141.3544 },
+  hakodate:  { lat: 41.7739, lng: 140.7265 },
+  nagoya:    { lat: 35.1709, lng: 136.8815 },
+  fukuoka:   { lat: 33.5904, lng: 130.4017 },
+  hiroshima: { lat: 34.3963, lng: 132.4594 },
+  sendai:    { lat: 38.2601, lng: 140.8822 },
+  okinawa:   { lat: 26.3344, lng: 127.8056 },
+  kanazawa:  { lat: 36.5781, lng: 136.6477 },
+  kobe:      { lat: 34.6901, lng: 135.1956 },
+  nagasaki:  { lat: 32.7503, lng: 129.8777 },
+  kumamoto:  { lat: 32.7898, lng: 130.7417 },
+  kagoshima: { lat: 31.5844, lng: 130.5413 },
+  oita:      { lat: 33.2846, lng: 131.4914 },
+  matsuyama: { lat: 33.8396, lng: 132.7658 },
+  takamatsu: { lat: 34.3428, lng: 134.0466 },
+  niigata:   { lat: 37.9161, lng: 139.0364 },
+  okayama:   { lat: 34.6657, lng: 133.9183 },
+  toyama:    { lat: 36.7013, lng: 137.2134 },
+  shizuoka:  { lat: 34.9717, lng: 138.3889 },
+  kochi:     { lat: 33.5597, lng: 133.5311 },
+  tokushima: { lat: 34.0702, lng: 134.5514 },
+  yamagata:  { lat: 38.2490, lng: 140.3281 },
+  akita:     { lat: 39.7186, lng: 140.1024 },
+  aomori:    { lat: 40.8246, lng: 140.7400 },
+  fukushima: { lat: 37.7540, lng: 140.4598 },
+  miyazaki:  { lat: 31.9111, lng: 131.4239 },
+  obihiro:   { lat: 42.9236, lng: 143.1966 },
+  nara:      { lat: 34.6851, lng: 135.8048 },
+  kamakura:  { lat: 35.3192, lng: 139.5466 },
+  hakone:    { lat: 35.2326, lng: 139.1070 },
+  nikko:     { lat: 36.7500, lng: 139.5983 }
 };
 
 let _rakutenLastCall = 0;
@@ -3903,7 +3907,6 @@ let _rakutenLastCall = 0;
 async function fetchRakutenHotels(payload) {
   if (!RAKUTEN_APP_ID) return [];
   const cityKey = cityKeyByInput(payload.city);
-  const areaMap = RAKUTEN_AREA_MAP[cityKey];
 
   // Rate limit: 1 req/sec
   const now = Date.now();
@@ -3916,6 +3919,17 @@ async function fetchRakutenHotels(payload) {
   const adults = Number(payload.guests) || 2;
   const rooms = Number(payload.rooms) || 1;
 
+  // Resolve city center coordinates
+  let coords = CITY_CENTER_COORDS[cityKey];
+  if (!coords) {
+    const city = CITY_DATA[cityKey];
+    if (city && city.airport) {
+      const ap = JAPAN_AIRPORT_COORDS.find(a => a.code === city.airport);
+      if (ap) coords = { lat: ap.lat, lng: ap.lng };
+    }
+  }
+  if (!coords) return [];
+
   const params = new URLSearchParams({
     applicationId: RAKUTEN_APP_ID,
     accessKey: RAKUTEN_ACCESS_KEY,
@@ -3927,42 +3941,28 @@ async function fetchRakutenHotels(payload) {
     roomNum: String(Math.min(rooms, 10)),
     hits: '20',
     sort: '+roomCharge',
-    responseType: 'large'
+    responseType: 'large',
+    datumType: '1',
+    latitude: String(coords.lat),
+    longitude: String(coords.lng),
+    searchRadius: '3'
   });
 
-  // Use area code if available, otherwise try coordinates
-  if (areaMap) {
-    params.set('largeClassCode', 'japan');
-    params.set('middleClassCode', areaMap.middle);
-    params.set('smallClassCode', areaMap.small);
-  } else {
-    // Fallback: use city coordinates from CITY_DATA
-    const city = CITY_DATA[cityKey] || buildGenericCity(cityKey);
-    if (city && city.airport) {
-      const airportCoord = JAPAN_AIRPORT_COORDS.find(a => a.code === city.airport);
-      if (airportCoord) {
-        params.set('datumType', '1');
-        params.set('latitude', String(airportCoord.lat));
-        params.set('longitude', String(airportCoord.lng));
-        params.set('searchRadius', '3');
-      } else {
-        return [];
-      }
-    } else {
-      return [];
-    }
-  }
+  const rakutenHeaders = {
+    'Referer': 'https://japanjapantravel.onrender.com/',
+    'Origin': 'https://japanjapantravel.onrender.com'
+  };
 
   try {
-    const res = await fetchWithTimeout(`${RAKUTEN_BASE}/VacantHotelSearch/20170426?${params}`, { headers: { 'Referer': 'https://japanjapantravel.onrender.com/' } }, AI_REQUEST_TIMEOUT_MS);
+    const res = await fetchWithTimeout(`${RAKUTEN_BASE}/VacantHotelSearch/20170426?${params}`, { headers: rakutenHeaders }, AI_REQUEST_TIMEOUT_MS);
     if (!res.ok) {
-      console.warn('[rakuten] search error:', res.status);
-      // Fallback to SimpleHotelSearch if VacantHotelSearch fails
+      console.warn('[rakuten] VacantHotelSearch error:', res.status);
+      // Fallback to SimpleHotelSearch
       params.delete('checkinDate');
       params.delete('checkoutDate');
       params.delete('adultNum');
       params.delete('roomNum');
-      const res2 = await fetchWithTimeout(`${RAKUTEN_BASE}/SimpleHotelSearch/20170426?${params}`, { headers: { 'Referer': 'https://japanjapantravel.onrender.com/' } }, AI_REQUEST_TIMEOUT_MS);
+      const res2 = await fetchWithTimeout(`${RAKUTEN_BASE}/SimpleHotelSearch/20170426?${params}`, { headers: rakutenHeaders }, AI_REQUEST_TIMEOUT_MS);
       if (!res2.ok) return [];
       const data2 = await res2.json();
       return normalizeRakutenSimple(data2, payload);
@@ -3983,8 +3983,11 @@ function normalizeRakutenVacant(data, payload) {
   const city = CITY_DATA[cityKey] || buildGenericCity(cityKey);
 
   return hotels.map((h, idx) => {
-    const basic = h.hotel?.[0]?.hotelBasicInfo || h.hotelBasicInfo || {};
-    const roomInfoArr = h.hotel?.slice(1) || [];
+    // formatVersion=2: h is array [{hotelBasicInfo}, {hotelDetailInfo}, ...{roomInfo}]
+    // formatVersion=1: h is {hotel: [{hotelBasicInfo}, ...]}
+    const hotelArr = Array.isArray(h) ? h : (h.hotel || [h]);
+    const basic = hotelArr[0]?.hotelBasicInfo || h.hotelBasicInfo || {};
+    const roomInfoArr = hotelArr.slice(1) || [];
     let cheapestCharge = Infinity;
     let cheapestRoom = null;
     let breakfastFlag = false;
@@ -4059,7 +4062,7 @@ function normalizeRakutenSimple(data, payload) {
   const city = CITY_DATA[cityKey] || buildGenericCity(cityKey);
 
   return hotels.map((h, idx) => {
-    const basic = h.hotel?.[0]?.hotelBasicInfo || h.hotelBasicInfo || {};
+    const basic = (Array.isArray(h) ? h : (h.hotel || [h]))[0]?.hotelBasicInfo || h.hotelBasicInfo || {};
     const priceJPY = basic.hotelMinCharge || 8000;
     const pricePerNightKRW = Math.round(convertToKRW(priceJPY, 'JPY'));
     const totalPriceKRW = pricePerNightKRW * nights * rooms;
