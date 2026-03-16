@@ -3691,6 +3691,16 @@ function convertToKRW(amount, currency) {
   return num;
 }
 
+// ── Travelpayouts 도시코드 → 공항코드 매핑 ──
+const TP_CITY_TO_AIRPORT = {
+  SEL: 'ICN', TYO: 'NRT', OSA: 'KIX', SPK: 'CTS', FUK: 'FUK',
+  NGO: 'NGO', OKA: 'OKA', HIJ: 'HIJ', SDJ: 'SDJ', KOJ: 'KOJ',
+  NGS: 'NGS', KMJ: 'KMJ', OIT: 'OIT', TAK: 'TAK', KMQ: 'KMQ',
+  UKB: 'UKB', NRT: 'NRT', KIX: 'KIX', HND: 'HND', CTS: 'CTS',
+  ICN: 'ICN', GMP: 'GMP', PUS: 'PUS'
+};
+function tpToAirport(code) { return TP_CITY_TO_AIRPORT[code] || code; }
+
 // ── Travelpayouts API (항공권) ──
 const TRAVELPAYOUTS_BASE = 'https://api.travelpayouts.com/aviasales/v3';
 
@@ -3698,7 +3708,7 @@ async function fetchTravelpayoutsFlights(payload) {
   if (!TRAVELPAYOUTS_TOKEN) return [];
   const from = payload.from || 'ICN';
   const tripType = payload.tripType || 'oneway';
-  const legs = payload.legs || [];
+  const legs = payload.multiSegments || payload.legs || [];
 
   // Multi-city: 구간별 각각 조회 후 합산
   if (tripType === 'multicity' && legs.length >= 2) {
@@ -3767,8 +3777,8 @@ function normalizeTravelpayoutsFlight(item, idx, tripType) {
   const transfers = Number(item.transfers || 0);
   const durationTo = Number(item.duration_to || item.duration || 0);
   const durationBack = Number(item.duration_back || 0);
-  const origin = item.origin || '';
-  const dest = item.destination || '';
+  const origin = tpToAirport(item.origin_airport || item.origin || '');
+  const dest = tpToAirport(item.destination_airport || item.destination || '');
 
   const outboundLeg = {
     legIndex: 0,
@@ -5491,6 +5501,19 @@ async function handleApi(req, res, parsedUrl) {
       if (!rows[0]) return sendJson(res, 404, { error: 'Plan not found' });
       return sendJson(res, 200, { plan: rows[0] });
     }
+
+    // Rakuten config for client-side API calls
+  if (req.method === 'GET' && parsedUrl.pathname === '/api/rakuten-config') {
+    return sendJson(res, 200, {
+      appId: RAKUTEN_APP_ID,
+      accessKey: RAKUTEN_ACCESS_KEY
+    });
+  }
+
+  // Exchange rate for client-side price conversion
+  if (req.method === 'GET' && parsedUrl.pathname === '/api/fx-rate') {
+    return sendJson(res, 200, { jpyKrw: fxJpyKrw, usdKrw: fxUsdKrw });
+  }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/flights') {
       const payload = await readBody(req);

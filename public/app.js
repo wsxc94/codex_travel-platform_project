@@ -533,8 +533,9 @@ function flightCardTemplate(x) {
     ${x.priceBreakdown ? `<div class="flight-sub">요금: 기본 ${x.priceBreakdown.baseKRW.toLocaleString()}원 · 세금 ${x.priceBreakdown.taxesKRW.toLocaleString()}원 · 수수료 ${x.priceBreakdown.feesKRW.toLocaleString()}원</div>` : ''}
     <div class="link-row">
       <button type="button" class="stay-select-btn flight-select-btn" data-flight-id="${escapeHtml(x._id || '')}">${selectedLabel}</button>
-      <a href="${escapeHtml(x.deeplinkSkyscanner || x.deeplink || (x.legs[0] && x.legs[0].deeplink) || '#')}" target="_blank" rel="noreferrer">스카이스캐너</a>
-      <a href="${escapeHtml(x.deeplinkKayak || x.deeplink || (x.legs[0] && x.legs[0].deeplink) || '#')}" target="_blank" rel="noreferrer">카약</a>
+      ${x.deeplink && x.deeplink !== '#' ? `<a href="${escapeHtml(x.deeplink)}" target="_blank" rel="noreferrer" class="booking-link">✈ 예약하기</a>` : ''}
+      <a href="${escapeHtml('https://www.skyscanner.co.kr/transport/flights/' + (x.legs && x.legs[0] ? x.legs[0].from : '').toLowerCase() + '/' + (x.legs && x.legs[0] ? x.legs[0].to : '').toLowerCase() + '/' + (x.legs && x.legs[0] && x.legs[0].date ? x.legs[0].date.replace(/-/g,'').slice(2) : '') + '/' + (x.legs && x.legs[1] && x.legs[1].date ? x.legs[1].date.replace(/-/g,'').slice(2) + '/' : ''))}" target="_blank" rel="noreferrer">스카이스캐너</a>
+      <a href="${escapeHtml('https://www.kayak.co.kr/flights/' + (x.legs && x.legs[0] ? x.legs[0].from : '') + '-' + (x.legs && x.legs[0] ? x.legs[0].to : '') + '/' + (x.legs && x.legs[0] ? x.legs[0].date : '') + (x.legs && x.legs[1] && x.legs[1].date ? '/' + x.legs[1].date : '') + '?sort=bestflight_a')}" target="_blank" rel="noreferrer">카약</a>
     </div>
   </article>`;
 }
@@ -1608,6 +1609,7 @@ function renderDestSearchCards(items) {
       '</div>' +
       '<div class="link-row">' +
         '<button type="button" class="add-to-plan-btn" data-add-type="dest" data-add-index="' + index + '" data-add-source="destSearch">\uC77C\uC815\uC5D0 \uCD94\uAC00</button>' +
+        '<button type="button" class="promote-to-rec-btn" data-promote-type="dest" data-promote-index="' + index + '" data-promote-source="destSearch">\u2B06 \uCD94\uCC9C \uC5EC\uD589\uC9C0\uB85C</button>' +
         '<a href="' + (x.mapUrl || '#') + '" target="_blank" rel="noreferrer">\uC9C0\uB3C4</a>' +
       '</div>' +
     '</article>';
@@ -1706,18 +1708,33 @@ el('btnStays').addEventListener('click', async () => {
       }
     };
 
-    const data = await postJson('/api/stays', payload);
-    stayResults = data.stays || [];
+    // 1순위: Rakuten 브라우저 직접 호출
+    var rakutenResults = await fetchRakutenClient(
+      payload.city, payload.checkIn, payload.checkOut, payload.guests, payload.rooms
+    );
+    var staySource = '';
+    if (rakutenResults.length > 0) {
+      stayResults = rakutenResults;
+      staySource = 'rakuten_live';
+    } else {
+      // 2순위: 서버 API (Amadeus / Mock 폴백)
+      var data = await postJson('/api/stays', payload);
+      stayResults = data.stays || [];
+      staySource = data.source || 'mock';
+      renderStayFilterChecks(data.filterOptions);
+    }
     renderStayCards();
-    renderStayFilterChecks(data.filterOptions);
-    const sourceNote = el('staySourceNote');
+    var sourceNote = el('staySourceNote');
     if (sourceNote) {
-      if (data.source === 'mock') {
-        sourceNote.textContent = data.note || '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
+      if (staySource === 'rakuten_live') {
+        sourceNote.textContent = '숙소: ✨ Rakuten Travel 실시간';
+        sourceNote.classList.remove('warn');
+      } else if (staySource === 'mock') {
+        sourceNote.textContent = '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
         sourceNote.classList.add('warn');
       } else {
-        var staySrcLabel = data.source === 'rakuten_live' ? '✨ Rakuten Travel 실시간' : String(data.source).includes('amadeus') ? '✨ Amadeus' : '✨ ' + data.source;
-        sourceNote.textContent = `숙소: ${staySrcLabel}`;
+        var staySrcLabel = String(staySource).includes('amadeus') ? '✨ Amadeus' : '✨ ' + staySource;
+        sourceNote.textContent = '숙소: ' + staySrcLabel;
         sourceNote.classList.remove('warn');
       }
     }
@@ -2299,6 +2316,44 @@ document.addEventListener('click', function(e) {
       showAddToPlanModal(place.name, { addType: addType });
     } else if (place) {
       alert('먼저 AI 일정을 생성해주세요.');
+    }
+  }
+});
+
+
+// Promote to recommended list handler
+document.addEventListener('click', function(e) {
+  var promBtn = e.target.closest('.promote-to-rec-btn');
+  if (!promBtn) return;
+  var pType = promBtn.dataset.promoteType;
+  var pIdx = Number(promBtn.dataset.promoteIndex);
+  var pSource = promBtn.dataset.promoteSource;
+  var item = null;
+  if (pSource === 'destSearch') item = (latestDestSearchList || [])[pIdx];
+  else if (pSource === 'foodSearch') item = (latestFoodList || [])[pIdx];
+  if (!item) return;
+
+  if (pType === 'dest') {
+    if (!latestDestList) latestDestList = [];
+    if (!latestDestList.find(function(d) { return d.name === item.name; })) {
+      latestDestList.push(item);
+      renderCards('destCards', latestDestList, 'dest');
+      promBtn.textContent = '\u2705 \uCD94\uAC00\uB428';
+      promBtn.disabled = true;
+    } else {
+      promBtn.textContent = '\uC774\uBBF8 \uCD94\uAC00\uB428';
+      promBtn.disabled = true;
+    }
+  } else if (pType === 'food') {
+    if (!latestFoodList) latestFoodList = [];
+    if (!latestFoodList.find(function(d) { return d.name === item.name; })) {
+      latestFoodList.push(item);
+      renderCards('recFoodCards', latestFoodList, 'food');
+      promBtn.textContent = '\u2705 \uCD94\uAC00\uB428';
+      promBtn.disabled = true;
+    } else {
+      promBtn.textContent = '\uC774\uBBF8 \uCD94\uAC00\uB428';
+      promBtn.disabled = true;
     }
   }
 });
@@ -3486,3 +3541,213 @@ async function deletePlanFromServer(planId) {
     showMemoToast('삭제 중 오류가 발생했습니다.');
   }
 }
+
+// ── Rakuten Travel 클라이언트 사이드 API ──
+var RAKUTEN_APP_ID = '';
+var RAKUTEN_ACCESS_KEY = '';
+var RAKUTEN_AREA_MAP = {
+  tokyo: { middle: 'tokyo', small: 'tokyo' },
+  osaka: { middle: 'osaka', small: 'osaka' },
+  kyoto: { middle: 'kyoto', small: 'shi' },
+  sapporo: { middle: 'hokkaido', small: 'sapporo' },
+  hakodate: { middle: 'hokkaido', small: 'hakodate' },
+  nagoya: { middle: 'aichi', small: 'nagoya' },
+  fukuoka: { middle: 'fukuoka', small: 'fukuoka' },
+  hiroshima: { middle: 'hiroshima', small: 'hiroshima' },
+  sendai: { middle: 'miyagi', small: 'sendai' },
+  okinawa: { middle: 'okinawa', small: 'naha' },
+  kanazawa: { middle: 'ishikawa', small: 'kanazawa' },
+  kobe: { middle: 'hyogo', small: 'kobe' },
+  nagasaki: { middle: 'nagasaki', small: 'nagasaki' },
+  kumamoto: { middle: 'kumamoto', small: 'kumamoto' },
+  kagoshima: { middle: 'kagoshima', small: 'kagoshima' },
+  oita: { middle: 'oita', small: 'beppu' },
+  matsuyama: { middle: 'ehime', small: 'matsuyama' },
+  takamatsu: { middle: 'kagawa', small: 'takamatsu' },
+  niigata: { middle: 'niigata', small: 'niigata' },
+  okayama: { middle: 'okayama', small: 'okayama' },
+  toyama: { middle: 'toyama', small: 'toyama' },
+  shizuoka: { middle: 'shizuoka', small: 'shizuoka' },
+  kochi: { middle: 'kochi', small: 'kochi' },
+  tokushima: { middle: 'tokushima', small: 'tokushima' },
+  yamagata: { middle: 'yamagata', small: 'yamagata' },
+  akita: { middle: 'akita', small: 'akita' },
+  aomori: { middle: 'aomori', small: 'aomori' },
+  fukushima: { middle: 'fukushima', small: 'fukushima' },
+  miyazaki: { middle: 'miyazaki', small: 'miyazaki' },
+  obihiro: { middle: 'hokkaido', small: 'obihiro' },
+  nara: { middle: 'nara', small: 'nara' },
+  hakone: { middle: 'kanagawa', small: 'hakone' },
+  kamakura: { middle: 'kanagawa', small: 'kamakura' },
+  nikko: { middle: 'tochigi', small: 'nikko' },
+  yokohama: { middle: 'kanagawa', small: 'yokohama' }
+};
+
+// Rakuten 키를 서버에서 가져오기
+async function initRakutenKeys() {
+  try {
+    var res = await fetch('/api/rakuten-config');
+    if (res.ok) {
+      var cfg = await res.json();
+      RAKUTEN_APP_ID = cfg.appId || '';
+      RAKUTEN_ACCESS_KEY = cfg.accessKey || '';
+    }
+  } catch (e) { /* ignore */ }
+}
+initRakutenKeys();
+
+async function fetchRakutenClient(cityKey, checkIn, checkOut, guests, rooms) {
+  if (!RAKUTEN_APP_ID || !RAKUTEN_ACCESS_KEY) return [];
+  var area = RAKUTEN_AREA_MAP[cityKey];
+  if (!area) return [];
+
+  var params = new URLSearchParams({
+    applicationId: RAKUTEN_APP_ID,
+    accessKey: RAKUTEN_ACCESS_KEY,
+    format: 'json',
+    formatVersion: '2',
+    checkinDate: checkIn,
+    checkoutDate: checkOut,
+    adultNum: String(Math.min(guests || 2, 10)),
+    roomNum: String(Math.min(rooms || 1, 10)),
+    hits: '20',
+    sort: '+roomCharge',
+    responseType: 'large',
+    largeClassCode: 'japan',
+    middleClassCode: area.middle,
+    smallClassCode: area.small
+  });
+
+  try {
+    var res = await fetch('https://openapi.rakuten.co.jp/engine/api/Travel/VacantHotelSearch/20170426?' + params);
+    if (!res.ok) {
+      // Fallback: SimpleHotelSearch
+      params.delete('checkinDate');
+      params.delete('checkoutDate');
+      params.delete('adultNum');
+      params.delete('roomNum');
+      var res2 = await fetch('https://openapi.rakuten.co.jp/engine/api/Travel/SimpleHotelSearch/20170426?' + params);
+      if (!res2.ok) return [];
+      var data2 = await res2.json();
+      return normalizeRakutenClient(data2, { checkIn: checkIn, checkOut: checkOut, guests: guests, rooms: rooms, city: cityKey }, true);
+    }
+    var data = await res.json();
+    return normalizeRakutenClient(data, { checkIn: checkIn, checkOut: checkOut, guests: guests, rooms: rooms, city: cityKey }, false);
+  } catch (e) {
+    console.warn('[rakuten-client]', e.message);
+    return [];
+  }
+}
+
+var FX_JPY_KRW = 9.5;
+// Get exchange rate
+(async function() {
+  try {
+    var r = await fetch('/api/fx-rate');
+    if (r.ok) { var d = await r.json(); FX_JPY_KRW = d.jpyKrw || 9.5; }
+  } catch(e) {}
+})();
+
+function normalizeRakutenClient(data, payload, isSimple) {
+  var hotels = data.hotels || [];
+  var checkIn = payload.checkIn;
+  var checkOut = payload.checkOut;
+  var nights = Math.max(1, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000));
+  var rooms = payload.rooms || 1;
+  var guests = payload.guests || 2;
+
+  return hotels.map(function(h, idx) {
+    var basic = (h.hotel && h.hotel[0] && h.hotel[0].hotelBasicInfo) ? h.hotel[0].hotelBasicInfo : (h.hotelBasicInfo || {});
+    var priceJPY, breakfastFlag = false, dinnerFlag = false, reserveUrl = '';
+
+    if (!isSimple && h.hotel) {
+      var cheapest = Infinity;
+      for (var i = 1; i < h.hotel.length; i++) {
+        var ri = h.hotel[i];
+        var rBasic = ri.roomInfo && ri.roomInfo[0] && ri.roomInfo[0].roomBasicInfo;
+        var rCharge = ri.roomInfo && ri.roomInfo[1] && ri.roomInfo[1].dailyCharge;
+        if (rBasic && rCharge) {
+          var total = Number(rCharge.total || rCharge.rakutenCharge || Infinity);
+          if (total < cheapest) {
+            cheapest = total;
+            breakfastFlag = rBasic.withBreakfastFlag === 1;
+            dinnerFlag = rBasic.withDinnerFlag === 1;
+            reserveUrl = rBasic.reserveUrl || '';
+          }
+        }
+      }
+      priceJPY = cheapest < Infinity ? cheapest : (basic.hotelMinCharge || 8000);
+    } else {
+      priceJPY = basic.hotelMinCharge || 8000;
+    }
+
+    var pricePerNightKRW = Math.round(priceJPY * FX_JPY_KRW);
+    var totalPriceKRW = pricePerNightKRW * nights * rooms;
+    var amenities = [];
+    if (breakfastFlag) amenities.push('\uc870\uc2dd \ud3ec\ud568');
+    if (dinnerFlag) amenities.push('\uc11d\uc2dd \ud3ec\ud568');
+    amenities.push('\ubb34\ub8cc Wi-Fi');
+
+    var nameKo = basic.hotelName || '\uc774\ub984 \uc5c6\uc74c';
+    var isRyokan = /\u65C5\u9928|\u6E29\u6CC9|\u308A\u3087\u304B\u3093|\u304A\u5BBF/.test(nameKo) || dinnerFlag;
+    var rating = Number(basic.reviewAverage || 0);
+
+    return {
+      id: 'rakuten_' + (basic.hotelNo || idx),
+      name: nameKo,
+      provider: 'Rakuten',
+      type: isRyokan ? 'ryokan' : 'hotel',
+      typeLabel: isRyokan ? '\ub8cc\uce78' : '\ud638\ud154',
+      area: basic.address1 || '',
+      rating: rating > 0 ? rating : 7.5,
+      guests: guests,
+      rooms: rooms,
+      checkIn: checkIn,
+      checkOut: checkOut,
+      nights: nights,
+      pricePerNightKRW: pricePerNightKRW,
+      totalPriceKRW: totalPriceKRW,
+      amenities: amenities,
+      aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
+      deeplink: reserveUrl || basic.hotelInformationUrl || basic.planListUrl || '#',
+      imageUrl: basic.hotelImageUrl || basic.hotelThumbnailUrl || null,
+      nearestStation: basic.nearestStation || '',
+      access: basic.access || ''
+    };
+  }).filter(function(h) { return h.pricePerNightKRW > 0; });
+}
+
+// ── Klook Tour Widget (Travelpayouts) ──
+var KLOOK_CITY_MAP = {
+  tokyo: 'Tokyo', osaka: 'Osaka', kyoto: 'Kyoto', sapporo: 'Sapporo',
+  fukuoka: 'Fukuoka', nagoya: 'Nagoya', hiroshima: 'Hiroshima', okinawa: 'Okinawa',
+  kobe: 'Kobe', kanazawa: 'Kanazawa', nagasaki: 'Nagasaki', sendai: 'Sendai',
+  hakone: 'Hakone', kamakura: 'Kamakura', nikko: 'Nikko', nara: 'Nara',
+  yokohama: 'Yokohama', kumamoto: 'Kumamoto', kagoshima: 'Kagoshima',
+  matsuyama: 'Matsuyama', takamatsu: 'Takamatsu', niigata: 'Niigata',
+  okayama: 'Okayama', hakodate: 'Hakodate'
+};
+
+function loadKlookWidget(cityKey) {
+  var wrap = document.getElementById('klookWidgetWrap');
+  if (!wrap) return;
+  var cityName = KLOOK_CITY_MAP[cityKey] || KLOOK_CITY_MAP.tokyo;
+  wrap.innerHTML = '<div id="tp-klook-widget"></div>';
+  var oldScripts = wrap.querySelectorAll('script');
+  oldScripts.forEach(function(s) { s.remove(); });
+  var sc = document.createElement('script');
+  sc.async = true;
+  sc.charset = 'utf-8';
+  sc.src = 'https://tpwgt.com/content?currency=KRW&trs=507447&shmarker=710362&locale=ko&city=' + encodeURIComponent(cityName) + '&category=3&amount=6&powered_by=true&campaign_id=137&promo_id=4497';
+  wrap.appendChild(sc);
+}
+
+// Load widget on city change
+if (el('city')) {
+  el('city').addEventListener('change', function() {
+    loadKlookWidget(this.value);
+  });
+  // Initial load
+  setTimeout(function() { loadKlookWidget(el('city').value || 'tokyo'); }, 1000);
+}
+
