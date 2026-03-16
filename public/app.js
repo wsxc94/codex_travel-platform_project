@@ -83,6 +83,7 @@ let staySortMode = 'balanced';
 let latestDestList = [];
 let latestRecFoodList = [];
 let latestDestSearchList = [];
+let latestFoodSearchList = [];
 let latestFoodList = [];
 var currentItineraryData = null;
 var itinMap = null;
@@ -481,6 +482,7 @@ function renderCards(targetId, items, mode) {
       </div>
       <div class="link-row">
         <button type="button" class="add-to-plan-btn" data-add-type="food" data-add-index="${index}" data-add-source="foodSearch">일정에 추가</button>
+        ${targetId === 'foodCards' ? `<button type="button" class="promote-to-rec-btn" data-promote-type="food" data-promote-index="${index}" data-promote-source="foodSearch">\u2B06 추천 맛집으로</button>` : ''}
         <a href="${x.mapUrl}" target="_blank" rel="noreferrer">지도</a>
       </div>
     </article>`;
@@ -1665,7 +1667,8 @@ el('btnFood').addEventListener('click', async () => {
     const genre = encodeURIComponent(el('foodGenre').value);
     const res = await fetch(`/api/foods?city=${city}&genre=${genre}&budget=mid`);
     const data = await res.json();
-    latestFoodList = data.list || [];
+    latestFoodSearchList = data.list || [];
+  latestFoodList = data.list || [];
   renderCards('foodCards', data.list, 'food');
     const sourceNote = el('foodSourceNote');
     if (sourceNote) {
@@ -2309,7 +2312,7 @@ document.addEventListener('click', function(e) {
     var addIdx = Number(addBtn.dataset.addIndex);
     var addSource = addBtn.dataset.addSource;
     var place = null;
-    if (addSource === 'foodSearch') place = (latestFoodList || [])[addIdx];
+    if (addSource === 'foodSearch') place = (latestFoodSearchList || latestFoodList || [])[addIdx];
     else if (addSource === 'destSearch') place = (latestDestSearchList || [])[addIdx];
     if (place && currentItineraryData) {
       pendingAddPlace = { name: place.name, area: place.area || place.city || '' };
@@ -2325,35 +2328,38 @@ document.addEventListener('click', function(e) {
 document.addEventListener('click', function(e) {
   var promBtn = e.target.closest('.promote-to-rec-btn');
   if (!promBtn) return;
+  e.preventDefault();
+  e.stopPropagation();
   var pType = promBtn.dataset.promoteType;
   var pIdx = Number(promBtn.dataset.promoteIndex);
   var pSource = promBtn.dataset.promoteSource;
+  console.log('[promote] type:', pType, 'idx:', pIdx, 'source:', pSource, 'listLen:', (latestDestSearchList||[]).length);
   var item = null;
   if (pSource === 'destSearch') item = (latestDestSearchList || [])[pIdx];
-  else if (pSource === 'foodSearch') item = (latestFoodList || [])[pIdx];
-  if (!item) return;
+  else if (pSource === 'foodSearch') item = (latestFoodSearchList || latestFoodList || [])[pIdx];
+  if (!item) { console.warn('[promote] item not found at index', pIdx); return; }
 
   if (pType === 'dest') {
     if (!latestDestList) latestDestList = [];
-    if (!latestDestList.find(function(d) { return d.name === item.name; })) {
+    var exists = latestDestList.find(function(d) { return d.name === item.name; });
+    if (!exists) {
       latestDestList.push(item);
       renderCards('destCards', latestDestList, 'dest');
       promBtn.textContent = '\u2705 \uCD94\uAC00\uB428';
-      promBtn.disabled = true;
     } else {
-      promBtn.textContent = '\uC774\uBBF8 \uCD94\uAC00\uB428';
-      promBtn.disabled = true;
+      promBtn.textContent = '\uC774\uBBF8 \uCD94\uCC9C\uC5D0 \uC788\uC74C';
+      setTimeout(function() { promBtn.textContent = '\u2B06 \uCD94\uCC9C \uC5EC\uD589\uC9C0\uB85C'; }, 1500);
     }
   } else if (pType === 'food') {
-    if (!latestFoodList) latestFoodList = [];
-    if (!latestFoodList.find(function(d) { return d.name === item.name; })) {
-      latestFoodList.push(item);
-      renderCards('recFoodCards', latestFoodList, 'food');
+    if (!latestRecFoodList) latestRecFoodList = [];
+    var existsF = latestRecFoodList.find(function(d) { return d.name === item.name; });
+    if (!existsF) {
+      latestRecFoodList.push(item);
+      renderRecFoodCards(latestRecFoodList);
       promBtn.textContent = '\u2705 \uCD94\uAC00\uB428';
-      promBtn.disabled = true;
     } else {
-      promBtn.textContent = '\uC774\uBBF8 \uCD94\uAC00\uB428';
-      promBtn.disabled = true;
+      promBtn.textContent = '\uC774\uBBF8 \uCD94\uCC9C\uC5D0 \uC788\uC74C';
+      setTimeout(function() { promBtn.textContent = '\u2B06 \uCD94\uCC9C \uB9DB\uC9D1\uC73C\uB85C'; }, 1500);
     }
   }
 });
