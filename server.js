@@ -34,8 +34,9 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const AMADEUS_API_KEY = process.env.AMADEUS_API_KEY || '';
 const AMADEUS_API_SECRET = process.env.AMADEUS_API_SECRET || '';
 const AMADEUS_ENV = (process.env.AMADEUS_ENV || 'test').toLowerCase();
-const KIWI_API_KEY = process.env.KIWI_API_KEY || '';
+const TRAVELPAYOUTS_TOKEN = process.env.TRAVELPAYOUTS_TOKEN || '';
 const RAKUTEN_APP_ID = process.env.RAKUTEN_APP_ID || '';
+const RAKUTEN_ACCESS_KEY = process.env.RAKUTEN_ACCESS_KEY || '';
 const FX_USD_KRW = Number(process.env.FX_USD_KRW || 1350);
 let fxUsdKrw = FX_USD_KRW;
 let fxJpyKrw = Number(process.env.FX_JPY_KRW || 9.5);
@@ -3690,144 +3691,162 @@ function convertToKRW(amount, currency) {
   return num;
 }
 
-// ── Kiwi.com Tequila API (항공권) ──
-const KIWI_BASE = 'https://tequila-api.kiwi.com';
+// ── Travelpayouts API (항공권) ──
+const TRAVELPAYOUTS_BASE = 'https://api.travelpayouts.com/aviasales/v3';
 
-function formatDateKiwi(isoDate) {
-  if (!isoDate) return '';
-  const [y, m, d] = isoDate.split('-');
-  return `${d}/${m}/${y}`;
-}
-
-async function fetchKiwiFlights(payload) {
-  if (!KIWI_API_KEY) return [];
+async function fetchTravelpayoutsFlights(payload) {
+  if (!TRAVELPAYOUTS_TOKEN) return [];
   const from = payload.from || 'ICN';
   const tripType = payload.tripType || 'oneway';
   const legs = payload.legs || [];
-  const headers = { 'apikey': KIWI_API_KEY };
 
-  // Multi-city
+  // Multi-city: 구간별 각각 조회 후 합산
   if (tripType === 'multicity' && legs.length >= 2) {
     try {
-      const requests = legs.map(l => ({
-        fly_from: l.from || 'ICN',
-        fly_to: l.to || 'NRT',
-        date_from: formatDateKiwi(l.date),
-        date_to: formatDateKiwi(l.date)
-      }));
-      const res = await fetchWithTimeout(`${KIWI_BASE}/v2/flights_multi`, {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ requests, curr: 'KRW', locale: 'ko', adults: Number(payload.adults) || 1, limit: 15 })
-      }, AI_REQUEST_TIMEOUT_MS);
-      if (!res.ok) { console.warn('[kiwi] multi-city error:', res.status); return []; }
-      const data = await res.json();
-      return (data || []).map((item, idx) => normalizeKiwiFlight(item, idx, tripType));
-    } catch (err) { console.warn('[kiwi] multi-city error:', err.message); return []; }
+      const allResults = [];
+      for (const leg of legs) {
+        const params = new URLSearchParams({
+          origin: leg.from || 'ICN',
+          destination: leg.to || 'NRT',
+          departure_at: leg.date || '',
+          sorting: 'price',
+          direct: 'false',
+          currency: 'krw',
+          limit: '10',
+          token: TRAVELPAYOUTS_TOKEN
+        });
+        const res = await fetchWithTimeout(`${TRAVELPAYOUTS_BASE}/prices_for_dates?${params}`, {}, AI_REQUEST_TIMEOUT_MS);
+        if (res.ok) {
+          const json = await res.json();
+          if (json.success && json.data) allResults.push(...json.data);
+        }
+      }
+      return allResults.map((item, idx) => normalizeTravelpayoutsFlight(item, idx, tripType));
+    } catch (err) { console.warn('[travelpayouts] multi-city error:', err.message); return []; }
   }
 
   // One-way or round-trip
+  const departDate = payload.departDate || legs[0]?.date || '';
+  const destination = payload.to || legs[0]?.to || 'NRT';
   const params = new URLSearchParams({
-    fly_from: from,
-    fly_to: payload.to || legs[0]?.to || 'NRT',
-    date_from: formatDateKiwi(payload.departDate || legs[0]?.date),
-    date_to: formatDateKiwi(payload.departDate || legs[0]?.date),
-    flight_type: tripType === 'roundtrip' ? 'round' : 'oneway',
-    adults: String(Number(payload.adults) || 1),
-    curr: 'KRW',
-    locale: 'ko',
-    max_stopovers: '2',
-    sort: 'quality',
-    limit: '20'
+    origin: from,
+    destination,
+    departure_at: departDate,
+    sorting: 'price',
+    direct: 'false',
+    currency: 'krw',
+    limit: '30',
+    token: TRAVELPAYOUTS_TOKEN
   });
-  if (tripType === 'roundtrip' && payload.returnDate) {
-    params.set('return_from', formatDateKiwi(payload.returnDate));
-    params.set('return_to', formatDateKiwi(payload.returnDate));
+  if (tripType === 'oneway') {
+    params.set('one_way', 'true');
   }
-  if (tripType === 'roundtrip' && legs[1]?.date) {
-    params.set('return_from', formatDateKiwi(legs[1].date));
-    params.set('return_to', formatDateKiwi(legs[1].date));
+  if (tripType === 'roundtrip') {
+    const returnDate = payload.returnDate || legs[1]?.date || '';
+    if (returnDate) params.set('return_at', returnDate);
   }
 
   try {
-    const res = await fetchWithTimeout(`${KIWI_BASE}/v2/search?${params}`, { headers }, AI_REQUEST_TIMEOUT_MS);
-    if (!res.ok) { console.warn('[kiwi] search error:', res.status); return []; }
-    const data = await res.json();
-    return (data.data || []).map((item, idx) => normalizeKiwiFlight(item, idx, tripType));
-  } catch (err) { console.warn('[kiwi] search error:', err.message); return []; }
+    const res = await fetchWithTimeout(`${TRAVELPAYOUTS_BASE}/prices_for_dates?${params}`, {}, AI_REQUEST_TIMEOUT_MS);
+    if (!res.ok) { console.warn('[travelpayouts] search error:', res.status); return []; }
+    const json = await res.json();
+    if (!json.success || !json.data) return [];
+    return json.data.map((item, idx) => normalizeTravelpayoutsFlight(item, idx, tripType));
+  } catch (err) { console.warn('[travelpayouts] search error:', err.message); return []; }
 }
 
-function normalizeKiwiFlight(item, idx, tripType) {
-  const outboundRoutes = (item.route || []).filter(r => r.return === 0);
-  const returnRoutes = (item.route || []).filter(r => r.return === 1);
-  const allRoutes = item.route || [];
+function normalizeTravelpayoutsFlight(item, idx, tripType) {
+  const depAt = item.departure_at || '';
+  const retAt = item.return_at || '';
+  const depDate = depAt.slice(0, 10);
+  const depTime = depAt.slice(11, 16);
+  const retDate = retAt.slice(0, 10);
+  const retTime = retAt.slice(11, 16);
+  const airline = item.airline || '';
+  const flightNum = `${airline}${item.flight_number || ''}`;
+  const transfers = Number(item.transfers || 0);
+  const durationTo = Number(item.duration_to || item.duration || 0);
+  const durationBack = Number(item.duration_back || 0);
+  const origin = item.origin || '';
+  const dest = item.destination || '';
 
-  const buildLeg = (routes, legIdx) => {
-    if (!routes.length) return null;
-    const first = routes[0];
-    const last = routes[routes.length - 1];
-    const segments = routes.map(r => ({
-      from: r.flyFrom,
-      to: r.flyTo,
-      departureTime: (r.local_departure || '').slice(11, 16),
-      arrivalTime: (r.local_arrival || '').slice(11, 16),
-      airline: r.airline || '',
-      airlineCode: r.airline || '',
-      flightNumber: `${r.airline || ''}${r.flight_no || ''}`,
+  const outboundLeg = {
+    legIndex: 0,
+    from: origin,
+    to: dest,
+    date: depDate,
+    departureTime: depTime,
+    arrivalTime: '',
+    durationMin: durationTo,
+    stops: transfers,
+    airline,
+    airlineCode: airline,
+    segments: [{
+      from: origin,
+      to: dest,
+      departureTime: depTime,
+      arrivalTime: '',
+      airline,
+      airlineCode: airline,
+      flightNumber: flightNum,
       cabin: 'ECONOMY',
       cabinLabel: '\uC774\uCF54\uB178\uBBF8',
-      baggageLabel: item.bags_price && item.bags_price['1'] != null ? `\uC704\uD0C1 1\uAC1C ${Math.round(item.bags_price['1']).toLocaleString()}\uC6D0` : '\uC218\uD558\uBB3C \uC815\uBCF4 \uC5C6\uC74C'
-    }));
-    const depTime = (first.local_departure || '').slice(11, 16);
-    const arrTime = (last.local_arrival || '').slice(11, 16);
-    const durationSec = tripType === 'roundtrip'
-      ? (legIdx === 0 ? item.duration?.departure : item.duration?.return) || 0
-      : (item.duration?.departure || item.duration?.total || 0);
-    return {
-      legIndex: legIdx,
-      from: first.flyFrom,
-      to: last.flyTo,
-      date: (first.local_departure || '').slice(0, 10),
-      departureTime: depTime,
-      arrivalTime: arrTime,
-      durationMin: Math.round(durationSec / 60),
-      stops: Math.max(0, routes.length - 1),
-      airline: first.airline || '',
-      airlineCode: first.airline || '',
-      segments,
-      deeplink: item.deep_link || '#'
-    };
+      baggageLabel: '\uC218\uD558\uBB3C \uC815\uBCF4 \uC5C6\uC74C'
+    }],
+    deeplink: '#'
   };
 
-  const legs = [];
-  if (outboundRoutes.length > 0) legs.push(buildLeg(outboundRoutes, 0));
-  else if (allRoutes.length > 0) legs.push(buildLeg(allRoutes, 0));
-  if (returnRoutes.length > 0) legs.push(buildLeg(returnRoutes, 1));
-  const validLegs = legs.filter(Boolean);
+  const validLegs = [outboundLeg];
+  if (tripType === 'roundtrip' && retAt) {
+    validLegs.push({
+      legIndex: 1,
+      from: dest,
+      to: origin,
+      date: retDate,
+      departureTime: retTime,
+      arrivalTime: '',
+      durationMin: durationBack,
+      stops: transfers,
+      airline,
+      airlineCode: airline,
+      segments: [{
+        from: dest,
+        to: origin,
+        departureTime: retTime,
+        arrivalTime: '',
+        airline,
+        airlineCode: airline,
+        flightNumber: '',
+        cabin: 'ECONOMY',
+        cabinLabel: '\uC774\uCF54\uB178\uBBF8',
+        baggageLabel: '\uC218\uD558\uBB3C \uC815\uBCF4 \uC5C6\uC74C'
+      }],
+      deeplink: '#'
+    });
+  }
 
-  const allAirlines = [...new Set(allRoutes.map(r => r.airline).filter(Boolean))];
-  const allAirports = [...new Set(allRoutes.flatMap(r => [r.flyFrom, r.flyTo]).filter(Boolean))];
-  const totalStops = validLegs.reduce((s, l) => s + l.stops, 0);
   const totalDurMin = validLegs.reduce((s, l) => s + l.durationMin, 0);
-  const depMinute = validLegs[0] ? toMinutes(validLegs[0].departureTime) : 0;
+  const depMinute = depTime ? parseInt(depTime.split(':')[0]) * 60 + parseInt(depTime.split(':')[1] || 0) : 0;
+  const priceKRW = Math.round(Number(item.price || 0));
 
-  const firstLeg = validLegs[0] || {};
-  const kayakUrl = `https://www.kayak.com/flights/${firstLeg.from || ''}-${firstLeg.to || ''}/${firstLeg.date || ''}/`;
-  const ssUrl = `https://www.skyscanner.co.kr/transport/flights/${(firstLeg.from || '').toLowerCase()}/${(firstLeg.to || '').toLowerCase()}/${(firstLeg.date || '').replace(/-/g, '').slice(2)}/`;
+  // 예약 링크 생성
+  const tpLink = item.link ? `https://www.aviasales.com${item.link}` : '#';
+  const kayakUrl = `https://www.kayak.com/flights/${origin}-${dest}/${depDate}/`;
+  const ssUrl = `https://www.skyscanner.co.kr/transport/flights/${origin.toLowerCase()}/${dest.toLowerCase()}/${depDate.replace(/-/g, '').slice(2)}/`;
 
   return {
-    id: `kiwi_${idx}`,
+    id: `tp_${idx}`,
     tripType,
-    provider: 'Kiwi.com',
-    airlines: allAirlines,
-    airports: allAirports,
-    totalPriceKRW: Math.round(Number(item.price || 0)),
+    provider: 'Travelpayouts',
+    airlines: [airline].filter(Boolean),
+    airports: [origin, dest].filter(Boolean),
+    totalPriceKRW: priceKRW,
     totalDurationMin: totalDurMin,
-    totalStops,
+    totalStops: transfers,
     departureMinute: depMinute,
     deeplinkKayak: kayakUrl,
     deeplinkSkyscanner: ssUrl,
-    deeplink: item.deep_link || '#',
+    deeplink: tpLink,
     legs: validLegs
   };
 }
@@ -3889,6 +3908,7 @@ async function fetchRakutenHotels(payload) {
 
   const params = new URLSearchParams({
     applicationId: RAKUTEN_APP_ID,
+    accessKey: RAKUTEN_ACCESS_KEY,
     format: 'json',
     formatVersion: '2',
     checkinDate: checkIn,
@@ -3924,7 +3944,7 @@ async function fetchRakutenHotels(payload) {
   }
 
   try {
-    const res = await fetchWithTimeout(`${RAKUTEN_BASE}/VacantHotelSearch/20170426?${params}`, {}, AI_REQUEST_TIMEOUT_MS);
+    const res = await fetchWithTimeout(`${RAKUTEN_BASE}/VacantHotelSearch/20170426?${params}`, { headers: { 'Referer': 'https://japanjapantravel.onrender.com/' } }, AI_REQUEST_TIMEOUT_MS);
     if (!res.ok) {
       console.warn('[rakuten] search error:', res.status);
       // Fallback to SimpleHotelSearch if VacantHotelSearch fails
@@ -3932,7 +3952,7 @@ async function fetchRakutenHotels(payload) {
       params.delete('checkoutDate');
       params.delete('adultNum');
       params.delete('roomNum');
-      const res2 = await fetchWithTimeout(`${RAKUTEN_BASE}/SimpleHotelSearch/20170426?${params}`, {}, AI_REQUEST_TIMEOUT_MS);
+      const res2 = await fetchWithTimeout(`${RAKUTEN_BASE}/SimpleHotelSearch/20170426?${params}`, { headers: { 'Referer': 'https://japanjapantravel.onrender.com/' } }, AI_REQUEST_TIMEOUT_MS);
       if (!res2.ok) return [];
       const data2 = await res2.json();
       return normalizeRakutenSimple(data2, payload);
@@ -5478,14 +5498,14 @@ async function handleApi(req, res, parsedUrl) {
       let source = 'mock';
       let sourceNote = '';
 
-      // 1순위: Kiwi.com Tequila API (무료)
-      if (KIWI_API_KEY) {
+      // 1순위: Travelpayouts API (무료 실시간)
+      if (TRAVELPAYOUTS_TOKEN) {
         try {
-          allCandidates = await fetchKiwiFlights(payload);
-          if (allCandidates.length > 0) source = 'kiwi_live';
+          allCandidates = await fetchTravelpayoutsFlights(payload);
+          if (allCandidates.length > 0) source = 'travelpayouts_live';
         } catch (err) {
-          console.warn('[kiwi] flight fetch error:', err.message);
-          sourceNote = `Kiwi 항공 조회 실패: ${err.message}`;
+          console.warn('[travelpayouts] flight fetch error:', err.message);
+          sourceNote = `Travelpayouts 항공 조회 실패: ${err.message}`;
         }
       }
 
