@@ -1013,6 +1013,7 @@ function buildPlanPayload(extra = {}) {
     pace: 'normal',
     budget: 'mid',
     useAi: true,
+    lang: currentLang,
     ...extra
   };
   const stayInfo = stayPayloadFromSelection();
@@ -1394,7 +1395,7 @@ el('btnAiAssist')?.addEventListener('click', async () => {
       days: Number(el('days').value || 4),
       startDate: el('startDate').value
     };
-    const data = await postJson('/api/ai-travel-chat', { message, context });
+    const data = await postJson('/api/ai-travel-chat', { message, context, lang: currentLang });
     const aiSourceNote = el('aiSourceNote');
     if (aiSourceNote) {
       var chatModelInfo = data.aiModel ? ' [모델: ' + data.aiModel + ']' : '';
@@ -1665,7 +1666,7 @@ el('btnFood').addEventListener('click', async () => {
   try {
     const city = encodeURIComponent(el('foodCity').value);
     const genre = encodeURIComponent(el('foodGenre').value);
-    const res = await fetch(`/api/foods?city=${city}&genre=${genre}&budget=mid`);
+    const res = await fetch(`/api/foods?lang=${currentLang}&city=${city}&genre=${genre}&budget=mid`);
     const data = await res.json();
     latestFoodSearchList = data.list || [];
   latestFoodList = data.list || [];
@@ -2275,7 +2276,7 @@ if (el('btnDestSearch')) {
         theme: el('destSearchTheme').value,
         budget: 'mid',
         limit: 10
-      };
+      , lang: currentLang};
       var data = await postJson('/api/dest-search', payload);
       renderDestSearchCards(data.destinations || []);
       var srcNote = el('destSearchSourceNote');
@@ -3761,5 +3762,615 @@ if (el('city')) {
   });
   // Initial load
   setTimeout(function() { loadKlookWidget(el('city').value || 'tokyo'); }, 1000);
+}
+
+
+
+// ═══════════════════════════════════════════════
+// 10. PDF EXPORT
+// ═══════════════════════════════════════════════
+document.addEventListener('click', function(e) {
+  if (e.target.closest('#btnExportPdf')) {
+    var text = buildItineraryText('text');
+    if (!text || text.indexOf('\uC77C\uC815\uC774 \uC5C6\uC2B5\uB2C8\uB2E4') >= 0) {
+      showMemoToast('\uC77C\uC815\uC744 \uBA3C\uC800 \uC0DD\uC131\uD574\uC8FC\uC138\uC694.');
+      return;
+    }
+    var printWin = window.open('', '_blank');
+    if (!printWin) { showMemoToast('\uD31D\uC5C5\uC774 \uCC28\uB2E8\uB418\uC5C8\uC2B5\uB2C8\uB2E4.'); return; }
+    var lines = text.split('\n');
+    var htmlBody = lines.map(function(line) {
+      if (line.startsWith('===') || line.startsWith('---')) return '<h2 style="border-bottom:1px solid #ccc;padding-bottom:4px;margin-top:16px">' + line.replace(/[=\-]/g, '').trim() + '</h2>';
+      if (line.startsWith('[') && line.endsWith(']')) return '<h3 style="color:#2563eb;margin-top:12px">' + line + '</h3>';
+      if (line.trim() === '') return '<br>';
+      return '<p style="margin:2px 0">' + line + '</p>';
+    }).join('\n');
+    printWin.document.write('<html><head><title>JapanTravel \uC77C\uC815</title><style>body{font-family:sans-serif;max-width:700px;margin:20px auto;padding:0 16px;font-size:13px;color:#1e293b}h2{font-size:16px}h3{font-size:14px}p{line-height:1.5}@media print{body{margin:0}}</style></head><body>' + htmlBody + '<script>setTimeout(function(){window.print()},300)<\/script></body></html>');
+    printWin.document.close();
+  }
+});
+
+// ═══════════════════════════════════════════════
+// 11. MAP ROUTE LINES (Polylines between markers)
+// ═══════════════════════════════════════════════
+var itinPolylines = [];
+
+var _origUpdateItinMap = updateItinMap;
+updateItinMap = async function() {
+  // Clear old polylines
+  for (var i = 0; i < itinPolylines.length; i++) {
+    itinPolylines[i].setMap(null);
+  }
+  itinPolylines = [];
+
+  await _origUpdateItinMap();
+
+  // Draw polylines between markers grouped by day
+  if (!itinMarkers || itinMarkers.length === 0 || !itinMap) return;
+  if (typeof google === 'undefined') return;
+
+  // Group markers by day
+  var dayGroups = {};
+  for (var mi = 0; mi < itinMarkers.length; mi++) {
+    var m = itinMarkers[mi];
+    var title = m.getTitle() || '';
+    var dayMatch = title.match(/Day (\d+)/);
+    var dayNum = dayMatch ? Number(dayMatch[1]) : 0;
+    if (!dayGroups[dayNum]) dayGroups[dayNum] = [];
+    dayGroups[dayNum].push(m.getPosition());
+  }
+
+  for (var day in dayGroups) {
+    var positions = dayGroups[day];
+    if (positions.length < 2) continue;
+    var colorIdx = (Number(day) - 1) % DAY_COLORS.length;
+    var line = new google.maps.Polyline({
+      path: positions,
+      geodesic: true,
+      strokeColor: DAY_COLORS[colorIdx],
+      strokeOpacity: 0.7,
+      strokeWeight: 3,
+      map: itinMap
+    });
+    itinPolylines.push(line);
+  }
+};
+
+// ═══════════════════════════════════════════════
+// 12. WISHLIST (localStorage)
+// ═══════════════════════════════════════════════
+function getWishlist() {
+  try { return JSON.parse(localStorage.getItem('travelWishlist') || '[]'); } catch(e) { return []; }
+}
+function saveWishlist(list) {
+  localStorage.setItem('travelWishlist', JSON.stringify(list));
+}
+function isWishlisted(name) {
+  return getWishlist().some(function(w) { return w.name === name; });
+}
+function toggleWishlist(name, type, area, city) {
+  var list = getWishlist();
+  var idx = list.findIndex(function(w) { return w.name === name; });
+  if (idx >= 0) {
+    list.splice(idx, 1);
+  } else {
+    list.push({ name: name, type: type || 'dest', area: area || '', city: city || '', addedAt: new Date().toISOString() });
+    trackPreference(type === 'food' ? 'genre' : 'theme', area || city || '', 'wishlist');
+  }
+  saveWishlist(list);
+  return idx < 0;
+}
+
+function renderWishlistPanel() {
+  var container = document.getElementById('wishlistContent');
+  if (!container) return;
+  var list = getWishlist();
+  if (list.length === 0) {
+    container.innerHTML = '<div class="wishlist-empty">\uCC1C\uD55C \uC7A5\uC18C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.<br>\uC5EC\uD589\uC9C0/\uB9DB\uC9D1 \uCE74\uB4DC\uC758 \u2764 \uBC84\uD2BC\uC744 \uB20C\uB7EC\uBCF4\uC138\uC694.</div>';
+    return;
+  }
+  var html = '<div style="padding:4px 8px;font-size:12px;color:#64748b">' + list.length + '\uAC1C \uC800\uC7A5\uB428</div>';
+  for (var i = 0; i < list.length; i++) {
+    var w = list[i];
+    html += '<div class="wishlist-item">';
+    html += '<div><div class="wishlist-item-name">' + escapeHtml(w.name) + '</div>';
+    html += '<div class="wishlist-item-meta">' + escapeHtml(w.type === 'food' ? '\uB9DB\uC9D1' : '\uC5EC\uD589\uC9C0') + ' \u00B7 ' + escapeHtml(w.area || w.city || '') + '</div></div>';
+    html += '<button class="wishlist-remove" data-wish-name="' + escapeHtml(w.name) + '">\u2715</button>';
+    html += '</div>';
+  }
+  container.innerHTML = html;
+}
+
+function addWishlistButtons() {
+  document.querySelectorAll('.card .card-body h4').forEach(function(h4) {
+    if (h4.querySelector('.wishlist-btn')) return;
+    var name = h4.textContent.replace(/^[^\w\uAC00-\uD7AF\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]+/, '').trim();
+    if (!name) return;
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'wishlist-btn' + (isWishlisted(name) ? ' wishlisted' : '');
+    btn.textContent = isWishlisted(name) ? '\u2764\uFE0F' : '\uD83E\uDE76';
+    btn.dataset.wishName = name;
+    btn.title = '\uCC1C \uCD94\uAC00/\uC81C\uAC70';
+    h4.appendChild(btn);
+  });
+}
+
+var _origRenderCards2 = renderCards;
+renderCards = function(targetId, items, mode) {
+  _origRenderCards2(targetId, items, mode);
+  setTimeout(addWishlistButtons, 50);
+};
+var _origRenderRecFoodCards2 = renderRecFoodCards;
+renderRecFoodCards = function(items) {
+  _origRenderRecFoodCards2(items);
+  setTimeout(addWishlistButtons, 50);
+};
+var _origRenderDestSearchCards2 = renderDestSearchCards;
+renderDestSearchCards = function(items) {
+  _origRenderDestSearchCards2(items);
+  setTimeout(addWishlistButtons, 50);
+};
+
+document.addEventListener('click', function(e) {
+  var wishBtn = e.target.closest('.wishlist-btn');
+  if (wishBtn) {
+    e.stopPropagation();
+    var name = wishBtn.dataset.wishName;
+    var card = wishBtn.closest('.card');
+    var type = card && card.querySelector('.card-info-row') ? (card.querySelector('.card-info-row').textContent.match(/\uB77C\uBA58|\uC2A4\uC2DC|\uC774\uC790\uCE74\uC57C|\uCFE0\uC2DC|\uD0C0\uCF54/) ? 'food' : 'dest') : 'dest';
+    var area = card && card.querySelector('.card-info-row') ? card.querySelector('.card-info-row').textContent.split('\u00B7').pop().trim() : '';
+    var added = toggleWishlist(name, type, area);
+    wishBtn.textContent = added ? '\u2764\uFE0F' : '\uD83E\uDE76';
+    wishBtn.classList.toggle('wishlisted', added);
+    showMemoToast(added ? '\uCC1C \uCD94\uAC00\uB428' : '\uCC1C \uC81C\uAC70\uB428');
+    return;
+  }
+  var removeBtn = e.target.closest('.wishlist-remove');
+  if (removeBtn) { toggleWishlist(removeBtn.dataset.wishName); renderWishlistPanel(); return; }
+  if (e.target.closest('#btnWishlist')) { renderWishlistPanel(); togglePanel('wishlistPanel'); return; }
+});
+
+// ═══════════════════════════════════════════════
+// 13. SEARCH HISTORY (localStorage)
+// ═══════════════════════════════════════════════
+var SEARCH_HISTORY_KEY = 'travelSearchHistory';
+var SEARCH_HISTORY_MAX = 20;
+
+function getSearchHistory() {
+  try { return JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]'); } catch(e) { return []; }
+}
+function saveSearchHistory(list) {
+  localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(list.slice(0, SEARCH_HISTORY_MAX)));
+}
+function addSearchHistory(type, params) {
+  var list = getSearchHistory();
+  var label = type;
+  if (type === 'plan') label = '\uCD94\uCC9C+\uC77C\uC815: ' + (params.city || '') + ' ' + (params.days || '') + '\uC77C';
+  else if (type === 'flight') label = '\uD56D\uACF5\uAD8C: ' + (params.from || '') + '\u2192' + (params.to || '');
+  else if (type === 'stay') label = '\uC219\uC18C: ' + (params.city || '');
+  else if (type === 'food') label = '\uB9DB\uC9D1: ' + (params.city || '') + ' ' + (params.genre || '');
+  else if (type === 'dest') label = '\uC5EC\uD589\uC9C0: ' + (params.city || '');
+  list.unshift({ type: type, label: label, params: params, time: Date.now() });
+  var seen = {};
+  list = list.filter(function(item) {
+    if (seen[item.label]) return false;
+    seen[item.label] = true;
+    return true;
+  });
+  saveSearchHistory(list);
+}
+
+function renderSearchHistoryPanel() {
+  var container = document.getElementById('searchHistoryContent');
+  if (!container) return;
+  var list = getSearchHistory();
+  if (list.length === 0) {
+    container.innerHTML = '<div class="wishlist-empty">\uAC80\uC0C9 \uAE30\uB85D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.</div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < list.length; i++) {
+    var item = list[i];
+    var ago = Math.round((Date.now() - item.time) / 60000);
+    var timeStr = ago < 60 ? ago + '\uBD84 \uC804' : Math.round(ago / 60) + '\uC2DC\uAC04 \uC804';
+    html += '<div class="search-history-item" data-sh-index="' + i + '">';
+    html += '<div><div class="search-history-label">' + escapeHtml(item.label) + '</div>';
+    html += '<div class="search-history-time">' + timeStr + '</div></div></div>';
+  }
+  html += '<button class="search-history-clear" id="btnClearHistory">\uAE30\uB85D \uC804\uCCB4 \uC0AD\uC81C</button>';
+  container.innerHTML = html;
+}
+
+document.addEventListener('click', function(e) {
+  if (e.target.closest('#btnSearchHistory')) { renderSearchHistoryPanel(); togglePanel('searchHistoryPanel'); return; }
+  if (e.target.closest('#btnClearHistory')) { localStorage.removeItem(SEARCH_HISTORY_KEY); renderSearchHistoryPanel(); showMemoToast('\uAC80\uC0C9 \uAE30\uB85D\uC774 \uC0AD\uC81C\uB418\uC5C8\uC2B5\uB2C8\uB2E4.'); return; }
+  var shItem = e.target.closest('.search-history-item');
+  if (shItem) {
+    var idx = Number(shItem.dataset.shIndex);
+    var list = getSearchHistory();
+    var item = list[idx];
+    if (!item) return;
+    if (item.type === 'plan' && item.params) {
+      if (item.params.city) el('city').value = item.params.city;
+      if (item.params.days) el('days').value = item.params.days;
+      if (item.params.theme) el('theme').value = item.params.theme;
+      el('btnPlan').click();
+    } else if (item.type === 'food' && item.params) {
+      if (item.params.city) el('foodCity').value = item.params.city;
+      if (item.params.genre) el('foodGenre').value = item.params.genre;
+      el('btnFood').click();
+    } else if (item.type === 'stay' && item.params) {
+      if (item.params.city) el('stayCity').value = item.params.city;
+      el('btnStays').click();
+    }
+    togglePanel('searchHistoryPanel');
+  }
+});
+
+// Record search history on button clicks (capture phase)
+(function() {
+  el('btnPlan').addEventListener('click', function() {
+    addSearchHistory('plan', { city: el('city').value, days: el('days').value, theme: el('theme').value });
+  }, true);
+  el('btnFood').addEventListener('click', function() {
+    addSearchHistory('food', { city: el('foodCity').value, genre: el('foodGenre').value });
+  }, true);
+  el('btnStays').addEventListener('click', function() {
+    addSearchHistory('stay', { city: el('stayCity').value });
+  }, true);
+  el('btnFlights').addEventListener('click', function() {
+    addSearchHistory('flight', { from: el('from').value, to: el('to').value });
+  }, true);
+  if (el('btnDestSearch')) {
+    el('btnDestSearch').addEventListener('click', function() {
+      addSearchHistory('dest', { city: el('destSearchCity').value, theme: el('destSearchTheme').value });
+    }, true);
+  }
+})();
+
+// ═══════════════════════════════════════════════
+// 14. USER PREFERENCE LEARNING (localStorage)
+// ═══════════════════════════════════════════════
+var PREF_KEY = 'travelPreferences';
+
+function getPreferences() {
+  try { return JSON.parse(localStorage.getItem(PREF_KEY) || '{}'); } catch(e) { return {}; }
+}
+function savePreferences(prefs) {
+  localStorage.setItem(PREF_KEY, JSON.stringify(prefs));
+}
+function trackPreference(category, value, action) {
+  if (!value || !category) return;
+  var prefs = getPreferences();
+  if (!prefs[category]) prefs[category] = {};
+  var v = String(value).toLowerCase().trim();
+  if (!v) return;
+  var weight = action === 'select' ? 3 : action === 'wishlist' ? 5 : action === 'search' ? 1 : 1;
+  prefs[category][v] = (prefs[category][v] || 0) + weight;
+  savePreferences(prefs);
+}
+function getTopPreferences(category, limit) {
+  var prefs = getPreferences();
+  var cat = prefs[category] || {};
+  return Object.entries(cat)
+    .sort(function(a, b) { return b[1] - a[1]; })
+    .slice(0, limit || 5)
+    .map(function(e) { return e[0]; });
+}
+
+el('city').addEventListener('change', function() { trackPreference('city', el('city').value, 'select'); });
+el('theme').addEventListener('change', function() { trackPreference('theme', el('theme').value, 'select'); });
+
+document.addEventListener('click', function(e) {
+  if (e.target.closest('.flight-select-btn')) {
+    var card = e.target.closest('.flight-card');
+    if (card) trackPreference('airline', card.querySelector('.airline-badge') ? card.querySelector('.airline-badge').textContent : '', 'select');
+  }
+  if (e.target.closest('.stay-select-btn')) {
+    var stayCard = e.target.closest('.stay-card');
+    if (stayCard) {
+      var stayMeta = stayCard.querySelector('.stay-meta');
+      if (stayMeta) trackPreference('stayArea', stayMeta.textContent.split('\u00B7').pop().trim(), 'select');
+    }
+  }
+});
+
+function showPreferenceHints() {
+  var topCities = getTopPreferences('city', 3);
+  var topThemes = getTopPreferences('theme', 2);
+  if (topCities.length === 0 && topThemes.length === 0) return;
+  var condPanel = document.querySelector('#section-conditions');
+  if (!condPanel || condPanel.querySelector('.pref-hints')) return;
+  var hints = [];
+  if (topCities.length > 0) {
+    var cityLabels = topCities.map(function(k) {
+      var c = cityCatalog.find(function(cc) { return cc.key === k; });
+      return c ? c.label : k;
+    });
+    hints.push('\uC790\uC8FC \uAC00\uB294 \uB3C4\uC2DC: ' + cityLabels.join(', '));
+  }
+  if (topThemes.length > 0) {
+    var themeLabels = { mixed: '\uBC38\uB7F0\uC2A4', foodie: '\uBBF8\uC2DD', culture: '\uBB38\uD654', shopping: '\uC1FC\uD551', nature: '\uC790\uC5F0' };
+    hints.push('\uC120\uD638 \uD14C\uB9C8: ' + topThemes.map(function(t) { return themeLabels[t] || t; }).join(', '));
+  }
+  var div = document.createElement('div');
+  div.className = 'pref-hints';
+  div.style.cssText = 'font-size:12px;color:#64748b;padding:4px 0;';
+  div.innerHTML = hints.map(function(h) { return '<span class="pref-badge">' + h + '</span>'; }).join(' ');
+  condPanel.after(div);
+}
+setTimeout(showPreferenceHints, 2000);
+
+// ═══════════════════════════════════════════════
+// 15. LANGUAGE SWITCHER (i18n)
+// ═══════════════════════════════════════════════
+var currentLang = localStorage.getItem('travelLang') || 'ko';
+
+
+var I18N = {
+  ko: {
+    'section-conditions': '여행 조건', 'section-results': '추천 결과',
+    'section-explore': '탐색', 'section-flights': '항공권 탐색',
+    'section-stays': '숙소 탐색', 'section-tours': '투어 / 액티비티',
+    'btn-plan': '추천+AI일정 통합 생성', 'btn-flights': '항공권 검색',
+    'btn-stays': '숙소 검색', 'btn-food': '검색',
+    'btn-add': '추가', 'btn-cancel': '취소', 'btn-close': '닫기',
+    'btn-save': '저장', 'btn-cancel2': '취소', 'btn-more': '더보기',
+    'btn-refresh-plan': 'AI 일정 새로고침',
+    'btn-undo': '\u21A9 되돌리기', 'btn-redo': '\u21AA 다시',
+    'tagline': 'AI기반 여행지,항공권,맛집 추천',
+    'login': ' 로그인',
+    'toolbar-export': '\uD83D\uDCCB 내보내기', 'toolbar-checklist': '\u2705 체크리스트',
+    'toolbar-emergency': '\uD83C\uDD98 긴급', 'toolbar-phrases': '\uD83D\uDDE3 회화',
+    'toolbar-weather': '\uD83C\uDF24 날씨', 'toolbar-wishlist': '\u2764\uFE0F 찜',
+    'toolbar-history': '\uD83D\uDCCB 검색기록',
+    'label-city': '여행 지역', 'label-startDate': '출발 날짜',
+    'label-days': '여행 일수', 'label-theme': '여행 테마',
+    'label-city2': '도시', 'label-theme2': '테마',
+    'label-city3': '도시', 'label-genre': '장르',
+    'label-from-airport': '출발 공항', 'label-to-airport': '도착 공항',
+    'label-depart-date': '출발일', 'label-return-date': '복귀일(왕복)',
+    'label-flight-pref': '추천 기준',
+    'label-checkin': '체크인', 'label-checkout': '체크아웃',
+    'label-guests': '인원', 'label-rooms': '객실 수', 'label-sort': '정렬',
+    'theme-mixed': '밸런스', 'theme-foodie': '미식',
+    'theme-culture': '문화', 'theme-shopping': '쇼핑', 'theme-nature': '자연',
+    'theme-all': '전체',
+    'trip-oneway': '편도', 'trip-roundtrip': '왕복', 'trip-multicity': '다구간',
+    'sort-recommended': '추천순', 'sort-price': '최저가순',
+    'sort-duration': '최단시간순', 'sort-recommended2': '추천순',
+    'pref-balanced': '가격/시간 균형',
+    'pref-cheap': '최저가 우선', 'pref-fast': '최단시간 우선',
+    'type-all': '전체', 'type-hotel': '호텔', 'type-ryokan': '료칸',
+    'type-apartment': '레지던스', 'type-guesthouse': '게스트하우스',
+    'tab-rec-dest': '추천 여행지', 'tab-rec-food': '추천 맛집',
+    'tab-dest': '여행지', 'tab-food': '맛집',
+    'ai-chat-title': 'AI 여행 조건 채팅',
+    'ai-itinerary': 'AI 일정',
+    'itinerary-map': '일정 지도',
+    'weather-title': '여행지 날씨',
+    'manual-flight': '직접 항공편 입력',
+    'manual-stay': '직접 숙소 입력',
+    'modal-add-plan': '일정에 추가',
+    'modal-day-select': 'Day 선택', 'modal-timeslot': '시간대',
+    'slot-morning': '오전', 'slot-afternoon': '오후', 'slot-allday': '종일',
+    'slot-breakfast': '아침', 'slot-lunch': '점심', 'slot-dinner': '저녁',
+    'panel-checklist': '\u2705 여행 준비 체크리스트',
+    'panel-emergency': '\uD83C\uDD98 일본 긴급 정보',
+    'panel-phrases': '\uD83D\uDDE3 일본어 여행 회화',
+    'panel-weather': '\uD83C\uDF24 여행지 날씨 예보',
+    'panel-export': '\uD83D\uDCCB 일정 내보내기',
+    'panel-wishlist': '\u2764\uFE0F 찜 / 위시리스트',
+    'panel-search-history': '\uD83D\uDCCB 검색 기록',
+    'panel-myplans': ' 내 저장 일정',
+    'export-pdf': '\uD83D\uDCC4 PDF 다운로드',
+    'export-text': '\uD83D\uDCC4 텍스트 복사',
+    'export-markdown': '\uD83D\uDCDD 마크다운 복사',
+    'export-link': '\uD83D\uDD17 링크 복사',
+    'login-title': '로그인', 'save-title': ' 일정 저장',
+    'tours-note': '여행 도시의 인기 투어와 액티비티를 확인하세요. (Klook 제공)',
+    'memo-saved': '메모가 저장되었습니다.',
+    'no-results': '결과 없음',
+    'add-to-plan': '일정에 추가',
+    'promote-to-rec': '\u2196\uFE0F 추천 여행지로',
+    'map-link': '지도',
+    'err-rate-limit': '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.',
+    'err-need-plan': '먼저 AI 일정을 생성해주세요.',
+    'loading': '로딩 중...',
+    'per-night': '/ 박'
+  },
+  en: {
+    'section-conditions': 'Travel Conditions', 'section-results': 'Recommendations',
+    'section-explore': 'Explore', 'section-flights': 'Flights',
+    'section-stays': 'Accommodations', 'section-tours': 'Tours / Activities',
+    'btn-plan': 'Generate Plan', 'btn-flights': 'Search Flights',
+    'btn-stays': 'Search Hotels', 'btn-food': 'Search',
+    'btn-add': 'Add', 'btn-cancel': 'Cancel', 'btn-close': 'Close',
+    'btn-save': 'Save', 'btn-cancel2': 'Cancel', 'btn-more': 'Show More',
+    'btn-refresh-plan': 'Refresh AI Plan',
+    'btn-undo': '\u21A9 Undo', 'btn-redo': '\u21AA Redo',
+    'tagline': 'AI-powered travel, flights & food recommendations',
+    'login': ' Login',
+    'toolbar-export': '\uD83D\uDCCB Export', 'toolbar-checklist': '\u2705 Checklist',
+    'toolbar-emergency': '\uD83C\uDD98 Emergency', 'toolbar-phrases': '\uD83D\uDDE3 Phrases',
+    'toolbar-weather': '\uD83C\uDF24 Weather', 'toolbar-wishlist': '\u2764\uFE0F Wishlist',
+    'toolbar-history': '\uD83D\uDCCB History',
+    'label-city': 'Destination', 'label-startDate': 'Start Date',
+    'label-days': 'Duration (days)', 'label-theme': 'Theme',
+    'label-city2': 'City', 'label-theme2': 'Theme',
+    'label-city3': 'City', 'label-genre': 'Genre',
+    'label-from-airport': 'From', 'label-to-airport': 'To',
+    'label-depart-date': 'Departure', 'label-return-date': 'Return',
+    'label-flight-pref': 'Sort By',
+    'label-checkin': 'Check-in', 'label-checkout': 'Check-out',
+    'label-guests': 'Guests', 'label-rooms': 'Rooms', 'label-sort': 'Sort',
+    'theme-mixed': 'Balanced', 'theme-foodie': 'Foodie',
+    'theme-culture': 'Culture', 'theme-shopping': 'Shopping', 'theme-nature': 'Nature',
+    'theme-all': 'All',
+    'trip-oneway': 'One-way', 'trip-roundtrip': 'Round-trip', 'trip-multicity': 'Multi-city',
+    'sort-recommended': 'Recommended', 'sort-price': 'Lowest Price',
+    'sort-duration': 'Shortest', 'sort-recommended2': 'Recommended',
+    'pref-balanced': 'Price/Time Balance',
+    'pref-cheap': 'Lowest Price', 'pref-fast': 'Fastest',
+    'type-all': 'All', 'type-hotel': 'Hotel', 'type-ryokan': 'Ryokan',
+    'type-apartment': 'Apartment', 'type-guesthouse': 'Guesthouse',
+    'tab-rec-dest': 'Destinations', 'tab-rec-food': 'Restaurants',
+    'tab-dest': 'Places', 'tab-food': 'Food',
+    'ai-chat-title': 'AI Travel Chat',
+    'ai-itinerary': 'AI Itinerary',
+    'itinerary-map': 'Itinerary Map',
+    'weather-title': 'Weather',
+    'manual-flight': 'Enter Flight Manually',
+    'manual-stay': 'Enter Hotel Manually',
+    'modal-add-plan': 'Add to Plan',
+    'modal-day-select': 'Select Day', 'modal-timeslot': 'Time Slot',
+    'slot-morning': 'Morning', 'slot-afternoon': 'Afternoon', 'slot-allday': 'All Day',
+    'slot-breakfast': 'Breakfast', 'slot-lunch': 'Lunch', 'slot-dinner': 'Dinner',
+    'panel-checklist': '\u2705 Travel Checklist',
+    'panel-emergency': '\uD83C\uDD98 Emergency Info (Japan)',
+    'panel-phrases': '\uD83D\uDDE3 Japanese Phrases',
+    'panel-weather': '\uD83C\uDF24 Weather Forecast',
+    'panel-export': '\uD83D\uDCCB Export Itinerary',
+    'panel-wishlist': '\u2764\uFE0F Wishlist',
+    'panel-search-history': '\uD83D\uDCCB Search History',
+    'panel-myplans': ' My Saved Plans',
+    'export-pdf': '\uD83D\uDCC4 Download PDF',
+    'export-text': '\uD83D\uDCC4 Copy Text',
+    'export-markdown': '\uD83D\uDCDD Copy Markdown',
+    'export-link': '\uD83D\uDD17 Copy Link',
+    'login-title': 'Login', 'save-title': ' Save Itinerary',
+    'tours-note': 'Check popular tours and activities. (Powered by Klook)',
+    'memo-saved': 'Memo saved.',
+    'no-results': 'No results',
+    'add-to-plan': 'Add to Plan',
+    'promote-to-rec': '\u2196\uFE0F Add to Recs',
+    'map-link': 'Map',
+    'err-rate-limit': 'Too many requests. Please try again later.',
+    'err-need-plan': 'Please generate an AI itinerary first.',
+    'loading': 'Loading...',
+    'per-night': '/ night'
+  },
+  ja: {
+    'section-conditions': '\u65C5\u884C\u6761\u4EF6', 'section-results': '\u304A\u3059\u3059\u3081',
+    'section-explore': '\u63A2\u7D22', 'section-flights': '\u822A\u7A7A\u5238',
+    'section-stays': '\u5BBF\u6CCA', 'section-tours': '\u30C4\u30A2\u30FC / \u30A2\u30AF\u30C6\u30A3\u30D3\u30C6\u30A3',
+    'btn-plan': '\u30D7\u30E9\u30F3\u4F5C\u6210', 'btn-flights': '\u822A\u7A7A\u5238\u691C\u7D22',
+    'btn-stays': '\u5BBF\u6CCA\u691C\u7D22', 'btn-food': '\u691C\u7D22',
+    'btn-add': '\u8FFD\u52A0', 'btn-cancel': '\u30AD\u30E3\u30F3\u30BB\u30EB', 'btn-close': '\u9589\u3058\u308B',
+    'btn-save': '\u4FDD\u5B58', 'btn-cancel2': '\u30AD\u30E3\u30F3\u30BB\u30EB', 'btn-more': '\u3082\u3063\u3068\u898B\u308B',
+    'btn-refresh-plan': 'AI\u30D7\u30E9\u30F3\u66F4\u65B0',
+    'btn-undo': '\u21A9 \u5143\u306B\u623B\u3059', 'btn-redo': '\u21AA \u3084\u308A\u76F4\u3057',
+    'tagline': 'AI\u3067\u65C5\u884C\u5148\u30FB\u822A\u7A7A\u5238\u30FB\u30B0\u30EB\u30E1\u3092\u63A8\u85A6',
+    'login': ' \u30ED\u30B0\u30A4\u30F3',
+    'toolbar-export': '\uD83D\uDCCB \u30A8\u30AF\u30B9\u30DD\u30FC\u30C8', 'toolbar-checklist': '\u2705 \u30C1\u30A7\u30C3\u30AF\u30EA\u30B9\u30C8',
+    'toolbar-emergency': '\uD83C\uDD98 \u7DCA\u6025', 'toolbar-phrases': '\uD83D\uDDE3 \u4F1A\u8A71',
+    'toolbar-weather': '\uD83C\uDF24 \u5929\u6C17', 'toolbar-wishlist': '\u2764\uFE0F \u304A\u6C17\u306B\u5165\u308A',
+    'toolbar-history': '\uD83D\uDCCB \u5C65\u6B74',
+    'label-city': '\u65C5\u884C\u5148', 'label-startDate': '\u51FA\u767A\u65E5',
+    'label-days': '\u65E5\u6570', 'label-theme': '\u30C6\u30FC\u30DE',
+    'label-city2': '\u90FD\u5E02', 'label-theme2': '\u30C6\u30FC\u30DE',
+    'label-city3': '\u90FD\u5E02', 'label-genre': '\u30B8\u30E3\u30F3\u30EB',
+    'label-from-airport': '\u51FA\u767A\u7A7A\u6E2F', 'label-to-airport': '\u5230\u7740\u7A7A\u6E2F',
+    'label-depart-date': '\u51FA\u767A\u65E5', 'label-return-date': '\u5E30\u56FD\u65E5',
+    'label-flight-pref': '\u4E26\u3073\u66FF\u3048',
+    'label-checkin': '\u30C1\u30A7\u30C3\u30AF\u30A4\u30F3', 'label-checkout': '\u30C1\u30A7\u30C3\u30AF\u30A2\u30A6\u30C8',
+    'label-guests': '\u4EBA\u6570', 'label-rooms': '\u90E8\u5C4B\u6570', 'label-sort': '\u4E26\u3073\u66FF\u3048',
+    'theme-mixed': '\u30D0\u30E9\u30F3\u30B9', 'theme-foodie': '\u30B0\u30EB\u30E1',
+    'theme-culture': '\u6587\u5316', 'theme-shopping': '\u30B7\u30E7\u30C3\u30D4\u30F3\u30B0', 'theme-nature': '\u81EA\u7136',
+    'theme-all': '\u5168\u3066',
+    'trip-oneway': '\u7247\u9053', 'trip-roundtrip': '\u5F80\u5FA9', 'trip-multicity': '\u591A\u90FD\u5E02',
+    'sort-recommended': '\u304A\u3059\u3059\u3081\u9806', 'sort-price': '\u6700\u5B89\u5024\u9806',
+    'sort-duration': '\u6700\u77ED\u6642\u9593\u9806', 'sort-recommended2': '\u304A\u3059\u3059\u3081\u9806',
+    'pref-balanced': '\u4FA1\u683C/\u6642\u9593\u30D0\u30E9\u30F3\u30B9',
+    'pref-cheap': '\u6700\u5B89\u5024\u512A\u5148', 'pref-fast': '\u6700\u77ED\u6642\u9593\u512A\u5148',
+    'type-all': '\u5168\u3066', 'type-hotel': '\u30DB\u30C6\u30EB', 'type-ryokan': '\u65C5\u9928',
+    'type-apartment': '\u30A2\u30D1\u30FC\u30C8\u30E1\u30F3\u30C8', 'type-guesthouse': '\u30B2\u30B9\u30C8\u30CF\u30A6\u30B9',
+    'tab-rec-dest': '\u304A\u3059\u3059\u3081\u30B9\u30DD\u30C3\u30C8', 'tab-rec-food': '\u304A\u3059\u3059\u3081\u30B0\u30EB\u30E1',
+    'tab-dest': '\u30B9\u30DD\u30C3\u30C8', 'tab-food': '\u30B0\u30EB\u30E1',
+    'ai-chat-title': 'AI\u65C5\u884C\u30C1\u30E3\u30C3\u30C8',
+    'ai-itinerary': 'AI\u30D7\u30E9\u30F3',
+    'itinerary-map': '\u30D7\u30E9\u30F3\u5730\u56F3',
+    'weather-title': '\u5929\u6C17\u4E88\u5831',
+    'manual-flight': '\u822A\u7A7A\u5238\u3092\u624B\u52D5\u5165\u529B',
+    'manual-stay': '\u5BBF\u6CCA\u3092\u624B\u52D5\u5165\u529B',
+    'modal-add-plan': '\u30D7\u30E9\u30F3\u306B\u8FFD\u52A0',
+    'modal-day-select': 'Day\u9078\u629E', 'modal-timeslot': '\u6642\u9593\u5E2F',
+    'slot-morning': '\u5348\u524D', 'slot-afternoon': '\u5348\u5F8C', 'slot-allday': '\u7D42\u65E5',
+    'slot-breakfast': '\u671D\u98DF', 'slot-lunch': '\u6607\u98DF', 'slot-dinner': '\u5915\u98DF',
+    'panel-checklist': '\u2705 \u65C5\u884C\u6E96\u5099\u30C1\u30A7\u30C3\u30AF\u30EA\u30B9\u30C8',
+    'panel-emergency': '\uD83C\uDD98 \u7DCA\u6025\u60C5\u5831',
+    'panel-phrases': '\uD83D\uDDE3 \u65C5\u884C\u4F1A\u8A71',
+    'panel-weather': '\uD83C\uDF24 \u5929\u6C17\u4E88\u5831',
+    'panel-export': '\uD83D\uDCCB \u30D7\u30E9\u30F3\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8',
+    'panel-wishlist': '\u2764\uFE0F \u304A\u6C17\u306B\u5165\u308A',
+    'panel-search-history': '\uD83D\uDCCB \u691C\u7D22\u5C65\u6B74',
+    'panel-myplans': ' \u4FDD\u5B58\u6E08\u307F\u30D7\u30E9\u30F3',
+    'export-pdf': '\uD83D\uDCC4 PDF\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9',
+    'export-text': '\uD83D\uDCC4 \u30C6\u30AD\u30B9\u30C8\u30B3\u30D4\u30FC',
+    'export-markdown': '\uD83D\uDCDD \u30DE\u30FC\u30AF\u30C0\u30A6\u30F3\u30B3\u30D4\u30FC',
+    'export-link': '\uD83D\uDD17 \u30EA\u30F3\u30AF\u30B3\u30D4\u30FC',
+    'login-title': '\u30ED\u30B0\u30A4\u30F3', 'save-title': ' \u30D7\u30E9\u30F3\u4FDD\u5B58',
+    'tours-note': '\u4EBA\u6C17\u30C4\u30A2\u30FC\u3068\u30A2\u30AF\u30C6\u30A3\u30D3\u30C6\u30A3\u3092\u30C1\u30A7\u30C3\u30AF\u3002(Klook\u63D0\u4F9B)',
+    'memo-saved': '\u30E1\u30E2\u304C\u4FDD\u5B58\u3055\u308C\u307E\u3057\u305F\u3002',
+    'no-results': '\u7D50\u679C\u306A\u3057',
+    'add-to-plan': '\u30D7\u30E9\u30F3\u306B\u8FFD\u52A0',
+    'promote-to-rec': '\u2196\uFE0F \u304A\u3059\u3059\u3081\u306B\u8FFD\u52A0',
+    'map-link': '\u5730\u56F3',
+    'err-rate-limit': '\u30EA\u30AF\u30A8\u30B9\u30C8\u304C\u591A\u3059\u304E\u307E\u3059\u3002\u3057\u3070\u3089\u304F\u304A\u5F85\u3061\u304F\u3060\u3055\u3044\u3002',
+    'err-need-plan': '\u307E\u305AAI\u30D7\u30E9\u30F3\u3092\u4F5C\u6210\u3057\u3066\u304F\u3060\u3055\u3044\u3002',
+    'loading': '\u8AAD\u307F\u8FBC\u307F\u4E2D...',
+    'per-night': '/ \u6CCA'
+  }
+};
+
+function t(key) {
+  var dict = I18N[currentLang] || I18N.ko;
+  return dict[key] || (I18N.ko[key]) || key;
+}
+
+function applyLanguage(lang) {
+  currentLang = lang;
+  localStorage.setItem('travelLang', lang);
+  document.documentElement.lang = lang === 'ko' ? 'ko' : lang === 'ja' ? 'ja' : 'en';
+  document.querySelectorAll('[data-i18n]').forEach(function(elem) {
+    var key = elem.getAttribute('data-i18n');
+    var val = t(key);
+    if (val && val !== key) {
+      if (elem.tagName === 'OPTION') {
+        elem.textContent = val;
+      } else if (elem.tagName === 'INPUT' && elem.type !== 'hidden') {
+        // skip
+      } else {
+        elem.textContent = val;
+      }
+    }
+  });
+  var sectionIds = ['section-conditions', 'section-results', 'section-explore', 'section-flights', 'section-stays', 'section-tours'];
+  for (var si = 0; si < sectionIds.length; si++) {
+    var elem = document.getElementById(sectionIds[si]);
+    if (elem) elem.textContent = t(sectionIds[si]);
+  }
+  var btnMap = { 'btnPlan': 'btn-plan', 'btnFlights': 'btn-flights', 'btnStays': 'btn-stays', 'btnFood': 'btn-food' };
+  for (var btnId in btnMap) {
+    var b = el(btnId);
+    if (b) b.textContent = t(btnMap[btnId]);
+  }
+  document.querySelectorAll('.lang-btn').forEach(function(btn) {
+    btn.classList.toggle('active', btn.dataset.lang === lang);
+  });
+  var foodGenreInput = el('foodGenre');
+  if (foodGenreInput) {
+    foodGenreInput.placeholder = lang === 'en' ? 'Genre (e.g. Ramen)' : lang === 'ja' ? '\u30B8\u30E3\u30F3\u30EB (\u4F8B: \u30E9\u30FC\u30E1\u30F3)' : '\uC7A5\uB974 (\uC608: \uB77C\uBA58)';
+  }
+}
+
+document.addEventListener('click', function(e) {
+  var langBtn = e.target.closest('.lang-btn');
+  if (langBtn) { applyLanguage(langBtn.dataset.lang); }
+});
+
+if (currentLang !== 'ko') {
+  setTimeout(function() { applyLanguage(currentLang); }, 500);
 }
 

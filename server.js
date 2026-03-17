@@ -132,6 +132,12 @@ setInterval(() => {
   for (const [ip, entry] of _rateLimitMap) {
     if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) _rateLimitMap.delete(ip);
   }
+  // Clean up expired sessions (7 days)
+  for (const [sid, sess] of sessionStore) {
+    if (!sid.startsWith('oauth_state_') && sess.createdAt && (Date.now() - sess.createdAt) > 7 * 24 * 60 * 60 * 1000) {
+      sessionStore.delete(sid);
+    }
+  }
   // Clean up expired OAuth state tokens (max 10 min lifetime)
   for (const [key, val] of sessionStore) {
     if (key.startsWith('oauth_state_') && now - (val.createdAt || 0) > 600_000) {
@@ -203,13 +209,21 @@ function createSession(userData) {
   return { sid, cookie: `sid=${sid}.${sig}; HttpOnly; Path=/; SameSite=Lax; Max-Age=604800` };
 }
 
+const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
 function parseSession(req) {
   const cookie = req.headers.cookie || '';
   const match = cookie.match(/sid=([^.;]+)\.([^;]+)/);
   if (!match) return null;
   const [, sid, sig] = match;
   if (signSession(sid) !== sig) return null;
-  return sessionStore.get(sid) || null;
+  const session = sessionStore.get(sid);
+  if (!session) return null;
+  if (session.createdAt && (Date.now() - session.createdAt) > SESSION_MAX_AGE_MS) {
+    sessionStore.delete(sid);
+    return null;
+  }
+  return session;
 }
 
 function destroySession(req) {
@@ -255,6 +269,33 @@ function findOrCreateUser(provider, providerId, profile) {
 }
 
 const AI_REQUEST_TIMEOUT_MS = Math.max(4000, Number(process.env.AI_REQUEST_TIMEOUT_MS || 15000));
+
+// -- fetchWithRetry: exponential backoff for external API calls --
+async function fetchWithRetry(url, options = {}, maxRetries = 2) {
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const resp = await fetch(url, options);
+      if (resp.ok || resp.status < 500) return resp;
+      if (attempt < maxRetries && [502, 503, 504].includes(resp.status)) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
+        console.log('[fetchWithRetry] status=' + resp.status + ' attempt=' + (attempt+1) + ' retrying in ' + delay + 'ms');
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
+        console.log('[fetchWithRetry] error attempt=' + (attempt+1) + ': ' + err.message);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastError || new Error('fetchWithRetry exhausted retries');
+}
+
 
 const AI_SYSTEM_MESSAGE = [
   'You are a travel itinerary planner.',
@@ -606,7 +647,13 @@ for (const [key, city] of Object.entries(CITY_DATA)) {
 }
 
 function sendJson(res, status, data) {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'X-XSS-Protection': '1; mode=block',
+    'Referrer-Policy': 'strict-origin-when-cross-origin'
+  });
   res.end(JSON.stringify(data));
 }
 
@@ -904,7 +951,7 @@ async function geocodeCityInJapan(cityLabel) {
   }
 }
 
-async function ensureDynamicCityProfile(cityLabel, theme = 'mixed', budget = 'mid', foodKeyword = '', fallbackAirport = 'NRT') {
+async function ensureDynamicCityProfile(cityLabel, theme = 'mixed', budget = 'mid', foodKeyword = '', fallbackAirport = 'NRT', lang = 'ko') {
   const geocoded = await geocodeCityInJapan(cityLabel);
   const key = toCustomCityKey(cityLabel);
   const airportCode = geocoded
@@ -913,11 +960,11 @@ async function ensureDynamicCityProfile(cityLabel, theme = 'mixed', budget = 'mi
   let highlights = [];
   let foods = [];
   try {
-    const places = await fetchGoogleAttractions(cityLabel, theme);
+    const places = await fetchGoogleAttractions(cityLabel, theme, lang);
     highlights = (places || []).slice(0, 10).map((p) => ({
       name: p.displayName?.text || '추천 명소',
-      area: shortArea(p.formattedAddress, cityLabel),
-      category: localizeType(p.primaryType) || '관광',
+      area: localizeAddress(p.formattedAddress, cityLabel, lang),
+      category: localizeType(p.primaryType, lang) || ({ko:'관광',en:'Attraction',ja:'観光'}[lang]||'관광'),
       stayMin: 90,
       bestTime: inferBestTime(p),
       crowdScore: 3
@@ -927,7 +974,7 @@ async function ensureDynamicCityProfile(cityLabel, theme = 'mixed', budget = 'mi
   }
   try {
     if (GOOGLE_MAPS_API_KEY) {
-      const places = await fetchFoodPlacesForCity(cityLabel, geocoded?.lat, geocoded?.lng, foodKeyword, budget);
+      const places = await fetchFoodPlacesForCity(cityLabel, geocoded?.lat, geocoded?.lng, foodKeyword, budget, lang);
       foods = (places || []).slice(0, 10).map((f) => ({
         name: f.name,
         area: shortArea(f.address, cityLabel) || f.area || cityLabel,
@@ -1965,7 +2012,7 @@ async function buildTravelChatPlan(payload = {}) {
   const knownByLabel = detectCityKeyByInput(parsed.cityLabel);
   if (!knownByLabel && parsed.cityLabel && parsed.cityLabel !== (CITY_DATA[parsed.cityKey]?.label || '')) {
     try {
-      cityMeta = await ensureDynamicCityProfile(parsed.cityLabel, parsed.theme, parsed.budget, parsed.foodKeyword, parsed.arrivalAirport);
+      cityMeta = await ensureDynamicCityProfile(parsed.cityLabel, parsed.theme, parsed.budget, parsed.foodKeyword, parsed.arrivalAirport, parsed.lang || 'ko');
     } catch {
       cityMeta = null;
     }
@@ -2240,6 +2287,16 @@ function shortArea(formattedAddr, cityLabel) {
   return parts.slice(0, 2).join(', ');
 }
 
+function localizeAddress(formattedAddr, cityLabel, lang) {
+  if (!formattedAddr) return cityLabel || '';
+  if (lang === 'ko') return shortArea(formattedAddr, cityLabel);
+  // For en/ja, return cleaned address as-is
+  const parts = formattedAddr.split(/,/).map(s => s.trim()).filter(s => s && s.length > 1);
+  if (parts.length === 0) return cityLabel || '';
+  if (parts.length <= 3) return parts.join(', ');
+  return parts.slice(0, 3).join(', ');
+}
+
 // ── Google Places primaryType Korean mapping ──
 const PRIMARY_TYPE_KO = {
   // Attractions
@@ -2300,16 +2357,115 @@ const PRIMARY_TYPE_KO = {
   'point_of_interest': '명소', 'establishment': '시설',
   'political': '행정구역', 'locality': '지역',
 };
+// ── Google Places primaryType English mapping ──
+const PRIMARY_TYPE_EN = {
+  'tourist_attraction': 'Attraction', 'museum': 'Museum', 'art_gallery': 'Art Gallery',
+  'aquarium': 'Aquarium', 'zoo': 'Zoo', 'amusement_park': 'Amusement Park',
+  'theme_park': 'Theme Park', 'water_park': 'Water Park',
+  'historical_landmark': 'Historic Site', 'monument': 'Monument', 'castle': 'Castle',
+  'temple': 'Temple', 'shrine': 'Shrine', 'church': 'Church', 'mosque': 'Mosque',
+  'place_of_worship': 'Place of Worship', 'cultural_center': 'Cultural Center',
+  'park': 'Park', 'national_park': 'National Park', 'garden': 'Garden',
+  'botanical_garden': 'Botanical Garden', 'beach': 'Beach', 'mountain': 'Mountain',
+  'hiking_area': 'Hiking Trail', 'campground': 'Campground', 'natural_feature': 'Natural Feature',
+  'shopping_mall': 'Shopping Mall', 'department_store': 'Department Store', 'store': 'Store',
+  'market': 'Market', 'supermarket': 'Supermarket', 'convenience_store': 'Convenience Store',
+  'clothing_store': 'Clothing', 'electronics_store': 'Electronics', 'book_store': 'Bookstore',
+  'gift_shop': 'Gift Shop', 'jewelry_store': 'Jewelry',
+  'restaurant': 'Restaurant', 'japanese_restaurant': 'Japanese', 'sushi_restaurant': 'Sushi',
+  'ramen_restaurant': 'Ramen', 'chinese_restaurant': 'Chinese', 'korean_restaurant': 'Korean',
+  'italian_restaurant': 'Italian', 'french_restaurant': 'French', 'indian_restaurant': 'Indian',
+  'thai_restaurant': 'Thai', 'vietnamese_restaurant': 'Vietnamese',
+  'mexican_restaurant': 'Mexican', 'american_restaurant': 'American',
+  'seafood_restaurant': 'Seafood', 'steak_house': 'Steakhouse',
+  'barbecue_restaurant': 'BBQ', 'vegetarian_restaurant': 'Vegetarian',
+  'vegan_restaurant': 'Vegan', 'pizza_restaurant': 'Pizza',
+  'hamburger_restaurant': 'Burger', 'sandwich_shop': 'Sandwich',
+  'fast_food_restaurant': 'Fast Food', 'food_court': 'Food Court',
+  'meal_delivery': 'Delivery', 'meal_takeaway': 'Takeaway',
+  'cafe': 'Cafe', 'coffee_shop': 'Coffee', 'tea_house': 'Tea House',
+  'bakery': 'Bakery', 'ice_cream_shop': 'Ice Cream', 'dessert_shop': 'Dessert',
+  'confectionery': 'Confectionery', 'bar': 'Bar', 'pub': 'Pub', 'wine_bar': 'Wine Bar',
+  'izakaya': 'Izakaya', 'night_club': 'Night Club',
+  'movie_theater': 'Cinema', 'performing_arts_theater': 'Theater',
+  'stadium': 'Stadium', 'bowling_alley': 'Bowling', 'gym': 'Gym',
+  'spa': 'Spa', 'hot_spring': 'Hot Spring',
+  'train_station': 'Train Station', 'subway_station': 'Subway', 'bus_station': 'Bus Stop',
+  'airport': 'Airport', 'ferry_terminal': 'Ferry',
+  'hotel': 'Hotel', 'lodging': 'Lodging', 'resort_hotel': 'Resort',
+  'guest_house': 'Guest House', 'hostel': 'Hostel',
+  'observation_deck': 'Observation Deck', 'lookout': 'Lookout', 'viewing_point': 'Viewpoint',
+  'scenic_spot': 'Scenic Spot', 'government_office': 'Government', 'city_hall': 'City Hall',
+  'university': 'University', 'school': 'School', 'library': 'Library',
+  'hospital': 'Hospital', 'pharmacy': 'Pharmacy',
+  'point_of_interest': 'Point of Interest', 'establishment': 'Establishment'
+};
 
-function localizeType(primaryType) {
+// ── Google Places primaryType Japanese mapping ──
+const PRIMARY_TYPE_JA = {
+  'tourist_attraction': '\u89b3\u5149\u540d\u6240', 'museum': '\u535a\u7269\u9928', 'art_gallery': '\u7f8e\u8853\u9928',
+  'aquarium': '\u6c34\u65cf\u9928', 'zoo': '\u52d5\u7269\u5712', 'amusement_park': '\u904a\u5712\u5730',
+  'theme_park': '\u30c6\u30fc\u30de\u30d1\u30fc\u30af', 'water_park': '\u30a6\u30a9\u30fc\u30bf\u30fc\u30d1\u30fc\u30af',
+  'historical_landmark': '\u53f2\u8de1', 'monument': '\u8a18\u5ff5\u7891', 'castle': '\u57ce',
+  'temple': '\u5bfa\u9662', 'shrine': '\u795e\u793e', 'church': '\u6559\u4f1a', 'mosque': '\u30e2\u30b9\u30af',
+  'place_of_worship': '\u5b97\u6559\u65bd\u8a2d', 'cultural_center': '\u6587\u5316\u30bb\u30f3\u30bf\u30fc',
+  'park': '\u516c\u5712', 'national_park': '\u56fd\u7acb\u516c\u5712', 'garden': '\u5ead\u5712',
+  'botanical_garden': '\u690d\u7269\u5712', 'beach': '\u30d3\u30fc\u30c1', 'mountain': '\u5c71',
+  'hiking_area': '\u30cf\u30a4\u30ad\u30f3\u30b0\u30b3\u30fc\u30b9', 'campground': '\u30ad\u30e3\u30f3\u30d7\u5834',
+  'natural_feature': '\u81ea\u7136\u666f\u89b3',
+  'shopping_mall': '\u30b7\u30e7\u30c3\u30d4\u30f3\u30b0\u30e2\u30fc\u30eb', 'department_store': '\u30c7\u30d1\u30fc\u30c8',
+  'store': '\u5e97\u8217', 'market': '\u5e02\u5834', 'supermarket': '\u30b9\u30fc\u30d1\u30fc',
+  'convenience_store': '\u30b3\u30f3\u30d3\u30cb', 'clothing_store': '\u8863\u6599\u54c1',
+  'electronics_store': '\u5bb6\u96fb', 'book_store': '\u66f8\u5e97',
+  'gift_shop': '\u304a\u571f\u7523', 'jewelry_store': '\u5b9d\u77f3',
+  'restaurant': '\u30ec\u30b9\u30c8\u30e9\u30f3', 'japanese_restaurant': '\u548c\u98df',
+  'sushi_restaurant': '\u5bff\u53f8', 'ramen_restaurant': '\u30e9\u30fc\u30e1\u30f3',
+  'chinese_restaurant': '\u4e2d\u83ef', 'korean_restaurant': '\u97d3\u56fd\u6599\u7406',
+  'italian_restaurant': '\u30a4\u30bf\u30ea\u30a2\u30f3', 'french_restaurant': '\u30d5\u30ec\u30f3\u30c1',
+  'indian_restaurant': '\u30a4\u30f3\u30c9\u6599\u7406', 'thai_restaurant': '\u30bf\u30a4\u6599\u7406',
+  'vietnamese_restaurant': '\u30d9\u30c8\u30ca\u30e0\u6599\u7406',
+  'mexican_restaurant': '\u30e1\u30ad\u30b7\u30ab\u30f3', 'american_restaurant': '\u30a2\u30e1\u30ea\u30ab\u30f3',
+  'seafood_restaurant': '\u6d77\u9bae', 'steak_house': '\u30b9\u30c6\u30fc\u30ad',
+  'barbecue_restaurant': '\u713c\u8089', 'vegetarian_restaurant': '\u30d9\u30b8\u30bf\u30ea\u30a2\u30f3',
+  'vegan_restaurant': '\u30f4\u30a3\u30fc\u30ac\u30f3', 'pizza_restaurant': '\u30d4\u30b6',
+  'hamburger_restaurant': '\u30d0\u30fc\u30ac\u30fc', 'sandwich_shop': '\u30b5\u30f3\u30c9\u30a4\u30c3\u30c1',
+  'fast_food_restaurant': '\u30d5\u30a1\u30b9\u30c8\u30d5\u30fc\u30c9', 'food_court': '\u30d5\u30fc\u30c9\u30b3\u30fc\u30c8',
+  'meal_delivery': '\u51fa\u524d', 'meal_takeaway': '\u30c6\u30a4\u30af\u30a2\u30a6\u30c8',
+  'cafe': '\u30ab\u30d5\u30a7', 'coffee_shop': '\u30b3\u30fc\u30d2\u30fc', 'tea_house': '\u8336\u5ba4',
+  'bakery': '\u30d1\u30f3\u5c4b', 'ice_cream_shop': '\u30a2\u30a4\u30b9',
+  'dessert_shop': '\u30c7\u30b6\u30fc\u30c8', 'confectionery': '\u83d3\u5b50',
+  'bar': '\u30d0\u30fc', 'pub': '\u30d1\u30d6', 'wine_bar': '\u30ef\u30a4\u30f3\u30d0\u30fc',
+  'izakaya': '\u5c45\u9152\u5c4b', 'night_club': '\u30ca\u30a4\u30c8\u30af\u30e9\u30d6',
+  'movie_theater': '\u6620\u753b\u9928', 'performing_arts_theater': '\u5287\u5834',
+  'stadium': '\u30b9\u30bf\u30b8\u30a2\u30e0', 'bowling_alley': '\u30dc\u30a6\u30ea\u30f3\u30b0',
+  'gym': '\u30b8\u30e0', 'spa': '\u30b9\u30d1', 'hot_spring': '\u6e29\u6cc9',
+  'train_station': '\u99c5', 'subway_station': '\u5730\u4e0b\u9244',
+  'bus_station': '\u30d0\u30b9\u505c', 'airport': '\u7a7a\u6e2f', 'ferry_terminal': '\u6e2f',
+  'hotel': '\u30db\u30c6\u30eb', 'lodging': '\u5bbf\u6cca', 'resort_hotel': '\u30ea\u30be\u30fc\u30c8',
+  'guest_house': '\u30b2\u30b9\u30c8\u30cf\u30a6\u30b9', 'hostel': '\u30db\u30b9\u30c6\u30eb',
+  'observation_deck': '\u5c55\u671b\u53f0', 'lookout': '\u5c55\u671b\u53f0',
+  'viewing_point': '\u5c55\u671b\u53f0', 'scenic_spot': '\u666f\u52dd\u5730',
+  'government_office': '\u5f79\u6240', 'city_hall': '\u5e02\u5f79\u6240',
+  'university': '\u5927\u5b66', 'school': '\u5b66\u6821', 'library': '\u56f3\u66f8\u9928',
+  'hospital': '\u75c5\u9662', 'pharmacy': '\u85ac\u5c40',
+  'point_of_interest': '\u540d\u6240', 'establishment': '\u65bd\u8a2d'
+};
+
+const PRIMARY_TYPE_DICTS = { ko: PRIMARY_TYPE_KO, en: PRIMARY_TYPE_EN, ja: PRIMARY_TYPE_JA };
+
+
+
+function localizeType(primaryType, lang) {
   if (!primaryType) return '';
   const key = String(primaryType).toLowerCase().replace(/\s+/g, '_');
-  if (PRIMARY_TYPE_KO[key]) return PRIMARY_TYPE_KO[key];
+  const dict = PRIMARY_TYPE_DICTS[lang] || PRIMARY_TYPE_KO;
+  if (dict[key]) return dict[key];
   // Try partial match
-  for (const [k, v] of Object.entries(PRIMARY_TYPE_KO)) {
+  for (const [k, v] of Object.entries(dict)) {
     if (key.includes(k) || k.includes(key)) return v;
   }
-  // Convert snake_case to readable if no match
+  // Fallback to English dict if available
+  if (lang !== 'en' && PRIMARY_TYPE_EN[key]) return PRIMARY_TYPE_EN[key];
   return key.replace(/_/g, ' ');
 }
 
@@ -2404,19 +2560,31 @@ function inferBestTime(place) {
   return place.currentOpeningHours?.openNow ? '10:00-12:00' : '13:00-15:00';
 }
 
-async function fetchGoogleAttractions(cityLabel, theme) {
+async function fetchGoogleAttractions(cityLabel, theme, lang) {
   if (!GOOGLE_MAPS_API_KEY) return [];
   const endpoint = 'https://places.googleapis.com/v1/places:searchText';
-  const themeHint = theme === 'foodie' ? '맛집 명소' : theme === 'culture' ? '역사 문화 명소' : theme === 'shopping' ? '쇼핑 명소' : theme === 'nature' ? '자연 공원 명소' : '인기 관광지';
+  const _themeHints = {
+    ko: { foodie: '맛집 명소', culture: '역사 문화 명소', shopping: '쇼핑 명소', nature: '자연 공원 명소', _default: '인기 관광지' },
+    en: { foodie: 'food spots', culture: 'historical cultural sites', shopping: 'shopping spots', nature: 'nature parks', _default: 'popular attractions' },
+    ja: { foodie: 'グルメスポット', culture: '歴史文化名所', shopping: 'ショッピングスポット', nature: '自然公園', _default: '人気観光地' }
+  };
+  const _th = _themeHints[lang] || _themeHints.ko;
+  const themeHint = _th[theme] || _th._default;
+  const _queryHints = {
+    ko: ['인기 관광지', '꼭 가봐야 할 곳', '추천 명소'],
+    en: ['popular attractions', 'must visit places', 'recommended spots'],
+    ja: ['人気観光地', 'おすすめスポット', '名所']
+  };
+  const _qh = _queryHints[lang] || _queryHints.ko;
   const queries = [
     `${cityLabel} ${themeHint}`,
-    `${cityLabel} 인기 관광지`,
-    `${cityLabel} 꼭 가봐야 할 곳`,
-    `${cityLabel} 추천 명소`
+    `${cityLabel} ${_qh[0]}`,
+    `${cityLabel} ${_qh[1]}`,
+    `${cityLabel} ${_qh[2]}`
   ];
 
   const results = await Promise.all(queries.map(async (q) => {
-    const body = { textQuery: q, maxResultCount: 20, languageCode: 'ko', regionCode: 'JP' };
+    const body = { textQuery: q, maxResultCount: 20, languageCode: lang || 'ko', regionCode: 'JP' };
     const r = await fetchWithTimeout(endpoint, {
       method: 'POST',
       headers: {
@@ -2497,6 +2665,7 @@ function scoreExternalPlace(place, ctx) {
 }
 
 async function recommendDestinations(payload) {
+  const lang = payload.lang || 'ko';
   const key = cityKeyByInput(payload.city);
   const city = CITY_DATA[key];
   const theme = payload.theme || 'mixed';
@@ -2508,7 +2677,7 @@ async function recommendDestinations(payload) {
     try {
       const [center, places] = await Promise.all([
         fetchGoogleCityCenter(city.label),
-        fetchGoogleAttractions(city.label, theme)
+        fetchGoogleAttractions(city.label, theme, lang)
       ]);
       if (places.length > 0) {
         const seenScored = new Set();
@@ -2516,8 +2685,8 @@ async function recommendDestinations(payload) {
           .map((p) => ({
             name: p.displayName?.text || '이름 없음',
             city: city.label,
-            category: localizeType(p.primaryType) || '관광',
-            area: shortArea(p.formattedAddress, city.label),
+            category: localizeType(p.primaryType, lang) || ({ko:'관광',en:'Attraction',ja:'観光'}[lang]||'관광'),
+            area: localizeAddress(p.formattedAddress, city.label, lang),
             bestTime: inferBestTime(p),
             crowdScore: 3,
             mapUrl: p.googleMapsUri || mapUrl(`${p.displayName?.text || city.label} ${city.label}`),
@@ -3367,7 +3536,7 @@ async function createItineraryWithGemini(payload, picks) {
   };
 }
 
-async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo) {
+async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo, lang) {
   if (!GOOGLE_MAPS_API_KEY) return [];
 
   // Compute centroid from destinations + stay location
@@ -3404,7 +3573,7 @@ async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo) 
       const body = {
         textQuery: q,
         maxResultCount: 20,
-        languageCode: 'ko',
+        languageCode: lang || 'ko',
         regionCode: 'JP',
         locationBias: {
           circle: {
@@ -3453,9 +3622,9 @@ async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo) 
       const aiFit = Math.round(Math.min(100, ratingScore + reviewScore + proximityScore + bonusScore));
       const priceLevel = normalizePriceLevel(p.priceLevel);
       const addr = p.formattedAddress || '';
-      const area = shortArea(addr, cityLabel);
+      const area = localizeAddress(addr, cityLabel, lang);
       return {
-        name: p.displayName?.text || '맛집', city: cityLabel, genre: localizeType(p.primaryType) || '\uC74C\uC2DD\uC810',
+        name: p.displayName?.text || '맛집', city: cityLabel, genre: localizeType(p.primaryType, lang) || ({ko:'\uC74C\uC2DD\uC810',en:'Restaurant',ja:'\u98F2\u98DF\u5E97'}[lang]||'\uC74C\uC2DD\uC810'),
         area, score: rating, reviewCount, priceLevel, aiFit, mapUrl: p.googleMapsUri || '',
         photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null,
         lat: loc ? loc.lat : null, lng: loc ? loc.lng : null,
@@ -3519,7 +3688,8 @@ async function buildTravelPlan(payload) {
     theme: payload.theme,
     pace: payload.pace,
     budget: 'mid',
-    limit: limitPerCity
+    limit: limitPerCity,
+    lang: payload.lang || 'ko'
   });
   const cityLabel = rec.city || '';
 
@@ -3537,6 +3707,7 @@ async function buildTravelPlan(payload) {
         theme: payload.theme,
         pace: payload.pace,
         budget: 'mid',
+        lang: payload.lang || 'ko',
         limit: Math.max(4, Math.min(8, Math.ceil(limitPerCity / (uniqueAdditionalKeys.length + 1))))
       }).catch(() => ({ picks: [] }))
     ));
@@ -3591,7 +3762,7 @@ async function buildTravelPlan(payload) {
     const foodCities = [rec.city, ...uniqueAdditionalKeys.map((k) => CITY_DATA[k]?.label).filter(Boolean)];
     const allFoods = await Promise.all(foodCities.map((cl) => {
       const cityDests = mergedRecommendations.filter((d) => String(d.city || '') === cl);
-      return fetchRecommendedFoods(cityDests.length > 0 ? cityDests : mergedRecommendations, cl, payload.budget, stayLoc).catch(() => []);
+      return fetchRecommendedFoods(cityDests.length > 0 ? cityDests : mergedRecommendations, cl, payload.budget, stayLoc, payload.lang || 'ko').catch(() => []);
     }));
     const seenFoodNames = new Set();
     for (const foods of allFoods) {
@@ -4856,14 +5027,14 @@ function isGenreMatchFoodName(name, genre) {
   return tokens.some((t) => lower.includes(String(t).toLowerCase()));
 }
 
-async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverride = '', maxResultCount = 20) {
+async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverride = '', maxResultCount = 20, lang = 'ko') {
   const endpoint = 'https://places.googleapis.com/v1/places:searchText';
   const cleanGenre = String(genre || '').trim();
   const textQuery = String(queryOverride || '').trim() || (cleanGenre ? `${query} ${cleanGenre} 맛집` : `${query} 일본 맛집`);
   const body = {
     textQuery,
     maxResultCount: Math.max(5, Math.min(20, Number(maxResultCount) || 15)),
-    languageCode: 'ko',
+    languageCode: lang || 'ko',
     regionCode: 'JP'
   };
 
@@ -4899,8 +5070,8 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
     const score = Number.isFinite(p.rating) ? p.rating : null;
     return {
       name: p.displayName?.text || '이름 없음',
-      area: shortArea(p.formattedAddress, query),
-      genre: cleanGenre || localizeType(p.primaryType) || '일식',
+      area: localizeAddress(p.formattedAddress, query, lang),
+      genre: cleanGenre || localizeType(p.primaryType, lang) || '일식',
       score,
       priceLevel,
       aiFit: scoreFoodFit(score, priceLevel, budget || 'mid'),
@@ -4911,7 +5082,7 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
   });
 }
 
-async function fetchFoodPlacesForCity(query, lat, lng, genre, budget) {
+async function fetchFoodPlacesForCity(query, lat, lng, genre, budget, lang) {
   const cleanGenre = String(genre || '').trim();
   const tokenQueries = genreTokens(cleanGenre);
   const baseQueries = cleanGenre
@@ -4932,7 +5103,7 @@ async function fetchFoodPlacesForCity(query, lat, lng, genre, budget) {
 
   const results = await Promise.all(queries.map(async (q) => {
     try {
-      return await fetchPlacesWithGoogle(query, lat, lng, cleanGenre, budget, q, 20);
+      return await fetchPlacesWithGoogle(query, lat, lng, cleanGenre, budget, q, 20, lang);
     } catch {
       return [];
     }
@@ -5513,10 +5684,7 @@ async function handleApi(req, res, parsedUrl) {
     });
   }
 
-  // Exchange rate for client-side price conversion
-  if (req.method === 'GET' && parsedUrl.pathname === '/api/fx-rate') {
-    return sendJson(res, 200, { jpyKrw: fxJpyKrw, usdKrw: fxUsdKrw });
-  }
+  // (fx-rate handler moved to consolidated location below)
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/flights') {
       const payload = await readBody(req);
@@ -5618,7 +5786,8 @@ async function handleApi(req, res, parsedUrl) {
       const payload = {
         city: parsedUrl.searchParams.get('city') || parsedUrl.searchParams.get('query') || 'tokyo',
         genre: parsedUrl.searchParams.get('genre') || '',
-        budget: parsedUrl.searchParams.get('budget') || 'mid'
+        budget: parsedUrl.searchParams.get('budget') || 'mid',
+        lang: parsedUrl.searchParams.get('lang') || 'ko'
       };
 
       if (GOOGLE_MAPS_API_KEY) {
@@ -5636,7 +5805,8 @@ async function handleApi(req, res, parsedUrl) {
             foodLat,
             foodLng,
             payload.genre,
-            payload.budget
+            payload.budget,
+            payload.lang
           );
           if (Array.isArray(places) && places.length > 0) {
             return sendJson(res, 200, { source: 'google_places', city: payload.city, list: places });
@@ -5659,7 +5829,8 @@ async function handleApi(req, res, parsedUrl) {
         theme: payload.theme || 'mixed',
         pace: 'normal',
         budget: payload.budget || 'mid',
-        limit: payload.limit || 20
+        limit: payload.limit || 20,
+        lang: payload.lang || 'ko'
       });
       return sendJson(res, 200, { source: result.source || 'unknown', destinations: result.picks || [] });
     }
@@ -5733,7 +5904,14 @@ function serveStatic(req, res, parsedUrl) {
       '.webmanifest': 'application/manifest+json; charset=utf-8'
     };
 
-    res.writeHead(200, { 'Content-Type': contentTypes[ext] || 'text/plain; charset=utf-8' });
+    res.writeHead(200, {
+      'Content-Type': contentTypes[ext] || 'text/plain; charset=utf-8',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'SAMEORIGIN',
+      'X-XSS-Protection': '1; mode=block',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
+      'Permissions-Policy': 'geolocation=(self), camera=(), microphone=()'
+    });
     res.end(data);
   });
 }

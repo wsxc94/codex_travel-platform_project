@@ -3662,3 +3662,30 @@ button:hover {
 .save-confirm-btn.overwrite:hover {
   background: #b45309 !important;
 }
+
+/* === Language Switcher === */
+.lang-switcher { display: flex; gap: 2px; align-items: center; }
+.lang-btn { background: transparent; border: 1px solid #cbd5e1; color: #64748b; padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.lang-btn.active { background: var(--primary, #2563eb); color: #fff; border-color: var(--primary, #2563eb); }
+
+/* === Wishlist === */
+.wishlist-content { padding: 8px; }
+.wishlist-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #e2e8f0; }
+.wishlist-item-name { font-weight: 500; }
+.wishlist-item-meta { font-size: 12px; color: #64748b; }
+.wishlist-remove { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 16px; }
+.wishlist-btn { background: none; border: none; cursor: pointer; font-size: 16px; padding: 2px 4px; opacity: 0.6; }
+.wishlist-btn:hover { opacity: 1; }
+.wishlist-btn.wishlisted { color: #ef4444; opacity: 1; }
+.wishlist-empty { text-align: center; padding: 24px; color: #94a3b8; }
+
+/* === Search History === */
+.search-history-content { padding: 8px; }
+.search-history-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-bottom: 1px solid #e2e8f0; cursor: pointer; }
+.search-history-item:hover { background: #f0f9ff; }
+.search-history-label { font-size: 13px; }
+.search-history-time { font-size: 11px; color: #94a3b8; }
+.search-history-clear { background: #ef4444; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; margin: 8px; font-size: 12px; }
+
+/* === Preference Badge === */
+.pref-badge { display: inline-block; background: #dbeafe; color: #1e40af; padding: 1px 6px; border-radius: 8px; font-size: 10px; margin-left: 4px; }
