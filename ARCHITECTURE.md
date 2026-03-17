@@ -29,14 +29,15 @@
 ### 파일 구조
 ```
 project-root/
-  server.js            # Node.js HTTP 서버 (전체 백엔드 로직, ~5000줄)
+  server.js            # Node.js HTTP 서버 (전체 백엔드 로직, ~5200줄)
   public/
     index.html          # 메인 HTML (~296줄)
-    app.js              # 프론트엔드 JS (~2200줄)
-    styles.css           # 전체 스타일 (~1700줄)
+    app.js              # 프론트엔드 JS (~3400줄)
+    styles.css           # 전체 스타일 (~1800줄)
     manifest.webmanifest # PWA 매니페스트
   deploy/
     DEPLOY.md           # 배포 가이드
+  test_all.js           # 자동 테스트 스위트 (91개 테스트)
   .env.example          # 환경 변수 예시
   render.yaml           # Render 배포 설정
 ```
@@ -795,6 +796,8 @@ Google Places API의 `primaryType` (영문)을 한국어로 변환하는 사전 
 | 2026-03 | convertToKRW에 JPY/EUR 환율 지원 추가 |
 | 2026-03 | Rakuten API 좌표 기반 검색 전환 + Origin 헤더 추가 (403 해결) |
 | 2026-03 | 숙소 검색: 브라우저 직접 호출 제거 (CORS), 서버 API 전용 |
+| 2026-03-17 | v3 기능: fetchWithRetry, 보안헤더, 세션타임아웃, PDF내보내기, 지도경로선, 위시리스트, 검색히스토리, 선호도학습, 다국어전환 |
+| 2026-03-17 | 자동 테스트 스위트 추가 (91개 테스트, node test_all.js) |
 | 2026-03 | Klook 위젯 8초 타임아웃 + Viator/GetYourGuide 폴백 링크 |
 
 
@@ -836,6 +839,65 @@ OAUTH_BASE_URL (배포시)
 - 로그인 모달: 네이버(초록)/카카오(노랑)/구글(흰색) 브랜드 버튼
 - 로그인 시: 💾저장 / 📂내 일정 버튼 노출
 - 내 일정 사이드 패널: 저장된 일정 카드 목록 (불러오기/삭제)
+
+
+## 12-5. v3 기능 추가 (2026-03-17)
+
+### fetchWithRetry (서버 API 복원력)
+- 외부 API 호출 시 지수 백오프(exponential backoff) 자동 재시도
+- 최대 2회 재시도, 502/503/504 상태코드 대상
+- 대기 시간: `min(1000 * 2^attempt, 4000)ms`
+
+### 보안 헤더 강화
+- **API 응답** (sendJson): X-Content-Type-Options: nosniff, X-Frame-Options: DENY, X-XSS-Protection, Referrer-Policy
+- **정적 파일** (serveStatic): X-Content-Type-Options: nosniff, X-Frame-Options: SAMEORIGIN, Permissions-Policy (geolocation=self)
+
+### 세션 타임아웃
+- `SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000` (7일)
+- `parseSession()`에서 만료 세션 자동 삭제
+- 주기적 정리 interval에서 만료 세션 일괄 삭제
+
+### PDF 내보내기
+- `#btnExportPdf` 버튼 (내보내기 패널)
+- `buildItineraryText('text')` 결과를 새 창에서 `window.print()` 호출
+- CSS 포맷팅된 프린트 뷰
+
+### 지도 경로선 (Polyline)
+- `updateItinMap` 래핑하여 일정 지도에 일자별 경로선 표시
+- `DAY_COLORS` 배열로 일자별 색상 구분
+- `google.maps.Polyline` 사용, 기존 폴리라인 자동 정리
+
+### 찜/위시리스트
+- localStorage 키: `japantravel_wishlist`
+- `getWishlist()`, `saveWishlist()`, `toggleWishlist()`, `renderWishlistPanel()`
+- 여행지/맛집/탐색 카드에 하트 버튼 자동 추가
+- 사이드 패널에서 저장 항목 관리
+
+### 검색 히스토리
+- localStorage 키: `japantravel_search_history` (최대 50건)
+- `addSearchHistory()`, `renderSearchHistoryPanel()`
+- 여행플랜/맛집/숙소/항공권/탐색 검색 시 자동 기록
+- 클릭으로 해당 섹션 이동, 전체 삭제 기능
+
+### 사용자 선호도 학습
+- localStorage 키: `japantravel_preferences`
+- `trackPreference(category, value)`: 도시/테마/항공사/숙소지역 추적
+- `getTopPreferences()`: 카테고리별 상위 3개 반환
+- `showPreferenceHints()`: UI에 선호도 배지(.pref-badge) 표시
+
+### 다국어 전환 (한/영/일)
+- `I18N` 딕셔너리: ko/en/ja 3개 언어
+- `applyLanguage(lang)`: 섹션 헤더 및 버튼 텍스트 동적 변환
+- localStorage에 선택 언어 저장, 페이지 로드 시 복원
+- 헤더에 언어 전환 버튼 (한/EN/日)
+
+### 자동 테스트 스위트 (test_all.js)
+- **91개 테스트** 전체 통과
+- 카테고리:
+  - 코드 분석 (40개): fetchWithRetry, 보안헤더, 세션, PDF, 폴리라인, 위시리스트, 검색기록, 선호도, i18n
+  - API 엔드포인트 (20+개): health, cities, maps-config, fx-rate, auth, travel-plan, dest-search, foods, flights, stays
+  - 보안 (3개): path traversal, input validation, rate limiting
+- 실행: `node test_all.js` (포트 13579에 테스트 서버 자동 시작/종료)
 
 ---
 **변경 이력**: 2026-03-11 소셜 로그인(Naver/Kakao/Google) + 일정 저장/불러오기 기능 추가
