@@ -4227,7 +4227,7 @@ function normalizeRakutenVacant(data, payload) {
       totalPriceKRW,
       amenities,
       aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
-      deeplink: reserveUrl || basic.hotelInformationUrl || basic.planListUrl || '#',
+      deeplink: basic.planListUrl || basic.hotelInformationUrl || reserveUrl || '#',
       imageUrl: basic.hotelImageUrl || basic.hotelThumbnailUrl || null,
       nearestStation: basic.nearestStation || '',
       access: basic.access || ''
@@ -4268,7 +4268,7 @@ function normalizeRakutenSimple(data, payload) {
       totalPriceKRW,
       amenities: ['\uBB34\uB8CC Wi-Fi'],
       aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
-      deeplink: basic.hotelInformationUrl || basic.planListUrl || '#',
+      deeplink: basic.planListUrl || basic.hotelInformationUrl || '#',
       imageUrl: basic.hotelImageUrl || null,
       nearestStation: basic.nearestStation || '',
       access: basic.access || ''

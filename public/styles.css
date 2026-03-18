@@ -252,8 +252,8 @@ button:hover {
   min-width: 0;
 }
 
-#flightCards {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+#flightCards, #stayCards {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 #foodCards {
@@ -793,7 +793,7 @@ button:hover {
     max-height: clamp(300px, 55vh, 700px);
   }
 
-  #flightCards {
+  #flightCards, #stayCards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -894,7 +894,7 @@ button:hover {
     font-size: 0.74rem;
   }
 
-  #flightCards {
+  #flightCards, #stayCards {
     grid-template-columns: 1fr;
   }
 
