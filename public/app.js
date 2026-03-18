@@ -364,7 +364,7 @@ function appendAiChat(role, text) {
   const box = el('aiChatLog');
   if (!box) return;
   const cls = role === 'user' ? 'user' : 'assistant';
-  const label = role === 'user' ? '사용자' : 'AI';
+  const label = role === 'user' ? t('chat-user') : 'AI';
   box.insertAdjacentHTML('beforeend', `<div class="chat-msg ${cls}"><strong>${label}</strong><br>${escapeHtml(text)}</div>`);
   box.scrollTop = box.scrollHeight;
 }
@@ -443,7 +443,7 @@ function ensureCheckOutDate() {
 function renderCards(targetId, items, mode) {
   const target = el(targetId);
   if (!items || items.length === 0) {
-    target.innerHTML = '<div class="card">결과 없음</div>';
+    target.innerHTML = '<div class="card">' + t('no-results') + '</div>';
     return;
   }
 
@@ -517,7 +517,7 @@ function flightCardTemplate(x) {
     return [`<div class="flight-leg-row"><span class="airline-badge" title="${escapeHtml(l.airline || '')}">${escapeHtml(l.airlineCode || '')}</span>${escapeHtml(l.departureTime || '')} → ${escapeHtml(l.arrivalTime || '')} ${escapeHtml(l.from || '')}(${escapeHtml(airportCityByCode(l.from))}) ~ ${escapeHtml(l.to || '')}(${escapeHtml(airportCityByCode(l.to))}) ${escapeHtml(l.airline || '')}</div>`];
   }).join('');
   const selectedClass = x._id && x._id === selectedFlightId ? ' selected' : '';
-  const selectedLabel = x._id && x._id === selectedFlightId ? '선택됨 (AI 일정 반영)' : 'AI 일정에 포함';
+  const selectedLabel = x._id && x._id === selectedFlightId ? t('selected-mark') : t('include-ai');
 
   return `<article class="card flight-card${selectedClass}">
     <div class="flight-top">
@@ -555,7 +555,7 @@ function renderFlightCards(reset = false) {
   });
 
   const cards = sorted.slice(0, visibleFlightCount);
-  el('flightCards').innerHTML = cards.length > 0 ? cards.map(flightCardTemplate).join('') : '<div class="card">결과 없음</div>';
+  el('flightCards').innerHTML = cards.length > 0 ? cards.map(flightCardTemplate).join('') : '<div class="card">' + t('no-results') + '</div>';
 
   const moreBtn = el('btnFlightMore');
   if (!moreBtn) return;
@@ -718,7 +718,7 @@ function renderItineraryTimeline() {
       }
     }
     if (selectedStay) {
-      var stayLabel = isFirstDay ? '체크인' : isLastDay ? '체크아웃' : '숙소';
+      var stayLabel = isFirstDay ? t('checkin') : isLastDay ? t('checkout') : t('stay');
       h += '<div class="itin-fixed-block itin-stay-block">';
       h += '<span class="itin-fixed-icon">🏨</span> ';
       h += '<strong>' + stayLabel + '</strong> ' + escapeHtml(selectedStay.name || '');
@@ -740,7 +740,7 @@ function renderItineraryTimeline() {
         }
       }
       h += '<div class="itin-period-zone itin-drop-zone" data-drop-day="' + day.day + '" data-drop-type="dest" data-drop-dest-period="' + dp.key + '" style="border-left-color:' + dp.color + '">';
-      h += '<div class="itin-period-header"><span style="color:' + dp.color + '">' + dp.icon + ' ' + dp.period + '</span><span class="itin-period-time">' + dp.time + '</span><span class="drop-hint">\uC5EC\uAE30\uC5D0 \uB4DC\uB86D</span></div>';
+      h += '<div class="itin-period-header"><span style="color:' + dp.color + '">' + dp.icon + ' ' + tPeriod(dp.period) + '</span><span class="itin-period-time">' + dp.time + '</span><span class="drop-hint">\uC5EC\uAE30\uC5D0 \uB4DC\uB86D</span></div>';
       if (filledSlots.length > 0) {
         for (var fsi = 0; fsi < filledSlots.length; fsi++) {
           var fs = filledSlots[fsi];
@@ -787,7 +787,7 @@ function renderItineraryTimeline() {
       if (filled) {
         var mc = meal.color;
         h += '<div class="itin-slot" draggable="true" data-itin-day="' + day.day + '" data-itin-period="' + escapeHtml(filled.period) + '" style="border-left-color:' + mc + '">';
-        h += '<div class="itin-slot-header"><span class="itin-slot-period" style="color:' + mc + '">' + meal.icon + ' ' + escapeHtml(filled.period) + '</span>';
+        h += '<div class="itin-slot-header"><span class="itin-slot-period" style="color:' + mc + '">' + meal.icon + ' ' + escapeHtml(tPeriod(filled.period)) + '</span>';
         h += '<span class="itin-slot-time">' + escapeHtml(filled.startTime + ' - ' + filled.endTime) + '</span></div>';
         var mealInfo = parsePlaceInfo(filled.place);
         var mealMapQ = encodeURIComponent(mealInfo.name + (mealInfo.info ? ' ' + mealInfo.info : ''));
@@ -797,7 +797,7 @@ function renderItineraryTimeline() {
         h += '</div>';
       } else {
         h += '<div class="itin-meal-empty itin-drop-zone" data-drop-day="' + day.day + '" data-drop-type="food" data-drop-meal="' + meal.key + '" style="border-left-color:' + meal.color + '">';
-        h += '<span class="itin-meal-label">' + meal.icon + ' ' + meal.period + '</span>';
+        h += '<span class="itin-meal-label">' + meal.icon + ' ' + tPeriod(meal.period) + '</span>';
         h += '<button type="button" class="itin-meal-add-btn" data-day="' + day.day + '" data-meal-slot="' + meal.key + '">\uB9DB\uC9D1 \uCD94\uAC00</button>';
         h += '</div>';
       }
@@ -840,11 +840,11 @@ function selectionFlightCard(flight) {
   if (!flight) return '';
   const first = flight.legs?.[0];
   const last = flight.legs?.[flight.legs.length - 1];
-  const destAirport = flight.tripType === 'roundtrip' ? (first?.to || '도착 미정') : (last?.to || first?.to || '도착 미정');
-  const route = `${first?.from || '출발 미정'} → ${destAirport}`;
+  const destAirport = flight.tripType === 'roundtrip' ? (first?.to || t('arrival-pending')) : (last?.to || first?.to || t('arrival-pending'));
+  const route = `${first?.from || t('departure-pending')} → ${destAirport}`;
   const dateRange = first?.date === last?.date ? first?.date : `${first?.date || ''} ~ ${last?.date || ''}`;
-  const price = flight.totalPriceKRW ? `${flight.totalPriceKRW.toLocaleString()}원` : '요금 미확인';
-  const airlines = (flight.airlines || []).join(', ') || (flight.provider || '항공사 정보 없음');
+  const price = flight.totalPriceKRW ? `${flight.totalPriceKRW.toLocaleString()}원` : t('price-na');
+  const airlines = (flight.airlines || []).join(', ') || (flight.provider || t('airline-na'));
   var outboundTime = first ? (first.departureTime || '') + ' → ' + (first.arrivalTime || '') : '';
   var returnTime = '';
   if (flight.tripType === 'roundtrip' && last && last !== first) {
@@ -872,9 +872,9 @@ function selectionFlightCard(flight) {
 function selectionStayCard(stay) {
   if (!stay) return '';
   const dates = stay.checkIn && stay.checkOut ? `${stay.checkIn} ~ ${stay.checkOut}` : stay.checkIn || stay.checkOut || '';
-  const total = stay.totalPriceKRW ? `${stay.totalPriceKRW.toLocaleString()}원` : '가격 정보 없음';
+  const total = stay.totalPriceKRW ? `${stay.totalPriceKRW.toLocaleString()}원` : t('price-no-info');
   const perNight = stay.pricePerNightKRW ? `${stay.pricePerNightKRW.toLocaleString()}원/박` : '';
-  const provider = stay.provider || '숙소 제공사 없음';
+  const provider = stay.provider || t('provider-na');
   const amenities = (stay.amenities || []).slice(0, 3).join(', ');
   return `
     <article class="selection-card">
@@ -910,7 +910,7 @@ function renderBudgetSummary() {
   var activityTotal = activityPerDay * days;
   var total = flightCost + stayCost + mealTotal + transportTotal + activityTotal;
   var fmt = function(n) { return n.toLocaleString() + '원'; };
-  var tierLabels = { low: '절약', mid: '표준', high: '프리미엄' };
+  var tierLabels = { low: t('budget-low'), mid: t('budget-mid'), high: t('budget-high') };
   var budgetLabel = bb ? (tierLabels[bb.budgetTier] || '표준') : '표준';
   wrap.innerHTML =
     '<h4>예상 비용 요약</h4>' +
@@ -995,7 +995,7 @@ function stayPayloadFromSelection() {
 function normalizeDestinationForPlan(dest) {
   if (!dest) return null;
   return {
-    name: dest.name || '추천 여행지',
+    name: dest.name || t('rec-dest'),
     city: dest.city || el('city').options[el('city').selectedIndex]?.text || '',
     area: dest.area || '',
     category: dest.category || '추천',
@@ -1034,13 +1034,13 @@ function buildPlanPayload(extra = {}) {
 
 function describeEngineSource(source, mode = 'chat') {
   const s = String(source || '').toLowerCase();
-  if (!s) return 'ℹ️ 규칙기반 (기본)';
+  if (!s) return 'ℹ️ ' + t('source-rule');
   // Extract model name from parentheses if present: "gemini_itinerary_v1 (gemini-2.0-flash)"
   var modelMatch = String(source || '').match(/\(([^)]+)\)/);
   var modelName = modelMatch ? modelMatch[1] : '';
-  if (s.includes('gemini')) return '✨ AI 기반 (Gemini' + (modelName ? ' - ' + modelName : '') + ')';
-  if (s.includes('openai')) return '✨ AI 기반 (OpenAI)';
-  if (s.includes('ai_planner')) return '✨ AI 기반 (Planner)';
+  if (s.includes('gemini')) return t('source-gemini') + (modelName ? ' - ' + modelName : '') + ')';
+  if (s.includes('openai')) return t('source-openai');
+  if (s.includes('ai_planner')) return t('source-planner');
   if (s.includes('rule')) return '📋 규칙기반 (AI 미응답 시 폴백)';
   if (s.includes('fallback') || s.includes('local_curated')) return '📋 규칙기반 (AI 미응답 시 폴백)';
   return `ℹ️ ${source}`;
@@ -1298,7 +1298,7 @@ function stayCardTemplate(x) {
     <div class="stay-meta-row stay-amenities">${amenityChips}</div>
     <div class="link-row">
       <button type="button" class="stay-select-btn" data-stay-id="${escapeHtml(String(x.id || ''))}">
-        ${x.id === selectedStayId ? '선택됨 (AI 일정 반영)' : 'AI 일정에 포함'}
+        ${x.id === selectedStayId ? t('selected-mark') : t('include-ai')}
       </button>
       <a href="${escapeHtml(x.deeplink || '#')}" target="_blank" rel="noreferrer">예약 페이지</a>
     </div>
@@ -1312,7 +1312,7 @@ function renderStayCards() {
     if (staySortMode === 'rating') return b.rating - a.rating;
     return b.aiScore - a.aiScore;
   });
-  el('stayCards').innerHTML = sorted.length > 0 ? sorted.map(stayCardTemplate).join('') : '<div class="card">결과 없음</div>';
+  el('stayCards').innerHTML = sorted.length > 0 ? sorted.map(stayCardTemplate).join('') : '<div class="card">' + t('no-results') + '</div>';
 }
 
 let currentTripType = 'oneway';
@@ -1382,7 +1382,7 @@ el('btnPlan').addEventListener('click', async () => {
 el('btnAiAssist')?.addEventListener('click', async () => {
   const message = String(el('aiRequest')?.value || '').trim();
   if (!message) {
-    appendAiChat('assistant', '요청 문장을 입력해 주세요.');
+    appendAiChat('assistant', t('chat-enter-msg'));
     return;
   }
 
@@ -1407,7 +1407,7 @@ el('btnAiAssist')?.addEventListener('click', async () => {
     if (data.cityMeta) upsertCityOption(data.cityMeta);
     applyAiConditions(data.parsed || {});
 
-    appendAiChat('assistant', data.reply || '요청 내용을 반영해서 새 추천을 생성합니다.');
+    appendAiChat('assistant', data.reply || t('chat-processing'));
     resetFlightSelectionDisplay();
     selectStayById('');
     await runPlan({}, true);
@@ -1454,10 +1454,10 @@ el('btnFlights').addEventListener('click', async () => {
     const sourceNote = el('flightSourceNote');
     if (sourceNote) {
       if (data.source === 'mock') {
-        sourceNote.textContent = data.note || '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
+        sourceNote.textContent = data.note || t('mock-notice');
         sourceNote.classList.add('warn');
       } else {
-        var flightSrcLabel = data.source === 'travelpayouts_live' ? '✨ Travelpayouts 실시간' : String(data.source).includes('amadeus') ? '✨ Amadeus' : '✨ ' + data.source;
+        var flightSrcLabel = data.source === 'travelpayouts_live' ? t('source-tp') : String(data.source).includes('amadeus') ? t('source-amadeus') : '✨ ' + data.source;
         sourceNote.textContent = `항공편: ${flightSrcLabel}`;
         sourceNote.classList.remove('warn');
       }
@@ -1675,7 +1675,7 @@ el('btnFood').addEventListener('click', async () => {
     if (sourceNote) {
       const source = data.source || 'unknown';
       const warning = data.warning ? ` · ${data.warning}` : '';
-      var foodSrcLabel = String(source).includes('google') ? '✨ Google Places 기반' : String(source).includes('tabelog') ? '✨ 타베로그 스타일' : String(source).includes('curated') ? '📋 규칙기반 (폴백)' : '✨ ' + source;
+      var foodSrcLabel = String(source).includes('google') ? t('source-google') : String(source).includes('tabelog') ? t('source-tabelog') : String(source).includes('curated') ? '📋 규칙기반 (폴백)' : '✨ ' + source;
       sourceNote.textContent = `맛집: ${foodSrcLabel}${warning}`;
       sourceNote.classList.toggle('warn', Boolean(data.warning));
     }
@@ -1721,14 +1721,14 @@ el('btnStays').addEventListener('click', async () => {
     var sourceNote = el('staySourceNote');
     if (sourceNote) {
       if (staySource === 'rakuten_live') {
-        sourceNote.textContent = '숙소: ✨ Rakuten Travel 실시간';
+        sourceNote.textContent = t('stay') + ': ' + t('source-rakuten');
         sourceNote.classList.remove('warn');
       } else if (staySource === 'mock') {
-        sourceNote.textContent = '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)';
+        sourceNote.textContent = t('mock-notice');
         sourceNote.classList.add('warn');
       } else {
-        var staySrcLabel = String(staySource).includes('amadeus') ? '✨ Amadeus' : '✨ ' + staySource;
-        sourceNote.textContent = '숙소: ' + staySrcLabel;
+        var staySrcLabel = String(staySource).includes('amadeus') ? t('source-amadeus') : '✨ ' + staySource;
+        sourceNote.textContent = t('stay') + ': ' + staySrcLabel;
         sourceNote.classList.remove('warn');
       }
     }
@@ -2142,7 +2142,7 @@ function buildDayRouteOrder(dayNum) {
   return places;
 }
 function modeLabel(mode) {
-  var m = { subway: '🚇 지하철', rail: '🚃 전철', bus: '🚌 버스', tram: '🚊 트램', transit: '🚍 대중교통', walking: '🚶 도보', estimated: '📍 추정', error: '⚠️ 오류' };
+  var m = { subway: '🚇 지하철', rail: '🚃 전철', bus: '🚌 버스', tram: '🚊 트램', transit: '🚍 대중교통', walking: '🚶 도보', estimated: '📍 추정', error: t('transport-err') };
   return m[mode] || mode;
 }
 async function calculateDayRouteCost(dayNum) {
@@ -2251,7 +2251,7 @@ async function updateItinMap() {
     var marker = new google.maps.Marker({
       position: pos,
       map: itinMap,
-      title: 'Day ' + p.day + ' ' + p.period + ': ' + p.name,
+      title: t('day-prefix') + p.day + ' ' + p.period + ': ' + p.name,
       label: { text: p.isMeal ? '' : label, color: '#fff', fontWeight: '700', fontSize: '11px' },
       icon: {
         path: google.maps.SymbolPath.CIRCLE,
@@ -2489,7 +2489,7 @@ document.addEventListener('keydown', function(e) {
 
 (async () => {
   await initCityOptions();
-  appendAiChat('assistant', '가고 싶은 장소를 채팅으로 입력하면 공항 기준 지역과 여행 조건을 자동으로 맞춰드릴게요.');
+  appendAiChat('assistant', t('chat-placeholder'));
   el('from').value = formatAirportDisplay(resolveAirportCode(el('from').value));
   setTripTab('oneway');
   resetSegments();
@@ -2856,7 +2856,7 @@ function buildItineraryText(format) {
 
   for (var di = 0; di < currentItineraryData.itinerary.length; di++) {
     var day = currentItineraryData.itinerary[di];
-    lines.push(md ? '## Day ' + day.day + ' (' + (day.date || '') + ')' : '--- Day ' + day.day + ' (' + (day.date || '') + ') ---');
+    lines.push(md ? '## ' + t('day-prefix') + day.day + ' (' + (day.date || '') + ')' : '--- Day ' + day.day + ' (' + (day.date || '') + ') ---');
     var groups = groupItineraryBlocks(day.blocks || []);
     for (var gi = 0; gi < groups.length; gi++) {
       var g = groups[gi];
@@ -2899,7 +2899,7 @@ document.addEventListener('click', function(e) {
   if (tgt.id === 'btnCopyText') {
     var text = buildItineraryText('text');
     if (navigator.clipboard) navigator.clipboard.writeText(text);
-    showMemoToast('텍스트가 클립보드에 복사되었습니다!');
+    showMemoToast(t('copy-text-done'));
     var p2 = document.getElementById('exportPreview');
     if (p2) p2.textContent = text;
     return;
@@ -2907,7 +2907,7 @@ document.addEventListener('click', function(e) {
   if (tgt.id === 'btnCopyMarkdown') {
     var md = buildItineraryText('markdown');
     if (navigator.clipboard) navigator.clipboard.writeText(md);
-    showMemoToast('마크다운이 복사되었습니다!');
+    showMemoToast(t('copy-md-done'));
     var p3 = document.getElementById('exportPreview');
     if (p3) p3.textContent = md;
     return;
@@ -2918,7 +2918,7 @@ document.addEventListener('click', function(e) {
       navigator.share({ title: 'JapanTravel 여행 일정', text: st });
     } else if (navigator.clipboard) {
       navigator.clipboard.writeText(st);
-      showMemoToast('일정이 클립보드에 복사되었습니다!');
+      showMemoToast(t('copy-itin-done'));
     }
     return;
   }
@@ -2946,12 +2946,12 @@ document.addEventListener('click', function(e) {
     }
     togglePanel('weatherPanel');
     var panelContent = document.getElementById('weatherPanelContent');
-    if (panelContent) panelContent.innerHTML = '날씨 정보 로딩 중...';
+    if (panelContent) panelContent.innerHTML = t('weather-loading');
     fetchWeather(cityKey).then(function(daily) {
       if (daily) {
         renderWeatherWidget(daily, cityLabel);
       } else {
-        if (panelContent) panelContent.innerHTML = '날씨 정보를 불러올 수 없습니다.';
+        if (panelContent) panelContent.innerHTML = t('weather-error');
       }
     });
     return;
@@ -2987,18 +2987,18 @@ function analyzeSchedule() {
 
     // Too many spots
     if (mainBlocks.length > 3) {
-      alerts.push({ type: 'warn', text: 'Day ' + day.day + ': \uC5EC\uD589\uC9C0 ' + mainBlocks.length + '\uACF3\uC740 \uB2E4\uC18C \uBE61\uBE61\uD560 \uC218 \uC788\uC5B4\uC694. \uC774\uB3D9\uC2DC\uAC04\uC744 \uACE0\uB824\uD574 3\uACF3 \uC774\uD558\uB97C \uCD94\uCC9C\uD569\uB2C8\uB2E4.' });
+      alerts.push({ type: 'warn', text: t('day-prefix') + day.day + ': \uC5EC\uD589\uC9C0 ' + mainBlocks.length + '\uACF3\uC740 \uB2E4\uC18C \uBE61\uBE61\uD560 \uC218 \uC788\uC5B4\uC694. \uC774\uB3D9\uC2DC\uAC04\uC744 \uACE0\uB824\uD574 3\uACF3 \uC774\uD558\uB97C \uCD94\uCC9C\uD569\uB2C8\uB2E4.' });
     }
 
     // Missing meals
     if (mainBlocks.length > 0 && mealBlocks.length === 0) {
-      alerts.push({ type: 'info', text: 'Day ' + day.day + ': \uB9DB\uC9D1\uC774 \uC544\uC9C1 \uCD94\uAC00\uB418\uC9C0 \uC54A\uC558\uC5B4\uC694. \uB9DB\uC9D1 \uCD94\uAC00\uB97C \uCD94\uCC9C\uD569\uB2C8\uB2E4!' });
+      alerts.push({ type: 'info', text: t('day-prefix') + day.day + ': \uB9DB\uC9D1\uC774 \uC544\uC9C1 \uCD94\uAC00\uB418\uC9C0 \uC54A\uC558\uC5B4\uC694. \uB9DB\uC9D1 \uCD94\uAC00\uB97C \uCD94\uCC9C\uD569\uB2C8\uB2E4!' });
     }
 
     // Allday + other spots
     var hasAllday = mainBlocks.some(function(b) { return b.period === '\uC885\uC77C'; });
     if (hasAllday && mainBlocks.length > 1) {
-      alerts.push({ type: 'warn', text: 'Day ' + day.day + ': \uC885\uC77C \uC77C\uC815\uACFC \uB2E4\uB978 \uC5EC\uD589\uC9C0\uAC00 \uAC19\uC740 \uB0A0\uC5D0 \uC788\uC2B5\uB2C8\uB2E4. \uC2DC\uAC04 \uCDA9\uB3CC\uC744 \uD655\uC778\uD558\uC138\uC694.' });
+      alerts.push({ type: 'warn', text: t('day-prefix') + day.day + ': \uC885\uC77C \uC77C\uC815\uACFC \uB2E4\uB978 \uC5EC\uD589\uC9C0\uAC00 \uAC19\uC740 \uB0A0\uC5D0 \uC788\uC2B5\uB2C8\uB2E4. \uC2DC\uAC04 \uCDA9\uB3CC\uC744 \uD655\uC778\uD558\uC138\uC694.' });
     }
 
     // Duplicate places across days
@@ -3210,7 +3210,7 @@ document.addEventListener('click', function(e) {
 
   // 로그아웃
   if (e.target.closest('#btnLogout')) {
-    if (!confirm('로그아웃 하시겠습니까?')) return;
+    if (!confirm(t('logout-confirm'))) return;
     fetch('/api/auth/logout', { method: 'POST' }).then(function() {
       currentUser = null;
       renderAuthUI();
@@ -3250,7 +3250,7 @@ document.addEventListener('click', function(e) {
 // 일정 저장
 async function savePlanToServer() {
   if (!currentUser) {
-    showMemoToast('로그인이 필요합니다.');
+    showMemoToast(t('login-required'));
     return;
   }
   if (!currentItineraryData) {
@@ -3383,7 +3383,7 @@ async function savePlanToServer() {
         });
         var result = await resp.json();
         if (resp.ok) {
-          showMemoToast(overwriteId ? '기존 일정을 덮어썼습니다!' : '일정이 저장되었습니다!');
+          showMemoToast(overwriteId ? '기존 일정을 덮어썼습니다!' : t('save-success'));
         } else {
           showMemoToast(result.error || '저장 실패');
         }
@@ -4178,7 +4178,93 @@ var I18N = {
     'err-rate-limit': '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.',
     'err-need-plan': '먼저 AI 일정을 생성해주세요.',
     'loading': '로딩 중...',
-    'per-night': '/ 박'
+    'per-night': '/ 박',
+    'day-prefix': 'Day ',
+    'arrival': '도착',
+    'departure': '출발',
+    'arrival-pending': '도착 미정',
+    'departure-pending': '출발 미정',
+    'checkin': '체크인',
+    'checkout': '체크아웃',
+    'stay': '숙소',
+    'selected-flight': '선택 항공권',
+    'selected-stay': '선택 숙소',
+    'selected-mark': '선택됨 (AI 일정 반영)',
+    'include-ai': 'AI 일정에 포함',
+    'won': '원',
+    'nights': '박',
+    'airline': '항공사',
+    'fare-base': '요금: 기본 ',
+    'fare-tax': ' · 세금 ',
+    'fare-fee': ' · 수수료 ',
+    'price-na': '요금 미확인',
+    'airline-na': '항공사 정보 없음',
+    'price-no-info': '가격 정보 없음',
+    'provider-na': '숙소 제공사 없음',
+    'edit': '✏️수정',
+    'delete': '✕삭제',
+    'room': '객실 ',
+    'rooms-label': '객실 ',
+    'guests-label': ' · 인원 ',
+    'per-night-unit': '원/박',
+    'no-selection': '선택된 항공권/숙소가 없습니다.',
+    'meal-breakfast': '아침',
+    'meal-lunch': '점심',
+    'meal-dinner': '저녁',
+    'time-morning': '오전',
+    'time-afternoon': '오후',
+    'time-allday': '종일',
+    'chat-user': '사용자',
+    'chat-ai': 'AI',
+    'chat-placeholder': '가고 싶은 장소를 채팅으로 입력하면 공항 기준 지역과 여행 조건을 자동으로 맞춰드릴게요.',
+    'chat-enter-msg': '요청 문장을 입력해 주세요.',
+    'chat-processing': '요청 내용을 반영해서 새 추천을 생성합니다.',
+    'chat-error': '요청 처리 중 오류가 발생했습니다: ',
+    'source-rule': '규칙기반 (기본)',
+    'source-gemini': '✨ AI 기반 (Gemini)',
+    'source-openai': '✨ AI 기반 (OpenAI)',
+    'source-planner': '✨ AI 기반 (Planner)',
+    'source-fallback': '������ 규칙기반 (AI 미응답 시 폴백)',
+    'source-tp': '✨ Travelpayouts 실시간',
+    'source-amadeus': '✨ Amadeus',
+    'source-rakuten': '✨ Rakuten Travel 실시간',
+    'source-google': '✨ Google Places 기반',
+    'source-tabelog': '✨ 타베로그 스타일',
+    'source-food-fb': '������ 규칙기반 (폴백)',
+    'mock-notice': '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)',
+    'transport-subway': '������ 지하철',
+    'transport-train': '������ 전철',
+    'transport-bus': '������ 버스',
+    'transport-tram': '������ 트램',
+    'transport-transit': '������ 대중교통',
+    'transport-walk': '������ 도보',
+    'transport-est': '������ 추정',
+    'transport-err': '⚠️ 오류',
+    'total-fare': '합계: ¥',
+    'free': '무료',
+    'budget-low': '절약',
+    'budget-mid': '표준',
+    'budget-high': '프리미엄',
+    'cost-flight': '✈️ 항공권',
+    'cost-stay': '������ 숙소 (',
+    'cost-food': '������ 식비',
+    'cost-transport': '������ 교통비',
+    'cost-activity': '������ 액티비티',
+    'rec-dest': '추천 여행지',
+    'error-prefix': '오류: ',
+    'copy-text-done': '텍스트가 클립보드에 복사되었습니다!',
+    'copy-md-done': '마크다운이 복사되었습니다!',
+    'copy-itin-done': '일정이 클립보드에 복사되었습니다!',
+    'weather-loading': '날씨 정보 로딩 중...',
+    'weather-error': '날씨 정보를 불러올 수 없습니다.',
+    'logout-confirm': '로그아웃 하시겠습니까?',
+    'login-required': '로그인이 필요합니다.',
+    'save-success': '일정이 저장되었습니다!',
+    'no-plan-yet': '일정을 먼저 생성해주세요.',
+    'add-to-plan-btn': '일정에 추가',
+    'promote-food': '추천 맛집으로',
+    'wishlist-add': '찜 추가됨',
+    'wishlist-remove': '찞 제거됨',
   },
   en: {
     'section-conditions': 'Travel Conditions', 'section-results': 'Recommendations',
@@ -4249,7 +4335,93 @@ var I18N = {
     'err-rate-limit': 'Too many requests. Please try again later.',
     'err-need-plan': 'Please generate an AI itinerary first.',
     'loading': 'Loading...',
-    'per-night': '/ night'
+    'per-night': '/ night',
+    'day-prefix': 'Day ',
+    'arrival': 'Arrival',
+    'departure': 'Departure',
+    'arrival-pending': 'Arrival TBD',
+    'departure-pending': 'Departure TBD',
+    'checkin': 'Check-in',
+    'checkout': 'Check-out',
+    'stay': 'Accommodation',
+    'selected-flight': 'Selected Flight',
+    'selected-stay': 'Selected Stay',
+    'selected-mark': 'Selected (in AI itinerary)',
+    'include-ai': 'Included in AI plan',
+    'won': 'KRW',
+    'nights': 'nights',
+    'airline': 'Airline',
+    'fare-base': 'Fare: Base ',
+    'fare-tax': ' Tax ',
+    'fare-fee': ' Fee ',
+    'price-na': 'Price unavailable',
+    'airline-na': 'Airline info N/A',
+    'price-no-info': 'No price info',
+    'provider-na': 'No provider info',
+    'edit': 'Edit',
+    'delete': 'Delete',
+    'room': 'Room ',
+    'rooms-label': 'Rooms ',
+    'guests-label': ' Guests ',
+    'per-night-unit': 'KRW/night',
+    'no-selection': 'No flights/stays selected.',
+    'meal-breakfast': 'Breakfast',
+    'meal-lunch': 'Lunch',
+    'meal-dinner': 'Dinner',
+    'time-morning': 'Morning',
+    'time-afternoon': 'Afternoon',
+    'time-allday': 'All Day',
+    'chat-user': 'You',
+    'chat-ai': 'AI',
+    'chat-placeholder': 'Type a place you want to visit and we will automatically match the airport, region, and trip conditions.',
+    'chat-enter-msg': 'Please enter your request.',
+    'chat-processing': 'Generating new recommendations based on your request.',
+    'chat-error': 'An error occurred while processing: ',
+    'source-rule': 'Rule-based (default)',
+    'source-gemini': 'AI-powered (Gemini)',
+    'source-openai': 'AI-powered (OpenAI)',
+    'source-planner': 'AI-powered (Planner)',
+    'source-fallback': 'Rule-based (AI fallback)',
+    'source-tp': 'Travelpayouts Live',
+    'source-amadeus': 'Amadeus',
+    'source-rakuten': 'Rakuten Travel Live',
+    'source-google': 'Google Places',
+    'source-tabelog': 'Tabelog Style',
+    'source-food-fb': 'Rule-based (fallback)',
+    'mock-notice': 'Currently showing demo data. (API failure or not connected)',
+    'transport-subway': 'Subway',
+    'transport-train': 'Train',
+    'transport-bus': 'Bus',
+    'transport-tram': 'Tram',
+    'transport-transit': 'Transit',
+    'transport-walk': 'Walk',
+    'transport-est': 'Est.',
+    'transport-err': 'Error',
+    'total-fare': 'Total: \u00a5',
+    'free': 'Free',
+    'budget-low': 'Budget',
+    'budget-mid': 'Standard',
+    'budget-high': 'Premium',
+    'cost-flight': 'Flights',
+    'cost-stay': 'Stay (',
+    'cost-food': 'Dining',
+    'cost-transport': 'Transport',
+    'cost-activity': 'Activities',
+    'rec-dest': 'Recommended',
+    'error-prefix': 'Error: ',
+    'copy-text-done': 'Text copied to clipboard!',
+    'copy-md-done': 'Markdown copied!',
+    'copy-itin-done': 'Itinerary copied to clipboard!',
+    'weather-loading': 'Loading weather...',
+    'weather-error': 'Unable to load weather info.',
+    'logout-confirm': 'Are you sure you want to log out?',
+    'login-required': 'Please log in first.',
+    'save-success': 'Itinerary saved!',
+    'no-plan-yet': 'Please generate an itinerary first.',
+    'add-to-plan-btn': 'Add to Plan',
+    'promote-food': 'Add to Recs',
+    'wishlist-add': 'Added to wishlist',
+    'wishlist-remove': 'Removed from wishlist',
   },
   ja: {
     'section-conditions': '\u65C5\u884C\u6761\u4EF6', 'section-results': '\u304A\u3059\u3059\u3081',
@@ -4320,13 +4492,113 @@ var I18N = {
     'err-rate-limit': '\u30EA\u30AF\u30A8\u30B9\u30C8\u304C\u591A\u3059\u304E\u307E\u3059\u3002\u3057\u3070\u3089\u304F\u304A\u5F85\u3061\u304F\u3060\u3055\u3044\u3002',
     'err-need-plan': '\u307E\u305AAI\u30D7\u30E9\u30F3\u3092\u4F5C\u6210\u3057\u3066\u304F\u3060\u3055\u3044\u3002',
     'loading': '\u8AAD\u307F\u8FBC\u307F\u4E2D...',
-    'per-night': '/ \u6CCA'
+    'per-night': '/ \u6CCA',
+    'day-prefix': 'Day ',
+    'arrival': '到着',
+    'departure': '出発',
+    'arrival-pending': '到着未定',
+    'departure-pending': '出発未定',
+    'checkin': 'チェックイン',
+    'checkout': 'チェックアウト',
+    'stay': '宿泊',
+    'selected-flight': '選択航空券',
+    'selected-stay': '選択宿泊',
+    'selected-mark': '選択済み (AIプランに反映)',
+    'include-ai': 'AIプランに含まれる',
+    'won': 'ウォン',
+    'nights': '泊',
+    'airline': '航空会社',
+    'fare-base': '運賃: 基本 ',
+    'fare-tax': ' 税金 ',
+    'fare-fee': ' 手数料 ',
+    'price-na': '運賃未確認',
+    'airline-na': '航空会社情報なし',
+    'price-no-info': '価格情報なし',
+    'provider-na': '提供元なし',
+    'edit': '✏️編集',
+    'delete': '✕削除',
+    'room': '客室 ',
+    'rooms-label': '部屋 ',
+    'guests-label': ' · 人数 ',
+    'per-night-unit': 'ウォン/泊',
+    'no-selection': '航空券/宿泊が選択されていません。',
+    'meal-breakfast': '朝食',
+    'meal-lunch': '昇食',
+    'meal-dinner': '夕食',
+    'time-morning': '午前',
+    'time-afternoon': '午後',
+    'time-allday': '終日',
+    'chat-user': 'ユーザー',
+    'chat-ai': 'AI',
+    'chat-placeholder': '行きたい場所をチャットで入力すると、空港・地域・旅行条件を自動調整します。',
+    'chat-enter-msg': 'リクエストを入力してください。',
+    'chat-processing': 'リクエストを反映して新しいおすすめを生成します。',
+    'chat-error': 'リクエスト処理中にエラーが発生しました: ',
+    'source-rule': 'ルールベース (デフォルト)',
+    'source-gemini': 'AIベース (Gemini)',
+    'source-openai': 'AIベース (OpenAI)',
+    'source-planner': 'AIベース (Planner)',
+    'source-fallback': 'ルールベース (AIフォールバック)',
+    'source-tp': 'Travelpayoutsリアルタイム',
+    'source-amadeus': 'Amadeus',
+    'source-rakuten': 'Rakuten Travelリアルタイム',
+    'source-google': 'Google Placesベース',
+    'source-tabelog': '食べログスタイル',
+    'source-food-fb': 'ルールベース (フォールバック)',
+    'mock-notice': '現在デモデータを表示中です。(API失敗または未接続)',
+    'transport-subway': '地下鉄',
+    'transport-train': '電車',
+    'transport-bus': 'バス',
+    'transport-tram': 'トラム',
+    'transport-transit': '公共交通',
+    'transport-walk': '徒歩',
+    'transport-est': '推定',
+    'transport-err': 'エラー',
+    'total-fare': '合計: ¥',
+    'free': '無料',
+    'budget-low': '節約',
+    'budget-mid': '標準',
+    'budget-high': 'プレミアム',
+    'cost-flight': '航空券',
+    'cost-stay': '宿泊 (',
+    'cost-food': '食費',
+    'cost-transport': '交通費',
+    'cost-activity': 'アクティビティ',
+    'rec-dest': 'おすすめ',
+    'error-prefix': 'エラー: ',
+    'copy-text-done': 'テキストがコピーされました!',
+    'copy-md-done': 'マークダウンがコピーされました!',
+    'copy-itin-done': 'プランがコピーされました!',
+    'weather-loading': '天気情報読み込み中...',
+    'weather-error': '天気情報を取得できません。',
+    'logout-confirm': 'ログアウトしますか？',
+    'login-required': 'ログインが必要です。',
+    'save-success': 'プランが保存されました!',
+    'no-plan-yet': 'まずプランを作成してください。',
+    'add-to-plan-btn': 'プランに追加',
+    'promote-food': 'おすすめに追加',
+    'wishlist-add': 'お気に入りに追加',
+    'wishlist-remove': 'お気に入りから削除',
   }
 };
 
 function t(key) {
   var dict = I18N[currentLang] || I18N.ko;
   return dict[key] || (I18N.ko[key]) || key;
+}
+
+// Display helper: translate internal period names for UI display
+var PERIOD_DISPLAY = {
+  '아침': { ko: '아침', en: 'Breakfast', ja: '朝食' },
+  '점심': { ko: '점심', en: 'Lunch', ja: '昇食' },
+  '저녁': { ko: '저녁', en: 'Dinner', ja: '夕食' },
+  '오전': { ko: '오전', en: 'Morning', ja: '午前' },
+  '오후': { ko: '오후', en: 'Afternoon', ja: '午後' },
+  '종일': { ko: '종일', en: 'All Day', ja: '終日' }
+};
+function tPeriod(p) {
+  var m = PERIOD_DISPLAY[p];
+  return m ? (m[currentLang] || m.ko) : p;
 }
 
 function applyLanguage(lang) {
@@ -4363,6 +4635,22 @@ function applyLanguage(lang) {
   if (foodGenreInput) {
     foodGenreInput.placeholder = lang === 'en' ? 'Genre (e.g. Ramen)' : lang === 'ja' ? '\u30B8\u30E3\u30F3\u30EB (\u4F8B: \u30E9\u30FC\u30E1\u30F3)' : '\uC7A5\uB974 (\uC608: \uB77C\uBA58)';
   }
+
+  // Re-render dynamic content with new language
+  try {
+    if (typeof renderItineraryTimeline === 'function' && typeof currentItineraryData !== 'undefined' && currentItineraryData) {
+      renderItineraryTimeline();
+    }
+    if (typeof renderFlightCards === 'function' && typeof flightResults !== 'undefined' && flightResults.length > 0) {
+      renderFlightCards();
+    }
+    if (typeof renderStayCards === 'function' && typeof stayResults !== 'undefined' && stayResults.length > 0) {
+      renderStayCards();
+    }
+    if (typeof renderPlanSelectionCards === 'function') {
+      renderPlanSelectionCards();
+    }
+  } catch(e) { console.warn('re-render on lang switch:', e.message); }
 }
 
 document.addEventListener('click', function(e) {
