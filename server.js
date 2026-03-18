@@ -3929,9 +3929,17 @@ async function fetchTravelpayoutsFlights(payload) {
 
   try {
     const res = await fetchWithTimeout(`${TRAVELPAYOUTS_BASE}/prices_for_dates?${params}`, {}, AI_REQUEST_TIMEOUT_MS);
-    if (!res.ok) { console.warn('[travelpayouts] search error:', res.status); return []; }
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      console.warn('[travelpayouts] search error:', res.status, errBody.slice(0, 300));
+      return [];
+    }
     const json = await res.json();
-    if (!json.success || !json.data) return [];
+    if (!json.success || !json.data) {
+      console.warn('[travelpayouts] no data:', JSON.stringify(json).slice(0, 200));
+      return [];
+    }
+    console.log('[travelpayouts] flights found:', json.data.length);
     return json.data.map((item, idx) => normalizeTravelpayoutsFlight(item, idx, tripType));
   } catch (err) { console.warn('[travelpayouts] search error:', err.message); return []; }
 }
@@ -4103,7 +4111,6 @@ async function fetchRakutenHotels(payload) {
 
   const params = new URLSearchParams({
     applicationId: RAKUTEN_APP_ID,
-    accessKey: RAKUTEN_ACCESS_KEY,
     format: 'json',
     formatVersion: '2',
     checkinDate: checkIn,
@@ -4118,6 +4125,7 @@ async function fetchRakutenHotels(payload) {
     longitude: String(coords.lng),
     searchRadius: '3'
   });
+  if (RAKUTEN_ACCESS_KEY) params.set('accessKey', RAKUTEN_ACCESS_KEY);
 
   const rakutenHeaders = {
     'Referer': 'https://japanjapantravel.onrender.com/',
@@ -4125,9 +4133,12 @@ async function fetchRakutenHotels(payload) {
   };
 
   try {
-    const res = await fetchWithTimeout(`${RAKUTEN_BASE}/VacantHotelSearch/20170426?${params}`, { headers: rakutenHeaders }, AI_REQUEST_TIMEOUT_MS);
+    const rakutenUrl = `${RAKUTEN_BASE}/VacantHotelSearch/20170426?${params}`;
+    console.log('[rakuten] VacantHotelSearch request:', { city: cityKey, checkIn, checkOut, lat: coords.lat, lng: coords.lng });
+    const res = await fetchWithTimeout(rakutenUrl, { headers: rakutenHeaders }, AI_REQUEST_TIMEOUT_MS);
     if (!res.ok) {
-      console.warn('[rakuten] VacantHotelSearch error:', res.status);
+      const errBody = await res.text().catch(() => '');
+      console.warn('[rakuten] VacantHotelSearch error:', res.status, errBody.slice(0, 300));
       // Fallback to SimpleHotelSearch
       params.delete('checkinDate');
       params.delete('checkoutDate');
@@ -4139,7 +4150,9 @@ async function fetchRakutenHotels(payload) {
       return normalizeRakutenSimple(data2, payload);
     }
     const data = await res.json();
-    return normalizeRakutenVacant(data, payload);
+    const result = normalizeRakutenVacant(data, payload);
+    console.log('[rakuten] VacantHotelSearch result:', result.length, 'hotels (raw hotels:', (data.hotels || []).length, ')');
+    return result;
   } catch (err) { console.warn('[rakuten] error:', err.message); return []; }
 }
 
@@ -5713,6 +5726,8 @@ async function handleApi(req, res, parsedUrl) {
         }
       }
 
+      console.log('[flights] source selection:', { travelpayouts: !!TRAVELPAYOUTS_TOKEN, amadeus: !!(AMADEUS_API_KEY && AMADEUS_API_SECRET), candidateCount: allCandidates.length });
+
       // 3순위: Mock 데이터
       if (allCandidates.length === 0) {
         allCandidates = flightCandidates(payload);
@@ -5761,6 +5776,8 @@ async function handleApi(req, res, parsedUrl) {
           sourceNote += (sourceNote ? ' / ' : '') + `Amadeus 호텔 조회 실패: ${err.message}`;
         }
       }
+
+      console.log('[stays] source selection:', { rakuten: !!RAKUTEN_APP_ID, amadeus: !!(AMADEUS_API_KEY && AMADEUS_API_SECRET), hotelCount: all.length });
 
       // 3순위: Mock 데이터
       if (all.length === 0) {
