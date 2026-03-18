@@ -769,6 +769,31 @@ button:hover {
   border-color: rgba(15, 118, 110, 0.25);
 }
 
+
+/* Loading spinner + button states */
+.spinner {
+  width: 28px; height: 28px;
+  border: 3px solid rgba(14, 116, 110, 0.2);
+  border-top-color: #0e746e;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  margin: 16px auto;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.loading-card {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 80px; opacity: 0.7;
+}
+
+.btn-loading {
+  opacity: 0.6; pointer-events: none; cursor: wait;
+}
+
+button:disabled {
+  opacity: 0.5; cursor: not-allowed;
+}
+
 @media (max-width: 1100px) {
   .split {
     grid-template-columns: 1fr 1fr;

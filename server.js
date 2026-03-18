@@ -126,6 +126,24 @@ function checkRateLimit(ip) {
   return true;
 }
 
+// OAuth state map for CSRF protection
+const _oauthStates = new Map();
+setInterval(() => { const cutoff = Date.now() - 600000; for (const [k, v] of _oauthStates) { if (v < cutoff) _oauthStates.delete(k); } }, 60000);
+
+// CSRF: verify Origin/Referer for state-changing requests
+function checkCsrf(req) {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return true;
+  const origin = req.headers['origin'] || '';
+  const referer = req.headers['referer'] || '';
+  const host = req.headers['host'] || '';
+  // Allow same-origin requests
+  if (origin && (origin.includes(host) || origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('onrender.com'))) return true;
+  if (!origin && referer && (referer.includes(host) || referer.includes('localhost') || referer.includes('onrender.com'))) return true;
+  // Allow requests with no origin (same-origin browser requests)
+  if (!origin && !referer) return true;
+  return false;
+}
+
 // Clean up rate limit map periodically
 setInterval(() => {
   const now = Date.now();
@@ -3762,7 +3780,7 @@ async function buildTravelPlan(payload) {
     const foodCities = [rec.city, ...uniqueAdditionalKeys.map((k) => CITY_DATA[k]?.label).filter(Boolean)];
     const allFoods = await Promise.all(foodCities.map((cl) => {
       const cityDests = mergedRecommendations.filter((d) => String(d.city || '') === cl);
-      return fetchRecommendedFoods(cityDests.length > 0 ? cityDests : mergedRecommendations, cl, payload.budget, stayLoc, payload.lang || 'ko').catch(() => []);
+      return fetchRecommendedFoods(cityDests.length > 0 ? cityDests : mergedRecommendations, cl, payload.budget, stayLoc, payload.lang || 'ko').catch((e) => { console.warn('[foods] partial failure:', cl, e.message); return []; });
     }));
     const seenFoodNames = new Set();
     for (const foods of allFoods) {
@@ -5134,7 +5152,9 @@ async function fetchFoodPlacesForCity(query, lat, lng, genre, budget, lang) {
     ? Array.from(new Set([...baseQueries, ...tokenQueries.map((t) => `${query} ${t} 맛집`)]))
     : baseQueries;
 
-  const results = await Promise.all(queries.map(async (q) => {
+  // Cap queries to 3 to reduce API calls
+  const cappedQueries = queries.slice(0, 3);
+  const results = await Promise.all(cappedQueries.map(async (q) => {
     try {
       return await fetchPlacesWithGoogle(query, lat, lng, cleanGenre, budget, q, 20, lang);
     } catch {
@@ -5394,10 +5414,16 @@ async function handleApi(req, res, parsedUrl) {
       return sendJson(res, 429, { error: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.' });
     }
 
+    // CSRF origin validation for POST/PUT/DELETE
+    if (!checkCsrf(req)) {
+      return sendJson(res, 403, { error: 'Origin not allowed' });
+    }
+
     // ── OAuth 로그인 라우트 ──
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/naver') {
       if (!NAVER_CLIENT_ID) return sendJson(res, 500, { error: 'Naver OAuth not configured' });
       const state = randomUUID();
+      _oauthStates.set(state, Date.now());
       const url = `https://nid.naver.com/oauth2.0/authorize?client_id=${NAVER_CLIENT_ID}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/naver/callback')}&response_type=code&state=${state}`;
       res.writeHead(302, { Location: url });
       return res.end();
@@ -5407,6 +5433,8 @@ async function handleApi(req, res, parsedUrl) {
       try {
         const code = parsedUrl.searchParams.get('code');
         const state = parsedUrl.searchParams.get('state');
+        if (!state || !_oauthStates.has(state)) { res.writeHead(302, { Location: '/?authError=invalid_state' }); return res.end(); }
+        _oauthStates.delete(state);
         const tokenData = await oauthFetch(`https://nid.naver.com/oauth2.0/token?grant_type=authorization_code&client_id=${NAVER_CLIENT_ID}&client_secret=${NAVER_CLIENT_SECRET}&code=${code}&state=${state}`);
         const profileData = await oauthFetch('https://openapi.naver.com/v1/nid/me', {
           headers: { Authorization: `Bearer ${tokenData.access_token}` }
@@ -5651,6 +5679,10 @@ async function handleApi(req, res, parsedUrl) {
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/travel-plan') {
       const payload = await readBody(req);
+      // Input sanitization
+      if (payload.city && String(payload.city).length > 50) return sendJson(res, 400, { error: 'Invalid city' });
+      if (payload.theme && String(payload.theme).length > 30) return sendJson(res, 400, { error: 'Invalid theme' });
+      if (payload.days && (Number(payload.days) < 1 || Number(payload.days) > 30)) return sendJson(res, 400, { error: 'Invalid days' });
       const vErr = validatePayload(payload, API_SCHEMAS['travel-plan']);
       if (vErr) return sendJson(res, 400, { error: vErr });
       const planResult = await buildTravelPlan(payload);

@@ -263,6 +263,53 @@ async function postJson(url, payload) {
   return res.json();
 }
 
+// Loading state helpers
+function setLoading(btnId, loading, label) {
+  var btn = el(btnId);
+  if (!btn) return;
+  if (loading) {
+    btn.disabled = true;
+    btn._origText = btn.textContent;
+    btn.textContent = t('loading') || 'Loading...';
+    btn.classList.add('btn-loading');
+  } else {
+    btn.disabled = false;
+    btn.textContent = label || btn._origText || '';
+    btn.classList.remove('btn-loading');
+  }
+}
+
+function showCardLoading(containerId) {
+  var c = el(containerId);
+  if (c) c.innerHTML = '<div class="card loading-card"><div class="spinner"></div></div>';
+}
+
+function friendlyError(err) {
+  var msg = err && err.message ? err.message : String(err || '');
+  if (/429|rate.?limit/i.test(msg)) return t('err-rate-limit');
+  if (/timeout|timed?.?out|ETIMEDOUT/i.test(msg)) return t('err-timeout') || 'Timeout';
+  if (/fetch|network|ERR_/i.test(msg)) return t('err-network') || 'Network error';
+  if (/5\d{2}|server/i.test(msg)) return t('err-server') || 'Server error';
+  return msg;
+}
+
+// Date validation
+function validateDates() {
+  var today = new Date().toISOString().slice(0, 10);
+  var startDate = el('startDate');
+  if (startDate && startDate.value && startDate.value < today) {
+    startDate.value = today;
+  }
+  var departDate = el('departDate');
+  if (departDate && departDate.value && departDate.value < today) {
+    departDate.value = today;
+  }
+  var checkInDate = el('stayCheckIn');
+  if (checkInDate && checkInDate.value && checkInDate.value < today) {
+    checkInDate.value = today;
+  }
+}
+
 async function initCityOptions() {
   const data = await getCachedOrFetch('/api/cities');
   const cities = (data.cities || []).sort((a, b) => a.label.localeCompare(b.label, 'ko'));
@@ -1061,6 +1108,11 @@ function buildFlightPayload(flight) {
 }
 
 async function runPlan(extra = {}, syncAux = false) {
+  validateDates();
+  setLoading('btnRun', true);
+  if (syncAux) setLoading('btnRunSync', true);
+  showCardLoading('destCards');
+  try {
   const payload = buildPlanPayload(extra);
   const data = await postJson('/api/travel-plan', payload);
   renderCards('destCards', data.recommendations, 'dest');
@@ -1108,6 +1160,13 @@ async function runPlan(extra = {}, syncAux = false) {
   el('btnFlights').click();
   el('btnFood').click();
   if (el('btnDestSearch')) el('btnDestSearch').click();
+  } catch (err) {
+    el('destCards').innerHTML = '<div class="card">' + friendlyError(err) + '</div>';
+    console.error('[runPlan]', err);
+  } finally {
+    setLoading('btnRun', false, t('btn-run') || 'AI Recommend');
+    setLoading('btnRunSync', false, t('btn-run-sync') || 'Full Generate');
+  }
 }
 
 function segmentRowTemplate(index, from = '', to = '', date = '') {
@@ -1445,6 +1504,9 @@ el('btnFlights').addEventListener('click', async () => {
       }
     };
 
+    validateDates();
+    setLoading('btnFlights', true);
+    showCardLoading('flightCards');
     const data = await postJson('/api/flights', payload);
     const stamp = Date.now();
     flightResults = (data.flights || []).map((f, i) => ({ ...f, _id: `f${stamp}-${i}` }));
@@ -1463,8 +1525,10 @@ el('btnFlights').addEventListener('click', async () => {
       }
     }
   } catch (err) {
-    el('flightCards').innerHTML = `<div class="card">오류: ${err.message}</div>`;
+    el('flightCards').innerHTML = '<div class="card">' + friendlyError(err) + '</div>';
     el('btnFlightMore')?.classList.add('hidden');
+  } finally {
+    setLoading('btnFlights', false, t('search-flights') || 'Search');
   }
 });
 
@@ -1713,6 +1777,9 @@ el('btnStays').addEventListener('click', async () => {
     };
 
     // 서버 API 호출 (Rakuten → Amadeus → Mock 폴백)
+    validateDates();
+    setLoading('btnStays', true);
+    showCardLoading('stayCards');
     var data = await postJson('/api/stays', payload);
     stayResults = data.stays || [];
     var staySource = data.source || 'mock';
@@ -1733,7 +1800,9 @@ el('btnStays').addEventListener('click', async () => {
       }
     }
   } catch (err) {
-    el('stayCards').innerHTML = `<div class="card">오류: ${err.message}</div>`;
+    el('stayCards').innerHTML = '<div class="card">' + friendlyError(err) + '</div>';
+  } finally {
+    setLoading('btnStays', false, t('search-stays') || 'Search');
   }
 });
 
@@ -2078,6 +2147,19 @@ document.addEventListener('drop', function(e) {
     newBlock = slot.period + '(' + slot.start + '-' + slot.end + '): ' + item.name + (destArea ? ' (' + destArea + ')' : '');
   }
 
+
+  // Time conflict detection
+  var hasConflict = dayData.blocks.some(function(b) {
+    var bp = parseItineraryBlock(b);
+    if (bp.type !== 'main') return false;
+    if (bp.startTime && bp.endTime && slot.start && slot.end) {
+      return bp.startTime < slot.end && slot.start < bp.endTime && bp.period === slot.period;
+    }
+    return false;
+  });
+  if (hasConflict && type === 'dest') {
+    if (!confirm(t('confirm-time-conflict') || 'This time slot already has an item. Add anyway?')) return;
+  }
 
   // If dropping food into a meal slot, remove existing food in that slot
   if (type === 'food' && isMealPeriod(slot.period)) {
@@ -3755,7 +3837,7 @@ function loadKlookWidget(cityKey) {
         '<a href="https://www.getyourguide.com/s/?q=' + encodeURIComponent(cityName + ', Japan') + '&searchSource=1" target="_blank" rel="noopener" style="display:inline-block;padding:10px 20px;background:#1a73e8;color:#fff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">GetYourGuide</a>' +
         '</div></div>';
     }
-  }, 8000);
+  }, 4000);
 }
 
 // Load widget on city change
@@ -4268,6 +4350,16 @@ var I18N = {
     'promote-food': '추천 맛집으로',
     'wishlist-add': '찜 추가됨',
     'wishlist-remove': '찞 제거됨',
+    'loading': '처리 중...',
+    'err-timeout': '서버 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.',
+    'err-network': '네트워크 오류가 발생했습니다. 인터넷 연결을 확인해주세요.',
+    'err-server': '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
+    'confirm-time-conflict': '이 시간대에 이미 일정이 있습니다. 추가하시겠습니까?',
+    'search-flights': '검색',
+    'search-stays': '검색',
+    'btn-run': 'AI 추천',
+    'btn-run-sync': '통합 생성',
+    'partial-failure': '일부 데이터를 가져오지 못했습니다'
   },
   en: {
     'section-conditions': 'Travel Conditions', 'section-results': 'Recommendations',
@@ -4524,7 +4616,17 @@ var I18N = {
     'plan-saved': 'Itinerary saved!',
     'popup-blocked': 'Popup was blocked.',
     'history-cleared': 'Search history cleared.',
-    'remove-segment': 'Remove'
+    'remove-segment': 'Remove',
+    'loading': 'Loading...',
+    'err-timeout': 'Server timed out. Please try again.',
+    'err-network': 'Network error. Please check your connection.',
+    'err-server': 'Server error. Please try again later.',
+    'confirm-time-conflict': 'This time slot already has an item. Add anyway?',
+    'search-flights': 'Search',
+    'search-stays': 'Search',
+    'btn-run': 'AI Recommend',
+    'btn-run-sync': 'Full Generate',
+    'partial-failure': 'Some data could not be loaded'
   },
   ja: {
     'section-conditions': '\u65C5\u884C\u6761\u4EF6', 'section-results': '\u304A\u3059\u3059\u3081',
@@ -4881,7 +4983,17 @@ var I18N = {
     'plan-saved': 'プランが保存されました!',
     'popup-blocked': 'ポップアップがブロックされました。',
     'history-cleared': '検索履歴が削除されました。',
-    'remove-segment': '削除'
+    'remove-segment': '削除',
+    'loading': '処理中...',
+    'err-timeout': 'サーバーがタイムアウトしました。しばらくしてから再試行してください。',
+    'err-network': 'ネットワークエラーです。接続を確認してください。',
+    'err-server': 'サーバーエラーです。しばらくしてから再試行してください。',
+    'confirm-time-conflict': 'この時間帯にはすでに予定があります。追加しますか？',
+    'search-flights': '検索',
+    'search-stays': '検索',
+    'btn-run': 'AIおすすめ',
+    'btn-run-sync': '一括生成',
+    'partial-failure': '一部のデータを取得できませんでした'
   }
 };
 
