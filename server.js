@@ -4156,8 +4156,31 @@ async function fetchRakutenHotels(payload) {
   } catch (err) { console.warn('[rakuten] error:', err.message); return []; }
 }
 
+
+// Rakuten deeplink: always use original JP URL (works for all languages)
+function rakutenDeeplink(hotelNo, originalUrl, lang) {
+  return originalUrl || (hotelNo ? `https://hotel.travel.rakuten.co.jp/hotelinfo/plan/${hotelNo}/` : '#');
+}
+
+// Rakuten amenity labels by language
+function rakutenAmenities(breakfastFlag, dinnerFlag, parkingInfo, lang) {
+  const am = [];
+  const L = {
+    ko: { breakfast: '조식 포함', dinner: '석식 포함', parking: '주차 가능', wifi: '무료 Wi-Fi' },
+    en: { breakfast: 'Breakfast included', dinner: 'Dinner included', parking: 'Parking available', wifi: 'Free Wi-Fi' },
+    ja: { breakfast: '朝食付き', dinner: '夕食付き', parking: '駐車場あり', wifi: '無料Wi-Fi' }
+  };
+  const l = L[lang] || L.ko;
+  if (breakfastFlag) am.push(l.breakfast);
+  if (dinnerFlag) am.push(l.dinner);
+  if (parkingInfo && !/なし|無/.test(parkingInfo)) am.push(l.parking);
+  am.push(l.wifi);
+  return am;
+}
+
 function normalizeRakutenVacant(data, payload) {
   const hotels = data.hotels || [];
+  const lang = payload.lang || 'ko';
   const checkIn = payload.checkIn || new Date().toISOString().slice(0, 10);
   const checkOut = payload.checkOut || (() => { const d = new Date(checkIn); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })();
   const nights = Math.max(1, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000));
@@ -4197,18 +4220,14 @@ function normalizeRakutenVacant(data, payload) {
     const pricePerNightKRW = Math.round(convertToKRW(priceJPY, 'JPY'));
     const totalPriceKRW = pricePerNightKRW * nights * rooms;
 
-    const amenities = [];
-    if (breakfastFlag) amenities.push('\uC870\uC2DD \uD3EC\uD568');
-    if (dinnerFlag) amenities.push('\uC11D\uC2DD \uD3EC\uD568');
-    if (basic.parkingInformation && !/\u306A\u3057|\u7121/.test(basic.parkingInformation)) amenities.push('\uC8FC\uCC28 \uAC00\uB2A5');
-    amenities.push('\uBB34\uB8CC Wi-Fi');
+    const amenities = rakutenAmenities(breakfastFlag, dinnerFlag, basic.parkingInformation, lang);
 
-    const nameKo = basic.hotelName || '\uC774\uB984 \uC5C6\uC74C';
+    const nameKo = basic.hotelName || (lang === 'en' ? 'Unknown' : lang === 'ja' ? '\u540D\u79F0\u4E0D\u660E' : '\uC774\uB984 \uC5C6\uC74C');
     const isRyokan = /\u65C5\u9928|\u6E29\u6CC9|\u308A\u3087\u304B\u3093|\u304A\u5BBF/.test(nameKo) || dinnerFlag;
     const typeKey = isRyokan ? 'ryokan' : 'hotel';
-    const typeLabel = isRyokan ? '\uB8CC\uCE78' : '\uD638\uD154';
+    const typeLabel = isRyokan ? (lang === 'en' ? 'Ryokan' : lang === 'ja' ? '\u65C5\u9928' : '\uB8CC\uCE78') : (lang === 'en' ? 'Hotel' : lang === 'ja' ? '\u30DB\u30C6\u30EB' : '\uD638\uD154');
     const rating = Number(basic.reviewAverage || 0);
-    const area = koreanizeAddress(basic.address1 + (basic.address2 || ''), city?.label || '') || city?.areas?.[0] || '';
+    const area = lang === 'ko' ? (koreanizeAddress(basic.address1 + (basic.address2 || ''), city?.label || '') || city?.areas?.[0] || '') : (basic.address1 || '') + (basic.address2 ? ' ' + basic.address2 : '');
 
     return {
       id: `rakuten_${basic.hotelNo || idx}`,
@@ -4227,7 +4246,7 @@ function normalizeRakutenVacant(data, payload) {
       totalPriceKRW,
       amenities,
       aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
-      deeplink: basic.planListUrl || basic.hotelInformationUrl || reserveUrl || '#',
+      deeplink: rakutenDeeplink(basic.hotelNo, basic.planListUrl || basic.hotelInformationUrl || reserveUrl, lang),
       imageUrl: basic.hotelImageUrl || basic.hotelThumbnailUrl || null,
       nearestStation: basic.nearestStation || '',
       access: basic.access || ''
@@ -4237,6 +4256,7 @@ function normalizeRakutenVacant(data, payload) {
 
 function normalizeRakutenSimple(data, payload) {
   const hotels = data.hotels || [];
+  const lang = payload.lang || 'ko';
   const checkIn = payload.checkIn || new Date().toISOString().slice(0, 10);
   const checkOut = payload.checkOut || (() => { const d = new Date(checkIn); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })();
   const nights = Math.max(1, Math.round((new Date(checkOut) - new Date(checkIn)) / 86400000));
@@ -4250,25 +4270,25 @@ function normalizeRakutenSimple(data, payload) {
     const priceJPY = basic.hotelMinCharge || 8000;
     const pricePerNightKRW = Math.round(convertToKRW(priceJPY, 'JPY'));
     const totalPriceKRW = pricePerNightKRW * nights * rooms;
-    const nameKo = basic.hotelName || '\uC774\uB984 \uC5C6\uC74C';
+    const nameKo = basic.hotelName || (lang === 'en' ? 'Unknown' : lang === 'ja' ? '\u540D\u79F0\u4E0D\u660E' : '\uC774\uB984 \uC5C6\uC74C');
     const isRyokan = /\u65C5\u9928|\u6E29\u6CC9|\u308A\u3087\u304B\u3093|\u304A\u5BBF/.test(nameKo);
     const rating = Number(basic.reviewAverage || 0);
-    const area = koreanizeAddress(basic.address1 + (basic.address2 || ''), city?.label || '') || city?.areas?.[0] || '';
+    const area = lang === 'ko' ? (koreanizeAddress(basic.address1 + (basic.address2 || ''), city?.label || '') || city?.areas?.[0] || '') : (basic.address1 || '') + (basic.address2 ? ' ' + basic.address2 : '');
 
     return {
       id: `rakuten_${basic.hotelNo || idx}`,
       name: nameKo,
       provider: 'Rakuten',
       type: isRyokan ? 'ryokan' : 'hotel',
-      typeLabel: isRyokan ? '\uB8CC\uCE78' : '\uD638\uD154',
+      typeLabel: isRyokan ? (lang === 'en' ? 'Ryokan' : lang === 'ja' ? '\u65C5\u9928' : '\uB8CC\uCE78') : (lang === 'en' ? 'Hotel' : lang === 'ja' ? '\u30DB\u30C6\u30EB' : '\uD638\uD154'),
       area,
       rating: rating > 0 ? rating : 7.5,
       guests, rooms, checkIn, checkOut, nights,
       pricePerNightKRW,
       totalPriceKRW,
-      amenities: ['\uBB34\uB8CC Wi-Fi'],
+      amenities: rakutenAmenities(false, false, null, lang),
       aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
-      deeplink: basic.planListUrl || basic.hotelInformationUrl || '#',
+      deeplink: rakutenDeeplink(basic.hotelNo, basic.planListUrl || basic.hotelInformationUrl, lang),
       imageUrl: basic.hotelImageUrl || null,
       nearestStation: basic.nearestStation || '',
       access: basic.access || ''

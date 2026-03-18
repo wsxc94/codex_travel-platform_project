@@ -2049,6 +2049,9 @@ document.addEventListener('drop', function(e) {
   var item = dragData.item;
   if (!item || !currentItineraryData) return;
 
+  // Type guard: dest cards only into dest zones, food cards only into food zones
+  if (type !== dropType) return;
+
   var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === dropDay; });
   if (!dayData) return;
 
