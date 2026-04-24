@@ -3605,7 +3605,7 @@ async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo, 
         headers: {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos'
+          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos,places.currentOpeningHours,places.regularOpeningHours'
         },
         body: JSON.stringify(body)
       });
@@ -3646,7 +3646,9 @@ async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo, 
         area, score: rating, reviewCount, priceLevel, aiFit, mapUrl: p.googleMapsUri || '',
         photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null,
         lat: loc ? loc.lat : null, lng: loc ? loc.lng : null,
-        distFromCenter: Math.round(distKm * 10) / 10
+        distFromCenter: Math.round(distKm * 10) / 10,
+        openNow: p.currentOpeningHours?.openNow ?? null,
+        todayHours: formatTodayHours(p.currentOpeningHours || p.regularOpeningHours)
       };
     })
     .filter((f) => f.score >= 3.0 || f.score === null)
@@ -5078,6 +5080,39 @@ function isGenreMatchFoodName(name, genre) {
   return tokens.some((t) => lower.includes(String(t).toLowerCase()));
 }
 
+
+// Extract today's opening hours as readable string
+function formatTodayHours(hoursObj) {
+  if (!hoursObj) return null;
+  // currentOpeningHours has periods array with open/close times
+  const periods = hoursObj.periods;
+  if (!periods || periods.length === 0) {
+    // Try weekdayDescriptions
+    const descs = hoursObj.weekdayDescriptions;
+    if (descs && descs.length > 0) {
+      const today = new Date().getDay(); // 0=Sun
+      const idx = today === 0 ? 6 : today - 1; // weekdayDescriptions: Mon=0
+      return descs[idx] || null;
+    }
+    return null;
+  }
+  // Find today's period
+  const now = new Date();
+  const todayDay = now.getDay(); // 0=Sun, 1=Mon...
+  const todayPeriods = periods.filter(p => {
+    const openDay = p.open?.day;
+    return openDay === todayDay;
+  });
+  if (todayPeriods.length === 0) return null;
+  return todayPeriods.map(p => {
+    const oh = String(p.open?.hour ?? 0).padStart(2, '0');
+    const om = String(p.open?.minute ?? 0).padStart(2, '0');
+    const ch = String(p.close?.hour ?? 23).padStart(2, '0');
+    const cm = String(p.close?.minute ?? 59).padStart(2, '0');
+    return `${oh}:${om}-${ch}:${cm}`;
+  }).join(', ');
+}
+
 async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverride = '', maxResultCount = 20, lang = 'ko') {
   const endpoint = 'https://places.googleapis.com/v1/places:searchText';
   const cleanGenre = String(genre || '').trim();
@@ -5103,7 +5138,7 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos'
+      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos,places.currentOpeningHours,places.regularOpeningHours'
     },
     body: JSON.stringify(body)
   }, AI_REQUEST_TIMEOUT_MS);
@@ -5128,7 +5163,9 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
       aiFit: scoreFoodFit(score, priceLevel, budget || 'mid'),
       address: p.formattedAddress || '주소 없음',
       mapUrl: p.googleMapsUri || null,
-      photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null
+      photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null,
+      openNow: p.currentOpeningHours?.openNow ?? null,
+      todayHours: formatTodayHours(p.currentOpeningHours || p.regularOpeningHours)
     };
   });
 }
