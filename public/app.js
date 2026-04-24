@@ -487,6 +487,19 @@ function ensureCheckOutDate() {
   }
 }
 
+
+function openStatusBadge(item) {
+  if (item.openNow === true) {
+    var hours = item.todayHours ? ' ' + item.todayHours : '';
+    return '<span class="open-badge open">' + (t('open-now') || 'Open') + hours + '</span>';
+  }
+  if (item.openNow === false) {
+    var hours2 = item.todayHours ? ' ' + item.todayHours : '';
+    return '<span class="open-badge closed">' + (t('closed-now') || 'Closed') + hours2 + '</span>';
+  }
+  return '';
+}
+
 function renderCards(targetId, items, mode) {
   const target = el(targetId);
   if (!items || items.length === 0) {
@@ -722,14 +735,14 @@ function renderItineraryTimeline() {
     h += '<div class="itin-summary">' + escapeHtml(data.summary) + '</div>';
   }
   var mealPeriods = [
-    { key: 'breakfast', period: '\uC544\uCE68', icon: '\uD83C\uDF73', color: '#ea580c', time: '08:00 - 09:30' },
-    { key: 'lunch', period: '\uC810\uC2EC', icon: '\uD83C\uDF5C', color: '#0284c7', time: '12:00 - 13:30' },
-    { key: 'dinner', period: '\uC800\uB141', icon: '\uD83C\uDF07', color: '#7c3aed', time: '18:00 - 20:00' }
+    { key: 'breakfast', period: '\uC544\uCE68', icon: '\uD83C\uDF73', color: 'var(--warn)', time: '08:00 - 09:30' },
+    { key: 'lunch', period: '\uC810\uC2EC', icon: '\uD83C\uDF5C', color: 'var(--fg-3)', time: '12:00 - 13:30' },
+    { key: 'dinner', period: '\uC800\uB141', icon: '\uD83C\uDF07', color: 'var(--fg-2)', time: '18:00 - 20:00' }
   ];
   var destPeriods = [
-    { key: 'morning', period: '\uC624\uC804', icon: '\uD83C\uDF05', color: '#059669', time: '09:00 - 12:00' },
-    { key: 'afternoon', period: '\uC624\uD6C4', icon: '\uD83C\uDF1E', color: '#d97706', time: '13:00 - 17:00' },
-    { key: 'allday', period: '\uC885\uC77C', icon: '\uD83C\uDF1F', color: '#dc2626', time: '09:00 - 18:00' }
+    { key: 'morning', period: '\uC624\uC804', icon: '\uD83C\uDF05', color: 'var(--ok)', time: '09:00 - 12:00' },
+    { key: 'afternoon', period: '\uC624\uD6C4', icon: '\uD83C\uDF1E', color: 'var(--warn)', time: '13:00 - 17:00' },
+    { key: 'allday', period: '\uC885\uC77C', icon: '\uD83C\uDF1F', color: 'var(--accent)', time: '09:00 - 18:00' }
   ];
   for (var di = 0; di < (data.itinerary || []).length; di++) {
     var day = data.itinerary[di];
@@ -1647,6 +1660,7 @@ function renderRecFoodCards(items) {
           '<h4>' + escapeHtml(x.name) + '</h4>' +
           '<div class="card-info-row">' + escapeHtml(x.genre || '') + ' \u00B7 ' + escapeHtml(x.area || '') + '</div>' +
           '<div class="card-scores">' + aiScoreBadge(x.aiFit) + starRating(x.score) + priceYen(x.priceLevel) + '</div>' +
+        openStatusBadge(x) +
         '</div>' +
       '</div>' +
       '<span class="drag-hint">\u2630 \uB4DC\uB798\uADF8</span>' +
@@ -2880,7 +2894,7 @@ function renderWeatherWidget(daily, cityLabel) {
     var lo = Math.round(daily.temperature_2m_min[i]);
     var rain = daily.precipitation_probability_max ? daily.precipitation_probability_max[i] : 0;
     var isTrip = startDate && d >= startDate && d < addDays(startDate, days);
-    html += '<div class="weather-day" style="' + (isTrip ? 'border-color:var(--primary);border-width:2px;background:#f0fdf4' : '') + '">';
+    html += '<div class="weather-day" style="' + (isTrip ? 'border-color:var(--accent);background:var(--accent-soft)' : '') + '">';
     html += '<div class="weather-day-date">' + d.slice(5) + '</div>';
     html += '<div class="weather-day-icon">' + icon + '</div>';
     html += '<div class="weather-day-temp"><span class="hi">' + hi + '\u00B0</span>/<span class="lo">' + lo + '\u00B0</span></div>';
@@ -3814,7 +3828,7 @@ function loadKlookWidget(cityKey) {
   var wrap = document.getElementById('klookWidgetWrap');
   if (!wrap) return;
   var cityName = KLOOK_CITY_MAP[cityKey] || KLOOK_CITY_MAP.tokyo;
-  wrap.innerHTML = '<div id="tp-klook-widget" style="min-height:120px;display:flex;align-items:center;justify-content:center;color:#888;font-size:14px;">' + cityName + ' \ud22c\uc5b4 \ub85c\ub529 \uc911...</div>';
+  wrap.innerHTML = '<div id="tp-klook-widget" style="min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--fg-3);font-size:13px;">' + cityName + ' \ud22c\uc5b4 \ub85c\ub529 \uc911...</div>';
   var oldScripts = wrap.querySelectorAll('script');
   oldScripts.forEach(function(s) { s.remove(); });
   var sc = document.createElement('script');
@@ -3829,12 +3843,13 @@ function loadKlookWidget(cityKey) {
     if (!widget) return;
     var hasContent = widget.querySelector('ins, iframe, .klook-widget, a[href*="klook"]');
     if (!hasContent) {
+      var tourLinkStyle = 'display:inline-block;padding:9px 18px;background:var(--bg-2);color:var(--fg-1);border:1px solid var(--line-2);border-radius:var(--r-md);text-decoration:none;font-size:13px;font-weight:500;transition:all .15s ease;';
       widget.innerHTML = '<div style="text-align:center;padding:24px 16px;">' +
-        '<p style="margin:0 0 12px;font-size:15px;color:#555;">' + cityName + ' \uc778\uae30 \ud22c\uc5b4 & \uc561\ud2f0\ube44\ud2f0</p>' +
-        '<div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:center;">' +
-        '<a href="https://www.klook.com/ko/search/result/?query=' + encodeURIComponent(cityName + ' tour') + '" target="_blank" rel="noopener" style="display:inline-block;padding:10px 20px;background:#ff5722;color:#fff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">Klook \ud22c\uc5b4 \ubcf4\uae30</a>' +
-        '<a href="https://www.viator.com/searchResults/all?text=' + encodeURIComponent(cityName) + '&destId=&tags=alltrips" target="_blank" rel="noopener" style="display:inline-block;padding:10px 20px;background:#2d9b4e;color:#fff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">Viator \ud22c\uc5b4 \ubcf4\uae30</a>' +
-        '<a href="https://www.getyourguide.com/s/?q=' + encodeURIComponent(cityName + ', Japan') + '&searchSource=1" target="_blank" rel="noopener" style="display:inline-block;padding:10px 20px;background:#1a73e8;color:#fff;border-radius:8px;text-decoration:none;font-size:14px;font-weight:600;">GetYourGuide</a>' +
+        '<p style="margin:0 0 14px;font-size:13px;color:var(--fg-3);letter-spacing:0.04em;">' + cityName + ' \uc778\uae30 \ud22c\uc5b4 & \uc561\ud2f0\ube44\ud2f0</p>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;">' +
+        '<a href="https://www.klook.com/ko/search/result/?query=' + encodeURIComponent(cityName + ' tour') + '" target="_blank" rel="noopener" style="' + tourLinkStyle + '">Klook \ud22c\uc5b4</a>' +
+        '<a href="https://www.viator.com/searchResults/all?text=' + encodeURIComponent(cityName) + '&destId=&tags=alltrips" target="_blank" rel="noopener" style="' + tourLinkStyle + '">Viator \ud22c\uc5b4</a>' +
+        '<a href="https://www.getyourguide.com/s/?q=' + encodeURIComponent(cityName + ', Japan') + '&searchSource=1" target="_blank" rel="noopener" style="' + tourLinkStyle + '">GetYourGuide</a>' +
         '</div></div>';
     }
   }, 4000);
@@ -3865,12 +3880,12 @@ document.addEventListener('click', function(e) {
     if (!printWin) { showMemoToast('\uD31D\uC5C5\uC774 \uCC28\uB2E8\uB418\uC5C8\uC2B5\uB2C8\uB2E4.'); return; }
     var lines = text.split('\n');
     var htmlBody = lines.map(function(line) {
-      if (line.startsWith('===') || line.startsWith('---')) return '<h2 style="border-bottom:1px solid #ccc;padding-bottom:4px;margin-top:16px">' + line.replace(/[=\-]/g, '').trim() + '</h2>';
-      if (line.startsWith('[') && line.endsWith(']')) return '<h3 style="color:#2563eb;margin-top:12px">' + line + '</h3>';
+      if (line.startsWith('===') || line.startsWith('---')) return '<h2 style="border-bottom:1px solid #d8d3c8;padding-bottom:4px;margin-top:16px">' + line.replace(/[=\-]/g, '').trim() + '</h2>';
+      if (line.startsWith('[') && line.endsWith(']')) return '<h3 style="color:#9c7a39;margin-top:12px">' + line + '</h3>';
       if (line.trim() === '') return '<br>';
       return '<p style="margin:2px 0">' + line + '</p>';
     }).join('\n');
-    printWin.document.write('<html><head><title>JapanTravel \uC77C\uC815</title><style>body{font-family:sans-serif;max-width:700px;margin:20px auto;padding:0 16px;font-size:13px;color:#1e293b}h2{font-size:16px}h3{font-size:14px}p{line-height:1.5}@media print{body{margin:0}}</style></head><body>' + htmlBody + '<script>setTimeout(function(){window.print()},300)<\/script></body></html>');
+    printWin.document.write('<html><head><title>JapanTravel \uC77C\uC815</title><style>body{font-family:sans-serif;max-width:700px;margin:20px auto;padding:0 16px;font-size:13px;color:#1a1814}h2{font-size:16px}h3{font-size:14px}p{line-height:1.5}@media print{body{margin:0}}</style></head><body>' + htmlBody + '<script>setTimeout(function(){window.print()},300)<\/script></body></html>');
     printWin.document.close();
   }
 });
@@ -3954,7 +3969,7 @@ function renderWishlistPanel() {
     container.innerHTML = '<div class="wishlist-empty">\uCC1C\uD55C \uC7A5\uC18C\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.<br>\uC5EC\uD589\uC9C0/\uB9DB\uC9D1 \uCE74\uB4DC\uC758 \u2764 \uBC84\uD2BC\uC744 \uB20C\uB7EC\uBCF4\uC138\uC694.</div>';
     return;
   }
-  var html = '<div style="padding:4px 8px;font-size:12px;color:#64748b">' + list.length + '\uAC1C \uC800\uC7A5\uB428</div>';
+  var html = '<div style="padding:4px 8px;font-size:12px;color:var(--fg-3)">' + list.length + '\uAC1C \uC800\uC7A5\uB428</div>';
   for (var i = 0; i < list.length; i++) {
     var w = list[i];
     html += '<div class="wishlist-item">';
@@ -4181,7 +4196,7 @@ function showPreferenceHints() {
   }
   var div = document.createElement('div');
   div.className = 'pref-hints';
-  div.style.cssText = 'font-size:12px;color:#64748b;padding:4px 0;';
+  div.style.cssText = 'font-size:12px;color:var(--fg-3);padding:4px 0;';
   div.innerHTML = hints.map(function(h) { return '<span class="pref-badge">' + h + '</span>'; }).join(' ');
   condPanel.after(div);
 }
@@ -4309,21 +4324,21 @@ var I18N = {
     'source-gemini': '✨ AI 기반 (Gemini)',
     'source-openai': '✨ AI 기반 (OpenAI)',
     'source-planner': '✨ AI 기반 (Planner)',
-    'source-fallback': '������ 규칙기반 (AI 미응답 시 폴백)',
+    'source-fallback': '������ 규칙기반 (AI 미응답 시 폴백)',
     'source-tp': '✨ Travelpayouts 실시간',
     'source-amadeus': '✨ Amadeus',
     'source-rakuten': '✨ Rakuten Travel 실시간',
     'source-google': '✨ Google Places 기반',
     'source-tabelog': '✨ 타베로그 스타일',
-    'source-food-fb': '������ 규칙기반 (폴백)',
+    'source-food-fb': '������ 규칙기반 (폴백)',
     'mock-notice': '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)',
-    'transport-subway': '������ 지하철',
-    'transport-train': '������ 전철',
-    'transport-bus': '������ 버스',
-    'transport-tram': '������ 트램',
-    'transport-transit': '������ 대중교통',
-    'transport-walk': '������ 도보',
-    'transport-est': '������ 추정',
+    'transport-subway': '������ 지하철',
+    'transport-train': '������ 전철',
+    'transport-bus': '������ 버스',
+    'transport-tram': '������ 트램',
+    'transport-transit': '������ 대중교통',
+    'transport-walk': '������ 도보',
+    'transport-est': '������ 추정',
     'transport-err': '⚠️ 오류',
     'total-fare': '합계: ¥',
     'free': '무료',
@@ -4331,10 +4346,10 @@ var I18N = {
     'budget-mid': '표준',
     'budget-high': '프리미엄',
     'cost-flight': '✈️ 항공권',
-    'cost-stay': '������ 숙소 (',
-    'cost-food': '������ 식비',
-    'cost-transport': '������ 교통비',
-    'cost-activity': '������ 액티비티',
+    'cost-stay': '������ 숙소 (',
+    'cost-food': '������ 식비',
+    'cost-transport': '������ 교통비',
+    'cost-activity': '������ 액티비티',
     'rec-dest': '추천 여행지',
     'error-prefix': '오류: ',
     'copy-text-done': '텍스트가 클립보드에 복사되었습니다!',
@@ -4359,7 +4374,9 @@ var I18N = {
     'search-stays': '검색',
     'btn-run': 'AI 추천',
     'btn-run-sync': '통합 생성',
-    'partial-failure': '일부 데이터를 가져오지 못했습니다'
+    'partial-failure': '일부 데이터를 가져오지 못했습니다',
+    'open-now': '영업중',
+    'closed-now': '영업종료'
   },
   en: {
     'section-conditions': 'Travel Conditions', 'section-results': 'Recommendations',
@@ -4626,7 +4643,9 @@ var I18N = {
     'search-stays': 'Search',
     'btn-run': 'AI Recommend',
     'btn-run-sync': 'Full Generate',
-    'partial-failure': 'Some data could not be loaded'
+    'partial-failure': 'Some data could not be loaded',
+    'open-now': 'Open',
+    'closed-now': 'Closed'
   },
   ja: {
     'section-conditions': '\u65C5\u884C\u6761\u4EF6', 'section-results': '\u304A\u3059\u3059\u3081',
@@ -4900,7 +4919,7 @@ var I18N = {
     'kayak': 'Kayak',
     'move-up': '上へ',
     'move-down': '下へ',
-    'route-calc': '������ 経路交通費計算',
+    'route-calc': '������ 経路交通費計算',
     'amenities': '設備: ',
     'won-suffix': 'ウォン',
     'not-selected': '未選択',
@@ -4933,10 +4952,10 @@ var I18N = {
     'fx-fallback': '100¥≈950ウォン',
     'provider-naver': 'Naver',
     'provider-kakao': 'Kakao',
-    'btn-save-plan': '������ 保存',
-    'btn-my-plans': '������ プラン',
+    'btn-save-plan': '������ 保存',
+    'btn-my-plans': '������ プラン',
     'btn-logout': 'ログアウト',
-    'btn-login': '������ ログイン',
+    'btn-login': '������ ログイン',
     'err-no-plan-save': '保存するプランがありません。',
     'plan-title-suffix': '日間の旅',
     'btn-save': '保存',
@@ -4964,11 +4983,11 @@ var I18N = {
     'calculating': '計算中...',
     'free-label': '無料',
     'source-ai-calc': '✨ AI計算',
-    'source-dist-est': '������ 距離推定 (AIフォールバック)',
-    'source-google-route': '������ Google経路 API',
+    'source-dist-est': '������ 距離推定 (AIフォールバック)',
+    'source-google-route': '������ Google経路 API',
     'err-input': '入力値が正しくありません。',
     'source-ai-google': '✨ AI + Google Places',
-    'source-rule-fb': '������ ルールベース (フォールバック)',
+    'source-rule-fb': '������ ルールベース (フォールバック)',
     'source-ai-rec': '✨ AIおすすめ',
     'rec-prefix': 'おすすめ: ',
     'flight-prefix': '航空券: ',
@@ -4993,7 +5012,9 @@ var I18N = {
     'search-stays': '検索',
     'btn-run': 'AIおすすめ',
     'btn-run-sync': '一括生成',
-    'partial-failure': '一部のデータを取得できませんでした'
+    'partial-failure': '一部のデータを取得できませんでした',
+    'open-now': '営業中',
+    'closed-now': '閉店'
   }
 };
 
