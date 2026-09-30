@@ -3,7 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>JapanTravel Suite</title>
+    <title>Tabimaru — AI 일본 여행 플래너</title>
+    <meta name="description" content="Tabimaru는 일본 여행지·항공권·숙소·맛집을 한곳에서 찾고 AI로 여행 일정을 만들어 주는 일본 여행 플래너예요." />
+    <meta name="application-name" content="Tabimaru" />
+    <meta name="apple-mobile-web-app-title" content="Tabimaru" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <!-- Travelpayouts verification -->
@@ -19,29 +23,29 @@
   <body>
     <div class="bg-layer"></div>
     <header class="top">
-      <div>
-        <h1>JapanTravel Suite</h1>
-        <p><span data-i18n="tagline">AI기반 여행지,항공권,맛집 추천</span></p>
+      <div class="brand-block">
+        <h1 class="brand-title"><span class="brand-name" data-brand>Tabimaru</span> <span class="brand-sep" aria-hidden="true">—</span> <span class="brand-sub" data-i18n="brand-subtitle">AI 일본 여행 플래너</span></h1>
+        <p><span data-i18n="tagline">AI 기반 여행지·항공권·맛집 추천</span></p>
       </div>
 
       <div class="travel-toolbar">
-        <button type="button" id="btnExportPlan" class="toolbar-btn" title="일정 내보내기" aria-label="일정 내보내기">📋 내보내기</button>
-        <button type="button" id="btnChecklist" class="toolbar-btn" title="여행 체크리스트" aria-label="여행 체크리스트"data-i18n="toolbar-checklist">✅ 체크리스트</button>
-        <button type="button" id="btnEmergency" class="toolbar-btn" title="긴급 정보" aria-label="긴급 정보">🆘 긴급</button>
-        <button type="button" id="btnPhrases" class="toolbar-btn" title="일본어 회화" aria-label="일본어 회화">🗣 회화</button>
-        <button type="button" id="btnWeather" class="toolbar-btn" title="날씨" aria-label="날씨 예보">🌤 날씨</button>
-        <button type="button" id="btnWishlist" class="toolbar-btn" title="찜/위시리스트" aria-label="위시리스트"data-i18n="toolbar-wishlist">❤️ 찜</button>
-        <button type="button" id="btnSearchHistory" class="toolbar-btn" title="검색 기록" aria-label="검색 기록">📋 검색기록</button>
+        <button type="button" id="btnExportPlan" class="toolbar-btn" title="일정 내보내기" aria-label="일정 내보내기" data-i18n-title="title-export" data-i18n-aria="title-export"><span class="tb-icon" aria-hidden="true">📋</span><span class="tb-label" data-i18n="toolbar-export">내보내기</span></button>
+        <button type="button" id="btnChecklist" class="toolbar-btn" title="여행 체크리스트" aria-label="여행 체크리스트" data-i18n-title="title-checklist" data-i18n-aria="title-checklist"><span class="tb-icon" aria-hidden="true">✅</span><span class="tb-label" data-i18n="toolbar-checklist">체크리스트</span></button>
+        <button type="button" id="btnEmergency" class="toolbar-btn" title="긴급 정보" aria-label="긴급 정보" data-i18n-title="title-emergency" data-i18n-aria="title-emergency"><span class="tb-icon" aria-hidden="true">🆘</span><span class="tb-label" data-i18n="toolbar-emergency">긴급</span></button>
+        <button type="button" id="btnPhrases" class="toolbar-btn" title="일본어 회화" aria-label="일본어 회화" data-i18n-title="title-phrases" data-i18n-aria="title-phrases"><span class="tb-icon" aria-hidden="true">🗣</span><span class="tb-label" data-i18n="toolbar-phrases">회화</span></button>
+        <button type="button" id="btnWeather" class="toolbar-btn" title="날씨 예보" aria-label="날씨 예보" data-i18n-title="title-weather" data-i18n-aria="title-weather"><span class="tb-icon" aria-hidden="true">🌤</span><span class="tb-label" data-i18n="toolbar-weather">날씨</span></button>
+        <button type="button" id="btnWishlist" class="toolbar-btn" title="찜/위시리스트" aria-label="찜/위시리스트" data-i18n-title="title-wishlist" data-i18n-aria="title-wishlist"><span class="tb-icon" aria-hidden="true">❤️</span><span class="tb-label" data-i18n="toolbar-wishlist">찜</span></button>
+        <button type="button" id="btnSearchHistory" class="toolbar-btn" title="검색 기록" aria-label="검색 기록" data-i18n-title="title-history" data-i18n-aria="title-history"><span class="tb-icon" aria-hidden="true">🕘</span><span class="tb-label" data-i18n="toolbar-history">검색기록</span></button>
       </div>
 
       <div class="lang-switcher" id="langSwitcher">
-        <button type="button" class="lang-btn active" data-lang="ko">한</button>
-        <button type="button" class="lang-btn" data-lang="en">EN</button>
-        <button type="button" class="lang-btn" data-lang="ja">日</button>
+        <button type="button" class="lang-btn active" data-lang="ko" lang="ko" title="한국어" aria-label="한국어">한</button>
+        <button type="button" class="lang-btn" data-lang="en" lang="en" title="English" aria-label="English">EN</button>
+        <button type="button" class="lang-btn" data-lang="ja" lang="ja" title="日本語" aria-label="日本語">日</button>
       </div>
 
       <div class="auth-area" id="authArea">
-        <button type="button" id="btnLogin" class="toolbar-btn auth-login-btn" title="로그인" aria-label="로그인"data-i18n="login"> 로그인</button>
+        <button type="button" id="btnLogin" class="toolbar-btn auth-login-btn" title="로그인" aria-label="로그인" data-i18n-title="login-title" data-i18n-aria="login-title"><span class="tb-icon" aria-hidden="true">👤</span><span class="tb-label" data-i18n="login">로그인</span></button>
       </div>
 
     </header>
@@ -65,15 +69,15 @@
             </select>
           </label>
           <input type="hidden" id="budget" value="mid">
-          <button id="btnPlan" aria-label="추천과 AI 일정 통합 생성">추천+AI일정 통합 생성</button>
+          <button id="btnPlan" aria-label="추천과 AI 일정 통합 생성" data-i18n-aria="aria-plan">추천+AI일정 통합 생성</button>
         </div>
         <div class="ai-chat-wrap">
           <h3 data-i18n="ai-chat-title">AI 여행 조건 채팅</h3>
-          <p class="note">가고 싶은 장소를 자연어로 입력하면 공항 기준 지역/조건을 자동 설정하고 추천을 생성합니다.</p>
+          <p class="note" data-i18n="ai-chat-note">가고 싶은 장소를 자연어로 입력하면 공항 기준 지역/조건을 자동 설정하고 추천을 생성합니다.</p>
           <div id="aiSourceNote" class="source-note"></div>
           <div class="ai-chat-input">
-            <textarea id="aiRequest" aria-label="AI 여행 조건 입력" placeholder="예: 유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고, 3박 4일로 이동 편한 숙소 추천해줘"></textarea>
-            <button id="btnAiAssist" type="button">AI로 조건 적용</button>
+            <textarea id="aiRequest" aria-label="AI 여행 조건 입력" data-i18n-aria="aria-ai-request" placeholder="예: 유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고, 3박 4일로 이동 편한 숙소 추천해줘" data-i18n-placeholder="ph-ai-request"></textarea>
+            <button id="btnAiAssist" type="button" data-i18n="btn-ai-assist">AI로 조건 적용</button>
           </div>
           <div id="aiChatLog" class="ai-chat-log"></div>
         </div>
@@ -83,9 +87,9 @@
         <h2 id="section-results">추천 결과</h2>
         <div class="split">
           <div>
-            <div class="rec-tabs" role="tablist" aria-label="추천 유형 선택">
-              <button type="button" class="rec-tab active" data-rec-tab="dest" role="tab" aria-selected="true"data-i18n="tab-rec-dest">추천 여행지</button>
-              <button type="button" class="rec-tab" data-rec-tab="food" role="tab" aria-selected="false"data-i18n="tab-rec-food">추천 맛집</button>
+            <div class="rec-tabs" role="tablist" aria-label="추천 유형 선택" data-i18n-aria="aria-rec-tabs">
+              <button type="button" class="rec-tab active" data-rec-tab="dest" role="tab" aria-selected="true" data-i18n="tab-rec-dest">추천 여행지</button>
+              <button type="button" class="rec-tab" data-rec-tab="food" role="tab" aria-selected="false" data-i18n="tab-rec-food">추천 맛집</button>
             </div>
             <div id="recDestPanel" class="rec-panel">
               <div id="destSourceNote" class="source-note"></div>
@@ -101,47 +105,48 @@
           <div id="planSourceLabel" class="source-note"></div>
           <div id="planSourceNote" class="source-note warn"></div>
           <div class="plan-controls">
-            <button id="btnPlanRefresh" type="button" class="ghost-btn"data-i18n="btn-refresh-plan">AI 일정 새로고침</button>
-            <button id="btnItinUndo" type="button" class="ghost-btn" aria-label="일정 되돌리기 (Ctrl+Z)"data-i18n="btn-undo">↩ 되돌리기</button>
-            <button id="btnItinRedo" type="button" class="ghost-btn" aria-label="일정 다시 실행 (Ctrl+Y)"data-i18n="btn-redo">↪ 다시</button>
-            <div class="plan-control-copy">선택된 항공·숙소를 유지하고 싶다면 버튼으로 AI 일정만 다시 요청하세요.</div>
+            <button id="btnPlanRefresh" type="button" class="ghost-btn" data-i18n="btn-refresh-plan">AI 일정 새로고침</button>
+            <button id="btnItinUndo" type="button" class="ghost-btn" aria-label="일정 되돌리기 (Ctrl+Z)" data-i18n-aria="aria-undo" data-i18n="btn-undo">↩ 되돌리기</button>
+            <button id="btnItinRedo" type="button" class="ghost-btn" aria-label="일정 다시 실행 (Ctrl+Y)" data-i18n-aria="aria-redo" data-i18n="btn-redo">↪ 다시</button>
+            <div class="plan-control-copy" data-i18n="plan-control-copy">선택된 항공·숙소를 유지하고 싶다면 버튼으로 AI 일정만 다시 요청하세요.</div>
           </div>
           <div id="planSelectionCards" class="selection-card-grid"></div>
           <div class="manual-input-group">
             <details class="manual-details">
               <summary data-i18n="manual-flight">직접 항공편 입력</summary>
-              <p class="manual-hint">출발/도착 공항·날짜는 여행 조건에서 자동 설정됩니다. 가는편=출발지→도착지, 오는편=도착지→출발지</p>
+              <p class="manual-hint" data-i18n="manual-flight-hint">출발/도착 공항·날짜는 여행 조건에서 자동 설정됩니다. 가는편=출발지→도착지, 오는편=도착지→출발지</p>
               <div class="fields two manual-fields">
-                <label class="form-item"><span>항공사</span><input id="manualFlightAirline" placeholder="예: 대한항공" /></label>
-                <label class="form-item"><span>편명</span><input id="manualFlightNumber" placeholder="예: KE713" /></label>
-                <label class="form-item"><span>가는편 출발</span><input id="manualFlightDepartTime" type="time" value="09:00" /></label>
-                <label class="form-item"><span>오는편 출발</span><input id="manualFlightArriveTime" type="time" value="12:00" /></label>
-                <label class="form-item"><span>가격(원)</span><input id="manualFlightPrice" type="number" min="0" step="1000" placeholder="350000" /></label>
-                <button id="btnManualFlight" type="button">항공편 추가</button>
+                <label class="form-item"><span data-i18n="airline">항공사</span><input id="manualFlightAirline" placeholder="예: 대한항공" data-i18n-placeholder="ph-airline" /></label>
+                <label class="form-item"><span data-i18n="label-flight-no">편명</span><input id="manualFlightNumber" placeholder="예: KE713" data-i18n-placeholder="ph-flight-no" /></label>
+                <label class="form-item"><span data-i18n="label-outbound-dep">가는편 출발</span><input id="manualFlightDepartTime" type="time" value="09:00" /></label>
+                <label class="form-item"><span data-i18n="label-return-dep">오는편 출발</span><input id="manualFlightArriveTime" type="time" value="12:00" /></label>
+                <label class="form-item"><span data-i18n="label-price-krw">가격(원)</span><input id="manualFlightPrice" type="number" min="0" step="1000" placeholder="350000" /></label>
+                <button id="btnManualFlight" type="button" data-i18n="btn-add-flight">항공편 추가</button>
               </div>
             </details>
             <details class="manual-details">
               <summary data-i18n="manual-stay">직접 숙소 입력</summary>
               <div class="fields two manual-fields">
-                <label class="form-item"><span>숙소명</span><input id="manualStayName" placeholder="예: 도쿄 시나가와 호텔" /></label>
-                <label class="form-item"><span>지역</span><input id="manualStayArea" placeholder="예: 시나가와" /></label>
-                <label class="form-item"><span>1박 가격(원)</span><input id="manualStayPrice" type="number" min="0" step="1000" placeholder="120000" /></label>
-                <label class="form-item"><span>평점 (0~10)</span><input id="manualStayRating" type="number" min="0" max="10" step="0.1" placeholder="8.5" /></label>
-                <label class="form-item"><span>숙소 타입</span><select id="manualStayType">
-                    <option value="hotel" selected>호텔</option>
-                    <option value="ryokan">료칸</option>
-                    <option value="apartment">레지던스</option>
-                    <option value="guesthouse">게스트하우스</option>
+                <label class="form-item"><span data-i18n="label-stay-name">숙소명</span><input id="manualStayName" placeholder="예: 도쿄 시나가와 호텔" data-i18n-placeholder="ph-stay-name" /></label>
+                <label class="form-item"><span data-i18n="label-area">지역</span><input id="manualStayArea" placeholder="예: 시나가와" data-i18n-placeholder="ph-stay-area" /></label>
+                <label class="form-item"><span data-i18n="label-price-night">1박 가격(원)</span><input id="manualStayPrice" type="number" min="0" step="1000" placeholder="120000" /></label>
+                <label class="form-item"><span data-i18n="label-rating10">평점 (0~10)</span><input id="manualStayRating" type="number" min="0" max="10" step="0.1" placeholder="8.5" /></label>
+                <label class="form-item"><span data-i18n="label-stay-type">숙소 타입</span><select id="manualStayType">
+                    <option value="hotel" selected data-i18n="type-hotel">호텔</option>
+                    <option value="ryokan" data-i18n="type-ryokan">료칸</option>
+                    <option value="apartment" data-i18n="type-apartment">레지던스</option>
+                    <option value="guesthouse" data-i18n="type-guesthouse">게스트하우스</option>
                   </select></label>
-                <label class="form-item"><span>예약 링크</span><input id="manualStayUrl" placeholder="https://..." /></label>
-                <button id="btnManualStay" type="button">숙소 추가</button>
+                <label class="form-item"><span data-i18n="label-booking-link">예약 링크</span><input id="manualStayUrl" placeholder="https://..." /></label>
+                <button id="btnManualStay" type="button" data-i18n="btn-add-stay">숙소 추가</button>
               </div>
             </details>
           </div>
           <div id="planResult" class="itinerary-timeline"></div>
-          <div id="itinMapWrap" class="itin-map-wrap">
+          <div id="itinMapWrap" class="itin-map-wrap hidden">
             <h4 class="itin-map-title" data-i18n="itinerary-map">일정 지도</h4>
-            <div id="itinMap" class="itin-map"></div>
+            <div id="itinMapNote" class="source-note hidden" role="status"></div>
+            <div id="itinMap" class="itin-map hidden"></div>
           </div>
                     <div id="weatherWidget" class="weather-widget hidden">
             <h4 data-i18n="weather-title">여행지 날씨</h4>
@@ -168,12 +173,12 @@
             <label class="form-item"><span data-i18n="label-theme2">테마</span>
               <select id="destSearchTheme">
                 <option value="mixed" selected data-i18n="theme-all">전체</option>
-                <option value="culture">문화</option>
-                <option value="nature">자연</option>
-                <option value="shopping">쇼핑</option>
+                <option value="culture" data-i18n="theme-culture">문화</option>
+                <option value="nature" data-i18n="theme-nature">자연</option>
+                <option value="shopping" data-i18n="theme-shopping">쇼핑</option>
               </select>
             </label>
-            <button id="btnDestSearch" aria-label="여행지 검색">검색</button>
+            <button id="btnDestSearch" aria-label="여행지 검색" data-i18n-aria="aria-dest-search" data-i18n="btn-search">검색</button>
           </div>
           <div id="destSearchSourceNote" class="source-note"></div>
           <div id="destSearchCards" class="cards"></div>
@@ -183,9 +188,9 @@
             <label class="form-item"><span data-i18n="label-city3">도시</span>
               <select id="foodCity"></select>
             </label>
-            <label class="form-item"><span data-i18n="label-genre">장르</span><input id="foodGenre" placeholder="장르 (예: 라멘)" /></label>
+            <label class="form-item"><span data-i18n="label-genre">장르</span><input id="foodGenre" placeholder="장르 (예: 라멘)" data-i18n-placeholder="ph-food-genre" /></label>
 
-            <button id="btnFood" aria-label="맛집 검색">검색</button>
+            <button id="btnFood" aria-label="맛집 검색" data-i18n-aria="aria-food-search">검색</button>
           </div>
           <div id="foodSourceNote" class="source-note"></div>
           <div id="foodCards" class="cards"></div>
@@ -194,19 +199,18 @@
 
       <section class="panel" aria-labelledby="section-flights">
         <h2 id="section-flights">항공권 탐색</h2>
-        <p class="note">실시간 데이터가 아닌 참고용 데이터 입니다.</p>
-        <div class="tabs" id="tripTabs" role="tablist" aria-label="항공권 유형 선택">
+        <div class="tabs" id="tripTabs" role="tablist" aria-label="항공권 유형 선택" data-i18n-aria="aria-trip-tabs">
           <button type="button" class="tab active" data-trip="oneway" role="tab" aria-selected="true" data-i18n="trip-oneway">편도</button>
           <button type="button" class="tab" data-trip="roundtrip" role="tab" aria-selected="false" data-i18n="trip-roundtrip">왕복</button>
           <button type="button" class="tab" data-trip="multicity" role="tab" aria-selected="false" data-i18n="trip-multicity">다구간</button>
         </div>
         <div class="fields three">
           <label class="form-item basic-route"><span data-i18n="label-from-airport">출발 공항</span><div class="airport-wrap">
-            <input id="from" class="airport-input" value="ICN" placeholder="출발 공항" autocomplete="off" />
+            <input id="from" class="airport-input" value="ICN" placeholder="출발 공항" data-i18n-placeholder="ph-from" autocomplete="off" />
             <div class="airport-suggest"></div>
           </div></label>
           <label class="form-item basic-route"><span data-i18n="label-to-airport">도착 공항</span><div class="airport-wrap">
-            <input id="to" class="airport-input" placeholder="도착 공항 (비우면 도시 기준)" autocomplete="off" />
+            <input id="to" class="airport-input" placeholder="도착 공항 (비우면 도시 기준)" data-i18n-placeholder="ph-to" autocomplete="off" />
             <div class="airport-suggest"></div>
           </div></label>
           <label class="form-item basic-route"><span data-i18n="label-depart-date">출발일</span><input id="departDate" type="date" /></label>
@@ -216,39 +220,39 @@
               <option value="cheap" data-i18n="pref-cheap">최저가 우선</option>
               <option value="fast" data-i18n="pref-fast">최단시간 우선</option>
             </select></label>
-          <button id="btnFlights" aria-label="항공권 검색">항공권 검색</button>
+          <button id="btnFlights" aria-label="항공권 검색" data-i18n-aria="btn-flights">항공권 검색</button>
         </div>
         <div id="multiWrap" class="multi-wrap hidden">
-          <p class="multi-help">다구간은 아래 구간을 직접 편집해서 검색합니다. 최소 2개 구간이 필요합니다.</p>
+          <p class="multi-help" data-i18n="multi-help">다구간은 아래 구간을 직접 편집해서 검색합니다. 최소 2개 구간이 필요합니다.</p>
           <div class="segment-head">
-            <span>출발</span>
-            <span>도착</span>
-            <span>날짜</span>
-            <span>삭제</span>
+            <span data-i18n="departure">출발</span>
+            <span data-i18n="arrival">도착</span>
+            <span data-i18n="label-date">날짜</span>
+            <span data-i18n="remove-segment">삭제</span>
           </div>
           <div id="segmentRows" class="segment-rows"></div>
           <div class="segment-actions">
-            <button id="addSegment" type="button">구간 추가</button>
-            <button id="resetSegments" type="button">초기화</button>
+            <button id="addSegment" type="button" data-i18n="btn-add-segment">구간 추가</button>
+            <button id="resetSegments" type="button" data-i18n="btn-reset-segments">초기화</button>
           </div>
         </div>
         <details class="filter-tab">
-          <summary>필터 탭</summary>
+          <summary data-i18n="filter-tab">필터 탭</summary>
           <div class="fields three filter-grid">
-            <label class="form-item"><span>최소 가격(원)</span><input id="priceMin" type="number" min="0" step="10000" value="0" placeholder="최소 가격" /></label>
-            <label class="form-item"><span>최대 가격(원)</span><input id="priceMax" type="number" min="0" step="10000" value="900000" placeholder="최대 가격" /></label>
-            <label class="form-item"><span>출발 최소 시</span><input id="hourMin" type="number" min="0" max="23" value="0" placeholder="출발 최소 시" /></label>
-            <label class="form-item"><span>출발 최대 시</span><input id="hourMax" type="number" min="0" max="23" value="23" placeholder="출발 최대 시" /></label>
-            <label class="form-item"><span>공항 필터(콤마)</span><input id="airportFilter" placeholder="공항 코드 콤마 (예: ICN,NRT)" /></label>
-            <label class="form-item"><span>항공사 필터(콤마)</span><input id="airlineFilter" placeholder="항공사 콤마 (예: Korean Air,ANA)" /></label>
+            <label class="form-item"><span data-i18n="label-price-min">최소 가격(원)</span><input id="priceMin" type="number" min="0" step="10000" value="0" placeholder="최소 가격" data-i18n-placeholder="ph-price-min" /></label>
+            <label class="form-item"><span data-i18n="label-price-max">최대 가격(원)</span><input id="priceMax" type="number" min="0" step="10000" value="900000" placeholder="최대 가격" data-i18n-placeholder="ph-price-max" /></label>
+            <label class="form-item"><span data-i18n="label-hour-min">출발 최소 시</span><input id="hourMin" type="number" min="0" max="23" value="0" placeholder="출발 최소 시" data-i18n-placeholder="label-hour-min" /></label>
+            <label class="form-item"><span data-i18n="label-hour-max">출발 최대 시</span><input id="hourMax" type="number" min="0" max="23" value="23" placeholder="출발 최대 시" data-i18n-placeholder="label-hour-max" /></label>
+            <label class="form-item"><span data-i18n="label-airport-filter">공항 필터(콤마)</span><input id="airportFilter" placeholder="공항 코드 콤마 (예: ICN,NRT)" data-i18n-placeholder="ph-airport-filter" /></label>
+            <label class="form-item"><span data-i18n="label-airline-filter">항공사 필터(콤마)</span><input id="airlineFilter" placeholder="항공사 콤마 (예: Korean Air,ANA)" data-i18n-placeholder="ph-airline-filter" /></label>
           </div>
           <div class="checks">
             <div>
-              <strong>공항 체크</strong>
+              <strong data-i18n="check-airports">공항 체크</strong>
               <div id="airportChecks" class="check-list"></div>
             </div>
             <div>
-              <strong>항공사 체크</strong>
+              <strong data-i18n="check-airlines">항공사 체크</strong>
               <div id="airlineChecks" class="check-list"></div>
             </div>
           </div>
@@ -261,15 +265,14 @@
         <div id="flightSourceNote" class="source-note"></div>
         <div id="flightCards" class="cards"></div>
         <div class="more-wrap">
-          <button id="btnFlightMore" type="button" class="more-btn hidden"data-i18n="btn-more">더보기</button>
+          <button id="btnFlightMore" type="button" class="more-btn hidden" data-i18n="btn-more">더보기</button>
         </div>
       </section>
 
       <section class="panel" aria-labelledby="section-stays">
         <h2 id="section-stays">숙소 탐색</h2>
-        <p class="note">실시간 데이터가 아닌 참고용 데이터 입니다.</p>
         <div class="fields three">
-          <label class="form-item"><span>도시</span>
+          <label class="form-item"><span data-i18n="label-city2">도시</span>
             <select id="stayCity"></select>
           </label>
           <label class="form-item"><span data-i18n="label-checkin">체크인</span><input id="checkIn" type="date" /></label>
@@ -278,18 +281,18 @@
           <label class="form-item"><span data-i18n="label-rooms">객실 수</span><input id="stayRooms" type="number" min="1" max="5" value="1" /></label>
           <label class="form-item"><span data-i18n="label-sort">정렬</span><select id="stayPreference">
               <option value="balanced" selected data-i18n="sort-recommended2">추천순</option>
-              <option value="price">최저가순</option>
-              <option value="rating">평점순</option>
+              <option value="price" data-i18n="sort-price">최저가순</option>
+              <option value="rating" data-i18n="sort-rating">평점순</option>
             </select></label>
-          <button id="btnStays" aria-label="숙소 검색">숙소 검색</button>
+          <button id="btnStays" aria-label="숙소 검색" data-i18n-aria="btn-stays">숙소 검색</button>
         </div>
         <details class="filter-tab">
-          <summary>필터 탭</summary>
+          <summary data-i18n="filter-tab">필터 탭</summary>
           <div class="fields three filter-grid">
-            <label class="form-item"><span>최소 가격(원)</span><input id="stayPriceMin" type="number" min="0" step="10000" value="60000" /></label>
-            <label class="form-item"><span>최대 가격(원)</span><input id="stayPriceMax" type="number" min="0" step="10000" value="450000" /></label>
-            <label class="form-item"><span>최소 평점</span><input id="stayRatingMin" type="number" min="0" max="5" step="0.1" value="3" /></label>
-            <label class="form-item"><span>숙소 타입</span><select id="stayType">
+            <label class="form-item"><span data-i18n="label-price-min">최소 가격(원)</span><input id="stayPriceMin" type="number" min="0" step="10000" value="60000" /></label>
+            <label class="form-item"><span data-i18n="label-price-max">최대 가격(원)</span><input id="stayPriceMax" type="number" min="0" step="10000" value="450000" /></label>
+            <label class="form-item"><span data-i18n="label-rating-min">최소 평점</span><input id="stayRatingMin" type="number" min="0" max="5" step="0.1" value="3" /></label>
+            <label class="form-item"><span data-i18n="label-stay-type">숙소 타입</span><select id="stayType">
                 <option value="" selected data-i18n="type-all">전체</option>
                 <option value="hotel" data-i18n="type-hotel">호텔</option>
                 <option value="ryokan" data-i18n="type-ryokan">료칸</option>
@@ -299,11 +302,11 @@
           </div>
           <div class="checks">
             <div>
-              <strong>예약사 체크</strong>
+              <strong data-i18n="check-providers">예약사 체크</strong>
               <div id="stayProviderChecks" class="check-list"></div>
             </div>
             <div>
-              <strong>부대시설</strong>
+              <strong data-i18n="check-amenities">부대시설</strong>
               <div id="stayAmenityChecks" class="check-list"></div>
             </div>
           </div>
@@ -320,7 +323,7 @@
 
     </main>
 
-    <!-- Google Maps JS: loaded dynamically by app.js via /api/maps-config -->
+    <!-- 지도(OpenStreetMap/Leaflet 기본, Google 선택)는 app.js가 /api/maps-config를 보고 필요할 때 불러온다 -->
     <script src="/app.js"></script>
   
     <div id="addToPlanModal" class="plan-modal-overlay hidden">
@@ -328,14 +331,14 @@
         <h4 data-i18n="modal-add-plan">일정에 추가</h4>
         <div class="plan-modal-place" id="modalPlaceName"></div>
         <div class="plan-modal-field" id="modalCustomWrap" style="display:none">
-          <span>장소 이름</span>
-          <input type="text" id="modalCustomName" placeholder="추가할 장소 이름 입력" />
+          <span data-i18n="modal-place-name">장소 이름</span>
+          <input type="text" id="modalCustomName" placeholder="추가할 장소 이름 입력" data-i18n-placeholder="ph-modal-place" />
         </div>
         <div class="plan-modal-field">
-          <span>유형</span>
+          <span data-i18n="modal-type">유형</span>
           <div class="plan-modal-type-btns">
-            <button type="button" class="type-btn active" data-type="dest">여행지</button>
-            <button type="button" class="type-btn" data-type="food">맛집</button>
+            <button type="button" class="type-btn active" data-type="dest" data-i18n="tab-dest">여행지</button>
+            <button type="button" class="type-btn" data-type="food" data-i18n="tab-food">맛집</button>
           </div>
         </div>
         <div class="plan-modal-field">
@@ -366,8 +369,8 @@
     <div id="checklistPanel" class="side-panel hidden">
       <div class="side-panel-inner">
         <div class="side-panel-header">
-          <h3data-i18n="panel-checklist">✅ 여행 준비 체크리스트</h3>
-          <button type="button" class="side-panel-close" data-close-panel="checklistPanel">✕</button>
+          <h3 data-i18n="panel-checklist">✅ 여행 준비 체크리스트</h3>
+          <button type="button" class="side-panel-close" data-close-panel="checklistPanel" aria-label="닫기" data-i18n-aria="btn-close">✕</button>
         </div>
         <div class="checklist-progress"><div class="checklist-bar"><div id="checklistProgressBar" class="checklist-bar-fill"></div></div><span id="checklistProgressText">0/0</span></div>
         <div id="checklistContent" class="checklist-content"></div>
@@ -377,8 +380,8 @@
     <div id="emergencyPanel" class="side-panel hidden">
       <div class="side-panel-inner">
         <div class="side-panel-header">
-          <h3>🆘 일본 긴급 정보</h3>
-          <button type="button" class="side-panel-close" data-close-panel="emergencyPanel">✕</button>
+          <h3 data-i18n="panel-emergency">🆘 일본 긴급 정보</h3>
+          <button type="button" class="side-panel-close" data-close-panel="emergencyPanel" aria-label="닫기" data-i18n-aria="btn-close">✕</button>
         </div>
         <div id="emergencyContent" class="emergency-content"></div>
       </div>
@@ -387,10 +390,10 @@
     <div id="phrasesPanel" class="side-panel hidden">
       <div class="side-panel-inner">
         <div class="side-panel-header">
-          <h3>🗣 일본어 여행 회화</h3>
-          <button type="button" class="side-panel-close" data-close-panel="phrasesPanel">✕</button>
+          <h3 data-i18n="panel-phrases">🗣 일본어 여행 회화</h3>
+          <button type="button" class="side-panel-close" data-close-panel="phrasesPanel" aria-label="닫기" data-i18n-aria="btn-close">✕</button>
         </div>
-        <div class="phrases-search"><input type="text" id="phrasesSearch" placeholder="상황 검색 (예: 주문, 길, 약국)" /></div>
+        <div class="phrases-search"><input type="text" id="phrasesSearch" placeholder="상황 검색 (예: 주문, 길, 약국)" data-i18n-placeholder="ph-phrases-search" /></div>
         <div id="phrasesContent" class="phrases-content"></div>
       </div>
     </div>
@@ -398,8 +401,8 @@
     <div id="weatherPanel" class="side-panel hidden">
       <div class="side-panel-inner">
         <div class="side-panel-header">
-          <h3>🌤 여행지 날씨 예보</h3>
-          <button type="button" class="side-panel-close" data-close-panel="weatherPanel">✕</button>
+          <h3 data-i18n="panel-weather">🌤 여행지 날씨 예보</h3>
+          <button type="button" class="side-panel-close" data-close-panel="weatherPanel" aria-label="닫기" data-i18n-aria="btn-close">✕</button>
         </div>
         <div id="weatherPanelContent" class="weather-panel-content"></div>
       </div>
@@ -408,14 +411,14 @@
     <div id="exportPanel" class="side-panel hidden">
       <div class="side-panel-inner">
         <div class="side-panel-header">
-          <h3>📋 일정 내보내기</h3>
-          <button type="button" class="side-panel-close" data-close-panel="exportPanel">✕</button>
+          <h3 data-i18n="panel-export">📋 일정 내보내기</h3>
+          <button type="button" class="side-panel-close" data-close-panel="exportPanel" aria-label="닫기" data-i18n-aria="btn-close">✕</button>
         </div>
         <div class="export-actions">
-          <button type="button" id="btnExportPdf" class="export-btn">📄 PDF 다운로드</button>
-          <button type="button" id="btnCopyText" class="export-btn">📄 텍스트 복사</button>
-          <button type="button" id="btnCopyMarkdown" class="export-btn">📝 마크다운 복사</button>
-          <button type="button" id="btnShareLink" class="export-btn">🔗 링크 복사</button>
+          <button type="button" id="btnExportPdf" class="export-btn" data-i18n="export-pdf">📄 PDF 다운로드</button>
+          <button type="button" id="btnCopyText" class="export-btn" data-i18n="export-text">📄 텍스트 복사</button>
+          <button type="button" id="btnCopyMarkdown" class="export-btn" data-i18n="export-markdown">📝 마크다운 복사</button>
+          <button type="button" id="btnShareLink" class="export-btn" data-i18n="export-link">🔗 링크 복사</button>
         </div>
         <div id="exportPreview" class="export-preview"></div>
       </div>
@@ -426,13 +429,13 @@
     <div id="loginModal" class="login-modal-overlay hidden">
       <div class="login-modal">
         <h4 data-i18n="login-title">로그인</h4>
-        <p class="login-modal-desc">로그인하면 일정을 저장하고 불러올 수 있습니다.</p>
+        <p class="login-modal-desc" data-i18n="login-desc">로그인하면 일정을 저장하고 불러올 수 있습니다.</p>
         <div class="login-buttons">
-          <a href="/api/auth/naver" class="login-btn naver-login" id="loginNaver"><span class="login-icon">N</span> 네이버 로그인</a>
-          <a href="/api/auth/kakao" class="login-btn kakao-login" id="loginKakao"><span class="login-icon"></span> 카카오 로그인</a>
-          <a href="/api/auth/google" class="login-btn google-login" id="loginGoogle"><span class="login-icon">G</span> Google 로그인</a>
+          <a href="/api/auth/naver" class="login-btn naver-login" id="loginNaver"><span class="login-icon" aria-hidden="true">N</span> <span data-i18n="login-naver">네이버 로그인</span></a>
+          <a href="/api/auth/kakao" class="login-btn kakao-login" id="loginKakao"><span class="login-icon" aria-hidden="true">K</span> <span data-i18n="login-kakao">카카오 로그인</span></a>
+          <a href="/api/auth/google" class="login-btn google-login" id="loginGoogle"><span class="login-icon" aria-hidden="true">G</span> <span data-i18n="login-google">Google 로그인</span></a>
         </div>
-        <button type="button" class="login-modal-close" id="loginModalClose"data-i18n="btn-close">닫기</button>
+        <button type="button" class="login-modal-close" id="loginModalClose" data-i18n="btn-close">닫기</button>
       </div>
     </div>
 
@@ -440,11 +443,11 @@
     <div id="myPlansPanel" class="side-panel hidden">
       <div class="side-panel-inner">
         <div class="side-panel-header">
-          <h3data-i18n="panel-myplans"> 내 저장 일정</h3>
-          <button type="button" class="side-panel-close" data-close-panel="myPlansPanel">✕</button>
+          <h3 data-i18n="panel-myplans">📂 내 저장 일정</h3>
+          <button type="button" class="side-panel-close" data-close-panel="myPlansPanel" aria-label="닫기" data-i18n-aria="btn-close">✕</button>
         </div>
         <div id="myPlansContent" class="my-plans-content">
-          <p class="my-plans-empty">저장된 일정이 없습니다.</p>
+          <p class="my-plans-empty" data-i18n="no-saved-plans">저장된 일정이 없습니다.</p>
         </div>
       </div>
     </div>
@@ -453,14 +456,14 @@
     <!-- 일정 저장 모달 -->
     <div id="saveModal" class="login-modal-overlay hidden">
       <div class="login-modal save-modal">
-        <h4 data-i18n="save-title"> 일정 저장</h4>
+        <h4 data-i18n="save-title">💾 일정 저장</h4>
         <div class="save-modal-body">
-          <label class="save-label">일정 이름</label>
-          <input type="text" id="saveNameInput" class="save-name-input" placeholder="일정 이름을 입력하세요" />
+          <label class="save-label" for="saveNameInput" data-i18n="save-name-label">일정 이름</label>
+          <input type="text" id="saveNameInput" class="save-name-input" placeholder="일정 이름을 입력하세요" data-i18n-placeholder="ph-save-name" />
           <div id="saveDupNotice" class="save-dup-notice hidden"></div>
         </div>
         <div class="save-modal-actions">
-          <button type="button" id="saveConfirmBtn" class="save-confirm-btn"data-i18n="btn-save">저장</button>
+          <button type="button" id="saveConfirmBtn" class="save-confirm-btn" data-i18n="btn-save">저장</button>
           <button type="button" id="saveCancelBtn" class="login-modal-close" data-i18n="btn-cancel2">취소</button>
         </div>
       </div>
@@ -469,8 +472,8 @@
     <div id="wishlistPanel" class="side-panel hidden">
       <div class="side-panel-inner">
         <div class="side-panel-header">
-          <h3data-i18n="panel-wishlist">❤️ 찜 / 위시리스트</h3>
-          <button type="button" class="side-panel-close" data-close-panel="wishlistPanel">✕</button>
+          <h3 data-i18n="panel-wishlist">❤️ 찜 / 위시리스트</h3>
+          <button type="button" class="side-panel-close" data-close-panel="wishlistPanel" aria-label="닫기" data-i18n-aria="btn-close">✕</button>
         </div>
         <div id="wishlistContent" class="wishlist-content"></div>
       </div>
@@ -479,14 +482,15 @@
     <div id="searchHistoryPanel" class="side-panel hidden">
       <div class="side-panel-inner">
         <div class="side-panel-header">
-          <h3>📋 검색 기록</h3>
-          <button type="button" class="side-panel-close" data-close-panel="searchHistoryPanel">✕</button>
+          <h3 data-i18n="panel-search-history">🕘 검색 기록</h3>
+          <button type="button" class="side-panel-close" data-close-panel="searchHistoryPanel" aria-label="닫기" data-i18n-aria="btn-close">✕</button>
         </div>
         <div id="searchHistoryContent" class="search-history-content"></div>
       </div>
     </div>
 
-    <div id="memoToast" class="memo-toast hidden"data-i18n="memo-saved">메모가 저장되었습니다.</div>
+    <!-- 문구는 showMemoToast가 매번 넣는다. data-i18n을 달면 언어를 바꿀 때 떠 있는 안내가 '메모 저장' 문구로 덮인다. -->
+    <div id="memoToast" class="memo-toast hidden" role="status" aria-live="polite"></div>
 
   </body>
 </html>

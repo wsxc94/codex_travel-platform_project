@@ -1,15 +1,18 @@
 {
-  "name": "JapanTravel AI Prototype",
-  "short_name": "JapanTravel",
+  "name": "Tabimaru — AI 일본 여행 플래너",
+  "short_name": "Tabimaru",
+  "description": "일본 여행지·항공권·숙소·맛집을 한곳에서 찾고 AI로 여행 일정을 만드는 일본 여행 플래너",
+  "lang": "ko",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f4f1ea",
   "theme_color": "#d43c2f",
   "icons": [
     {
-      "src": "/favicon.ico",
-      "sizes": "64x64",
-      "type": "image/x-icon"
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
     }
   ],
   "scope": "/"
