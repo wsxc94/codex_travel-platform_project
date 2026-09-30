@@ -1,8 +1,8 @@
-﻿const http = require('http');
+const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
-const { randomUUID } = require('crypto');
+const { randomUUID, randomBytes, createHash, timingSafeEqual } = require('crypto');
 
 function loadEnvFile() {
   const envPath = path.join(__dirname, '.env');
@@ -26,39 +26,123 @@ function loadEnvFile() {
 
 loadEnvFile();
 
+// 환경변수 값을 공백 제거 후 반환한다(값이 공백뿐이면 미설정으로 본다). 여러 이름을 주면 앞에서부터 첫 값.
+function envValue(...names) {
+  for (const name of names) {
+    const v = String(process.env[name] || '').trim();
+    if (v) return v;
+  }
+  return '';
+}
+
+function trimTrailingSlash(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+// ── 브랜드(표시 이름) — 이름을 바꿀 때는 이 줄들만 고친다 ──
+// 도메인에 묶인 값(Render 주소·OAuth 콜백 경로·Rakuten Referer·쿠키 이름 sid 등)은 브랜드와 따로 둔다.
+const APP_BRAND = 'Tabimaru';
+const APP_TAGLINE = { ko: 'AI 일본 여행 플래너', en: 'AI Japan Trip Planner', ja: 'AI日本旅行プランナー' };
+const APP_ID = 'tabimaru';
+const APP_REPO_URL = 'https://github.com/wsxc94/tabimaru-japan-travel-planner';
+// 외부 무료 API(open-meteo·환율 등)에 보내는 User-Agent
+const OUTBOUND_USER_AGENT = `TabimaruBot/0.1 (+${APP_REPO_URL})`;
+
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
-const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
-const AMADEUS_API_KEY = process.env.AMADEUS_API_KEY || '';
-const AMADEUS_API_SECRET = process.env.AMADEUS_API_SECRET || '';
-const AMADEUS_ENV = (process.env.AMADEUS_ENV || 'test').toLowerCase();
-const TRAVELPAYOUTS_TOKEN = process.env.TRAVELPAYOUTS_TOKEN || '';
-const RAKUTEN_APP_ID = process.env.RAKUTEN_APP_ID || '';
-const RAKUTEN_ACCESS_KEY = process.env.RAKUTEN_ACCESS_KEY || '';
-const FX_USD_KRW = Number(process.env.FX_USD_KRW || 1350);
-let fxUsdKrw = FX_USD_KRW;
-let fxJpyKrw = Number(process.env.FX_JPY_KRW || 9.5);
+
+// ── 장소·지도 공급자 모드 ──
+// PLACES_PROVIDER: 'free'(기본, Google 호출 0회: 내장 큐레이션 + 위키미디어 사진) | 'google'(Places API(New))
+// MAP_PROVIDER: 'osm'(기본, OpenStreetMap + Leaflet) | 'google'(Maps JavaScript API)
+const PLACES_PROVIDER = envValue('PLACES_PROVIDER').toLowerCase() === 'google' ? 'google' : 'free';
+const MAP_PROVIDER = envValue('MAP_PROVIDER').toLowerCase() === 'google' ? 'google' : 'osm';
+// 서버 전용 키(브라우저로 절대 보내지 않음). 예전 변수 GOOGLE_MAPS_API_KEY는 서버 키 대체로만 쓴다.
+const GOOGLE_MAPS_SERVER_KEY = envValue('GOOGLE_MAPS_SERVER_KEY', 'GOOGLE_MAPS_API_KEY');
+const GOOGLE_MAPS_SERVER_KEY_FROM_LEGACY = !envValue('GOOGLE_MAPS_SERVER_KEY') && Boolean(envValue('GOOGLE_MAPS_API_KEY'));
+// 브라우저용 키(Maps JavaScript API 전용, HTTP 리퍼러 제한). 대체값 없음 — 없으면 지도는 OSM으로 간다.
+const GOOGLE_MAPS_BROWSER_KEY = envValue('GOOGLE_MAPS_BROWSER_KEY');
+const GOOGLE_PLACES_ENABLED = PLACES_PROVIDER === 'google';
+// Google 호출 상한(프로세스 메모리 기준 — 재시작하면 0부터 다시 센다. 확실한 상한은 Google Cloud 콘솔의 할당량으로 건다).
+// 기본값은 월 무료 사용량이 가장 작은 SKU(월 1,000회 수준) 안에 들도록 잡았다. 검색·지오코딩·경로와 사진은 따로 센다.
+function nonNegativeInt(raw, fallback) {
+  const n = Number(raw);
+  return raw !== '' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+}
+const GOOGLE_DAILY_CALL_LIMIT = nonNegativeInt(envValue('GOOGLE_DAILY_CALL_LIMIT'), 30);
+const GOOGLE_MONTHLY_CALL_LIMIT = nonNegativeInt(envValue('GOOGLE_MONTHLY_CALL_LIMIT'), 900);
+const GOOGLE_PHOTO_DAILY_LIMIT = nonNegativeInt(envValue('GOOGLE_PHOTO_DAILY_LIMIT'), 30);
+const GOOGLE_PHOTO_MONTHLY_LIMIT = nonNegativeInt(envValue('GOOGLE_PHOTO_MONTHLY_LIMIT'), 900);
+const DIAGNOSTICS_TOKEN = envValue('DIAGNOSTICS_TOKEN');
+
+// ── 외부 API 주소(테스트에서 가짜 서버로 바꿀 수 있음) ──
+const PLACES_API_BASE = trimTrailingSlash(envValue('PLACES_API_BASE') || 'https://places.googleapis.com');
+const GEOCODE_API_BASE = trimTrailingSlash(envValue('GEOCODE_API_BASE') || 'https://maps.googleapis.com');
+const GEMINI_API_BASE = trimTrailingSlash(envValue('GEMINI_API_BASE') || 'https://generativelanguage.googleapis.com');
+const TRAVELPAYOUTS_API_BASE = trimTrailingSlash(envValue('TRAVELPAYOUTS_API_BASE') || 'https://api.travelpayouts.com');
+const PLACE_IMAGES_FILE = envValue('PLACE_IMAGES_FILE')
+  ? path.resolve(__dirname, envValue('PLACE_IMAGES_FILE'))
+  : path.join(__dirname, 'assets', 'place-images.json');
+
+const RAKUTEN_API_BASE = trimTrailingSlash(envValue('RAKUTEN_API_BASE') || 'https://openapi.rakuten.co.jp/engine/api/Travel');
+
+const SUPABASE_URL = trimTrailingSlash(envValue('SUPABASE_URL'));
+const SUPABASE_SERVICE_ROLE_KEY = envValue('SUPABASE_SERVICE_ROLE_KEY');
+// Amadeus Self-Service(test.api.amadeus.com)는 주소가 사라져 항공·숙소 대체 경로에서 뺐다(AMADEUS_* 변수는 더 이상 쓰지 않음).
+const TRAVELPAYOUTS_TOKEN = envValue('TRAVELPAYOUTS_TOKEN');
+const RAKUTEN_APP_ID = envValue('RAKUTEN_APP_ID');
+const RAKUTEN_ACCESS_KEY = envValue('RAKUTEN_ACCESS_KEY');
+// ── 환율: 실시간 조회(open.er-api → frankfurter) 성공 값을 쓴다. 실패하면 FX_* 환경변수, 그것도 없으면 대략값. ──
+const FX_APPROX_USD_KRW = 1355; // 대략값(2026-09-30 실시간 값 근처). 실시간·환경변수가 모두 없을 때만 쓴다.
+const FX_APPROX_JPY_KRW = 8.6;
+function positiveEnvNumber(name) {
+  const n = Number(envValue(name));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+const FX_ENV_USD_KRW = positiveEnvNumber('FX_USD_KRW');
+const FX_ENV_JPY_KRW = positiveEnvNumber('FX_JPY_KRW');
+let fxUsdKrw = FX_ENV_USD_KRW || FX_APPROX_USD_KRW;
+let fxJpyKrw = FX_ENV_JPY_KRW || FX_APPROX_JPY_KRW;
 let fxLastUpdate = '';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY || '';
+// 'live'(실시간 조회) | 'env'(FX_USD_KRW·FX_JPY_KRW 둘 다 설정) | 'approximate'(하나라도 대략값)
+let fxSource = (FX_ENV_USD_KRW && FX_ENV_JPY_KRW) ? 'env' : 'approximate';
+let fxProvider = null;
+let fxLiveAt = 0;
+const OPENAI_API_KEY = envValue('OPENAI_API_KEY', 'OPENAI_KEY');
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
-const GEMINI_API_MODEL = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+const GEMINI_API_KEY = envValue('GEMINI_API_KEY', 'GOOGLE_API_KEY');
+const GEMINI_API_MODEL = envValue('GEMINI_API_MODEL') || 'gemini-2.5-flash';
 // Fallback priority: 쿼터+속도 우선 (빠른 응답 > 품질)
-// 1. gemini-2.5-flash     (primary, 빠름+쿼터 넉넉)
-// 2. gemini-2.0-flash     (빠름, 쿼터 넉넉)
-// 3. gemini-2.5-flash-lite (경량, 쿼터 많음)
-// 4. gemini-2.0-flash-lite (초경량, 쿼터 많음)
-// 5. gemini-2.5-pro       (최고 품질, 쿼터 적음 ~20회 → 마지막)
+// 1. GEMINI_API_MODEL (기본 gemini-2.5-flash)
+// 2. gemini-2.5-flash / gemini-2.5-flash-lite (주 모델과 겹치면 제외)
+// 3. gemini-flash-latest (최신 flash 별칭)
+// ※ gemini-2.0-flash·2.0-flash-lite는 종료되어 404, gemini-2.5-pro는 신규 사용자에게 404라 목록에서 뺐다(2026-10 확인).
 const GEMINI_FALLBACK_MODELS = [
-  'gemini-2.0-flash',
+  'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
-  'gemini-2.0-flash-lite',
-  'gemini-2.5-pro'
+  'gemini-flash-latest'
 ].filter(m => m !== GEMINI_API_MODEL);
-const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
+const GEMINI_ENDPOINT = `${GEMINI_API_BASE}/v1beta/models`;
 const USE_GEMINI = Boolean(GEMINI_API_KEY);
+
+// -- 같은 경고를 반복해서 찍지 않는 로그 헬퍼 (기본: 같은 key는 10분에 한 번) --
+const _warnLastAt = new Map();
+function warnThrottled(key, message, windowMs = 10 * 60_000) {
+  const now = Date.now();
+  const last = _warnLastAt.get(key);
+  if (last !== undefined && (now - last) < windowMs) return;
+  _warnLastAt.set(key, now);
+  console.warn(message);
+}
+function warnOnce(key, message) {
+  warnThrottled(key, message, Number.POSITIVE_INFINITY);
+}
+
+if (GOOGLE_PLACES_ENABLED && GOOGLE_MAPS_SERVER_KEY_FROM_LEGACY) {
+  warnOnce('google-legacy-key', '[google] PLACES_PROVIDER=google 인데 GOOGLE_MAPS_SERVER_KEY가 없어 GOOGLE_MAPS_API_KEY를 서버 키로 사용합니다. 서버 전용 키(GOOGLE_MAPS_SERVER_KEY)로 분리하세요.');
+}
+if (GOOGLE_PLACES_ENABLED && !GOOGLE_MAPS_SERVER_KEY) {
+  warnOnce('google-key-missing', '[google] PLACES_PROVIDER=google 이지만 서버 키가 없습니다. 무료 모드 데이터(내장 큐레이션)로 응답합니다.');
+}
 
 // -- AI Model Circuit Breaker --
 // 429/503 에러 발생 모델을 일정 시간 스킵하여 불필요한 API 호출 방지
@@ -107,12 +191,17 @@ function getAvailableModels(models) {
 }
 
 // -- Request Validation & Rate Limiting --
-const MAX_REQUEST_BODY_BYTES = 512_000; // 500KB max
+const MAX_REQUEST_BODY_BYTES = 512_000; // 500KB max (일정 저장처럼 큰 본문을 받는 라우트만)
+// 라우트별 본문 크기 한도
+const BODY_LIMIT_SMALL = 32 * 1024;    // 항공·숙소·장소 검색·이동비
+const BODY_LIMIT_DEFAULT = 64 * 1024;  // 그 밖의 일반 요청
+const BODY_LIMIT_PLAN = 128 * 1024;    // 일정 생성·AI 채팅(선택 장소·대화 기록 포함)
+const BODY_LIMIT_LARGE = MAX_REQUEST_BODY_BYTES; // 일정 저장
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 60;
 const _rateLimitMap = new Map();
 
-function checkRateLimit(ip) {
+function checkRateLimit(ip, maxRequests = RATE_LIMIT_MAX_REQUESTS) {
   const now = Date.now();
   let entry = _rateLimitMap.get(ip);
   if (!entry || now - entry.windowStart > RATE_LIMIT_WINDOW_MS) {
@@ -120,28 +209,190 @@ function checkRateLimit(ip) {
     _rateLimitMap.set(ip, entry);
   }
   entry.count++;
-  if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
+  if (entry.count > maxRequests) {
     return false;
   }
   return true;
 }
 
-// OAuth state map for CSRF protection
+// OAuth state map for CSRF protection: state → { createdAt, provider } (10분 유효, 요청한 브라우저의 쿠키와도 대조)
 const _oauthStates = new Map();
-setInterval(() => { const cutoff = Date.now() - 600000; for (const [k, v] of _oauthStates) { if (v < cutoff) _oauthStates.delete(k); } }, 60000);
+setInterval(() => { const cutoff = Date.now() - 600000; for (const [k, v] of _oauthStates) { if ((v?.createdAt || 0) < cutoff) _oauthStates.delete(k); } }, 60000);
+
+// ── 프록시 뒤의 클라이언트 IP·HTTPS 판단 ──
+// X-Forwarded-For·X-Forwarded-Proto는 Render(환경변수 RENDER가 있음) 또는 TRUST_PROXY=1일 때만 믿는다.
+// 클라이언트가 직접 보낸 값은 앞쪽에 남으므로, 우리 앞 프록시가 붙인 마지막 값을 클라이언트 IP로 쓴다.
+// (프록시가 여러 단이라 마지막 값이 프록시 주소라면 TRUST_PROXY_HOPS=N 으로 뒤에서 N번째 값을 쓴다. 기본 1)
+// 그 값이 Cloudflare 주소면(Render 앞단이 Cloudflare인 경우) 여러 방문자가 한 주소를 함께 쓰게 되므로,
+// 한 칸 앞 값(Cloudflare가 붙인 방문자 주소)을 쓴다. 위조 값을 고르지 못하게 딱 한 칸만 건너뛴다.
+const TRUST_PROXY = Boolean(envValue('RENDER')) || ['1', 'true'].includes(envValue('TRUST_PROXY').toLowerCase());
+const TRUST_PROXY_HOPS = (() => {
+  const n = Number(envValue('TRUST_PROXY_HOPS') || 1);
+  return Number.isInteger(n) && n >= 1 && n <= 5 ? n : 1;
+})();
+
+// Cloudflare 공개 IP 대역 (https://www.cloudflare.com/ips/ 기준)
+const CLOUDFLARE_CIDRS = [
+  '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22', '141.101.64.0/18', '108.162.192.0/18',
+  '190.93.240.0/20', '188.114.96.0/20', '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+  '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+  '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32', '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32'
+];
+
+function ipv4ToInt(ip) {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(ip || ''));
+  if (!m) return null;
+  const p = m.slice(1).map(Number);
+  if (p.some((n) => n > 255)) return null;
+  return (((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3]) >>> 0;
+}
+
+function ipv6ToHextets(ip) {
+  let s = String(ip || '').toLowerCase().split('%')[0];
+  if (!s.includes(':')) return null;
+  const tailV4 = /(\d{1,3}(?:\.\d{1,3}){3})$/.exec(s);
+  if (tailV4) {
+    const n = ipv4ToInt(tailV4[1]);
+    if (n === null) return null;
+    s = s.slice(0, -tailV4[1].length) + (n >>> 16).toString(16) + ':' + (n & 0xffff).toString(16);
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  if (fill < 0) return null;
+  const all = [...head, ...Array(fill).fill('0'), ...tail];
+  if (all.length !== 8 || all.some((h) => !/^[0-9a-f]{1,4}$/.test(h))) return null;
+  return all.map((h) => parseInt(h, 16));
+}
+
+const CLOUDFLARE_RANGES = CLOUDFLARE_CIDRS.map((cidr) => {
+  const [addr, bitsRaw] = cidr.split('/');
+  const bits = Number(bitsRaw);
+  const v4 = ipv4ToInt(addr);
+  if (v4 !== null) return { v: 4, base: v4, bits };
+  const v6 = ipv6ToHextets(addr);
+  return v6 ? { v: 6, base: v6, bits } : null;
+}).filter(Boolean);
+
+// "1.2.3.4:5678", "[2001:db8::1]:443", "::ffff:1.2.3.4" 표기를 주소만 남긴다.
+function bareIp(value) {
+  let s = String(value || '').trim();
+  const bracket = /^\[([^\]]+)\](?::\d+)?$/.exec(s);
+  if (bracket) s = bracket[1];
+  const v4port = /^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/.exec(s);
+  if (v4port) s = v4port[1];
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(s);
+  return mapped ? mapped[1] : s;
+}
+
+function isCloudflareIp(value) {
+  const ip = bareIp(value);
+  const v4 = ipv4ToInt(ip);
+  if (v4 !== null) {
+    return CLOUDFLARE_RANGES.some((r) => r.v === 4 && ((v4 ^ r.base) >>> (32 - r.bits)) === 0);
+  }
+  const v6 = ipv6ToHextets(ip);
+  if (!v6) return false;
+  return CLOUDFLARE_RANGES.some((r) => {
+    if (r.v !== 6) return false;
+    let left = r.bits;
+    for (let i = 0; i < 8 && left > 0; i += 1) {
+      const take = Math.min(16, left);
+      const mask = (0xffff << (16 - take)) & 0xffff;
+      if ((v6[i] & mask) !== (r.base[i] & mask)) return false;
+      left -= take;
+    }
+    return true;
+  });
+}
+
+// 프록시 구성 확인용 로그: 첫 요청 1줄 + 처음 50개 요청의 항목 수 분포 요약 1줄 (IP 자체는 남기지 않음)
+const PROXY_SAMPLE_TARGET = 50;
+const _proxySample = { n: 0, counts: {}, cfLastHop: 0, cfHeader: 0, trueClientHeader: 0, done: false };
+function noteProxyShape(req, entryCount, lastHopIsCloudflare) {
+  if (_proxySample.done) return;
+  _proxySample.n += 1;
+  _proxySample.counts[entryCount] = (_proxySample.counts[entryCount] || 0) + 1;
+  if (lastHopIsCloudflare) _proxySample.cfLastHop += 1;
+  if (req.headers['cf-connecting-ip']) _proxySample.cfHeader += 1;
+  if (req.headers['true-client-ip']) _proxySample.trueClientHeader += 1;
+  if (_proxySample.n === 1) {
+    console.log(`[proxy] 첫 요청: X-Forwarded-For 항목 ${entryCount}개${lastHopIsCloudflare ? '(마지막 값이 Cloudflare 주소라 한 칸 앞 값을 씀)' : ''}, TRUST_PROXY_HOPS=${TRUST_PROXY_HOPS}. 요청 ${PROXY_SAMPLE_TARGET}개를 모아 분포를 한 번 더 남깁니다.`);
+  }
+  if (_proxySample.n >= PROXY_SAMPLE_TARGET) {
+    _proxySample.done = true;
+    const dist = Object.entries(_proxySample.counts).map(([k, v]) => `${k}개:${v}건`).join(', ');
+    console.log(`[proxy] 처음 ${_proxySample.n}개 요청의 X-Forwarded-For 항목 수 분포 {${dist}}, 마지막 값이 Cloudflare 주소 ${_proxySample.cfLastHop}건, `
+      + `CF-Connecting-IP 헤더 ${_proxySample.cfHeader}건, True-Client-IP 헤더 ${_proxySample.trueClientHeader}건 (TRUST_PROXY_HOPS=${TRUST_PROXY_HOPS}). `
+      + '대부분의 요청에서 항목 수가 같고 그 마지막 값이 우리 앞 프록시 주소일 때만 TRUST_PROXY_HOPS를 바꾸세요(잘못 올리면 방문자가 보낸 값이 기준 IP가 됩니다).');
+  }
+}
+
+function clientIpOf(req) {
+  const socketIp = req.socket?.remoteAddress || 'unknown';
+  if (!TRUST_PROXY) return socketIp;
+  const parts = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    noteProxyShape(req, 0, false);
+    return socketIp;
+  }
+  let idx = Math.max(0, parts.length - TRUST_PROXY_HOPS);
+  const hopIsCloudflare = isCloudflareIp(parts[idx]);
+  if (hopIsCloudflare && idx > 0) idx -= 1;
+  noteProxyShape(req, parts.length, hopIsCloudflare);
+  return bareIp(parts[idx]) || socketIp;
+}
+
+function isHttpsRequest(req) {
+  if (req.socket?.encrypted) return true;
+  if (!TRUST_PROXY) return false;
+  return String(req.headers['x-forwarded-proto'] || '').split(',').some((s) => s.trim().toLowerCase() === 'https');
+}
+
+// "scheme://host[:port]" 형태로 정규화. http/https가 아니거나 해석할 수 없으면 ''.
+function originOf(value) {
+  try {
+    const u = new URL(String(value || ''));
+    return (u.protocol === 'http:' || u.protocol === 'https:') ? u.origin : '';
+  } catch {
+    return '';
+  }
+}
+
+// 상태를 바꾸는 요청을 허용할 출처(정확히 일치해야 함):
+// 설정한 공개 주소(PUBLIC_BASE_URL·OAUTH_BASE_URL), 요청이 들어온 자기 주소(Host), http://localhost:<PORT>
+function allowedOriginsFor(req) {
+  const set = new Set([
+    originOf(envValue('PUBLIC_BASE_URL')),
+    originOf(envValue('OAUTH_BASE_URL')),
+    `http://localhost:${PORT}`
+  ]);
+  const host = String(req.headers.host || '').trim();
+  if (host && /^[A-Za-z0-9.\-[\]:]+$/.test(host)) {
+    set.add(originOf(`http://${host}`));
+    set.add(originOf(`https://${host}`));
+  }
+  set.delete('');
+  return set;
+}
 
 // CSRF: verify Origin/Referer for state-changing requests
 function checkCsrf(req) {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return true;
-  const origin = req.headers['origin'] || '';
-  const referer = req.headers['referer'] || '';
-  const host = req.headers['host'] || '';
-  // Allow same-origin requests
-  if (origin && (origin.includes(host) || origin.includes('localhost') || origin.includes('127.0.0.1') || origin.includes('onrender.com'))) return true;
-  if (!origin && referer && (referer.includes(host) || referer.includes('localhost') || referer.includes('onrender.com'))) return true;
-  // Allow requests with no origin (same-origin browser requests)
-  if (!origin && !referer) return true;
-  return false;
+  const originHeader = req.headers['origin'];
+  const referer = req.headers['referer'];
+  let origin = '';
+  if (originHeader !== undefined) {
+    origin = originOf(originHeader); // 'null'(샌드박스·file://)은 ''가 되어 거부된다
+  } else if (referer) {
+    origin = originOf(referer);
+  } else {
+    // Origin·Referer가 모두 없는 요청(서버 간 호출·CLI)은 브라우저 CSRF가 아니므로 통과시킨다.
+    return true;
+  }
+  return Boolean(origin) && allowedOriginsFor(req).has(origin);
 }
 
 // Clean up rate limit map periodically
@@ -192,25 +443,49 @@ const API_SCHEMAS = {
     message: { type: 'string', required: true, maxLength: 2000 }
   },
   flights: {
-    tripType: { type: 'string', enum: ['oneway', 'roundtrip', 'multicity'] }
+    tripType: { type: 'string', enum: ['oneway', 'roundtrip', 'multicity'] },
+    city: { type: 'string', maxLength: 50 },
+    from: { type: 'string', maxLength: 40 },
+    to: { type: 'string', maxLength: 40 },
+    departDate: { type: 'string', maxLength: 30 },
+    returnDate: { type: 'string', maxLength: 30 },
+    preference: { type: 'string', maxLength: 20 }
   },
   stays: {
+    city: { type: 'string', maxLength: 50 },
+    checkIn: { type: 'string', maxLength: 30 },
+    checkOut: { type: 'string', maxLength: 30 },
     guests: { type: 'number', min: 1, max: 20 },
-    rooms: { type: 'number', min: 1, max: 10 }
+    rooms: { type: 'number', min: 1, max: 10 },
+    preference: { type: 'string', maxLength: 20 }
+  },
+  'travel-plan-save': {
+    planKey: { type: 'string', maxLength: 80 },
+    city: { type: 'string', maxLength: 50 },
+    theme: { type: 'string', enum: ['mixed', 'foodie', 'culture', 'shopping', 'nature'] },
+    budget: { type: 'string', enum: ['low', 'mid', 'high'] },
+    startDate: { type: 'string', maxLength: 10 },
+    days: { type: 'number', min: 1, max: 30 }
   }
 };
 
 const CHAT_PARSE_STRICT_AI = String(process.env.CHAT_PARSE_STRICT_AI || 'false').toLowerCase() === 'true';
 
-// ── OAuth 로그인 설정 ──
-const NAVER_CLIENT_ID = process.env.NAVER_CLIENT_ID || '';
-const NAVER_CLIENT_SECRET = process.env.NAVER_CLIENT_SECRET || '';
-const KAKAO_REST_API_KEY = process.env.KAKAO_REST_API_KEY || '';
-const KAKAO_CLIENT_SECRET = process.env.KAKAO_CLIENT_SECRET || '';
-const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
-const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
-const SESSION_SECRET = process.env.SESSION_SECRET || 'japantravel-default-secret-change-me';
-const OAUTH_BASE_URL = process.env.OAUTH_BASE_URL || `http://localhost:${PORT}`;
+// ── OAuth 로그인 설정 (값이 공백뿐이면 미설정으로 본다) ──
+const NAVER_CLIENT_ID = envValue('NAVER_CLIENT_ID');
+const NAVER_CLIENT_SECRET = envValue('NAVER_CLIENT_SECRET');
+const KAKAO_REST_API_KEY = envValue('KAKAO_REST_API_KEY');
+const KAKAO_CLIENT_SECRET = envValue('KAKAO_CLIENT_SECRET');
+const GOOGLE_OAUTH_CLIENT_ID = envValue('GOOGLE_OAUTH_CLIENT_ID');
+const GOOGLE_OAUTH_CLIENT_SECRET = envValue('GOOGLE_OAUTH_CLIENT_SECRET');
+// 세션 서명 비밀값. 설정이 없으면 추측할 수 없는 임의 값을 실행마다 새로 만든다(재시작하면 로그인이 풀림).
+const SESSION_SECRET = (() => {
+  const configured = envValue('SESSION_SECRET');
+  if (configured) return configured;
+  warnOnce('session-secret-missing', '[session] SESSION_SECRET이 없어 이번 실행에서만 쓰는 임의 비밀값을 만들었습니다. 재시작하면 로그인 세션이 풀리니 운영에서는 SESSION_SECRET을 설정하세요.');
+  return randomBytes(32).toString('hex');
+})();
+const OAUTH_BASE_URL = envValue('OAUTH_BASE_URL') || `http://localhost:${PORT}`;
 
 // ── 세션 저장소 (인메모리) ──
 const sessionStore = new Map();
@@ -220,11 +495,54 @@ function signSession(sid) {
   return createHmac('sha256', SESSION_SECRET).update(sid).digest('hex').slice(0, 16);
 }
 
-function createSession(userData) {
+// HTTPS로 들어온 요청(신뢰하는 프록시의 x-forwarded-proto 포함)에는 Secure를 붙인다.
+function sessionCookieAttributes(req) {
+  return `HttpOnly; Path=/; SameSite=Lax${req && isHttpsRequest(req) ? '; Secure' : ''}`;
+}
+
+// ── OAuth state: 서버 발급 기록 + 로그인을 시작한 브라우저의 짧은 쿠키에 함께 묶는다(로그인 CSRF 방지) ──
+const OAUTH_STATE_COOKIE = 'oauth_state';
+const OAUTH_STATE_TTL_MS = 600_000;
+
+function oauthStateCookieAttributes(req) {
+  return `HttpOnly; SameSite=Lax; Path=/api/auth${req && isHttpsRequest(req) ? '; Secure' : ''}`;
+}
+
+function issueOauthState(req, provider) {
+  const state = randomUUID();
+  _oauthStates.set(state, { createdAt: Date.now(), provider });
+  return { state, cookie: `${OAUTH_STATE_COOKIE}=${state}; ${oauthStateCookieAttributes(req)}; Max-Age=600` };
+}
+
+function clearOauthStateCookie(req) {
+  return `${OAUTH_STATE_COOKIE}=; ${oauthStateCookieAttributes(req)}; Max-Age=0`;
+}
+
+function cookieValue(req, name) {
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const idx = part.indexOf('=');
+    if (idx > 0 && part.slice(0, idx).trim() === name) return part.slice(idx + 1).trim();
+  }
+  return '';
+}
+
+// 콜백의 state가 ① 이 서버가 같은 제공자용으로 10분 안에 발급했고 ② 요청 브라우저의 oauth_state 쿠키와 같을 때만 true.
+// 확인한 state는 결과와 상관없이 서버 기록에서 지운다(재사용 불가).
+function consumeOauthState(req, provider, state) {
+  const given = String(state || '');
+  const entry = given ? _oauthStates.get(given) : null;
+  if (entry) _oauthStates.delete(given);
+  if (!entry || entry.provider !== provider || (Date.now() - entry.createdAt) > OAUTH_STATE_TTL_MS) return false;
+  const a = Buffer.from(cookieValue(req, OAUTH_STATE_COOKIE));
+  const b = Buffer.from(given);
+  return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+}
+
+function createSession(userData, req) {
   const sid = randomUUID();
   sessionStore.set(sid, { ...userData, createdAt: Date.now() });
   const sig = signSession(sid);
-  return { sid, cookie: `sid=${sid}.${sig}; HttpOnly; Path=/; SameSite=Lax; Max-Age=604800` };
+  return { sid, cookie: `sid=${sid}.${sig}; ${sessionCookieAttributes(req)}; Max-Age=604800` };
 }
 
 const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -316,12 +634,17 @@ async function fetchWithRetry(url, options = {}, maxRetries = 2) {
 
 
 const AI_SYSTEM_MESSAGE = [
-  'You are a travel itinerary planner.',
+  'You are a travel itinerary planner for Japan.',
   'Return only JSON that matches the provided schema.',
   'Use the provided picks and foods; avoid inventing places not in input.',
   'Respect flight timing if provided (arrival and departure).',
   'If stay details are supplied, mention the picked property and honor its check-in/out window when planning the first and last days.',
-  'Schedule blocks in local time with start/end like "09:00".'
+  'Schedule blocks in local time. Every block is ONE string in exactly this format: "<period>(HH:MM-HH:MM): <place name> (<area>)",',
+  'where <period> is the Korean word 오전 (start before 12:00), 오후 (start 12:00-16:59) or 저녁 (dinner, start 17:00 or later) — keep these Korean words in every language.',
+  'Examples: "오전(09:00-11:00): 센소지 (아사쿠사)", "오후(13:00-15:30): 시부야 스카이 (시부야)", "저녁(18:00-20:00): 아후리 라멘 (에비스)".',
+  'Each day needs 2 to 4 blocks ordered by time, and at least one 오전 or 오후 block; a rest day still uses a block such as "오후(13:00-16:00): 카페/산책 (숙소 주변)".',
+  'Use each pick at most once in the whole trip: do not schedule a place again on another day until every pick has been used.',
+  'If the picks run out, use a free-time block (for example "오후(13:00-16:00): 자유 일정 (<area> 주변 산책)", written in the output language) instead of repeating a place or inventing one.'
 ].join(' ');
 
 const CITY_DATA = {
@@ -376,82 +699,85 @@ const CITY_DATA = {
 };
 
 const JAPAN_CITY_PROFILES = {
-  sapporo: { label: '삿포로', nameJa: '札幌', airport: 'CTS', areas: ['오도리', '스스키노', '조잔케이'], sightA: '오도리 공원', sightB: '삿포로 TV 타워', sightC: '니조시장', foodA: '스프카레 GARAKU', foodB: '스미레 라멘', genreA: '카레', genreB: '라멘' },
-  hakodate: { label: '하코다테', airport: 'HKD', areas: ['모토마치', '고료카쿠', '베이 에어리어'], sightA: '하코다테 야경', sightB: '고료카쿠 공원', sightC: '아침시장', foodA: '하코다테 카이센동', foodB: '시오라멘', genreA: '해산물', genreB: '라멘' },
-  asahikawa: { label: '아사히카와', airport: 'AKJ', areas: ['역전', '아사히야마', '평화거리'], sightA: '아사히야마 동물원', sightB: '헤이와도리 쇼핑공원', sightC: '우에노팜', foodA: '아사히카와 라멘', foodB: '징기스칸', genreA: '라멘', genreB: '양고기' },
-  aomori: { label: '아오모리', airport: 'AOJ', areas: ['신마치', '아사무시', '아오모리역'], sightA: '네부타 박물관', sightB: '아오모리 베이브리지', sightC: '아오모리 현립미술관', foodA: '아오모리 사과 디저트', foodB: '해산물 시장', genreA: '디저트', genreB: '해산물' },
+  sapporo: { label: '삿포로', nameJa: '札幌', airport: 'CTS', areas: ['오도리', '스스키노', '조잔케이'], sightA: '오도리 공원', sightB: '삿포로 TV 타워', sightC: '니조시장', sightBMeta: { area: '오도리' }, sightCMeta: { area: '오도리', bestTime: '07:30-10:00' }, foodA: '스프카레 GARAKU', foodB: '스미레 라멘', genreA: '카레', genreB: '라멘' },
+  hakodate: { label: '하코다테', airport: 'HKD', areas: ['모토마치', '고료카쿠', '베이 에어리어'], sightA: '하코다테 야경', sightB: '고료카쿠 공원', sightC: '아침시장', sightAMeta: { bestTime: '20:00-21:30' }, sightCMeta: { area: '하코다테역', bestTime: '07:00-09:30' }, foodA: '하코다테 카이센동', foodB: '시오라멘', genreA: '해산물', genreB: '라멘' },
+  asahikawa: { label: '아사히카와', airport: 'AKJ', areas: ['역전', '아사히야마', '평화거리'], sightA: '아사히야마 동물원', sightB: '헤이와도리 쇼핑공원', sightC: '우에노팜', sightAMeta: { area: '아사히야마' }, sightBMeta: { area: '평화거리' }, sightCMeta: { area: '나가야마' }, foodA: '아사히카와 라멘', foodB: '징기스칸', genreA: '라멘', genreB: '양고기' },
+  aomori: { label: '아오모리', airport: 'AOJ', areas: ['신마치', '아사무시', '아오모리역'], sightA: '네부타 박물관', sightB: '아오모리 베이브리지', sightC: '아오모리 현립미술관', sightAMeta: { area: '아오모리역' }, sightBMeta: { area: '아오모리역' }, sightCMeta: { area: '산나이마루야마' }, foodA: '아오모리 사과 디저트', foodB: '해산물 시장', genreA: '디저트', genreB: '해산물' },
   akita: { label: '아키타', airport: 'AXT', areas: ['센슈공원', '오가', '아키타역'], sightA: '센슈공원', sightB: '오가 반도', sightC: '아키타 시립박물관', foodA: '기리탄포', foodB: '이나니와 우동', genreA: '향토요리', genreB: '우동' },
   hanamaki: { label: '하나마키', airport: 'HNA', areas: ['온천지구', '역전', '이와테'], sightA: '하나마키 온천', sightB: '미야자와 겐지 기념관', sightC: '이와테 산책로', foodA: '완코소바', foodB: '모리오카 냉면', genreA: '소바', genreB: '면요리' },
-  yamagata: { label: '야마가타', airport: 'GAJ', areas: ['자오', '야마가타역', '카조공원'], sightA: '자오 온천', sightB: '카조 공원', sightC: '리사쿠지', foodA: '이모니', foodB: '야마가타 소바', genreA: '향토요리', genreB: '소바' },
-  sendai: { label: '센다이', nameJa: '仙台', airport: 'SDJ', areas: ['아오바구', '고쿠분초', '마쓰시마'], sightA: '즈이호덴', sightB: '센다이성 유적', sightC: '마쓰시마', foodA: '규탄 전문점', foodB: '즈다모치 카페', genreA: '규탄', genreB: '디저트' },
-  fukushima: { label: '후쿠시마', airport: 'FKS', areas: ['아이즈와카마츠', '코리야마', '후쿠시마역'], sightA: '쓰루가성', sightB: '고시키누마', sightC: '오우치주쿠', foodA: '키타카타 라멘', foodB: '소스카츠동', genreA: '라멘', genreB: '돈카츠' },
-  niigata: { label: '니가타', airport: 'KIJ', areas: ['반다이', '후루마치', '사도'], sightA: '피아반다이 시장', sightB: '니가타 수족관', sightC: '사도섬', foodA: '니가타 돈부리', foodB: '니혼슈 바', genreA: '해산물', genreB: '주점' },
-  kanazawa: { label: '가나자와', nameJa: '金沢', airport: 'KMQ', areas: ['겐로쿠엔', '히가시차야', '오미초'], sightA: '겐로쿠엔', sightB: '오미초 시장', sightC: '히가시차야 거리', foodA: '카나자와 스시', foodB: '노도구로 구이', genreA: '스시', genreB: '일식' },
-  toyama: { label: '도야마', airport: 'TOY', areas: ['도야마역', '우나즈키', '알펜루트'], sightA: '알펜루트', sightB: '도야마성 공원', sightC: '글래스 미술관', foodA: '시로에비', foodB: '부리 샤브', genreA: '해산물', genreB: '일식' },
-  shizuoka: { label: '시즈오카', airport: 'FSZ', areas: ['시미즈', '시즈오카역', '쿠사츠'], sightA: '미호노마쓰바라', sightB: '쿠노잔 도쇼구', sightC: '시즈오카 차밭', foodA: '사쿠라에비', foodB: '우나기 덮밥', genreA: '해산물', genreB: '일식' },
-  nagoya: { label: '나고야', nameJa: '名古屋', airport: 'NGO', areas: ['사카에', '나고야역', '오스'], sightA: '나고야성', sightB: '오아시스21', sightC: '도요타 산업기술 기념관', foodA: '미소카츠', foodB: '히츠마부시', genreA: '돈카츠', genreB: '장어덮밥' },
-  okayama: { label: '오카야마', airport: 'OKJ', areas: ['오카야마역', '고라쿠엔', '쿠라시키'], sightA: '고라쿠엔', sightB: '오카야마성', sightC: '쿠라시키 미관지구', foodA: '바라즈시', foodB: '데미카츠동', genreA: '향토요리', genreB: '돈카츠' },
-  hiroshima: { label: '히로시마', nameJa: '広島', airport: 'HIJ', areas: ['나카구', '미야지마', '히로시마역'], sightA: '평화기념공원', sightB: '이쓰쿠시마 신사', sightC: '히로시마성', foodA: '히로시마 오코노미야키', foodB: '굴 요리', genreA: '오코노미야키', genreB: '해산물' },
+  yamagata: { label: '야마가타', airport: 'GAJ', areas: ['자오', '야마가타역', '카조공원'], sightA: '자오 온천', sightB: '카조 공원', sightC: '리사쿠지', sightCMeta: { area: '야마데라' }, foodA: '이모니', foodB: '야마가타 소바', genreA: '향토요리', genreB: '소바' },
+  sendai: { label: '센다이', nameJa: '仙台', airport: 'SDJ', areas: ['아오바구', '고쿠분초', '마쓰시마'], sightA: '즈이호덴', sightB: '센다이성 유적', sightC: '마쓰시마', sightBMeta: { area: '아오바구' }, foodA: '규탄 전문점', foodB: '즈다모치 카페', genreA: '규탄', genreB: '디저트' },
+  fukushima: { label: '후쿠시마', airport: 'FKS', areas: ['아이즈와카마츠', '코리야마', '후쿠시마역'], sightA: '쓰루가성', sightB: '고시키누마', sightC: '오우치주쿠', sightBMeta: { area: '우라반다이' }, sightCMeta: { area: '시모고' }, foodA: '키타카타 라멘', foodB: '소스카츠동', genreA: '라멘', genreB: '돈카츠' },
+  niigata: { label: '니가타', airport: 'KIJ', areas: ['반다이', '후루마치', '사도'], sightA: '피아반다이 시장', sightB: '니가타 수족관', sightC: '사도섬', sightCMeta: { dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, foodA: '니가타 돈부리', foodB: '니혼슈 바', genreA: '해산물', genreB: '주점' },
+  kanazawa: { label: '가나자와', nameJa: '金沢', airport: 'KMQ', areas: ['겐로쿠엔', '히가시차야', '오미초'], sightA: '겐로쿠엔', sightB: '오미초 시장', sightC: '히가시차야 거리', sightBMeta: { area: '오미초' }, sightCMeta: { area: '히가시차야' }, foodA: '카나자와 스시', foodB: '노도구로 구이', genreA: '스시', genreB: '일식' },
+  toyama: { label: '도야마', airport: 'TOY', areas: ['도야마역', '우나즈키', '알펜루트'], sightA: '알펜루트', sightB: '도야마성 공원', sightC: '글래스 미술관', sightAMeta: { area: '다테야마', fullDay: true, bestTime: '09:00-18:00', stayMin: 480 }, sightBMeta: { area: '도야마역' }, sightCMeta: { area: '도야마역' }, foodA: '시로에비', foodB: '부리 샤브', genreA: '해산물', genreB: '일식' },
+  shizuoka: { label: '시즈오카', airport: 'FSZ', areas: ['시미즈', '시즈오카역', '니혼다이라'], sightA: '미호노마쓰바라', sightB: '쿠노잔 도쇼구', sightC: '시즈오카 차밭', foodA: '사쿠라에비', foodB: '우나기 덮밥', genreA: '해산물', genreB: '일식' },
+  nagoya: { label: '나고야', nameJa: '名古屋', airport: 'NGO', areas: ['사카에', '나고야역', '오스'], sightA: '나고야성', sightB: '오아시스21', sightC: '도요타 산업기술 기념관', sightBMeta: { area: '사카에' }, sightCMeta: { area: '나고야역' }, foodA: '미소카츠', foodB: '히츠마부시', genreA: '돈카츠', genreB: '장어덮밥' },
+  okayama: { label: '오카야마', airport: 'OKJ', areas: ['오카야마역', '고라쿠엔', '쿠라시키'], sightA: '고라쿠엔', sightB: '오카야마성', sightC: '쿠라시키 미관지구', sightAMeta: { area: '고라쿠엔' }, foodA: '바라즈시', foodB: '데미카츠동', genreA: '향토요리', genreB: '돈카츠' },
+  hiroshima: { label: '히로시마', nameJa: '広島', airport: 'HIJ', areas: ['나카구', '미야지마', '히로시마역'], sightA: '평화기념공원', sightB: '이쓰쿠시마 신사', sightC: '히로시마성', sightCMeta: { area: '나카구' }, foodA: '히로시마 오코노미야키', foodB: '굴 요리', genreA: '오코노미야키', genreB: '해산물' },
   yonago: { label: '요나고', airport: 'YGJ', areas: ['사카이미나토', '다이센', '요나고역'], sightA: '미즈키 시게루 로드', sightB: '다이센', sightC: '카이케 온천', foodA: '게 요리', foodB: '회덮밥', genreA: '해산물', genreB: '일식' },
-  izumo: { label: '이즈모', airport: 'IZO', areas: ['이즈모타이샤', '신지호', '역전'], sightA: '이즈모 타이샤', sightB: '이나사 해변', sightC: '신지호 석양', foodA: '이즈모 소바', foodB: '젠자이', genreA: '소바', genreB: '디저트' },
+  izumo: { label: '이즈모', airport: 'IZO', areas: ['이즈모타이샤', '신지호', '역전'], sightA: '이즈모 타이샤', sightB: '이나사 해변', sightC: '신지호 석양', sightBMeta: { area: '이즈모타이샤' }, sightCMeta: { area: '신지호', bestTime: '17:00-18:00' }, foodA: '이즈모 소바', foodB: '젠자이', genreA: '소바', genreB: '디저트' },
   takamatsu: { label: '다카마쓰', airport: 'TAK', areas: ['리쓰린', '선포트', '야시마'], sightA: '리쓰린 공원', sightB: '타카마츠성 유적', sightC: '야시마 전망대', foodA: '사누키 우동', foodB: '올리브 소고기', genreA: '우동', genreB: '일식' },
   matsuyama: { label: '마쓰야마', airport: 'MYJ', areas: ['도고온천', '마쓰야마성', '오카이도'], sightA: '도고온천', sightB: '마쓰야마성', sightC: '보찬 열차', foodA: '도미밥', foodB: '쟈코텐', genreA: '일식', genreB: '향토요리' },
-  kochi: { label: '고치', airport: 'KCZ', areas: ['고치성', '히로메시장', '카츠라하마'], sightA: '고치성', sightB: '카츠라하마', sightC: '히로메 시장', foodA: '가츠오 타타키', foodB: '사와치 요리', genreA: '해산물', genreB: '향토요리' },
-  tokushima: { label: '도쿠시마', airport: 'TKS', areas: ['아와오도리', '비잔', '나루토'], sightA: '아와오도리 회관', sightB: '나루토 소용돌이', sightC: '비잔 로프웨이', foodA: '도쿠시마 라멘', foodB: '아와규', genreA: '라멘', genreB: '일식' },
-  fukuoka: { label: '후쿠오카', nameJa: '福岡', airport: 'FUK', areas: ['하카타', '텐진', '모모치'], sightA: '오호리 공원', sightB: '캐널시티 하카타', sightC: '후쿠오카 타워', foodA: '하카타 라멘', foodB: '모츠나베', genreA: '라멘', genreB: '전골' },
-  nagasaki: { label: '나가사키', airport: 'NGS', areas: ['데지마', '차이나타운', '이나사야마'], sightA: '글로버가든', sightB: '평화공원', sightC: '이나사야마 전망대', foodA: '짬뽕', foodB: '카스테라', genreA: '면요리', genreB: '디저트' },
-  kumamoto: { label: '구마모토', airport: 'KMJ', areas: ['구마모토성', '스이젠지', '아소'], sightA: '구마모토성', sightB: '스이젠지 공원', sightC: '아소 화산', foodA: '바사시', foodB: '구마모토 라멘', genreA: '일식', genreB: '라멘' },
+  kochi: { label: '고치', airport: 'KCZ', areas: ['고치성', '히로메시장', '카츠라하마'], sightA: '고치성', sightB: '카츠라하마', sightC: '히로메 시장', sightBMeta: { area: '카츠라하마' }, sightCMeta: { area: '히로메시장' }, foodA: '가츠오 타타키', foodB: '사와치 요리', genreA: '해산물', genreB: '향토요리' },
+  tokushima: { label: '도쿠시마', airport: 'TKS', areas: ['아와오도리', '비잔', '나루토'], sightA: '아와오도리 회관', sightB: '나루토 소용돌이', sightC: '비잔 로프웨이', sightBMeta: { area: '나루토' }, sightCMeta: { area: '비잔' }, foodA: '도쿠시마 라멘', foodB: '아와규', genreA: '라멘', genreB: '일식' },
+  fukuoka: { label: '후쿠오카', nameJa: '福岡', airport: 'FUK', areas: ['하카타', '텐진', '모모치'], sightA: '오호리 공원', sightB: '캐널시티 하카타', sightC: '후쿠오카 타워', sightAMeta: { area: '텐진' }, sightBMeta: { area: '하카타' }, foodA: '하카타 라멘', foodB: '모츠나베', genreA: '라멘', genreB: '전골' },
+  nagasaki: { label: '나가사키', airport: 'NGS', areas: ['데지마', '차이나타운', '이나사야마'], sightA: '글로버가든', sightB: '평화공원', sightC: '이나사야마 전망대', sightBMeta: { area: '우라카미' }, sightCMeta: { bestTime: '20:00-21:30' }, foodA: '짬뽕', foodB: '카스테라', genreA: '면요리', genreB: '디저트' },
+  kumamoto: { label: '구마모토', airport: 'KMJ', areas: ['구마모토성', '스이젠지', '아소'], sightA: '구마모토성', sightB: '스이젠지 공원', sightC: '아소 화산', sightCMeta: { dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, foodA: '바사시', foodB: '구마모토 라멘', genreA: '일식', genreB: '라멘' },
   oita: { label: '오이타', airport: 'OIT', areas: ['벳푸', '유후인', '오이타역'], sightA: '벳푸 지옥온천', sightB: '유후인 거리', sightC: '타카사키야마', foodA: '도리텐', foodB: '벳푸 냉면', genreA: '향토요리', genreB: '면요리' },
-  miyazaki: { label: '미야자키', airport: 'KMI', areas: ['아오시마', '니치난', '시내'], sightA: '아오시마 신사', sightB: '우도신궁', sightC: '선멧세 니치난', foodA: '치킨난반', foodB: '미야자키 소고기', genreA: '일식', genreB: '육류' },
-  kagoshima: { label: '가고시마', airport: 'KOJ', areas: ['사쿠라지마', '덴몬칸', '이부스키'], sightA: '사쿠라지마', sightB: '센간엔', sightC: '이부스키 모래찜', foodA: '쿠로부타 돈카츠', foodB: '사츠마아게', genreA: '돈카츠', genreB: '향토요리' },
-  okinawa: { label: '오키나와', nameJa: '沖縄', airport: 'OKA', areas: ['나하', '차탄', '온나'], sightA: '국제거리', sightB: '츄라우미 수족관', sightC: '아메리칸 빌리지', foodA: '오키나와 소바', foodB: '고야참푸루', genreA: '면요리', genreB: '향토요리' },
+  miyazaki: { label: '미야자키', airport: 'KMI', areas: ['아오시마', '니치난', '시내'], sightA: '아오시마 신사', sightB: '우도신궁', sightC: '선멧세 니치난', sightCMeta: { area: '니치난' }, foodA: '치킨난반', foodB: '미야자키 소고기', genreA: '일식', genreB: '육류' },
+  kagoshima: { label: '가고시마', airport: 'KOJ', areas: ['사쿠라지마', '덴몬칸', '이부스키'], sightA: '사쿠라지마', sightB: '센간엔', sightC: '이부스키 모래찜', sightBMeta: { area: '이소' }, foodA: '쿠로부타 돈카츠', foodB: '사츠마아게', genreA: '돈카츠', genreB: '향토요리' },
+  okinawa: { label: '오키나와', nameJa: '沖縄', airport: 'OKA', areas: ['나하', '차탄', '온나'], sightA: '국제거리', sightB: '츄라우미 수족관', sightC: '아메리칸 빌리지', sightBMeta: { area: '모토부', dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, sightCMeta: { area: '차탄' }, foodA: '오키나와 소바', foodB: '고야참푸루', genreA: '면요리', genreB: '향토요리' },
   obihiro: { label: '오비히로', airport: 'OBO', areas: ['반에이', '도카치', '역전'], sightA: '반에이 경마', sightB: '도카치가와 온천', sightC: '마나베 정원', foodA: '부타동', foodB: '유제품 디저트', genreA: '덮밥', genreB: '디저트' }
 };
 
 const JAPAN_CITY_PROFILES_EXTRA = {
-  wakkanai: { label: '왓카나이', airport: 'WKJ', areas: ['노샷푸', '왓카나이역', '소야곶'], sightA: '소야곶', sightB: '노샷푸 곶', sightC: '왓카나이 공원', foodA: '해산물 덮밥', foodB: '홋카이도 우유 디저트', genreA: '해산물', genreB: '디저트' },
-  rishiri: { label: '리시리', airport: 'RIS', areas: ['오시도마리', '리시리후지', '페시미사키'], sightA: '리시리산 전망', sightB: '페시미사키 전망대', sightC: '섬 해안 드라이브', foodA: '리시리 다시 라멘', foodB: '성게 요리', genreA: '라멘', genreB: '해산물' },
+  wakkanai: { label: '왓카나이', airport: 'WKJ', areas: ['노샷푸', '왓카나이역', '소야곶'], sightA: '소야곶', sightB: '노샷푸 곶', sightC: '왓카나이 공원', sightAMeta: { area: '소야곶' }, sightBMeta: { area: '노샷푸' }, sightCMeta: { area: '왓카나이역' }, foodA: '해산물 덮밥', foodB: '홋카이도 우유 디저트', genreA: '해산물', genreB: '디저트' },
+  rishiri: { label: '리시리', airport: 'RIS', areas: ['오시도마리', '리시리후지', '페시미사키'], sightA: '리시리산 전망', sightB: '페시미사키 전망대', sightC: '섬 해안 드라이브', sightAMeta: { area: '리시리후지' }, sightBMeta: { area: '오시도마리' }, sightCMeta: { area: '리시리' }, foodA: '리시리 다시 라멘', foodB: '성게 요리', genreA: '라멘', genreB: '해산물' },
   memanbetsu: { label: '메만베쓰', airport: 'MMB', areas: ['아바시리', '비호로', '시레토코'], sightA: '아바시리 유빙관', sightB: '비호로 고개', sightC: '시레토코 자연길', foodA: '게 요리', foodB: '현지 버거', genreA: '해산물', genreB: '패스트푸드' },
-  kushiro: { label: '구시로', airport: 'KUH', areas: ['누사마이', '와쇼시장', '습원'], sightA: '구시로 습원', sightB: '누사마이 다리', sightC: '와쇼 시장', foodA: '카이센동', foodB: '로바타야키', genreA: '해산물', genreB: '구이' },
-  nakashibetsu: { label: '나카시베츠', airport: 'SHB', areas: ['네무로', '구시로', '중심가'], sightA: '노츠케 반도', sightB: '네무로 해안', sightC: '현지 목장 체험', foodA: '치즈 플래터', foodB: '우유 아이스크림', genreA: '유제품', genreB: '디저트' },
-  okadama: { label: '삿포로 오카다마', airport: 'OKD', areas: ['히가시구', '중앙구', '오도리'], sightA: '모에레누마 공원', sightB: '삿포로 맥주박물관', sightC: '오도리 야경', foodA: '수프카레', foodB: '징기스칸', genreA: '카레', genreB: '육류' },
-  misawa: { label: '미사와', airport: 'MSJ', areas: ['미사와', '도와다', '아오모리'], sightA: '오이라세 계류', sightB: '도와다 호수', sightC: '미사와 항공박물관', foodA: '사과 디저트', foodB: '히메마스 요리', genreA: '디저트', genreB: '향토요리' },
-  odate: { label: '오다테', airport: 'ONJ', areas: ['오다테', '카즈노', '아키타'], sightA: '아키타견 박물관', sightB: '하치만타이', sightC: '오유 스톤서클', foodA: '기리탄포', foodB: '히나이 토리', genreA: '향토요리', genreB: '닭요리' },
-  shonai: { label: '쇼나이', airport: 'SYO', areas: ['쓰루오카', '사카타', '데와산잔'], sightA: '데와산잔', sightB: '가모 수족관', sightC: '사카타 항구', foodA: '야마가타 소바', foodB: '쇼진요리', genreA: '소바', genreB: '향토요리' },
-  ibaraki: { label: '이바라키', airport: 'IBR', areas: ['미토', '오아라이', '히타치'], sightA: '가이라쿠엔', sightB: '오아라이 해변', sightC: '히타치 해변공원', foodA: '아구 돼지 요리', foodB: '낫토 정식', genreA: '일식', genreB: '향토요리' },
-  matsumoto: { label: '마쓰모토', airport: 'MMJ', areas: ['마쓰모토성', '나와테', '아즈미노'], sightA: '마쓰모토성', sightB: '나카마치 거리', sightC: '가미코치', foodA: '신슈 소바', foodB: '바사시', genreA: '소바', genreB: '육류' },
+  kushiro: { label: '구시로', airport: 'KUH', areas: ['누사마이', '와쇼시장', '습원'], sightA: '구시로 습원', sightB: '누사마이 다리', sightC: '와쇼 시장', sightAMeta: { area: '습원' }, sightBMeta: { area: '누사마이' }, sightCMeta: { area: '와쇼시장', bestTime: '08:00-10:00' }, foodA: '카이센동', foodB: '로바타야키', genreA: '해산물', genreB: '구이' },
+  nakashibetsu: { label: '나카시베츠', airport: 'SHB', areas: ['네무로', '구시로', '중심가'], sightA: '노츠케 반도', sightB: '네무로 해안', sightC: '현지 목장 체험', sightBMeta: { area: '네무로' }, foodA: '치즈 플래터', foodB: '우유 아이스크림', genreA: '유제품', genreB: '디저트' },
+  okadama: { label: '삿포로 오카다마', airport: 'OKD', areas: ['히가시구', '중앙구', '오도리'], sightA: '모에레누마 공원', sightB: '삿포로 맥주박물관', sightC: '오도리 야경', sightBMeta: { area: '히가시구' }, sightCMeta: { bestTime: '20:00-21:30' }, foodA: '수프카레', foodB: '징기스칸', genreA: '카레', genreB: '육류' },
+  misawa: { label: '미사와', airport: 'MSJ', areas: ['미사와', '도와다', '아오모리'], sightA: '오이라세 계류', sightB: '도와다 호수', sightC: '미사와 항공박물관', sightAMeta: { area: '도와다' }, sightCMeta: { area: '미사와' }, foodA: '사과 디저트', foodB: '히메마스 요리', genreA: '디저트', genreB: '향토요리' },
+  odate: { label: '오다테', airport: 'ONJ', areas: ['오다테', '카즈노', '아키타'], sightA: '아키타견 박물관', sightB: '하치만타이', sightC: '오유 스톤서클', sightCMeta: { area: '카즈노' }, foodA: '기리탄포', foodB: '히나이 토리', genreA: '향토요리', genreB: '닭요리' },
+  shonai: { label: '쇼나이', airport: 'SYO', areas: ['쓰루오카', '사카타', '데와산잔'], sightA: '데와산잔', sightB: '가모 수족관', sightC: '사카타 항구', sightAMeta: { area: '데와산잔' }, sightBMeta: { area: '쓰루오카' }, sightCMeta: { area: '사카타' }, foodA: '야마가타 소바', foodB: '쇼진요리', genreA: '소바', genreB: '향토요리' },
+  ibaraki: { label: '이바라키', airport: 'IBR', areas: ['미토', '오아라이', '히타치'], sightA: '가이라쿠엔', sightB: '오아라이 해변', sightC: '히타치 해변공원', sightCMeta: { area: '히타치나카' }, foodA: '아구 돼지 요리', foodB: '낫토 정식', genreA: '일식', genreB: '향토요리' },
+  matsumoto: { label: '마쓰모토', airport: 'MMJ', areas: ['마쓰모토성', '나와테', '아즈미노'], sightA: '마쓰모토성', sightB: '나카마치 거리', sightC: '가미코치', sightCMeta: { area: '가미코치', dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, foodA: '신슈 소바', foodB: '바사시', genreA: '소바', genreB: '육류' },
   nanki_shirahama: { label: '난키 시라하마', airport: 'SHM', areas: ['시라하마', '엔게츠섬', '어드벤처월드'], sightA: '시라라하마 해변', sightB: '엔게츠섬', sightC: '어드벤처월드', foodA: '해산물 정식', foodB: '온천 달걀 요리', genreA: '해산물', genreB: '일식' },
-  kobe: { label: '고베', nameJa: '神戸', airport: 'UKB', areas: ['산노미야', '모자이크', '기타노'], sightA: '고베 하버랜드', sightB: '기타노 이진칸', sightC: '누노비키 허브원', foodA: '고베규 스테이크', foodB: '아카시야키', genreA: '육류', genreB: '분식' },
-  tajima: { label: '다지마', airport: 'TJH', areas: ['도요오카', '기노사키', '출석가'], sightA: '기노사키 온천', sightB: '고노토리 공원', sightC: '겐부도', foodA: '카니 요리', foodB: '다지마규 구이', genreA: '해산물', genreB: '육류' },
-  tottori: { label: '돗토리', airport: 'TTJ', areas: ['돗토리 사구', '쿠라요시', '돗토리역'], sightA: '돗토리 사구', sightB: '우라도메 해안', sightC: '모래 미술관', foodA: '게 요리', foodB: '배 디저트', genreA: '해산물', genreB: '디저트' },
+  kobe: { label: '고베', nameJa: '神戸', airport: 'UKB', areas: ['산노미야', '모자이크', '기타노'], sightA: '고베 하버랜드', sightB: '기타노 이진칸', sightC: '누노비키 허브원', sightAMeta: { area: '하버랜드' }, sightBMeta: { area: '기타노' }, sightCMeta: { area: '신고베' }, foodA: '고베규 스테이크', foodB: '아카시야키', genreA: '육류', genreB: '분식' },
+  tajima: { label: '다지마', airport: 'TJH', areas: ['도요오카', '기노사키', '이즈시'], sightA: '기노사키 온천', sightB: '고노토리 공원', sightC: '겐부도', sightAMeta: { area: '기노사키' }, sightBMeta: { area: '도요오카' }, sightCMeta: { area: '도요오카' }, foodA: '카니 요리', foodB: '다지마규 구이', genreA: '해산물', genreB: '육류' },
+  tottori: { label: '돗토리', airport: 'TTJ', areas: ['돗토리 사구', '쿠라요시', '돗토리역'], sightA: '돗토리 사구', sightB: '우라도메 해안', sightC: '모래 미술관', sightBMeta: { area: '이와미' }, sightCMeta: { area: '돗토리 사구' }, foodA: '게 요리', foodB: '배 디저트', genreA: '해산물', genreB: '디저트' },
   iwakuni: { label: '이와쿠니', airport: 'IWK', areas: ['긴타이쿄', '이와쿠니성', '역전'], sightA: '긴타이교', sightB: '이와쿠니성', sightC: '시라헤비 신사', foodA: '이와쿠니 스시', foodB: '연근 요리', genreA: '스시', genreB: '향토요리' },
-  yamaguchi_ube: { label: '야마구치 우베', airport: 'UBJ', areas: ['우베', '야마구치', '아키요시다이'], sightA: '아키요시 동굴', sightB: '루리코지', sightC: '우베 공원', foodA: '복어 요리', foodB: '가와라소바', genreA: '해산물', genreB: '면요리' },
-  kitakyushu: { label: '기타큐슈', airport: 'KKJ', areas: ['고쿠라', '모지코', '야하타'], sightA: '모지코 레트로', sightB: '고쿠라성', sightC: '사라쿠라산 야경', foodA: '야키카레', foodB: '우동', genreA: '카레', genreB: '우동' },
+  yamaguchi_ube: { label: '야마구치 우베', airport: 'UBJ', areas: ['우베', '야마구치', '아키요시다이'], sightA: '아키요시 동굴', sightB: '루리코지', sightC: '우베 공원', sightAMeta: { area: '아키요시다이' }, sightCMeta: { area: '우베' }, foodA: '복어 요리', foodB: '가와라소바', genreA: '해산물', genreB: '면요리' },
+  kitakyushu: { label: '기타큐슈', airport: 'KKJ', areas: ['고쿠라', '모지코', '야하타'], sightA: '모지코 레트로', sightB: '고쿠라성', sightC: '사라쿠라산 야경', sightAMeta: { area: '모지코' }, sightBMeta: { area: '고쿠라' }, sightCMeta: { bestTime: '20:00-21:30' }, foodA: '야키카레', foodB: '우동', genreA: '카레', genreB: '우동' },
   saga: { label: '사가', airport: 'HSG', areas: ['사가역', '카라쓰', '우레시노'], sightA: '요시노가리 유적', sightB: '카라쓰성', sightC: '우레시노 온천', foodA: '사가규', foodB: '온천 두부', genreA: '육류', genreB: '두부요리' },
-  amami: { label: '아마미', airport: 'ASJ', areas: ['아마미시', '해변', '숲길'], sightA: '아마미 블루 해변', sightB: '망그로브 카약', sightC: '아야마루 곶', foodA: '케이한', foodB: '흑설탕 디저트', genreA: '향토요리', genreB: '디저트' },
-  yakushima: { label: '야쿠시마', airport: 'KUM', areas: ['미야노우라', '시라타니', '아나보'], sightA: '시라타니 운수협곡', sightB: '조몬스기 트레일', sightC: '오코 폭포', foodA: '토비우오 요리', foodB: '사쓰마아게', genreA: '해산물', genreB: '향토요리' },
-  tanegashima: { label: '다네가시마', airport: 'TNE', areas: ['니시노오모테', '우주센터', '해변'], sightA: '다네가시마 우주센터', sightB: '우라마 산책로', sightC: '해변 일몰', foodA: '현지 해산물 덮밥', foodB: '고구마 디저트', genreA: '해산물', genreB: '디저트' },
-  miyako: { label: '미야코지마', airport: 'MMY', areas: ['히라라', '이케마', '쿠리마'], sightA: '이케마 대교', sightB: '요나하마에하마 해변', sightC: '히가시헨나자키', foodA: '미야코소바', foodB: '해산물 BBQ', genreA: '면요리', genreB: '해산물' },
-  ishigaki: { label: '이시가키', airport: 'ISG', areas: ['이시가키시', '카비라', '항구'], sightA: '카비라만', sightB: '이시가키 석회동굴', sightC: '환상적인 석양 포인트', foodA: '야에야마 소바', foodB: '이시가키규 스테이크', genreA: '면요리', genreB: '육류' },
-  shimojishima: { label: '시모지시마', airport: 'SHI', areas: ['이라부', '시모지', '비치'], sightA: '17END 비치', sightB: '이라부 대교', sightC: '스노클링 포인트', foodA: '섬 생선 요리', foodB: '트로피컬 디저트', genreA: '해산물', genreB: '디저트' },
-  kumejima: { label: '구메지마', airport: 'UEO', areas: ['구메지마시', '해변', '산호초'], sightA: '하테노하마', sightB: '우에구스쿠성터', sightC: '열대 해변 산책', foodA: '현지 소바', foodB: '바다포도 샐러드', genreA: '면요리', genreB: '샐러드' },
+  amami: { label: '아마미', airport: 'ASJ', areas: ['아마미시', '해변', '숲길'], sightA: '아마미 블루 해변', sightB: '망그로브 카약', sightC: '아야마루 곶', sightBMeta: { area: '숲길' }, sightCMeta: { area: '해변' }, foodA: '케이한', foodB: '흑설탕 디저트', genreA: '향토요리', genreB: '디저트' },
+  yakushima: { label: '야쿠시마', airport: 'KUM', areas: ['미야노우라', '시라타니', '아나보'], sightA: '시라타니 운수협곡', sightB: '조몬스기 트레일', sightC: '오코 폭포', sightAMeta: { area: '시라타니' }, sightBMeta: { area: '아나보', fullDay: true, bestTime: '09:00-18:00', stayMin: 480 }, sightCMeta: { area: '구리오' }, foodA: '토비우오 요리', foodB: '사쓰마아게', genreA: '해산물', genreB: '향토요리' },
+  tanegashima: { label: '다네가시마', airport: 'TNE', areas: ['니시노오모테', '우주센터', '해변'], sightA: '다네가시마 우주센터', sightB: '우라마 산책로', sightC: '해변 일몰', sightAMeta: { area: '우주센터' }, sightBMeta: { area: '니시노오모테' }, sightCMeta: { bestTime: '17:00-18:00' }, foodA: '현지 해산물 덮밥', foodB: '고구마 디저트', genreA: '해산물', genreB: '디저트' },
+  miyako: { label: '미야코지마', airport: 'MMY', areas: ['히라라', '이케마', '쿠리마'], sightA: '이케마 대교', sightB: '요나하마에하마 해변', sightC: '히가시헨나자키', sightAMeta: { area: '이케마' }, sightBMeta: { area: '쿠리마' }, sightCMeta: { area: '구스쿠베' }, foodA: '미야코소바', foodB: '해산물 BBQ', genreA: '면요리', genreB: '해산물' },
+  ishigaki: { label: '이시가키', airport: 'ISG', areas: ['이시가키시', '카비라', '항구'], sightA: '카비라만', sightB: '이시가키 석회동굴', sightC: '환상적인 석양 포인트', sightAMeta: { area: '카비라' }, sightBMeta: { area: '이시가키시' }, sightCMeta: { bestTime: '17:00-18:00' }, foodA: '야에야마 소바', foodB: '이시가키규 스테이크', genreA: '면요리', genreB: '육류' },
+  shimojishima: { label: '시모지시마', airport: 'SHI', areas: ['이라부', '시모지', '비치'], sightA: '17END 비치', sightB: '이라부 대교', sightC: '스노클링 포인트', sightAMeta: { area: '시모지' }, sightBMeta: { area: '이라부' }, foodA: '섬 생선 요리', foodB: '트로피컬 디저트', genreA: '해산물', genreB: '디저트' },
+  kumejima: { label: '구메지마', airport: 'UEO', areas: ['구메지마시', '해변', '산호초'], sightA: '하테노하마', sightB: '우에구스쿠성터', sightC: '열대 해변 산책', sightAMeta: { area: '산호초' }, sightBMeta: { area: '구메지마시' }, sightCMeta: { area: '해변' }, foodA: '현지 소바', foodB: '바다포도 샐러드', genreA: '면요리', genreB: '샐러드' },
   kita_daito: { label: '기타다이토', airport: 'KTD', areas: ['기타다이토', '해안', '마을'], sightA: '섬 해안 절벽', sightB: '로컬 등대', sightC: '바다 조망길', foodA: '섬 해산물 정식', foodB: '현지 디저트', genreA: '해산물', genreB: '디저트' },
   yonaguni: { label: '요나구니', airport: 'OGN', areas: ['요나구니', '바다절벽', '마을'], sightA: '일본 최서단 기념비', sightB: '드라마티컬 절벽', sightC: '해저 지형 다이빙', foodA: '섬 소바', foodB: '가쓰오 요리', genreA: '면요리', genreB: '해산물' },
-  tokunoshima: { label: '도쿠노시마', airport: 'TKN', areas: ['아마기', '이스엔', '해변'], sightA: '무시로세 해안', sightB: '아마기 산책로', sightC: '야생 자연 보호지', foodA: '향토 정식', foodB: '흑설탕 디저트', genreA: '향토요리', genreB: '디저트' }
+  tokunoshima: { label: '도쿠노시마', airport: 'TKN', areas: ['아마기', '이스엔', '해변'], sightA: '무시로세 해안', sightB: '아마기 산책로', sightC: '야생 자연 보호지', sightAMeta: { area: '해변' }, sightBMeta: { area: '아마기' }, foodA: '향토 정식', foodB: '흑설탕 디저트', genreA: '향토요리', genreB: '디저트' }
 };
 
 Object.assign(JAPAN_CITY_PROFILES, JAPAN_CITY_PROFILES_EXTRA);
 
 function buildGenericCity(profile) {
   const [a1, a2, a3] = profile.areas;
+  // 명소는 자리 순서 기본값(지역 = areas[i], 추천 시간 = 오전/오후/늦은 오후)을 받고,
+  // sightAMeta·sightBMeta·sightCMeta가 있으면 실제 지역·시간으로 덮어쓴다(야경 20:00-21:30, 하루가 다 드는 곳 fullDay/dayTrip 등).
+  const sight = (name, defaults, meta) => ({ name, ...defaults, ...(meta || {}) });
   return {
     label: profile.label,
     airport: profile.airport,
     areas: profile.areas,
     highlights: [
-      { name: profile.sightA, area: a1, category: '문화/명소', stayMin: 90, bestTime: '09:00-11:00', crowdScore: 3 },
-      { name: profile.sightB, area: a2, category: '자연/전망', stayMin: 100, bestTime: '13:00-15:00', crowdScore: 3 },
-      { name: profile.sightC, area: a3, category: '로컬/산책', stayMin: 110, bestTime: '16:00-18:00', crowdScore: 2 }
+      sight(profile.sightA, { area: a1, category: '문화/명소', stayMin: 90, bestTime: '09:00-11:00', crowdScore: 3 }, profile.sightAMeta),
+      sight(profile.sightB, { area: a2, category: '자연/전망', stayMin: 100, bestTime: '13:00-15:00', crowdScore: 3 }, profile.sightBMeta),
+      sight(profile.sightC, { area: a3, category: '로컬/산책', stayMin: 110, bestTime: '16:00-18:00', crowdScore: 2 }, profile.sightCMeta)
     ],
     foods: [
       { name: profile.foodA, area: a1, genre: profile.genreA, priceLevel: 2, score: 3.8 },
@@ -540,13 +866,13 @@ const DYNAMIC_LOCALITY_AIRPORT_HINT = {
 };
 
 const MUST_ATTRACTIONS = [
-  { name: '유니버셜 스튜디오 재팬', cityKey: 'osaka', area: '오사카', aliases: ['유니버셜', '유니버셜 스튜디오', 'usj', 'universal studios', 'universal studios japan'] },
+  { name: '유니버셜 스튜디오 재팬', cityKey: 'osaka', area: '오사카', fullDay: true, aliases: ['유니버셜', '유니버셜 스튜디오', 'usj', 'universal studios', 'universal studios japan'] },
   { name: '금각사', cityKey: 'kyoto', area: '교토', aliases: ['금각사', '킨카쿠지', 'kinkakuji', 'golden pavilion'] },
   { name: '후시미 이나리', cityKey: 'kyoto', area: '교토', aliases: ['후시미 이나리', '후시미이나리', 'fushimi inari'] },
   { name: '도톤보리', cityKey: 'osaka', area: '오사카', aliases: ['도톤보리', 'dotonbori'] },
   { name: '센소지', cityKey: 'tokyo', area: '도쿄', aliases: ['센소지', '아사쿠사 절', 'sensoji'] },
-  { name: '도쿄 디즈니랜드', cityKey: 'tokyo', area: '도쿄', aliases: ['도쿄 디즈니랜드', 'tokyo disneyland', '디즈니랜드'] },
-  { name: '도쿄 디즈니씨', cityKey: 'tokyo', area: '도쿄', aliases: ['도쿄 디즈니씨', 'tokyo disneysea', '디즈니씨'] },
+  { name: '도쿄 디즈니랜드', cityKey: 'tokyo', area: '지바 우라야스', fullDay: true, aliases: ['도쿄 디즈니랜드', 'tokyo disneyland', '디즈니랜드'] },
+  { name: '도쿄 디즈니씨', cityKey: 'tokyo', area: '지바 우라야스', fullDay: true, aliases: ['도쿄 디즈니씨', 'tokyo disneysea', '디즈니씨'] },
   { name: '시부야 스카이', cityKey: 'tokyo', area: '도쿄', aliases: ['시부야 스카이', 'shibuya sky'] },
   { name: '도쿄 타워', cityKey: 'tokyo', area: '도쿄', aliases: ['도쿄 타워', 'tokyo tower'] },
   { name: '오사카성', cityKey: 'osaka', area: '오사카', aliases: ['오사카성', 'osaka castle'] },
@@ -558,50 +884,50 @@ const MUST_ATTRACTIONS = [
   { name: '삿포로 TV 타워', cityKey: 'sapporo', area: '삿포로', aliases: ['삿포로 tv 타워', 'sapporo tv tower'] },
   { name: '후쿠오카 타워', cityKey: 'fukuoka', area: '후쿠오카', aliases: ['후쿠오카 타워', 'fukuoka tower'] },
   { name: '캐널시티 하카타', cityKey: 'fukuoka', area: '후쿠오카', aliases: ['캐널시티', 'canal city hakata'] },
-  { name: '이쓰쿠시마 신사', cityKey: 'hiroshima', area: '히로시마', aliases: ['이쓰쿠시마 신사', 'itsukushima shrine', '미야지마 신사'] },
+  { name: '이쓰쿠시마 신사', cityKey: 'hiroshima', area: '미야지마', aliases: ['이쓰쿠시마 신사', 'itsukushima shrine', '미야지마 신사'] },
   { name: '히로시마 평화기념공원', cityKey: 'hiroshima', area: '히로시마', aliases: ['평화기념공원', 'hiroshima peace memorial park'] },
   { name: '겐로쿠엔', cityKey: 'kanazawa', area: '가나자와', aliases: ['겐로쿠엔', 'kenrokuen'] },
   { name: '나고야성', cityKey: 'nagoya', area: '나고야', aliases: ['나고야성', 'nagoya castle'] },
-  { name: '츄라우미 수족관', cityKey: 'okinawa', area: '오키나와', aliases: ['츄라우미 수족관', 'churaumi aquarium'] },
+  { name: '츄라우미 수족관', cityKey: 'okinawa', area: '모토부', dayTrip: true, aliases: ['츄라우미 수족관', 'churaumi aquarium'] },
   { name: '국제거리', cityKey: 'okinawa', area: '오키나와', aliases: ['국제거리', 'kokusai dori'] },
-  { name: '벳푸 지옥온천', cityKey: 'oita', area: '오이타', aliases: ['벳푸 지옥온천', 'beppu hells'] },
-  { name: '유후인', cityKey: 'oita', area: '오이타', aliases: ['유후인', 'yufuin'] },
+  { name: '벳푸 지옥온천', cityKey: 'oita', area: '벳푸', aliases: ['벳푸 지옥온천', 'beppu hells'] },
+  { name: '유후인', cityKey: 'oita', area: '유후인', aliases: ['유후인', 'yufuin'] },
   { name: '우에노 공원', cityKey: 'tokyo', area: '도쿄', aliases: ['우에노공원', '우에노 공원', 'ueno park'] },
   { name: '메구로강', cityKey: 'tokyo', area: '도쿄', aliases: ['메구로강', '메구로 강', 'meguro river'] },
-  { name: '오타루 운하', cityKey: 'sapporo', area: '삿포로', aliases: ['오타루', '오타루 운하', 'otaru canal'] },
-  { name: '다자이후 텐만구', cityKey: 'fukuoka', area: '후쿠오카', aliases: ['다자이후', '다자이후 텐만구', 'dazaifu tenmangu'] },
-  { name: '노토반도', cityKey: 'kanazawa', area: '가나자와', aliases: ['노토반도', '노토 반도', 'noto peninsula'] },
-  { name: '시라카와고', cityKey: 'kanazawa', area: '가나자와', aliases: ['시라카와고', 'shirakawago'] },
+  { name: '오타루 운하', cityKey: 'sapporo', area: '오타루', aliases: ['오타루', '오타루 운하', 'otaru canal'] },
+  { name: '다자이후 텐만구', cityKey: 'fukuoka', area: '다자이후', aliases: ['다자이후', '다자이후 텐만구', 'dazaifu tenmangu'] },
+  { name: '노토반도', cityKey: 'kanazawa', area: '노토', dayTrip: true, aliases: ['노토반도', '노토 반도', 'noto peninsula'] },
+  { name: '시라카와고', cityKey: 'kanazawa', area: '기후 시라카와고', dayTrip: true, aliases: ['시라카와고', 'shirakawago'] },
   { name: '원폭돔', cityKey: 'hiroshima', area: '히로시마', aliases: ['원폭돔', '원폭 돔', 'atomic bomb dome'] },
   { name: '사쿠라지마', cityKey: 'kagoshima', area: '가고시마', aliases: ['사쿠라지마', 'sakurajima'] },
-  { name: '후라노 라벤더밭', cityKey: 'asahikawa', area: '아사히카와', aliases: ['후라노', '라벤더', 'furano lavender'] },
-  { name: '비에이 청의 호수', cityKey: 'asahikawa', area: '아사히카와', aliases: ['비에이', '청의 호수', 'biei blue pond'] },
-  { name: '후지큐 하이랜드', cityKey: 'tokyo', area: '도쿄', aliases: ['후지큐', '후지큐 하이랜드', 'fujikyu highland'] },
-  { name: '나가시마 스파랜드', cityKey: 'nagoya', area: '나고야', aliases: ['나가시마 스파랜드', 'nagashima spa land'] },
+  { name: '후라노 라벤더밭', cityKey: 'asahikawa', area: '후라노', dayTrip: true, aliases: ['후라노', '라벤더', 'furano lavender'] },
+  { name: '비에이 청의 호수', cityKey: 'asahikawa', area: '비에이', aliases: ['비에이', '청의 호수', 'biei blue pond'] },
+  { name: '후지큐 하이랜드', cityKey: 'tokyo', area: '야마나시 후지요시다', dayTrip: true, aliases: ['후지큐', '후지큐 하이랜드', 'fujikyu highland'] },
+  { name: '나가시마 스파랜드', cityKey: 'nagoya', area: '미에 구와나', fullDay: true, aliases: ['나가시마 스파랜드', 'nagashima spa land'] },
   { name: '닌텐도 뮤지엄', cityKey: 'kyoto', area: '교토', aliases: ['닌텐도 뮤지엄', 'nintendo museum'] },
-  { name: '지브리파크', cityKey: 'nagoya', area: '나고야', aliases: ['지브리파크', 'ghibli park'] },
-  { name: '도쿄 해리포터 스튜디오', cityKey: 'tokyo', area: '도쿄', aliases: ['해리포터 스튜디오', 'harry potter studio tokyo'] },
+  { name: '지브리파크', cityKey: 'nagoya', area: '아이치 나가쿠테', fullDay: true, aliases: ['지브리파크', 'ghibli park'] },
+  { name: '도쿄 해리포터 스튜디오', cityKey: 'tokyo', area: '네리마', dayTrip: true, aliases: ['해리포터 스튜디오', 'harry potter studio tokyo'] },
   { name: '하코다테 아침시장', cityKey: 'hakodate', area: '하코다테', aliases: ['하코다테 아침시장', 'hakodate morning market'] },
   { name: '니가타 사케 양조장', cityKey: 'niigata', area: '니가타', aliases: ['사케 양조장', '사케 투어', 'brewery tour'] },
   { name: '오키나와 스노클링', cityKey: 'okinawa', area: '오키나와', aliases: ['스노클링', 'snorkeling'] },
-  { name: '알펜루트', cityKey: 'toyama', area: '도야마', aliases: ['알펜루트', '다테야마 쿠로베', 'tateyama kurobe alpine route'] },
-  { name: '구마노고도', cityKey: 'kobe', area: '고베', aliases: ['구마노고도', 'kumano kodo'] },
-  { name: '가마쿠라', cityKey: 'tokyo', area: '도쿄', aliases: ['가마쿠라', 'kamakura'] },
-  { name: '에노시마', cityKey: 'tokyo', area: '도쿄', aliases: ['에노시마', 'enoshima'] },
-  { name: '오이라세 계곡', cityKey: 'aomori', area: '아오모리', aliases: ['오이라세 계곡', 'oirase gorge'] },
-  { name: '시레토코 국립공원', cityKey: 'memanbetsu', area: '메만베쓰', aliases: ['시레토코', 'shiretoko'] },
-  { name: '야쿠시마 트레킹', cityKey: 'yakushima', area: '야쿠시마', aliases: ['야쿠시마', 'yakushima'] },
-  { name: '아소산', cityKey: 'kumamoto', area: '구마모토', aliases: ['아소산', 'aso'] },
+  { name: '알펜루트', cityKey: 'toyama', area: '다테야마', fullDay: true, aliases: ['알펜루트', '다테야마 쿠로베', 'tateyama kurobe alpine route'] },
+  { name: '구마노고도', cityKey: 'kobe', area: '와카야마 다나베', dayTrip: true, aliases: ['구마노고도', 'kumano kodo'] },
+  { name: '가마쿠라', cityKey: 'tokyo', area: '가나가와 가마쿠라', dayTrip: true, aliases: ['가마쿠라', 'kamakura'] },
+  { name: '에노시마', cityKey: 'tokyo', area: '가나가와 후지사와', dayTrip: true, aliases: ['에노시마', 'enoshima'] },
+  { name: '오이라세 계곡', cityKey: 'aomori', area: '도와다', dayTrip: true, aliases: ['오이라세 계곡', 'oirase gorge'] },
+  { name: '시레토코 국립공원', cityKey: 'memanbetsu', area: '시레토코', dayTrip: true, aliases: ['시레토코', 'shiretoko'] },
+  { name: '야쿠시마 트레킹', cityKey: 'yakushima', area: '야쿠시마', fullDay: true, aliases: ['야쿠시마', 'yakushima'] },
+  { name: '아소산', cityKey: 'kumamoto', area: '아소', dayTrip: true, aliases: ['아소산', 'aso'] },
   { name: '돗토리 사구', cityKey: 'tottori', area: '돗토리', aliases: ['돗토리 사구', 'tottori sand dune'] },
-  { name: '카미코치', cityKey: 'matsumoto', area: '마쓰모토', aliases: ['카미코치', 'kamikochi'] },
-  { name: '쿠사츠 온천', cityKey: 'tokyo', area: '도쿄', aliases: ['쿠사츠 온천', 'kusatsu onsen'] },
-  { name: '긴잔 온천', cityKey: 'yamagata', area: '야마가타', aliases: ['긴잔온천', '긴잔 온천', 'ginzan onsen'] },
-  { name: '노보리베츠 온천', cityKey: 'sapporo', area: '삿포로', aliases: ['노보리베츠', 'noboribetsu'] },
-  { name: '게로 온천', cityKey: 'nagoya', area: '나고야', aliases: ['게로온천', '게로 온천', 'gero onsen'] },
+  { name: '카미코치', cityKey: 'matsumoto', area: '가미코치', dayTrip: true, aliases: ['카미코치', 'kamikochi'] },
+  { name: '쿠사츠 온천', cityKey: 'tokyo', area: '군마 쿠사츠', dayTrip: true, aliases: ['쿠사츠 온천', 'kusatsu onsen'] },
+  { name: '긴잔 온천', cityKey: 'yamagata', area: '오바나자와', dayTrip: true, aliases: ['긴잔온천', '긴잔 온천', 'ginzan onsen'] },
+  { name: '노보리베츠 온천', cityKey: 'sapporo', area: '노보리베츠', dayTrip: true, aliases: ['노보리베츠', 'noboribetsu'] },
+  { name: '게로 온천', cityKey: 'nagoya', area: '기후 게로', dayTrip: true, aliases: ['게로온천', '게로 온천', 'gero onsen'] },
   { name: '키노사키 온천', cityKey: 'tajima', area: '다지마', aliases: ['키노사키', 'kinosaki onsen'] },
-  { name: '아리마 온천', cityKey: 'kobe', area: '고베', aliases: ['아리마 온천', 'arima onsen'] },
-  { name: '시부 온천', cityKey: 'matsumoto', area: '마쓰모토', aliases: ['시부온천', '시부 온천', 'shibu onsen'] },
-  { name: '스노우몽키 파크', cityKey: 'matsumoto', area: '마쓰모토', aliases: ['스노우몽키', 'snow monkey'] }
+  { name: '아리마 온천', cityKey: 'kobe', area: '아리마', aliases: ['아리마 온천', 'arima onsen'] },
+  { name: '시부 온천', cityKey: 'matsumoto', area: '나가노 야마노우치', dayTrip: true, aliases: ['시부온천', '시부 온천', 'shibu onsen'] },
+  { name: '스노우몽키 파크', cityKey: 'matsumoto', area: '나가노 야마노우치', dayTrip: true, aliases: ['스노우몽키', 'snow monkey'] }
 ];
 
 function matchMustAttractions(text) {
@@ -613,6 +939,25 @@ function matchMustAttractions(text) {
     }
   }
   return hits;
+}
+
+// 하루 전체가 드는 장소인지: 'fullDay'(테마파크·긴 트레킹) | 'dayTrip'(먼 당일치기) | ''.
+// 카드·후보의 표시 → 대표 명소(MUST_ATTRACTIONS, 이름·별칭) → 도시 명소(highlights) 순으로 본다.
+// 화면에서 돌아온 en/ja 이름(예: 'Tokyo Disneyland', '東京ディズニーランド')도 원래 한글 이름으로 바꿔 찾는다.
+function allDayPlaceKind(place, cityKey) {
+  if (!place) return '';
+  if (place.fullDay) return 'fullDay';
+  if (place.dayTrip) return 'dayTrip';
+  const ck = cityKeyByLabel(place.city) || cityKey || '';
+  const raw = String(place.nameKo || place.name || '').trim();
+  if (!raw) return '';
+  const ko = /[가-힣]/.test(raw) ? raw : (koPlaceNameForLabel(raw, ck) || raw);
+  const lower = ko.toLowerCase();
+  const must = MUST_ATTRACTIONS.find((m) => m.name === ko || (m.aliases || []).some((a) => String(a).toLowerCase() === lower));
+  const hl = (CITY_DATA[ck]?.highlights || []).find((h) => h.name === ko);
+  const hit = [must, hl].find((x) => x && (x.fullDay || x.dayTrip));
+  if (!hit) return '';
+  return hit.fullDay ? 'fullDay' : 'dayTrip';
 }
 
 const JAPAN_AIRPORT_COORDS = [
@@ -664,20 +1009,32 @@ for (const [key, city] of Object.entries(CITY_DATA)) {
   CITY_ALIASES[key] = Array.from(new Set([...(CITY_ALIASES[key] || []), key, city.label]));
 }
 
-function sendJson(res, status, data) {
+function sendJson(res, status, data, extraHeaders = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'X-XSS-Protection': '1; mode=block',
-    'Referrer-Policy': 'strict-origin-when-cross-origin'
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    ...extraHeaders
   });
   res.end(JSON.stringify(data));
+}
+
+// 응답 상태 코드를 지정해 던지는 오류(본문 크기 초과 413, JSON 형식 오류 400 등)
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.name = 'HttpError';
+    this.status = status;
+  }
 }
 
 function hasSupabase() {
   return Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
 }
+
+const SUPABASE_TIMEOUT_MS = 8000;
 
 async function supabaseRequest(method, route, body) {
   if (!hasSupabase()) {
@@ -693,37 +1050,94 @@ async function supabaseRequest(method, route, body) {
   if (method === 'POST') {
     headers.Prefer = 'return=representation,resolution=merge-duplicates';
   }
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/${route}`, {
+  const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/${route}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined
-  });
+  }, SUPABASE_TIMEOUT_MS);
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Supabase error ${response.status}: ${text}`);
+    // 원문은 서버 로그에만 남는다(응답에는 일반 안내만 나감).
+    throw new Error(`Supabase error ${response.status}: ${text.slice(0, 300)}`);
   }
   if (response.status === 204) return [];
   return response.json();
 }
 
-function readBody(req) {
+// Supabase 연결 확인(값 비싼 작업 전에). 결과는 성공 5분·실패 1분 동안 재사용한다.
+const _supabaseProbe = { at: 0, reachable: null };
+async function supabaseStatus() {
+  if (!hasSupabase()) return { configured: false, reachable: false };
+  const ttl = _supabaseProbe.reachable ? 5 * 60_000 : 60_000;
+  if (_supabaseProbe.at && (Date.now() - _supabaseProbe.at) < ttl) {
+    return { configured: true, reachable: Boolean(_supabaseProbe.reachable) };
+  }
+  let reachable = false;
+  try {
+    const r = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/`, {
+      method: 'HEAD',
+      headers: { apikey: SUPABASE_SERVICE_ROLE_KEY }
+    }, 4000);
+    reachable = r.status < 500;
+    if (!reachable) warnThrottled('supabase:unreachable', `[supabase] 저장소 응답 오류 HTTP ${r.status}`);
+  } catch (err) {
+    warnThrottled('supabase:unreachable', `[supabase] 저장소에 연결할 수 없습니다: ${err?.cause?.code || err?.message || err}`);
+  }
+  _supabaseProbe.at = Date.now();
+  _supabaseProbe.reachable = reachable;
+  return { configured: true, reachable };
+}
+
+// 저장소를 쓸 수 없을 때의 응답(503). 진행 전에 확인해서 AI·장소 검색 같은 비싼 작업을 돌리지 않는다.
+async function supabaseUnavailableResponse(res) {
+  const store = await supabaseStatus();
+  if (!store.configured) {
+    sendJson(res, 503, { error: '일정 저장소가 설정되어 있지 않습니다.', reasonCode: 'PROVIDER_UNAVAILABLE' });
+    return true;
+  }
+  if (!store.reachable) {
+    sendJson(res, 503, { error: '일정 저장소에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.', reasonCode: 'PROVIDER_UNAVAILABLE' });
+    return true;
+  }
+  return false;
+}
+
+// JSON 본문을 읽는다. 라우트마다 maxBytes(기본 64KB, 최대 500KB)를 넘으면 413.
+function readBody(req, maxBytes = BODY_LIMIT_DEFAULT) {
+  const limit = Math.min(Math.max(1024, Number(maxBytes) || BODY_LIMIT_DEFAULT), MAX_REQUEST_BODY_BYTES);
   return new Promise((resolve, reject) => {
-    let body = '';
+    const declared = Number(req.headers['content-length'] || 0);
+    if (Number.isFinite(declared) && declared > limit) {
+      reject(new HttpError(413, 'Request body too large'));
+      return;
+    }
+    const chunks = [];
     let size = 0;
+    let done = false;
     req.on('data', (chunk) => {
+      if (done) return;
       size += chunk.length;
-      if (size > MAX_REQUEST_BODY_BYTES) {
-        req.destroy();
-        reject(new Error('Request body too large'));
+      if (size > limit) {
+        done = true;
+        reject(new HttpError(413, 'Request body too large'));
         return;
       }
-      body += chunk;
+      chunks.push(chunk);
     });
     req.on('end', () => {
-      try { resolve(body ? JSON.parse(body) : {}); }
-      catch { reject(new Error('Invalid JSON body')); }
+      if (done) return;
+      done = true;
+      // 청크 경계에서 한글(멀티바이트)이 깨지지 않게 바이트를 모아서 한 번에 디코딩한다.
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (!text.trim()) { resolve({}); return; }
+      try { resolve(JSON.parse(text)); }
+      catch { reject(new HttpError(400, 'Invalid JSON body')); }
     });
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (done) return;
+      done = true;
+      reject(err);
+    });
   });
 }
 
@@ -950,23 +1364,17 @@ function extractRequestedLocality(text) {
 }
 
 async function geocodeCityInJapan(cityLabel) {
-  if (!GOOGLE_MAPS_API_KEY) return null;
-  try {
-    const endpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(`${cityLabel} Japan`)}&key=${GOOGLE_MAPS_API_KEY}&language=ko&region=jp`;
-    const res = await fetch(endpoint);
-    if (!res.ok) return null;
-    const data = await res.json();
-    const first = data.results?.[0];
-    if (!first?.geometry?.location) return null;
-    return {
-      label: cityLabel,
-      lat: Number(first.geometry.location.lat),
-      lng: Number(first.geometry.location.lng),
-      formatted: first.formatted_address || cityLabel
-    };
-  } catch {
-    return null;
+  // google 모드: Geocoding API(비용 가드 적용). free 모드: open-meteo 무료 지오코딩.
+  if (GOOGLE_PLACES_ENABLED) {
+    try {
+      const first = await googleGeocodeFirst(`${cityLabel} Japan`, 'ko');
+      if (first) return { label: cityLabel, lat: first.lat, lng: first.lng, formatted: first.formatted || cityLabel };
+    } catch {
+      // 원인은 googleApiFetch가 로그로 남긴다. 아래 무료 지오코딩으로 넘어간다.
+    }
   }
+  const free = await geocodeWithOpenMeteo(cityLabel, 'ko');
+  return free ? { label: cityLabel, lat: free.lat, lng: free.lng, formatted: free.name || cityLabel } : null;
 }
 
 async function ensureDynamicCityProfile(cityLabel, theme = 'mixed', budget = 'mid', foodKeyword = '', fallbackAirport = 'NRT', lang = 'ko') {
@@ -978,20 +1386,24 @@ async function ensureDynamicCityProfile(cityLabel, theme = 'mixed', budget = 'mi
   let highlights = [];
   let foods = [];
   try {
-    const places = await fetchGoogleAttractions(cityLabel, theme, lang);
+    const places = GOOGLE_PLACES_ENABLED
+      ? await fetchGoogleAttractions(cityLabel, theme, lang, geocoded ? { lat: geocoded.lat, lng: geocoded.lng } : null)
+      : [];
     highlights = (places || []).slice(0, 10).map((p) => ({
       name: p.displayName?.text || '추천 명소',
       area: localizeAddress(p.formattedAddress, cityLabel, lang),
       category: localizeType(p.primaryType, lang) || ({ko:'관광',en:'Attraction',ja:'観光'}[lang]||'관광'),
       stayMin: 90,
       bestTime: inferBestTime(p),
-      crowdScore: 3
+      crowdScore: 3,
+      lat: p.location?.latitude ?? null,
+      lng: p.location?.longitude ?? null
     }));
   } catch {
     highlights = [];
   }
   try {
-    if (GOOGLE_MAPS_API_KEY) {
+    if (GOOGLE_PLACES_ENABLED) {
       const places = await fetchFoodPlacesForCity(cityLabel, geocoded?.lat, geocoded?.lng, foodKeyword, budget, lang);
       foods = (places || []).slice(0, 10).map((f) => ({
         name: f.name,
@@ -1940,7 +2352,9 @@ async function parseTravelChatWithGemini(message, context, history, prevParsed) 
   ].filter(Boolean).join('\n');
   const data = await callGeminiGenerateContent(prompt, {
     temperature: 0.2,
-    maxOutputTokens: 700,
+    // 2.5 계열은 생각 토큰이 한도를 나눠 써서 700이면 잘리기 쉬웠다 → 생각 끄고 여유 있게
+    maxOutputTokens: 1200,
+    thinkingBudget: 0,
     topP: 0.9,
     responseMimeType: 'application/json'
   });
@@ -1986,7 +2400,9 @@ async function buildTravelChatPlan(payload = {}) {
       parsed._aiModel = geminiParsed._aiModel || GEMINI_API_MODEL;
       source = 'gemini_chat_parser_v1';
     } catch (err) {
-      aiErrors.push(classifyAiError('Gemini', err));
+      const classified = classifyAiError('Gemini', err);
+      aiErrors.push(classified);
+      warnThrottled(`chat:gemini:${classified.code}`, `[chat] Gemini 해석 실패(${classified.code}) → ${OPENAI_API_KEY ? 'OpenAI 시도' : '규칙 기반 해석'}: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
     }
   }
 
@@ -1996,7 +2412,9 @@ async function buildTravelChatPlan(payload = {}) {
       parsed = normalizeTravelChatParsed(openaiParsed, fallback);
       source = 'openai_chat_parser_v1';
     } catch (err) {
-      aiErrors.push(classifyAiError('OpenAI', err));
+      const classified = classifyAiError('OpenAI', err);
+      aiErrors.push(classified);
+      warnThrottled(`chat:openai:${classified.code}`, `[chat] OpenAI 해석 실패(${classified.code}) → 규칙 기반 해석: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
     }
   }
 
@@ -2118,7 +2536,7 @@ async function buildTravelChatPlan(payload = {}) {
     source,
     aiModel: parsed._aiModel || null,
     aiNote: summarizeAiErrors(aiErrors),
-    aiErrors
+    aiErrors: publicAiErrors(aiErrors)
   };
 }
 
@@ -2487,15 +2905,981 @@ function localizeType(primaryType, lang) {
   return key.replace(/_/g, ' ');
 }
 
-async function fetchGoogleCityCenter(cityLabel) {
-  if (!GOOGLE_MAPS_API_KEY) return null;
-  const endpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(cityLabel + ' Japan')}&key=${GOOGLE_MAPS_API_KEY}`;
-  const response = await fetch(endpoint);
-  if (!response.ok) return null;
-  const data = await response.json();
-  const loc = data.results?.[0]?.geometry?.location;
-  return loc ? { lat: Number(loc.lat), lng: Number(loc.lng) } : null;
+// ══════════════════════════════════════════════════════════════════════
+// Google Maps Platform 공통 호출 헬퍼 (PLACES_PROVIDER=google 일 때만 실제 호출)
+//  - Places·Geocoding·Directions·사진 요청은 모두 googleApiFetch 한 곳을 거친다.
+//  - 비용 가드 ① 결제 꺼짐/권한 거부/한도 초과 응답을 받으면 30분 동안 모든 Google 호출을 건너뛴다.
+//            ② 호출 상한(UTC 날짜·UTC 월 기준)을 넘으면 다음 날/다음 달까지 건너뛴다.
+//               검색·지오코딩·경로: GOOGLE_DAILY_CALL_LIMIT(기본 30) / GOOGLE_MONTHLY_CALL_LIMIT(기본 900)
+//               사진:              GOOGLE_PHOTO_DAILY_LIMIT(기본 30) / GOOGLE_PHOTO_MONTHLY_LIMIT(기본 900) — 사진이 검색 예산을 쓰지 않게 따로 센다.
+//  - Geocoding/Directions는 HTTP 200 + status(REQUEST_DENIED 등)로 거부를 알리므로 본문까지 확인한다.
+// ══════════════════════════════════════════════════════════════════════
+const GOOGLE_CIRCUIT_OPEN_MS = 30 * 60_000;
+const GOOGLE_REQUEST_TIMEOUT_MS = Math.min(AI_REQUEST_TIMEOUT_MS, 10_000);
+const GOOGLE_CIRCUIT_REASONS = new Set(['GOOGLE_BILLING_DISABLED', 'GOOGLE_PERMISSION_DENIED', 'GOOGLE_QUOTA_EXCEEDED']);
+const _googleGuard = {
+  circuitUntil: 0, circuitReason: null, day: '', month: '',
+  calls: 0, monthCalls: 0, photoCalls: 0, photoMonthCalls: 0,
+  lastErrorCode: null, lastErrorAt: null
+};
+const GOOGLE_BUCKET_LIMITS = {
+  search: { daily: GOOGLE_DAILY_CALL_LIMIT, monthly: GOOGLE_MONTHLY_CALL_LIMIT, dayKey: 'calls', monthKey: 'monthCalls' },
+  photo: { daily: GOOGLE_PHOTO_DAILY_LIMIT, monthly: GOOGLE_PHOTO_MONTHLY_LIMIT, dayKey: 'photoCalls', monthKey: 'photoMonthCalls' }
+};
+
+class GoogleApiError extends Error {
+  constructor(reasonCode, message, httpStatus = null) {
+    super(message || reasonCode);
+    this.name = 'GoogleApiError';
+    this.reasonCode = reasonCode;
+    this.httpStatus = httpStatus;
+  }
 }
+
+function googleGuardState() {
+  const iso = new Date().toISOString();
+  const day = iso.slice(0, 10);
+  const month = iso.slice(0, 7);
+  if (_googleGuard.day !== day) {
+    _googleGuard.day = day;
+    _googleGuard.calls = 0;
+    _googleGuard.photoCalls = 0;
+  }
+  if (_googleGuard.month !== month) {
+    _googleGuard.month = month;
+    _googleGuard.monthCalls = 0;
+    _googleGuard.photoMonthCalls = 0;
+  }
+  const circuitOpen = _googleGuard.circuitUntil > Date.now();
+  return {
+    enabled: GOOGLE_PLACES_ENABLED,
+    serverKeyConfigured: Boolean(GOOGLE_MAPS_SERVER_KEY),
+    callsToday: _googleGuard.calls,
+    dailyCallLimit: GOOGLE_DAILY_CALL_LIMIT,
+    callsThisMonth: _googleGuard.monthCalls,
+    monthlyCallLimit: GOOGLE_MONTHLY_CALL_LIMIT,
+    photoCallsToday: _googleGuard.photoCalls,
+    photoDailyLimit: GOOGLE_PHOTO_DAILY_LIMIT,
+    photoCallsThisMonth: _googleGuard.photoMonthCalls,
+    photoMonthlyLimit: GOOGLE_PHOTO_MONTHLY_LIMIT,
+    countersResetOnRestart: true,
+    circuitOpen,
+    circuitReason: circuitOpen ? _googleGuard.circuitReason : null,
+    circuitOpenUntil: circuitOpen ? new Date(_googleGuard.circuitUntil).toISOString() : null,
+    lastErrorCode: _googleGuard.lastErrorCode,
+    lastErrorAt: _googleGuard.lastErrorAt
+  };
+}
+
+// 지금 Google을 호출하면 안 되는 이유(reasonCode). 호출해도 되면 null.
+// ignoreCircuit: 진단 검사(probe)처럼 차단 중에도 1회 확인이 필요할 때만 사용(호출 상한은 그대로 적용).
+// bucket: 'search'(검색·지오코딩·경로) | 'photo'(사진)
+function googleBlockedReason({ ignoreCircuit = false, bucket = 'search' } = {}) {
+  if (!GOOGLE_PLACES_ENABLED) return 'PROVIDER_UNAVAILABLE';
+  if (!GOOGLE_MAPS_SERVER_KEY) return 'GOOGLE_KEY_MISSING';
+  googleGuardState();
+  if (_googleGuard.circuitUntil > Date.now() && !ignoreCircuit) return 'GOOGLE_CIRCUIT_OPEN';
+  const lim = GOOGLE_BUCKET_LIMITS[bucket] || GOOGLE_BUCKET_LIMITS.search;
+  const label = bucket === 'photo' ? '사진 ' : '';
+  if (_googleGuard[lim.dayKey] >= lim.daily) {
+    warnThrottled(`google:daily-cap:${bucket}`, `[google] 오늘(UTC) ${label}호출 상한 ${lim.daily}회에 도달해 다음 UTC 자정까지 Google ${label}호출을 건너뜁니다.`);
+    return 'GOOGLE_QUOTA_EXCEEDED';
+  }
+  if (_googleGuard[lim.monthKey] >= lim.monthly) {
+    warnThrottled(`google:monthly-cap:${bucket}`, `[google] 이번 달(UTC) ${label}호출 상한 ${lim.monthly}회에 도달해 다음 달까지 Google ${label}호출을 건너뜁니다.`);
+    return 'GOOGLE_QUOTA_EXCEEDED';
+  }
+  return null;
+}
+
+function redactGoogleKey(text) {
+  let s = String(text || '');
+  if (GOOGLE_MAPS_SERVER_KEY) s = s.split(GOOGLE_MAPS_SERVER_KEY).join('***');
+  return s.replace(/AIza[0-9A-Za-z_-]{20,}/g, 'AIza***');
+}
+
+// Google 오류 본문을 reasonCode로 분류한다. (Places(New): error.status/details[].reason, 레거시: status/error_message)
+function classifyGoogleFailure(httpStatus, body) {
+  const err = body && typeof body === 'object' && body.error && typeof body.error === 'object' ? body.error : null;
+  const status = String(err?.status || (body && typeof body.status === 'string' ? body.status : '') || '').toUpperCase();
+  const details = Array.isArray(err?.details) ? err.details : [];
+  const reason = String((details.find((d) => d && d.reason) || {}).reason || '').toUpperCase();
+  const message = String(err?.message || body?.error_message || '');
+  const low = message.toLowerCase();
+  let reasonCode = 'GOOGLE_ERROR';
+  if (reason === 'BILLING_DISABLED' || low.includes('billing')) {
+    reasonCode = 'GOOGLE_BILLING_DISABLED';
+  } else if (httpStatus === 429 || status === 'RESOURCE_EXHAUSTED' || status === 'OVER_QUERY_LIMIT' || status === 'OVER_DAILY_LIMIT' || reason === 'RATE_LIMIT_EXCEEDED' || reason.includes('QUOTA')) {
+    reasonCode = 'GOOGLE_QUOTA_EXCEEDED';
+  } else if (httpStatus === 401 || httpStatus === 403 || status === 'PERMISSION_DENIED' || status === 'REQUEST_DENIED' || status === 'UNAUTHENTICATED' || reason.startsWith('API_KEY') || reason === 'SERVICE_DISABLED') {
+    reasonCode = 'GOOGLE_PERMISSION_DENIED';
+  }
+  return { reasonCode, status, reason, message: redactGoogleKey(message).slice(0, 200) };
+}
+
+// 모든 Google Maps Platform 요청의 단일 출입구. opts: { label, method, headers, body, expect: 'json'|'image', timeoutMs, bypassCircuit, bucket: 'search'|'photo' }
+async function googleApiFetch(url, opts = {}) {
+  const label = opts.label || 'google';
+  const bucket = opts.bucket === 'photo' ? 'photo' : 'search';
+  const blocked = googleBlockedReason({ ignoreCircuit: Boolean(opts.bypassCircuit), bucket });
+  if (blocked) throw new GoogleApiError(blocked, `Google ${label} skipped (${blocked})`);
+  const lim = GOOGLE_BUCKET_LIMITS[bucket];
+  _googleGuard[lim.dayKey] += 1;
+  _googleGuard[lim.monthKey] += 1;
+  let res;
+  try {
+    res = await fetchWithTimeout(url, {
+      method: opts.method || 'GET',
+      headers: { ...(opts.headers || {}) },
+      body: opts.body
+    }, opts.timeoutMs || GOOGLE_REQUEST_TIMEOUT_MS);
+  } catch (err) {
+    const msg = redactGoogleKey(err?.message || err);
+    _googleGuard.lastErrorCode = 'GOOGLE_ERROR';
+    _googleGuard.lastErrorAt = new Date().toISOString();
+    warnThrottled('google:GOOGLE_ERROR:network', `[google] ${label} 요청 실패(네트워크/타임아웃): ${msg}`);
+    throw new GoogleApiError('GOOGLE_ERROR', `Google ${label} network error`);
+  }
+  const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+  if (opts.expect === 'image' && res.ok && contentType.startsWith('image/')) return res;
+  let body = null;
+  try {
+    const text = await res.text();
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = null;
+  }
+  if (res.ok && opts.expect !== 'image') {
+    const legacyStatus = String(body && typeof body.status === 'string' ? body.status : '').toUpperCase();
+    if (!legacyStatus || legacyStatus === 'OK' || legacyStatus === 'ZERO_RESULTS' || legacyStatus === 'NOT_FOUND') {
+      // 진단 검사가 성공하면(예: 결제를 켠 뒤) 차단을 바로 푼다.
+      if (opts.bypassCircuit && _googleGuard.circuitUntil > Date.now()) {
+        _googleGuard.circuitUntil = 0;
+        _googleGuard.circuitReason = null;
+        console.log(`[google] ${label} 확인 성공 — Google 호출 차단을 해제합니다.`);
+      }
+      return body || {};
+    }
+  }
+  const failure = classifyGoogleFailure(res.status, body);
+  if (res.ok && opts.expect === 'image') failure.message = `unexpected content-type ${contentType || '-'}`;
+  _googleGuard.lastErrorCode = failure.reasonCode;
+  _googleGuard.lastErrorAt = new Date().toISOString();
+  if (GOOGLE_CIRCUIT_REASONS.has(failure.reasonCode)) {
+    _googleGuard.circuitUntil = Date.now() + GOOGLE_CIRCUIT_OPEN_MS;
+    _googleGuard.circuitReason = failure.reasonCode;
+  }
+  warnThrottled(
+    `google:${failure.reasonCode}`,
+    `[google] ${label} → HTTP ${res.status} ${failure.status || '-'} ${failure.reason || ''} ${failure.message}`.replace(/\s+/g, ' ').trim()
+      + (GOOGLE_CIRCUIT_REASONS.has(failure.reasonCode) ? ' — 30분 동안 Google 호출을 건너뜁니다.' : '')
+  );
+  throw new GoogleApiError(failure.reasonCode, `Google ${label} ${res.status} ${failure.status || failure.reason || ''}`.trim(), res.status);
+}
+
+// Places API(New) Text Search. 결과 사진 이름은 사진 프록시 허용 목록에 등록한다.
+async function googlePlacesSearchText(body, fieldMask, label = 'places:searchText', extra = {}) {
+  const data = await googleApiFetch(`${PLACES_API_BASE}/v1/places:searchText`, {
+    ...extra,
+    label,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': GOOGLE_MAPS_SERVER_KEY,
+      'X-Goog-FieldMask': fieldMask
+    },
+    body: JSON.stringify(body)
+  });
+  const places = Array.isArray(data?.places) ? data.places : [];
+  places.forEach((p) => rememberPlacePhotoName(p?.photos?.[0]?.name));
+  return places;
+}
+
+// Geocoding API — 첫 결과의 좌표. (결과 없음 → null)
+async function googleGeocodeFirst(address, lang = 'ko') {
+  const url = `${GEOCODE_API_BASE}/maps/api/geocode/json?address=${encodeURIComponent(address)}&language=${encodeURIComponent(lang || 'ko')}&region=jp&key=${encodeURIComponent(GOOGLE_MAPS_SERVER_KEY)}`;
+  const data = await googleApiFetch(url, { label: 'geocode' });
+  const first = data?.results?.[0];
+  const loc = first?.geometry?.location;
+  if (!loc) return null;
+  return { lat: Number(loc.lat), lng: Number(loc.lng), formatted: first.formatted_address || '' };
+}
+
+// ── Google 사진 프록시(/api/place-photo)용: 서버가 최근 Places 응답에서 받은 사진 이름만 허용 ──
+const PLACE_PHOTO_NAME_RE = /^places\/[A-Za-z0-9_-]+\/photos\/[A-Za-z0-9_-]+$/;
+const PLACE_PHOTO_NAME_TTL_MS = 24 * 60 * 60_000;
+const PLACE_PHOTO_NAME_MAX = 5000;
+const _issuedPhotoNames = new Map();
+
+function rememberPlacePhotoName(name) {
+  const n = String(name || '');
+  if (!PLACE_PHOTO_NAME_RE.test(n)) return false;
+  _issuedPhotoNames.delete(n);
+  _issuedPhotoNames.set(n, Date.now());
+  while (_issuedPhotoNames.size > PLACE_PHOTO_NAME_MAX) {
+    _issuedPhotoNames.delete(_issuedPhotoNames.keys().next().value);
+  }
+  return true;
+}
+
+function isIssuedPlacePhotoName(name) {
+  const at = _issuedPhotoNames.get(String(name || ''));
+  return Boolean(at && (Date.now() - at) < PLACE_PHOTO_NAME_TTL_MS);
+}
+
+// Google 사진 → 키가 들어가지 않는 우리 서버 프록시 주소 + 촬영자 표기
+function googlePhotoFields(place) {
+  const photo = place?.photos?.[0];
+  const name = String(photo?.name || '');
+  if (!rememberPlacePhotoName(name)) return { photoUrl: null };
+  const author = Array.isArray(photo.authorAttributions) ? photo.authorAttributions[0] : null;
+  const authorUri = author && /^https:\/\//.test(String(author.uri || '')) ? String(author.uri) : '';
+  return {
+    photoUrl: `/api/place-photo?name=${encodeURIComponent(name)}&w=400`,
+    photoCredit: { artist: String(author?.displayName || ''), license: 'Google Maps', filePage: authorUri, scope: 'place' }
+  };
+}
+
+// ── 결과 캐시 (google 모드, 메모리 12시간) ──
+const PLACES_CACHE_TTL_MS = 12 * 60 * 60_000;
+const PLACES_CACHE_MAX = 300;
+const _placesCache = new Map();
+
+function placesCacheGet(key) {
+  const entry = _placesCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at > PLACES_CACHE_TTL_MS) {
+    _placesCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function placesCacheSet(key, value) {
+  _placesCache.delete(key);
+  _placesCache.set(key, { at: Date.now(), value });
+  while (_placesCache.size > PLACES_CACHE_MAX) {
+    _placesCache.delete(_placesCache.keys().next().value);
+  }
+}
+
+// allSettled 결과가 전부 실패면 첫 오류를 던지고, 아니면 성공한 값만 모은다.
+function settledValuesOrThrow(settled) {
+  const ok = settled.filter((s) => s.status === 'fulfilled').map((s) => s.value);
+  if (ok.length === 0 && settled.length > 0) {
+    const first = settled.find((s) => s.status === 'rejected');
+    throw first.reason;
+  }
+  return ok;
+}
+
+// ── 무료 지오코딩 (open-meteo, 키 없음·무료) — 동적 도시의 중심 좌표용, 결과는 24시간 메모리 캐시 ──
+const _openMeteoGeoCache = new Map();
+async function geocodeWithOpenMeteo(name, lang = 'ko') {
+  const q = String(name || '').trim();
+  if (!q) return null;
+  const cacheKey = `${lang}|${q}`;
+  const cached = _openMeteoGeoCache.get(cacheKey);
+  if (cached && (Date.now() - cached.at) < 24 * 60 * 60_000) return cached.value;
+  let value = null;
+  try {
+    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=5&language=${encodeURIComponent(lang || 'ko')}&format=json&countryCode=JP`;
+    const res = await fetchWithTimeout(url, { headers: { 'User-Agent': OUTBOUND_USER_AGENT } }, 6000);
+    if (res.ok) {
+      const data = await res.json();
+      const hit = (Array.isArray(data?.results) ? data.results : []).find((r) => String(r.country_code || '').toUpperCase() === 'JP');
+      if (hit && Number.isFinite(Number(hit.latitude)) && Number.isFinite(Number(hit.longitude))) {
+        value = { lat: Number(hit.latitude), lng: Number(hit.longitude), name: String(hit.name || q) };
+      }
+    }
+  } catch (err) {
+    warnThrottled('open-meteo-geocode', `[geocode] open-meteo 지오코딩 실패: ${err.message}`);
+  }
+  _openMeteoGeoCache.set(cacheKey, { at: Date.now(), value });
+  if (_openMeteoGeoCache.size > 500) _openMeteoGeoCache.delete(_openMeteoGeoCache.keys().next().value);
+  return value;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// 정적 장소 사진·좌표: assets/place-images.json (위키미디어 공용의 자유 라이선스 이미지만)
+//  키: "<cityKey>|<CITY_DATA highlights의 장소 이름>" — 파일이 없으면 사진 없이 정상 동작한다.
+// ══════════════════════════════════════════════════════════════════════
+function cleanPlaceText(value, maxLen = 160) {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, maxLen) : '';
+}
+
+// 사진 데이터 항목 한 개를 검증해 정리한다(places·cities·foodGenres 공통).
+// 사진은 위키미디어 공용(commons) 이미지 + 파일 페이지 + 라이선스가 모두 있을 때만 인정하고,
+// 좌표는 일본 범위(위도 20~46.5, 경도 122~154)만 받는다. labels.en/ja(또는 nameEn/nameJa)는 선택.
+function readPlaceMediaEntry(v) {
+  // 위키백과 로컬(비자유) 이미지는 버린다.
+  const image = typeof v.image === 'string' && /^https:\/\/upload\.wikimedia\.org\/wikipedia\/commons\//.test(v.image) ? v.image : null;
+  const filePage = typeof v.filePage === 'string' && /^https:\/\/commons\.wikimedia\.org\/wiki\//.test(v.filePage) ? v.filePage : '';
+  const license = cleanPlaceText(v.license, 60);
+  const hasPhoto = Boolean(image && filePage && license);
+  const lat = typeof v.lat === 'number' && Number.isFinite(v.lat) && v.lat >= 20 && v.lat <= 46.5 ? v.lat : null;
+  const lng = typeof v.lng === 'number' && Number.isFinite(v.lng) && v.lng >= 122 && v.lng <= 154 ? v.lng : null;
+  const hasCoords = lat !== null && lng !== null;
+  const labelsIn = v.labels && typeof v.labels === 'object' ? v.labels : {};
+  return {
+    image: hasPhoto ? image : null,
+    filePage: hasPhoto ? filePage : '',
+    license: hasPhoto ? license : '',
+    artist: hasPhoto ? cleanPlaceText(v.artist, 120) : '',
+    lat: hasCoords ? lat : null,
+    lng: hasCoords ? lng : null,
+    wikidata: /^Q\d+$/.test(String(v.wikidata || '')) ? String(v.wikidata) : '',
+    labels: {
+      en: cleanPlaceText(labelsIn.en || v.nameEn, 80),
+      ja: cleanPlaceText(labelsIn.ja || v.nameJa, 80)
+    }
+  };
+}
+
+function loadPlaceImages() {
+  const byKey = new Map();
+  const byName = new Map();
+  // cities: cityKey → 도시 대표 사진(좌표가 일본 범위일 때만). foodGenres: CITY_DATA foods[].genre 원문(한국어) → 음식 예시 사진.
+  const cities = new Map();
+  const foodGenres = new Map();
+  const fileLabel = path.relative(__dirname, PLACE_IMAGES_FILE) || PLACE_IMAGES_FILE;
+  try {
+    if (!fs.existsSync(PLACE_IMAGES_FILE)) {
+      console.warn(`[place-images] ${fileLabel} 파일이 없어 장소 사진·좌표 없이 동작합니다.`);
+      return { byKey, byName, cities, foodGenres };
+    }
+    const raw = JSON.parse(fs.readFileSync(PLACE_IMAGES_FILE, 'utf8').replace(/^﻿/, ''));
+    const section = (name) => (raw && typeof raw[name] === 'object' && raw[name] && !Array.isArray(raw[name]) ? raw[name] : {});
+    let withPhoto = 0;
+    let withCoords = 0;
+    let withLabels = 0;
+    for (const [key, v] of Object.entries(section('places'))) {
+      const sep = key.indexOf('|');
+      if (sep <= 0 || !v || typeof v !== 'object') continue;
+      const name = key.slice(sep + 1).trim();
+      if (!name) continue;
+      const entry = readPlaceMediaEntry(v);
+      if (entry.image) withPhoto += 1;
+      if (entry.lat !== null) withCoords += 1;
+      if (entry.labels.en || entry.labels.ja) withLabels += 1;
+      byKey.set(`${key.slice(0, sep).trim()}|${name}`, entry);
+      if (!byName.has(name)) byName.set(name, []);
+      byName.get(name).push(entry);
+    }
+    for (const [cityKey, v] of Object.entries(section('cities'))) {
+      const ck = String(cityKey || '').trim();
+      if (!/^[a-z0-9_]+$/.test(ck) || !v || typeof v !== 'object') continue;
+      const entry = readPlaceMediaEntry(v);
+      // 도시 사진은 좌표가 일본 안일 때만 쓴다(다른 나라 항목을 잘못 고른 경우를 거른다).
+      if (!entry.image || entry.lat === null) continue;
+      cities.set(ck, entry);
+    }
+    for (const [genre, v] of Object.entries(section('foodGenres'))) {
+      const g = String(genre || '').trim();
+      if (!g || !v || typeof v !== 'object') continue;
+      const entry = readPlaceMediaEntry(v);
+      if (!entry.image) continue;
+      foodGenres.set(g, entry);
+    }
+    console.log(`[place-images] ${byKey.size}곳 로드 (사진 ${withPhoto}곳, 좌표 ${withCoords}곳, en/ja 이름 ${withLabels}곳), 도시 사진 ${cities.size}곳, 음식 장르 사진 ${foodGenres.size}개`);
+  } catch (err) {
+    console.warn(`[place-images] ${fileLabel}을(를) 읽지 못해 장소 사진·좌표 없이 동작합니다: ${err.message}`);
+  }
+  return { byKey, byName, cities, foodGenres };
+}
+
+const PLACE_IMAGES = loadPlaceImages();
+
+// photoCredit.scope: 'place'(그 장소 사진) | 'city'(도시 대표 사진) | 'genre'(음식 장르 예시 사진)
+function mediaCredit(media, scope) {
+  return { artist: media.artist, license: media.license, filePage: media.filePage, scope };
+}
+
+// 도시 대표 사진·음식 장르 사진처럼 "그 장소 자체의 사진이 아닌" 대체 사진인지
+function hasFallbackPhoto(item) {
+  const scope = item?.photoCredit?.scope;
+  return Boolean(item?.photoUrl) && (scope === 'city' || scope === 'genre');
+}
+
+// 카드에 자기 사진이 없으면 도시 대표 사진을 붙인다(photoCredit.scope='city'). 좌표는 붙이지 않는다(도시 중심은 그 장소 위치가 아님).
+function withCityPhotoFallback(item, cityKey) {
+  if (!item || item.photoUrl) return item;
+  const media = PLACE_IMAGES.cities.get(String(cityKey || ''));
+  if (!media || !media.image) return item;
+  return { ...item, photoUrl: media.image, photoCredit: mediaCredit(media, 'city') };
+}
+
+// 음식 장르 → 예시 사진. 원문(한국어) 장르, 동의어('ramen'·'寿司' → '라멘'·'스시'), en/ja 장르 표기 순으로 찾는다.
+function genrePhotoFor(genre) {
+  const g = String(genre || '').trim();
+  if (!g) return null;
+  const direct = PLACE_IMAGES.foodGenres.get(g) || PLACE_IMAGES.foodGenres.get(canonicalFoodGenre(g));
+  if (direct) return direct;
+  const low = g.toLowerCase();
+  for (const [ko, names] of Object.entries(FOOD_GENRE_I18N)) {
+    if (String(names.en || '').toLowerCase() === low || String(names.ja || '') === g) {
+      return PLACE_IMAGES.foodGenres.get(ko) || null;
+    }
+  }
+  return null;
+}
+
+// 맛집 카드에 자기 사진이 없으면 음식 장르 예시 사진을 붙인다(photoCredit.scope='genre').
+function withGenrePhotoFallback(item, genre) {
+  if (!item || item.photoUrl) return item;
+  const media = genrePhotoFor(genre);
+  if (!media) return item;
+  return { ...item, photoUrl: media.image, photoCredit: mediaCredit(media, 'genre') };
+}
+
+// cityKey가 맞으면 그 항목, 아니면 이름이 한 곳에만 있을 때 그 항목.
+function placeMediaFor(cityKey, name) {
+  const n = String(name || '').trim();
+  if (!n) return null;
+  if (cityKey) {
+    const hit = PLACE_IMAGES.byKey.get(`${cityKey}|${n}`);
+    if (hit) return hit;
+  }
+  const list = PLACE_IMAGES.byName.get(n);
+  return list && list.length === 1 ? list[0] : null;
+}
+
+function hasLatLng(item) {
+  return item && item.lat !== null && item.lat !== undefined && item.lng !== null && item.lng !== undefined
+    && Number.isFinite(Number(item.lat)) && Number.isFinite(Number(item.lng));
+}
+
+// 카드에 photoUrl·photoCredit·lat·lng를 붙인다(이미 있으면 유지. 단, 도시·장르 대체 사진은 그 장소 사진으로 바꾼다).
+function attachPlaceMedia(item, cityKey, lookupName) {
+  if (!item) return item;
+  const media = placeMediaFor(cityKey, lookupName || item.name);
+  if (!media) return item;
+  const out = { ...item };
+  if ((!out.photoUrl || hasFallbackPhoto(out)) && media.image) {
+    out.photoUrl = media.image;
+    out.photoCredit = mediaCredit(media, 'place');
+  }
+  if (!hasLatLng(out) && media.lat !== null) {
+    out.lat = media.lat;
+    out.lng = media.lng;
+  }
+  if (media.wikidata && !out.wikidata) out.wikidata = media.wikidata;
+  return out;
+}
+
+// ── 내장 큐레이션 데이터의 en/ja 표기 (데이터가 있는 곳만; 없으면 원문 유지) ──
+const CURATED_PLACE_I18N = {
+  'tokyo|센소지': { en: 'Senso-ji Temple', ja: '浅草寺' },
+  'tokyo|시부야 스카이': { en: 'Shibuya Sky', ja: '渋谷スカイ' },
+  'tokyo|메이지 신궁': { en: 'Meiji Jingu Shrine', ja: '明治神宮' },
+  'tokyo|츠키지 외시장': { en: 'Tsukiji Outer Market', ja: '築地場外市場' },
+  'tokyo|긴자 식스': { en: 'Ginza Six', ja: 'GINZA SIX' },
+  'tokyo|오다이바 해변공원': { en: 'Odaiba Marine Park', ja: 'お台場海浜公園' },
+  'osaka|오사카성': { en: 'Osaka Castle', ja: '大阪城' },
+  'osaka|도톤보리': { en: 'Dotonbori', ja: '道頓堀' },
+  'osaka|우메다 스카이 빌딩': { en: 'Umeda Sky Building', ja: '梅田スカイビル' },
+  'osaka|신세카이': { en: 'Shinsekai', ja: '新世界' },
+  'kyoto|후시미 이나리': { en: 'Fushimi Inari Taisha', ja: '伏見稲荷大社' },
+  'kyoto|기요미즈데라': { en: 'Kiyomizu-dera Temple', ja: '清水寺' },
+  'kyoto|아라시야마 대나무숲': { en: 'Arashiyama Bamboo Grove', ja: '嵐山 竹林の小径' },
+  // 사진 데이터(place-images.json)에 en/ja 이름이 없는 명소(설명형 이름이거나 위키 문서가 없는 곳)
+  'akita|아키타 시립박물관': { en: 'Akita city museum', ja: '秋田市の博物館' },
+  'hanamaki|하나마키 온천': { en: 'Hanamaki Onsen', ja: '花巻温泉' },
+  'hanamaki|미야자와 겐지 기념관': { en: 'Miyazawa Kenji Memorial Museum', ja: '宮沢賢治記念館' },
+  'hanamaki|이와테 산책로': { en: 'Iwate walking trail', ja: '岩手の散策路' },
+  'shizuoka|시즈오카 차밭': { en: 'Shizuoka tea fields', ja: '静岡の茶畑' },
+  'matsuyama|보찬 열차': { en: 'Botchan Train', ja: '坊っちゃん列車' },
+  'oita|유후인 거리': { en: 'Yufuin town streets', ja: '湯布院の街並み' },
+  'miyazaki|선멧세 니치난': { en: 'Sun Messe Nichinan', ja: 'サンメッセ日南' },
+  'rishiri|섬 해안 드라이브': { en: 'Island coastal drive', ja: '島の海岸ドライブ' },
+  'kushiro|와쇼 시장': { en: 'Washo Market', ja: '釧路和商市場' },
+  'nakashibetsu|네무로 해안': { en: 'Nemuro coast', ja: '根室の海岸' },
+  'nakashibetsu|현지 목장 체험': { en: 'Local farm experience', ja: '地元の牧場体験' },
+  'ibaraki|오아라이 해변': { en: 'Oarai beach', ja: '大洗の海岸' },
+  'matsumoto|나카마치 거리': { en: 'Nakamachi Street', ja: '中町通り' },
+  'iwakuni|시라헤비 신사': { en: 'Iwakuni White Snake Shrine', ja: '岩国白蛇神社' },
+  'yamaguchi_ube|우베 공원': { en: 'Ube park', ja: '宇部の公園' },
+  'amami|아마미 블루 해변': { en: 'Amami blue-water beaches', ja: '奄美の青い海のビーチ' },
+  'amami|망그로브 카약': { en: 'Mangrove kayaking', ja: 'マングローブカヤック' },
+  'amami|아야마루 곶': { en: 'Cape Ayamaru', ja: 'あやまる岬' },
+  'tanegashima|우라마 산책로': { en: 'Urama walking trail', ja: 'ウラマの散策路' },
+  'tanegashima|해변 일몰': { en: 'Beach sunset', ja: '浜辺の夕日' },
+  'ishigaki|환상적인 석양 포인트': { en: 'Sunset viewpoint', ja: '夕日の名所' },
+  'shimojishima|17END 비치': { en: '17END Beach', ja: '17END' },
+  'shimojishima|스노클링 포인트': { en: 'Snorkeling spot', ja: 'シュノーケリングスポット' },
+  'kumejima|열대 해변 산책': { en: 'Tropical beach walk', ja: '南国のビーチ散策' },
+  'kita_daito|섬 해안 절벽': { en: 'Island coastal cliffs', ja: '島の海岸の断崖' },
+  'kita_daito|로컬 등대': { en: 'Local lighthouse', ja: '島の灯台' },
+  'kita_daito|바다 조망길': { en: 'Ocean-view trail', ja: '海を望む遊歩道' },
+  'yonaguni|드라마티컬 절벽': { en: 'Dramatic sea cliffs', ja: '海の断崖絶壁' },
+  'tokunoshima|무시로세 해안': { en: 'Mushirose coast', ja: 'ムシロ瀬' },
+  'tokunoshima|아마기 산책로': { en: 'Amagi walking trail', ja: '天城の散策路' },
+  'tokunoshima|야생 자연 보호지': { en: 'Wildlife reserve', ja: '野生生物の保護区' },
+  // 사진 데이터의 위키데이터 이름이 카드 대상과 다른 명소(성·단체·산 이름 대신 카드가 가리키는 곳의 이름)
+  'akita|센슈공원': { en: 'Senshu Park', ja: '千秋公園' },
+  'odate|아키타견 박물관': { en: 'Akita Dog Museum', ja: '秋田犬会館' },
+  'kanazawa|히가시차야 거리': { en: 'Higashi Chaya District', ja: 'ひがし茶屋街' },
+  'kobe|기타노 이진칸': { en: 'Kitano Ijinkan', ja: '北野異人館' },
+  'tokyo|우에노 공원': { en: 'Ueno Park', ja: '上野公園' },
+  'kyoto|금각사': { ja: '金閣寺' },
+  'memanbetsu|시레토코 자연길': { en: 'Shiretoko nature trail', ja: '知床の自然散策路' },
+  'hakodate|하코다테 야경': { en: 'Mount Hakodate night view', ja: '函館山の夜景' },
+  'kitakyushu|사라쿠라산 야경': { en: 'Mount Sarakura night view', ja: '皿倉山の夜景' },
+  'okadama|오도리 야경': { en: 'Odori Park night view', ja: '大通公園の夜景' },
+  'izumo|신지호 석양': { en: 'Lake Shinji sunset', ja: '宍道湖の夕日' },
+  'kagoshima|이부스키 모래찜': { en: 'Ibusuki sand bath', ja: '指宿の砂むし温泉' },
+  'asahikawa|후라노 라벤더밭': { en: 'Furano lavender fields', ja: '富良野のラベンダー畑' },
+  'yakushima|조몬스기 트레일': { en: 'Jōmon Sugi trail', ja: '縄文杉トレッキング' },
+  'yonaguni|일본 최서단 기념비': { en: 'Westernmost Point of Japan monument', ja: '日本最西端の碑' },
+  'yonaguni|해저 지형 다이빙': { en: 'Yonaguni Monument dive', ja: '与那国島海底地形ダイビング' },
+  'rishiri|리시리산 전망': { en: 'Mount Rishiri viewpoint', ja: '利尻山の眺望' }
+};
+
+const CURATED_AREA_I18N = {
+  '아사쿠사': { en: 'Asakusa', ja: '浅草' }, '시부야': { en: 'Shibuya', ja: '渋谷' }, '하라주쿠': { en: 'Harajuku', ja: '原宿' },
+  '츠키지': { en: 'Tsukiji', ja: '築地' }, '긴자': { en: 'Ginza', ja: '銀座' }, '오다이바': { en: 'Odaiba', ja: 'お台場' },
+  '신주쿠': { en: 'Shinjuku', ja: '新宿' }, '에비스': { en: 'Ebisu', ja: '恵比寿' }, '주오구': { en: 'Chuo Ward', ja: '中央区' },
+  '난바': { en: 'Namba', ja: '難波' }, '우메다': { en: 'Umeda', ja: '梅田' }, '에비스초': { en: 'Ebisucho', ja: '恵美須町' },
+  '신세카이': { en: 'Shinsekai', ja: '新世界' }, '후시미': { en: 'Fushimi', ja: '伏見' }, '히가시야마': { en: 'Higashiyama', ja: '東山' },
+  '아라시야마': { en: 'Arashiyama', ja: '嵐山' }, '기온': { en: 'Gion', ja: '祇園' }, '사쿄구': { en: 'Sakyo Ward', ja: '左京区' },
+  '신사이바시': { en: 'Shinsaibashi', ja: '心斎橋' }, '덴노지': { en: 'Tennoji', ja: '天王寺' }, '가와라마치': { en: 'Kawaramachi', ja: '河原町' },
+  '오도리': { en: 'Odori', ja: '大通' }, '스스키노': { en: 'Susukino', ja: 'すすきの' }, '조잔케이': { en: 'Jozankei', ja: '定山渓' },
+  '하카타': { en: 'Hakata', ja: '博多' }, '텐진': { en: 'Tenjin', ja: '天神' }, '모모치': { en: 'Momochi', ja: '百道' },
+  '사카에': { en: 'Sakae', ja: '栄' }, '나고야역': { en: 'Nagoya Station', ja: '名古屋駅' }, '오스': { en: 'Osu', ja: '大須' },
+  '나하': { en: 'Naha', ja: '那覇' }, '차탄': { en: 'Chatan', ja: '北谷' }, '온나': { en: 'Onna', ja: '恩納' },
+  '나카구': { en: 'Naka Ward', ja: '中区' }, '미야지마': { en: 'Miyajima', ja: '宮島' }, '히로시마역': { en: 'Hiroshima Station', ja: '広島駅' },
+  '겐로쿠엔': { en: 'Kenrokuen', ja: '兼六園' }, '히가시차야': { en: 'Higashi Chaya', ja: 'ひがし茶屋街' }, '오미초': { en: 'Omicho', ja: '近江町' },
+  '아오바구': { en: 'Aoba Ward', ja: '青葉区' }, '고쿠분초': { en: 'Kokubuncho', ja: '国分町' }, '마쓰시마': { en: 'Matsushima', ja: '松島' },
+  '산노미야': { en: 'Sannomiya', ja: '三宮' }, '모자이크': { en: 'Mosaic', ja: 'モザイク' }, '기타노': { en: 'Kitano', ja: '北野' },
+  // 명소의 실제 지역(도시 프로필 sightXMeta·대표 명소 area)
+  '하코다테역': { en: 'Hakodate Station', ja: '函館駅' }, '모토마치': { en: 'Motomachi', ja: '元町' }, '고료카쿠': { en: 'Goryokaku', ja: '五稜郭' },
+  '아사히야마': { en: 'Asahiyama', ja: '旭山' }, '평화거리': { en: 'Heiwa-dori', ja: '平和通' }, '나가야마': { en: 'Nagayama', ja: '永山' },
+  '아오모리역': { en: 'Aomori Station', ja: '青森駅' }, '산나이마루야마': { en: 'Sannai-Maruyama', ja: '三内丸山' }, '야마데라': { en: 'Yamadera', ja: '山寺' },
+  '우라반다이': { en: 'Urabandai', ja: '裏磐梯' }, '시모고': { en: 'Shimogo', ja: '下郷' }, '다테야마': { en: 'Tateyama', ja: '立山' },
+  '도야마역': { en: 'Toyama Station', ja: '富山駅' }, '니혼다이라': { en: 'Nihondaira', ja: '日本平' }, '고라쿠엔': { en: 'Korakuen', ja: '後楽園' },
+  '이즈모타이샤': { en: 'Izumo Taisha', ja: '出雲大社' }, '신지호': { en: 'Lake Shinji', ja: '宍道湖' }, '카츠라하마': { en: 'Katsurahama', ja: '桂浜' },
+  '히로메시장': { en: 'Hirome Market', ja: 'ひろめ市場' }, '나루토': { en: 'Naruto', ja: '鳴門' }, '비잔': { en: 'Mount Bizan', ja: '眉山' },
+  '우라카미': { en: 'Urakami', ja: '浦上' }, '니치난': { en: 'Nichinan', ja: '日南' }, '이소': { en: 'Iso', ja: '磯' },
+  '모토부': { en: 'Motobu', ja: '本部' }, '소야곶': { en: 'Cape Soya', ja: '宗谷岬' }, '노샷푸': { en: 'Noshappu', ja: 'ノシャップ' },
+  '왓카나이역': { en: 'Wakkanai Station', ja: '稚内駅' }, '리시리후지': { en: 'Rishirifuji', ja: '利尻富士' }, '오시도마리': { en: 'Oshidomari', ja: '鴛泊' },
+  '습원': { en: 'Kushiro Marsh', ja: '釧路湿原' }, '누사마이': { en: 'Nusamai', ja: '幣舞' }, '와쇼시장': { en: 'Washo Market', ja: '和商市場' },
+  '네무로': { en: 'Nemuro', ja: '根室' }, '히가시구': { en: 'Higashi Ward', ja: '東区' }, '도와다': { en: 'Towada', ja: '十和田' },
+  '카즈노': { en: 'Kazuno', ja: '鹿角' }, '데와산잔': { en: 'Dewa Sanzan', ja: '出羽三山' }, '쓰루오카': { en: 'Tsuruoka', ja: '鶴岡' },
+  '사카타': { en: 'Sakata', ja: '酒田' }, '히타치나카': { en: 'Hitachinaka', ja: 'ひたちなか' }, '가미코치': { en: 'Kamikochi', ja: '上高地' },
+  '하버랜드': { en: 'Harborland', ja: 'ハーバーランド' }, '신고베': { en: 'Shin-Kobe', ja: '新神戸' }, '기노사키': { en: 'Kinosaki', ja: '城崎' },
+  '도요오카': { en: 'Toyooka', ja: '豊岡' }, '이즈시': { en: 'Izushi', ja: '出石' }, '이와미': { en: 'Iwami', ja: '岩美' },
+  '돗토리 사구': { en: 'Tottori Sand Dunes', ja: '鳥取砂丘' }, '아키요시다이': { en: 'Akiyoshidai', ja: '秋吉台' }, '우베': { en: 'Ube', ja: '宇部' },
+  '모지코': { en: 'Mojiko', ja: '門司港' }, '고쿠라': { en: 'Kokura', ja: '小倉' }, '시라타니': { en: 'Shiratani', ja: '白谷' },
+  '아나보': { en: 'Anbo', ja: '安房' }, '구리오': { en: 'Kurio', ja: '栗生' }, '우주센터': { en: 'Space Center', ja: '宇宙センター' },
+  '니시노오모테': { en: 'Nishinoomote', ja: '西之表' }, '이케마': { en: 'Ikema', ja: '池間' }, '쿠리마': { en: 'Kurima', ja: '来間' },
+  '구스쿠베': { en: 'Gusukube', ja: '城辺' }, '카비라': { en: 'Kabira', ja: '川平' }, '이시가키시': { en: 'Ishigaki City', ja: '石垣市' },
+  '시모지': { en: 'Shimoji', ja: '下地' }, '이라부': { en: 'Irabu', ja: '伊良部' }, '산호초': { en: 'Coral reef', ja: 'サンゴ礁' },
+  '구메지마시': { en: 'Kumejima town', ja: '久米島町' }, '해변': { en: 'Beach', ja: 'ビーチ' }, '숲길': { en: 'Forest trail', ja: '森の小径' },
+  '아마기': { en: 'Amagi', ja: '天城' },
+  '지바 우라야스': { en: 'Urayasu, Chiba', ja: '千葉県浦安市' }, '야마나시 후지요시다': { en: 'Fujiyoshida, Yamanashi', ja: '山梨県富士吉田市' },
+  '네리마': { en: 'Nerima', ja: '練馬' }, '가나가와 가마쿠라': { en: 'Kamakura, Kanagawa', ja: '神奈川県鎌倉市' },
+  '가나가와 후지사와': { en: 'Fujisawa, Kanagawa', ja: '神奈川県藤沢市' }, '군마 쿠사츠': { en: 'Kusatsu, Gunma', ja: '群馬県草津町' },
+  '미에 구와나': { en: 'Kuwana, Mie', ja: '三重県桑名市' }, '아이치 나가쿠테': { en: 'Nagakute, Aichi', ja: '愛知県長久手市' },
+  '기후 게로': { en: 'Gero, Gifu', ja: '岐阜県下呂市' }, '기후 시라카와고': { en: 'Shirakawa-go, Gifu', ja: '岐阜県白川郷' },
+  '노보리베츠': { en: 'Noboribetsu', ja: '登別' }, '오타루': { en: 'Otaru', ja: '小樽' }, '노토': { en: 'Noto', ja: '能登' },
+  '후라노': { en: 'Furano', ja: '富良野' }, '비에이': { en: 'Biei', ja: '美瑛' }, '와카야마 다나베': { en: 'Tanabe, Wakayama', ja: '和歌山県田辺市' },
+  '시레토코': { en: 'Shiretoko', ja: '知床' }, '아소': { en: 'Aso', ja: '阿蘇' }, '오바나자와': { en: 'Obanazawa', ja: '尾花沢' },
+  '나가노 야마노우치': { en: 'Yamanouchi, Nagano', ja: '長野県山ノ内町' }, '다자이후': { en: 'Dazaifu', ja: '太宰府' },
+  '유후인': { en: 'Yufuin', ja: '湯布院' }, '아리마': { en: 'Arima', ja: '有馬' }, '벳푸': { en: 'Beppu', ja: '別府' }
+};
+
+const CURATED_CATEGORY_I18N = {
+  '문화': { en: 'Culture', ja: '文化' }, '전망': { en: 'Viewpoint', ja: '展望' }, '자연': { en: 'Nature', ja: '自然' },
+  '미식': { en: 'Food', ja: 'グルメ' }, '쇼핑': { en: 'Shopping', ja: 'ショッピング' }, '산책': { en: 'Walk', ja: '散策' },
+  '트레킹': { en: 'Hiking', ja: 'トレッキング' }, '야경': { en: 'Night view', ja: '夜景' }, '로컬': { en: 'Local', ja: 'ローカル' },
+  '명소': { en: 'Landmark', ja: '名所' }, '관광': { en: 'Sightseeing', ja: '観光' }, '도심 산책': { en: 'City walk', ja: '街歩き' },
+  '요청 명소': { en: 'Requested spot', ja: 'リクエストした名所' }, '대표 명소': { en: 'Top sight', ja: '定番スポット' },
+  '추천 여행지': { en: 'Recommended spot', ja: 'おすすめスポット' }
+};
+
+// 내장 맛집 이름 en/ja (도쿄·오사카·교토). 나머지는 도시 공통 이름 규칙(로컬 이자카야·대표 라멘)만 바꾸고 원문 유지.
+const CURATED_FOOD_I18N = {
+  'tokyo|스시다이': { en: 'Sushi Dai', ja: '寿司大' },
+  'tokyo|아후리 라멘': { en: 'AFURI Ramen', ja: 'AFURI' },
+  'tokyo|토리키조쿠': { en: 'Torikizoku', ja: '鳥貴族' },
+  'osaka|쿠시카츠 다루마': { en: 'Kushikatsu Daruma', ja: '串かつだるま' },
+  'osaka|타코야키 주하치반': { en: 'Takoyaki Juhachiban', ja: 'たこ焼十八番' },
+  'osaka|후쿠타로 오코노미야키': { en: 'Fukutaro Okonomiyaki', ja: 'お好み焼 福太郎' },
+  'kyoto|오멘 긴카쿠지': { en: 'Omen Ginkakuji', ja: 'おめん 銀閣寺本店' },
+  'kyoto|기온 우오신': { en: 'Gion Uoshin', ja: 'Gion Uoshin' }
+};
+
+// 도쿄·오사카·교토 밖 도시(JAPAN_CITY_PROFILES foodA/foodB)의 내장 맛집·음식 이름 en/ja. 도시와 상관없이 이름으로 찾는다.
+const REGIONAL_FOOD_I18N = {
+  '스프카레 GARAKU': { en: 'Soup Curry GARAKU', ja: 'スープカレー GARAKU' }, '스미레 라멘': { en: 'Sumire Ramen', ja: 'すみれ' },
+  '하코다테 카이센동': { en: 'Hakodate kaisendon', ja: '函館の海鮮丼' }, '시오라멘': { en: 'Shio ramen', ja: '塩ラーメン' },
+  '아사히카와 라멘': { en: 'Asahikawa ramen', ja: '旭川ラーメン' }, '징기스칸': { en: 'Jingisukan grilled lamb', ja: 'ジンギスカン' },
+  '아오모리 사과 디저트': { en: 'Aomori apple desserts', ja: '青森りんごスイーツ' }, '해산물 시장': { en: 'Seafood market', ja: '海鮮市場' },
+  '기리탄포': { en: 'Kiritanpo', ja: 'きりたんぽ' }, '이나니와 우동': { en: 'Inaniwa udon', ja: '稲庭うどん' },
+  '완코소바': { en: 'Wanko soba', ja: 'わんこそば' }, '모리오카 냉면': { en: 'Morioka reimen', ja: '盛岡冷麺' },
+  '이모니': { en: 'Imoni stew', ja: '芋煮' }, '야마가타 소바': { en: 'Yamagata soba', ja: '山形そば' },
+  '규탄 전문점': { en: 'Gyutan beef tongue restaurant', ja: '牛たん専門店' }, '즈다모치 카페': { en: 'Zunda mochi café', ja: 'ずんだ餅カフェ' },
+  '키타카타 라멘': { en: 'Kitakata ramen', ja: '喜多方ラーメン' }, '소스카츠동': { en: 'Sauce katsudon', ja: 'ソースカツ丼' },
+  '니가타 돈부리': { en: 'Niigata rice bowl', ja: '新潟の丼もの' }, '니혼슈 바': { en: 'Sake bar', ja: '日本酒バー' },
+  '카나자와 스시': { en: 'Kanazawa sushi', ja: '金沢の寿司' }, '노도구로 구이': { en: 'Grilled nodoguro seaperch', ja: 'のどぐろの塩焼き' },
+  '시로에비': { en: 'Shiro-ebi white shrimp', ja: '白えび' }, '부리 샤브': { en: 'Buri shabu-shabu', ja: 'ぶりしゃぶ' },
+  '사쿠라에비': { en: 'Sakura shrimp', ja: '桜えび' }, '우나기 덮밥': { en: 'Unagi rice bowl', ja: 'うなぎ丼' },
+  '미소카츠': { en: 'Miso katsu', ja: '味噌カツ' }, '히츠마부시': { en: 'Hitsumabushi', ja: 'ひつまぶし' },
+  '바라즈시': { en: 'Barazushi', ja: 'ばら寿司' }, '데미카츠동': { en: 'Demi-katsudon', ja: 'デミカツ丼' },
+  '히로시마 오코노미야키': { en: 'Hiroshima okonomiyaki', ja: '広島お好み焼き' }, '굴 요리': { en: 'Oyster dishes', ja: '牡蠣料理' },
+  '게 요리': { en: 'Crab dishes', ja: 'カニ料理' }, '회덮밥': { en: 'Sashimi rice bowl', ja: '海鮮丼' },
+  '이즈모 소바': { en: 'Izumo soba', ja: '出雲そば' }, '젠자이': { en: 'Zenzai sweet red bean soup', ja: 'ぜんざい' },
+  '사누키 우동': { en: 'Sanuki udon', ja: '讃岐うどん' }, '올리브 소고기': { en: 'Olive beef', ja: 'オリーブ牛' },
+  '도미밥': { en: 'Taimeshi sea bream rice', ja: '鯛めし' }, '쟈코텐': { en: 'Jakoten', ja: 'じゃこ天' },
+  '가츠오 타타키': { en: 'Katsuo tataki', ja: 'かつおのたたき' }, '사와치 요리': { en: 'Sawachi platter', ja: '皿鉢料理' },
+  '도쿠시마 라멘': { en: 'Tokushima ramen', ja: '徳島ラーメン' }, '아와규': { en: 'Awa beef', ja: '阿波牛' },
+  '하카타 라멘': { en: 'Hakata ramen', ja: '博多ラーメン' }, '모츠나베': { en: 'Motsunabe', ja: 'もつ鍋' },
+  '짬뽕': { en: 'Champon', ja: 'ちゃんぽん' }, '카스테라': { en: 'Castella', ja: 'カステラ' },
+  '바사시': { en: 'Basashi horse sashimi', ja: '馬刺し' }, '구마모토 라멘': { en: 'Kumamoto ramen', ja: '熊本ラーメン' },
+  '도리텐': { en: 'Toriten', ja: 'とり天' }, '벳푸 냉면': { en: 'Beppu reimen', ja: '別府冷麺' },
+  '치킨난반': { en: 'Chicken nanban', ja: 'チキン南蛮' }, '미야자키 소고기': { en: 'Miyazaki beef', ja: '宮崎牛' },
+  '쿠로부타 돈카츠': { en: 'Kurobuta tonkatsu', ja: '黒豚とんかつ' }, '사츠마아게': { en: 'Satsuma-age', ja: 'さつま揚げ' },
+  '사쓰마아게': { en: 'Satsuma-age', ja: 'さつま揚げ' }, '오키나와 소바': { en: 'Okinawa soba', ja: '沖縄そば' },
+  '고야참푸루': { en: 'Goya champuru', ja: 'ゴーヤーチャンプルー' }, '부타동': { en: 'Butadon pork rice bowl', ja: '豚丼' },
+  '유제품 디저트': { en: 'Dairy desserts', ja: '乳製品スイーツ' }, '해산물 덮밥': { en: 'Seafood rice bowl', ja: '海鮮丼' },
+  '홋카이도 우유 디저트': { en: 'Hokkaido milk desserts', ja: '北海道ミルクスイーツ' }, '리시리 다시 라멘': { en: 'Rishiri kelp-broth ramen', ja: '利尻昆布ラーメン' },
+  '성게 요리': { en: 'Sea urchin dishes', ja: 'ウニ料理' }, '현지 버거': { en: 'Local burger', ja: 'ご当地バーガー' },
+  '카이센동': { en: 'Kaisendon', ja: '海鮮丼' }, '로바타야키': { en: 'Robatayaki', ja: '炉端焼き' },
+  '치즈 플래터': { en: 'Cheese platter', ja: 'チーズプレート' }, '우유 아이스크림': { en: 'Milk ice cream', ja: 'ミルクアイス' },
+  '수프카레': { en: 'Soup curry', ja: 'スープカレー' }, '사과 디저트': { en: 'Apple desserts', ja: 'りんごスイーツ' },
+  '히메마스 요리': { en: 'Himemasu trout dishes', ja: 'ヒメマス料理' }, '히나이 토리': { en: 'Hinai chicken', ja: '比内地鶏' },
+  '쇼진요리': { en: 'Shojin ryori temple cuisine', ja: '精進料理' }, '아구 돼지 요리': { en: 'Agu pork dishes', ja: 'アグー豚料理' },
+  '낫토 정식': { en: 'Natto set meal', ja: '納豆定食' }, '신슈 소바': { en: 'Shinshu soba', ja: '信州そば' },
+  '해산물 정식': { en: 'Seafood set meal', ja: '海鮮定食' }, '온천 달걀 요리': { en: 'Onsen egg dishes', ja: '温泉卵料理' },
+  '고베규 스테이크': { en: 'Kobe beef steak', ja: '神戸牛ステーキ' }, '아카시야키': { en: 'Akashiyaki', ja: '明石焼き' },
+  '카니 요리': { en: 'Crab dishes', ja: 'カニ料理' }, '다지마규 구이': { en: 'Grilled Tajima beef', ja: '但馬牛の焼肉' },
+  '배 디저트': { en: 'Pear desserts', ja: '梨スイーツ' }, '이와쿠니 스시': { en: 'Iwakuni sushi', ja: '岩国寿司' },
+  '연근 요리': { en: 'Lotus root dishes', ja: 'れんこん料理' }, '복어 요리': { en: 'Fugu dishes', ja: 'ふぐ料理' },
+  '가와라소바': { en: 'Kawara soba', ja: '瓦そば' }, '야키카레': { en: 'Yaki-curry', ja: '焼きカレー' },
+  '우동': { en: 'Udon', ja: 'うどん' }, '사가규': { en: 'Saga beef', ja: '佐賀牛' },
+  '온천 두부': { en: 'Onsen yudofu hot-spring tofu', ja: '温泉湯どうふ' }, '케이한': { en: 'Keihan chicken rice soup', ja: '鶏飯' },
+  '흑설탕 디저트': { en: 'Brown sugar desserts', ja: '黒糖スイーツ' }, '토비우오 요리': { en: 'Flying fish dishes', ja: 'トビウオ料理' },
+  '현지 해산물 덮밥': { en: 'Local seafood rice bowl', ja: '地元の海鮮丼' }, '고구마 디저트': { en: 'Sweet potato desserts', ja: 'さつまいもスイーツ' },
+  '미야코소바': { en: 'Miyako soba', ja: '宮古そば' }, '해산물 BBQ': { en: 'Seafood BBQ', ja: '海鮮バーベキュー' },
+  '야에야마 소바': { en: 'Yaeyama soba', ja: '八重山そば' }, '이시가키규 스테이크': { en: 'Ishigaki beef steak', ja: '石垣牛ステーキ' },
+  '섬 생선 요리': { en: 'Island fish dishes', ja: '島魚料理' }, '트로피컬 디저트': { en: 'Tropical desserts', ja: 'トロピカルスイーツ' },
+  '현지 소바': { en: 'Local soba', ja: '地元のそば' }, '바다포도 샐러드': { en: 'Sea grape salad', ja: '海ぶどうサラダ' },
+  '섬 해산물 정식': { en: 'Island seafood set meal', ja: '島の海鮮定食' }, '현지 디저트': { en: 'Local desserts', ja: '地元のスイーツ' },
+  '섬 소바': { en: 'Island soba', ja: '島そば' }, '가쓰오 요리': { en: 'Bonito dishes', ja: 'カツオ料理' },
+  '향토 정식': { en: 'Local set meal', ja: '郷土料理の定食' }
+};
+
+// 한글 도시 이름(CITY_DATA label) → cityKey (정확히 같은 이름만)
+function cityKeyForExactLabel(label) {
+  const target = String(label || '').trim();
+  if (!target) return '';
+  for (const [k, v] of Object.entries(CITY_DATA)) {
+    if (String(v.label || '').trim() === target) return k;
+  }
+  return '';
+}
+
+function localizeCuratedFoodName(name, cityKey, lang) {
+  const n = String(name || '');
+  if (!n || lang === 'ko') return n;
+  const hit = CURATED_FOOD_I18N[`${cityKey}|${n}`] || REGIONAL_FOOD_I18N[n];
+  if (hit && hit[lang]) return hit[lang];
+  const label = CITY_DATA[cityKey]?.label || '';
+  if (label && n.startsWith(`${label} `)) {
+    const rest = n.slice(label.length + 1);
+    const cityName = localizedCityName(cityKey, lang);
+    if (rest === '로컬 이자카야') return lang === 'ja' ? `${cityName}の地元居酒屋` : `${cityName} local izakaya`;
+    if (rest === '대표 라멘') return lang === 'ja' ? `${cityName}の名物ラーメン` : `Classic ${cityName} ramen`;
+  }
+  return n;
+}
+
+// ── 규칙 기반 일정 문구 (시간대 단어 오전/오후/저녁은 화면 형식이라 모든 언어에서 그대로 둔다) ──
+const RULE_PLAN_TEXT = {
+  ko: {
+    freeTime: '자유 일정',
+    walkAround: (area) => `${area} 주변 산책`,
+    cafeWalk: (city) => `${city} 여유 산책·카페`,
+    restDay: (city) => `${city} 휴식일: 카페/산책 중심으로 여유 일정`,
+    transitOnly: '대중교통 중심으로 가까운 동선만 이동',
+    freeRest: '자유 휴식',
+    localFood: (city) => `${city} 로컬 미식 동선`,
+    cafeDessert: (city) => `${city} 감성 카페/디저트`,
+    transfer: (from, to, hint) => `도시 이동: ${from} -> ${to} (${hint})`,
+    arrivalRest: '도착 후 이동/체크인 및 휴식',
+    checkoutAirport: '체크아웃 & 공항 이동',
+    departurePrep: '출국 준비 및 공항 이동',
+    summary: (city, days, withFlight) => `${city} ${days}일 맞춤 일정${withFlight ? ' (항공권 시간 반영)' : ''}`,
+    tips: {
+      base: ['첫날은 공항-도심 이동 시간을 최소 2시간 확보', '핫플은 오픈 직후 또는 20시 이후 방문 추천', '하루 도보 18,000보 이상이면 다음날 오전 일정 완화 권장'],
+      arrival: (t) => `도착 ${t} + 이동시간 90분 기준으로 첫날 일정 시작`,
+      departure: (t) => `출국 ${t} 2시간 전 공항 도착 기준으로 마지막날 조정`,
+      airportBuffer: (m) => `마지막날 공항 도착 버퍼 ${m}분 반영`,
+      indoorFocus: '우천 가능성을 고려해 실내 비중을 높여 구성',
+      removeShopping: '쇼핑 동선 제외 후 관광/체험 중심으로 구성',
+      optimizeTransit: '도시/지역 이동 횟수를 줄이는 방향으로 동선 최적화',
+      lowWalking: '도보 부담을 줄이기 위해 구간 집중형 일정으로 구성',
+      publicTransitOnly: '대중교통 전용 이동 기준으로 일정 구성',
+      jrPassMode: 'JR 패스 활용 가능 구간 우선으로 동선 제안',
+      nightViewFocus: '야경 명소 시간대를 우선 배치',
+      firstTimeJapan: '일본 첫 여행 기준으로 대표 명소를 우선 반영',
+      multiCity: (list) => `다중 도시 일정: ${list.join(' -> ')} 순서로 동선을 구성`,
+      freeTime: '추천할 장소를 모두 배치해 남는 시간은 자유 일정으로 두었어요'
+    }
+  },
+  en: {
+    freeTime: 'Free time',
+    walkAround: (area) => `stroll around ${area}`,
+    cafeWalk: (city) => `relaxed walk and cafés in ${city}`,
+    restDay: (city) => `${city} rest day: an easy day of cafés and walks`,
+    transitOnly: 'Short hops by public transport only',
+    freeRest: 'Free rest',
+    localFood: (city) => `local food walk in ${city}`,
+    cafeDessert: (city) => `cafés and desserts in ${city}`,
+    transfer: (from, to, hint) => `Transfer: ${from} -> ${to} (${hint})`,
+    arrivalRest: 'Arrival, transfer, check-in and rest',
+    checkoutAirport: 'Check-out & head to the airport',
+    departurePrep: 'Prepare for departure and head to the airport',
+    summary: (city, days, withFlight) => `${days}-day plan for ${city}${withFlight ? ' (fitted to your flight times)' : ''}`,
+    tips: {
+      base: ['Allow at least 2 hours for the airport-to-city transfer on day 1', 'Visit popular spots right after opening or after 8 pm', 'If you walk more than 18,000 steps, take the next morning easy'],
+      arrival: (t) => `Day 1 starts from your ${t} arrival plus 90 minutes of transfer`,
+      departure: (t) => `Last day adjusted to reach the airport 2 hours before your ${t} departure`,
+      airportBuffer: (m) => `Last-day airport buffer of ${m} minutes included`,
+      indoorFocus: 'More indoor stops in case of rain',
+      removeShopping: 'Shopping stops removed; focused on sights and experiences',
+      optimizeTransit: 'Route optimized to reduce city/area changes',
+      lowWalking: 'Clustered stops to keep walking light',
+      publicTransitOnly: 'Planned for public transport only',
+      jrPassMode: 'Prefers segments covered by the JR Pass',
+      nightViewFocus: 'Night-view spots placed at the best time',
+      firstTimeJapan: 'Classic sights first for a first trip to Japan',
+      multiCity: (list) => `Multi-city trip: ${list.join(' -> ')}`,
+      freeTime: 'All suggested places are scheduled; remaining slots are left as free time'
+    }
+  },
+  ja: {
+    freeTime: '自由時間',
+    walkAround: (area) => `${area}周辺を散策`,
+    cafeWalk: (city) => `${city}でのんびり散策・カフェ`,
+    restDay: (city) => `${city}休息日：カフェや散策中心のゆったりプラン`,
+    transitOnly: '公共交通機関で近場のみ移動',
+    freeRest: '自由休憩',
+    localFood: (city) => `${city}のローカルグルメ巡り`,
+    cafeDessert: (city) => `${city}のカフェ・スイーツ`,
+    transfer: (from, to, hint) => `都市間移動：${from} -> ${to}（${hint}）`,
+    arrivalRest: '到着後の移動・チェックイン・休憩',
+    checkoutAirport: 'チェックアウト＆空港へ移動',
+    departurePrep: '出国準備と空港への移動',
+    summary: (city, days, withFlight) => `${city} ${days}日間のプラン${withFlight ? '（航空便の時刻を反映）' : ''}`,
+    tips: {
+      base: ['初日は空港から市内への移動に2時間以上を確保', '人気スポットは開店直後か20時以降がおすすめ', '1日18,000歩以上歩いたら翌朝の予定をゆるめに'],
+      arrival: (t) => `到着${t}＋移動90分を基準に初日の予定を開始`,
+      departure: (t) => `出発${t}の2時間前に空港着を基準に最終日を調整`,
+      airportBuffer: (m) => `最終日の空港到着バッファ${m}分を反映`,
+      indoorFocus: '雨に備えて屋内の比重を高めて構成',
+      removeShopping: 'ショッピングを除き観光・体験中心に構成',
+      optimizeTransit: '都市・エリア間の移動回数を減らすよう最適化',
+      lowWalking: '歩く負担を減らすためエリアを絞って構成',
+      publicTransitOnly: '公共交通機関のみでの移動を前提に構成',
+      jrPassMode: 'JRパスが使える区間を優先',
+      nightViewFocus: '夜景スポットを最適な時間帯に配置',
+      firstTimeJapan: '初めての日本旅行向けに定番スポットを優先',
+      multiCity: (list) => `複数都市の旅程：${list.join(' -> ')}の順`,
+      freeTime: 'おすすめの場所をすべて配置し、残りの時間は自由時間にしました'
+    }
+  }
+};
+
+const TRANSFER_HINT_I18N = {
+  'JR/한큐 약 30~60분': { en: 'JR/Hankyu, about 30-60 min', ja: 'JR/阪急 約30～60分' },
+  '신칸센 약 2시간 10분': { en: 'Shinkansen, about 2 h 10 min', ja: '新幹線 約2時間10分' },
+  '신칸센 약 2시간 30분': { en: 'Shinkansen, about 2 h 30 min', ja: '新幹線 約2時間30分' },
+  '전철 약 40~60분': { en: 'Train, about 40-60 min', ja: '電車 約40～60分' },
+  '전철 약 30~50분': { en: 'Train, about 30-50 min', ja: '電車 約30～50分' },
+  '전철 약 45~60분': { en: 'Train, about 45-60 min', ja: '電車 約45～60分' },
+  '대중교통 기준 이동': { en: 'by public transport', ja: '公共交通機関で移動' },
+  '대중교통 기준 1~3시간': { en: 'about 1-3 h by public transport', ja: '公共交通機関で約1～3時間' }
+};
+
+// 규칙 기반 일정의 "자유 일정" 칸 이름(지도·좌표 대상에서 뺀다)
+const FREE_TIME_TITLES = new Set(Object.values(RULE_PLAN_TEXT).map((t) => t.freeTime));
+
+// 예시 숙소(sample) 표기 en/ja
+const MOCK_STAY_I18N = {
+  names: {
+    '그랜드 호텔': { en: 'Grand Hotel', ja: 'グランドホテル' }, '센트럴 스테이': { en: 'Central Stay', ja: 'セントラルステイ' },
+    '파노라마 료칸': { en: 'Panorama Ryokan', ja: 'パノラマ旅館' }, '시티 레지던스': { en: 'City Residence', ja: 'シティレジデンス' },
+    '마켓 하우스': { en: 'Market House', ja: 'マーケットハウス' }, '리버사이드': { en: 'Riverside', ja: 'リバーサイド' },
+    '미드타운 호텔': { en: 'Midtown Hotel', ja: 'ミッドタウンホテル' }, '가든 스테이': { en: 'Garden Stay', ja: 'ガーデンステイ' },
+    '아카데미아': { en: 'Academia', ja: 'アカデミア' }, '스카이뷰 스테이': { en: 'Skyview Stay', ja: 'スカイビューステイ' },
+    '모던 하우스': { en: 'Modern House', ja: 'モダンハウス' }, '힐탑 숙소': { en: 'Hilltop Inn', ja: 'ヒルトップイン' }
+  },
+  types: {
+    '호텔': { en: 'Hotel', ja: 'ホテル' }, '료칸': { en: 'Ryokan', ja: '旅館' },
+    '레지던스': { en: 'Serviced apartment', ja: 'レジデンス' }, '게스트하우스': { en: 'Guesthouse', ja: 'ゲストハウス' }
+  },
+  amenities: {
+    '조식 포함': { en: 'Breakfast included', ja: '朝食付き' }, '무료 Wi-Fi': { en: 'Free Wi-Fi', ja: '無料Wi-Fi' },
+    '온천': { en: 'Hot spring', ja: '温泉' }, '야외 수영장': { en: 'Outdoor pool', ja: '屋外プール' },
+    '피트니스': { en: 'Fitness', ja: 'フィットネス' }, '공항 셔틀': { en: 'Airport shuttle', ja: '空港シャトル' }
+  }
+};
+
+function mockStayText(group, ko, lang) {
+  if (lang === 'ko') return ko;
+  return MOCK_STAY_I18N[group]?.[ko]?.[lang] || ko;
+}
+
+const FOOD_GENRE_I18N = {
+  '스시': { en: 'Sushi', ja: '寿司' }, '라멘': { en: 'Ramen', ja: 'ラーメン' }, '이자카야': { en: 'Izakaya', ja: '居酒屋' },
+  '쿠시카츠': { en: 'Kushikatsu', ja: '串カツ' }, '타코야키': { en: 'Takoyaki', ja: 'たこ焼き' }, '오코노미야키': { en: 'Okonomiyaki', ja: 'お好み焼き' },
+  '우동': { en: 'Udon', ja: 'うどん' }, '소바': { en: 'Soba', ja: 'そば' }, '가이세키': { en: 'Kaiseki', ja: '懐石' },
+  '카레': { en: 'Curry', ja: 'カレー' }, '디저트': { en: 'Dessert', ja: 'デザート' }, '해산물': { en: 'Seafood', ja: '海鮮' },
+  '향토요리': { en: 'Local cuisine', ja: '郷土料理' }, '면요리': { en: 'Noodles', ja: '麺料理' }, '규탄': { en: 'Beef tongue', ja: '牛タン' },
+  '돈카츠': { en: 'Tonkatsu', ja: 'とんかつ' }, '주점': { en: 'Bar', ja: '酒場' }, '일식': { en: 'Japanese', ja: '和食' },
+  '장어덮밥': { en: 'Eel rice bowl', ja: 'うなぎ丼' }, '양고기': { en: 'Lamb', ja: 'ラム肉' }, '전골': { en: 'Hot pot', ja: '鍋料理' },
+  '육류': { en: 'Meat', ja: '肉料理' }, '분식': { en: 'Street food', ja: '軽食' }, '덮밥': { en: 'Rice bowl', ja: '丼' },
+  '유제품': { en: 'Dairy', ja: '乳製品' }, '패스트푸드': { en: 'Fast food', ja: 'ファストフード' }, '구이': { en: 'Grill', ja: '炉端焼き' },
+  '닭요리': { en: 'Chicken', ja: '鶏料理' }, '두부요리': { en: 'Tofu', ja: '豆腐料理' }, '샐러드': { en: 'Salad', ja: 'サラダ' }
+};
+
+// JP_KO_AREA(영문→한글)를 뒤집은 한글→영문 지역명 (en 표기 보조)
+const KO_AREA_TO_EN = (() => {
+  const out = {};
+  for (const [en, ko] of Object.entries(JP_KO_AREA)) {
+    if (!out[ko]) out[ko] = en.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  return out;
+})();
+
+function normalizeLang(lang) {
+  const l = String(lang || 'ko').toLowerCase();
+  return l === 'en' || l === 'ja' ? l : 'ko';
+}
+
+// fallback: en/ja 표기를 모르는 한글 지역명일 때 대신 쓸 값(보통 도시 이름). 없으면 원문 유지.
+function localizeCuratedArea(area, lang, fallback = '') {
+  const a = String(area || '');
+  if (!a || lang === 'ko') return a;
+  const hit = CURATED_AREA_I18N[a];
+  if (hit && hit[lang]) return hit[lang];
+  // 지역 칸에 도시 이름이 들어 있으면(예: 요청 명소의 '오사카') 도시 이름 표기를 쓴다.
+  const ck = cityKeyForExactLabel(a);
+  if (ck) return localizedCityName(ck, lang);
+  const out = KO_AREA_TO_EN[a] || a;
+  return fallback && /[가-힣]/.test(out) && !/[가-힣]/.test(fallback) ? fallback : out;
+}
+
+// 대표 명소(MUST_ATTRACTIONS)의 영문 표기: 가장 긴 로마자 별칭(예: 'universal studios japan' → 'Universal Studios Japan')
+const MUST_NAME_ACRONYMS = { tv: 'TV', usj: 'USJ' };
+function mustAttractionLatinName(cityKey, koName) {
+  const target = String(koName || '').trim().toLowerCase();
+  const m = MUST_ATTRACTIONS.find((x) => x.cityKey === cityKey
+    && (x.name.toLowerCase() === target || (x.aliases || []).some((a) => String(a).toLowerCase() === target)));
+  const latin = (m?.aliases || []).filter((a) => /^[a-z0-9 .'-]+$/i.test(a)).sort((a, b) => b.length - a.length)[0];
+  if (!latin) return '';
+  return latin.split(/\s+/).map((w) => MUST_NAME_ACRONYMS[w.toLowerCase()] || (w.charAt(0).toUpperCase() + w.slice(1))).join(' ');
+}
+
+function localizeCuratedCategory(category, lang) {
+  const c = String(category || '');
+  if (!c || lang === 'ko') return c;
+  if (CURATED_CATEGORY_I18N[c]?.[lang]) return CURATED_CATEGORY_I18N[c][lang];
+  return c.split('/').map((part) => CURATED_CATEGORY_I18N[part.trim()]?.[lang] || part.trim()).join('/');
+}
+
+function localizeFoodGenre(genre, lang) {
+  const g = String(genre || '');
+  if (!g || lang === 'ko') return g;
+  return FOOD_GENRE_I18N[g]?.[lang] || g;
+}
+
+// 내장 큐레이션 장소 한 곳을 lang에 맞게 표기한다(원래 한글 이름은 nameKo로 남김).
+function localizeCuratedPlace(place, cityKey, lang) {
+  if (!place || lang === 'ko') return place;
+  // 이미 현지화된 카드(nameKo 있음)도 원래 한글 이름으로 찾는다(여러 번 불러도 결과가 같다).
+  const koName = String(place.nameKo || place.name || '');
+  const media = placeMediaFor(cityKey, koName);
+  // en/ja 표기 순서: 내장 표 → 사진 데이터의 위키데이터 이름(labels) → 대표 명소의 로마자 별칭(ja도 한글보다 로마자가 읽기 쉽다)
+  const localizedName = CURATED_PLACE_I18N[`${cityKey}|${koName}`]?.[lang] || media?.labels?.[lang]
+    || (lang === 'ja' ? media?.labels?.en : '') || mustAttractionLatinName(cityKey, koName) || '';
+  const out = { ...place };
+  if (localizedName && localizedName !== place.name) {
+    out.nameKo = koName;
+    out.name = localizedName;
+  }
+  out.area = localizeCuratedArea(place.area, lang, CITY_DATA[cityKey] ? localizedCityName(cityKey, lang) : '');
+  out.category = localizeCuratedCategory(place.category, lang);
+  return out;
+}
+
+// 도시 중심 좌표: 정적 표 → 동적 도시 center → 명소 좌표 평균 → 공항 좌표 (Google 호출 없음)
+function resolveCityCenter(cityKey) {
+  const key = String(cityKey || '');
+  const fixed = CITY_CENTER_COORDS[key];
+  if (fixed) return { lat: fixed.lat, lng: fixed.lng };
+  const city = CITY_DATA[key];
+  if (!city) return null;
+  if (hasLatLng(city.center)) return { lat: Number(city.center.lat), lng: Number(city.center.lng) };
+  const pts = (city.highlights || [])
+    .map((h) => (hasLatLng(h) ? h : placeMediaFor(key, h.name)))
+    .filter((p) => hasLatLng(p));
+  if (pts.length > 0) {
+    return {
+      lat: pts.reduce((s, p) => s + Number(p.lat), 0) / pts.length,
+      lng: pts.reduce((s, p) => s + Number(p.lng), 0) / pts.length
+    };
+  }
+  const ap = JAPAN_AIRPORT_COORDS.find((a) => a.code === city.airport);
+  return ap ? { lat: ap.lat, lng: ap.lng } : null;
+}
+
+// 도시 중심: 정적 좌표를 먼저 쓰고, google 모드에서 정적 좌표가 없을 때만 Geocoding을 부른다.
+async function fetchGoogleCityCenter(cityLabel, cityKey) {
+  const key = cityKey || detectCityKeyByInput(cityLabel) || cityKeyByLabel(cityLabel);
+  const fixed = resolveCityCenter(key);
+  if (fixed) return fixed;
+  if (!GOOGLE_PLACES_ENABLED) return null;
+  try {
+    const first = await googleGeocodeFirst(`${cityLabel} Japan`, 'ko');
+    return first ? { lat: first.lat, lng: first.lng } : null;
+  } catch {
+    return null;
+  }
+}
+
+// 도시 입력(키·한글/영문 이름·동적 도시 키) → 좌표. Google 호출 없음.
+// 정적 표·동적 도시 중심·명소 좌표·공항 좌표로 먼저 찾고, 모르는 이름이면 open-meteo 무료 지오코딩(캐시)을 쓴다.
+async function resolveCityCoordsForInput(input, lang = 'ko') {
+  const raw = String(input || '').trim().slice(0, 60);
+  if (!raw) return null;
+  const key = detectCityKeyByInput(raw);
+  if (key) {
+    const center = resolveCityCenter(key);
+    if (center) return { key, label: CITY_DATA[key]?.label || raw, lat: center.lat, lng: center.lng };
+  }
+  const label = key ? (CITY_DATA[key]?.label || raw) : raw;
+  if (/^custom_[0-9a-f]+$/i.test(label)) return null; // 사라진 동적 도시 키는 이름을 알 수 없다
+  const geo = await geocodeWithOpenMeteo(label, lang);
+  return geo ? { key: key || '', label, lat: geo.lat, lng: geo.lng } : null;
+}
+
+function sourceInfo(kind, provider, reasonCode = null) {
+  return { kind, provider, reasonCode: reasonCode || null };
+}
+
+// 레거시 warning 필드용 짧은 한국어 문구 (원시 오류 문자열은 보여주지 않는다)
+const PLACES_REASON_TEXT_KO = {
+  GOOGLE_KEY_MISSING: 'Google 장소 검색 키가 설정되지 않아 기본 목록을 보여드려요',
+  GOOGLE_BILLING_DISABLED: 'Google 장소 검색을 쓸 수 없어(결제 미설정) 기본 목록을 보여드려요',
+  GOOGLE_PERMISSION_DENIED: 'Google 장소 검색 권한이 없어 기본 목록을 보여드려요',
+  GOOGLE_QUOTA_EXCEEDED: '오늘 장소 검색 한도에 도달해 기본 목록을 보여드려요',
+  GOOGLE_CIRCUIT_OPEN: '장소 검색을 잠시 쉬는 중이라 기본 목록을 보여드려요',
+  GOOGLE_ERROR: '장소 검색에 일시적인 문제가 있어 기본 목록을 보여드려요',
+  NO_RESULTS: '검색 결과가 없어 기본 목록을 보여드려요',
+  PROVIDER_UNAVAILABLE: '실시간 장소 검색을 쓰지 않아 기본 목록을 보여드려요'
+};
 
 
 // ── Infer best visit time from place type + opening hours ──
@@ -2578,9 +3962,9 @@ function inferBestTime(place) {
   return place.currentOpeningHours?.openNow ? '10:00-12:00' : '13:00-15:00';
 }
 
-async function fetchGoogleAttractions(cityLabel, theme, lang) {
-  if (!GOOGLE_MAPS_API_KEY) return [];
-  const endpoint = 'https://places.googleapis.com/v1/places:searchText';
+// google 모드 전용. 쿼리 2개·작은 필드 마스크·12시간 캐시. 모든 쿼리가 실패하면 첫 오류(GoogleApiError)를 던진다.
+async function fetchGoogleAttractions(cityLabel, theme, lang, center = null) {
+  if (!GOOGLE_PLACES_ENABLED) return [];
   const _themeHints = {
     ko: { foodie: '맛집 명소', culture: '역사 문화 명소', shopping: '쇼핑 명소', nature: '자연 공원 명소', _default: '인기 관광지' },
     en: { foodie: 'food spots', culture: 'historical cultural sites', shopping: 'shopping spots', nature: 'nature parks', _default: 'popular attractions' },
@@ -2594,28 +3978,24 @@ async function fetchGoogleAttractions(cityLabel, theme, lang) {
     ja: ['人気観光地', 'おすすめスポット', '名所']
   };
   const _qh = _queryHints[lang] || _queryHints.ko;
-  const queries = [
+  const queries = Array.from(new Set([
     `${cityLabel} ${themeHint}`,
     `${cityLabel} ${_qh[0]}`,
-    `${cityLabel} ${_qh[1]}`,
-    `${cityLabel} ${_qh[2]}`
-  ];
+    `${cityLabel} ${_qh[1]}`
+  ])).slice(0, 2);
+  const cacheKey = `attractions|${cityLabel}|${theme || 'mixed'}|${lang || 'ko'}|${queries.join('/')}`;
+  const cached = placesCacheGet(cacheKey);
+  if (cached) return cached;
 
-  const results = await Promise.all(queries.map(async (q) => {
+  const fieldMask = 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.location,places.photos';
+  const settled = await Promise.allSettled(queries.map((q) => {
     const body = { textQuery: q, maxResultCount: 20, languageCode: lang || 'ko', regionCode: 'JP' };
-    const r = await fetchWithTimeout(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.currentOpeningHours.openNow,places.regularOpeningHours,places.location,places.photos'
-      },
-      body: JSON.stringify(body)
-    }, AI_REQUEST_TIMEOUT_MS);
-    if (!r.ok) return [];
-    const data = await r.json();
-    return data.places || [];
+    if (hasLatLng(center)) {
+      body.locationBias = { circle: { center: { latitude: Number(center.lat), longitude: Number(center.lng) }, radius: 30000 } };
+    }
+    return googlePlacesSearchText(body, fieldMask, 'places:attractions');
   }));
+  const results = settledValuesOrThrow(settled);
 
   const merged = results.flat();
   // Filter out non-Japan results
@@ -2639,7 +4019,9 @@ async function fetchGoogleAttractions(cityLabel, theme, lang) {
     if (id) uniq.set(id, p);
     else uniq.set(name, p);
   }
-  return Array.from(uniq.values());
+  const out = Array.from(uniq.values());
+  placesCacheSet(cacheKey, out);
+  return out;
 }
 
 function seasonalBonus(primaryType, startDate) {
@@ -2682,21 +4064,86 @@ function scoreExternalPlace(place, ctx) {
   return Math.round(clamp(composite - (congestion * 10), 0, 100));
 }
 
+// 도시 이름 en/ja 표기(화면 public/app.js의 PLACE_NAME_I18N과 같은 값 — 서버 문구와 화면 표기를 맞춘다). [영어, 일본어]
+const CITY_NAME_I18N = {
+  '도쿄': ['Tokyo', '東京'], '오사카': ['Osaka', '大阪'], '교토': ['Kyoto', '京都'], '삿포로': ['Sapporo', '札幌'],
+  '하코다테': ['Hakodate', '函館'], '아사히카와': ['Asahikawa', '旭川'], '아오모리': ['Aomori', '青森'], '아키타': ['Akita', '秋田'],
+  '하나마키': ['Hanamaki', '花巻'], '야마가타': ['Yamagata', '山形'], '센다이': ['Sendai', '仙台'], '후쿠시마': ['Fukushima', '福島'],
+  '니가타': ['Niigata', '新潟'], '가나자와': ['Kanazawa', '金沢'], '도야마': ['Toyama', '富山'], '시즈오카': ['Shizuoka', '静岡'],
+  '나고야': ['Nagoya', '名古屋'], '오카야마': ['Okayama', '岡山'], '히로시마': ['Hiroshima', '広島'], '요나고': ['Yonago', '米子'],
+  '이즈모': ['Izumo', '出雲'], '다카마쓰': ['Takamatsu', '高松'], '마쓰야마': ['Matsuyama', '松山'], '고치': ['Kochi', '高知'],
+  '도쿠시마': ['Tokushima', '徳島'], '후쿠오카': ['Fukuoka', '福岡'], '나가사키': ['Nagasaki', '長崎'], '구마모토': ['Kumamoto', '熊本'],
+  '오이타': ['Oita', '大分'], '미야자키': ['Miyazaki', '宮崎'], '가고시마': ['Kagoshima', '鹿児島'], '오키나와': ['Okinawa', '沖縄'],
+  '오비히로': ['Obihiro', '帯広'], '왓카나이': ['Wakkanai', '稚内'], '리시리': ['Rishiri', '利尻'], '메만베쓰': ['Memanbetsu', '女満別'],
+  '구시로': ['Kushiro', '釧路'], '나카시베츠': ['Nakashibetsu', '中標津'], '삿포로 오카다마': ['Sapporo Okadama', '札幌丘珠'], '미사와': ['Misawa', '三沢'],
+  '오다테': ['Odate', '大館'], '쇼나이': ['Shonai', '庄内'], '이바라키': ['Ibaraki', '茨城'], '마쓰모토': ['Matsumoto', '松本'],
+  '난키 시라하마': ['Nanki-Shirahama', '南紀白浜'], '고베': ['Kobe', '神戸'], '다지마': ['Tajima', '但馬'], '돗토리': ['Tottori', '鳥取'],
+  '이와쿠니': ['Iwakuni', '岩国'], '야마구치 우베': ['Yamaguchi Ube', '山口宇部'], '기타큐슈': ['Kitakyushu', '北九州'], '사가': ['Saga', '佐賀'],
+  '아마미': ['Amami', '奄美'], '야쿠시마': ['Yakushima', '屋久島'], '다네가시마': ['Tanegashima', '種子島'], '미야코지마': ['Miyakojima', '宮古島'],
+  '이시가키': ['Ishigaki', '石垣'], '시모지시마': ['Shimojishima', '下地島'], '구메지마': ['Kumejima', '久米島'], '기타다이토': ['Kitadaito', '北大東'],
+  '요나구니': ['Yonaguni', '与那国'], '도쿠노시마': ['Tokunoshima', '徳之島']
+};
+
+// 사진 데이터(cities)의 위키데이터 en/ja 이름 — 도시 항목 대신 이웃 항목의 사진을 빌린 경우(예: 이바라키 → 미토)가 있어서,
+// en 이름이 cityKey와 맞을 때만(같은 항목일 때만) 쓴다. 위 표에 없는 도시의 대체 표기용.
+function cityLabelsFromMedia(cityKey) {
+  const media = PLACE_IMAGES.cities.get(String(cityKey || ''));
+  const en = media?.labels?.en || '';
+  if (!en) return {};
+  const fold = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const a = fold(en);
+  const b = fold(cityKey);
+  return a && b && (a.includes(b) || b.includes(a)) ? media.labels : {};
+}
+
+function localizedCityName(cityKey, lang) {
+  const city = CITY_DATA[cityKey];
+  const label = city?.label || String(cityKey || '');
+  if (lang === 'ko' || !city || city.dynamic || String(cityKey).startsWith('custom_')) return label;
+  const row = CITY_NAME_I18N[label];
+  const mediaLabels = cityLabelsFromMedia(cityKey);
+  const en = row?.[0] || mediaLabels.en
+    || String(cityKey).split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  if (lang === 'ja') return row?.[1] || city.nameJa || JAPAN_CITY_PROFILES[cityKey]?.nameJa || mediaLabels.ja || en;
+  return en;
+}
+
+function recommendationSummary(cityKey, count, lang) {
+  const name = localizedCityName(cityKey, lang);
+  if (lang === 'en') return `${count} recommended places in ${name}`;
+  if (lang === 'ja') return `${name}のおすすめスポット ${count}件`;
+  return `${name} 여행지 추천 ${count}곳`;
+}
+
+// 내장 큐레이션 명소 + 위키미디어 사진/좌표 (Google 호출 없음)
+function buildCuratedPicks(cityKey, city, theme, lang, max) {
+  return (city.highlights || [])
+    .map((p) => attachPlaceMedia({
+      ...p,
+      city: city.label,
+      aiScore: 70 + themeScore(theme, p) * 10 - p.crowdScore * 2,
+      mapUrl: mapUrl(`${p.name} ${city.label}`)
+    }, cityKey, p.name))
+    .map((p) => localizeCuratedPlace(p, cityKey, lang))
+    .sort((a, b) => b.aiScore - a.aiScore)
+    .slice(0, max);
+}
+
 async function recommendDestinations(payload) {
-  const lang = payload.lang || 'ko';
+  const lang = normalizeLang(payload.lang);
   const key = cityKeyByInput(payload.city);
   const city = CITY_DATA[key];
   const theme = payload.theme || 'mixed';
   const pace = payload.pace || 'normal';
   const budget = payload.budget || 'mid';
   const max = Math.max(6, Math.min(30, Number(payload.limit) || 20));
+  let fallbackReason = null;
 
-  if (GOOGLE_MAPS_API_KEY) {
+  if (GOOGLE_PLACES_ENABLED) {
     try {
-      const [center, places] = await Promise.all([
-        fetchGoogleCityCenter(city.label),
-        fetchGoogleAttractions(city.label, theme, lang)
-      ]);
+      // 도시 중심은 정적 좌표(Geocoding 호출 없음)
+      const center = resolveCityCenter(key);
+      const places = await fetchGoogleAttractions(city.label, theme, lang, center);
       if (places.length > 0) {
         const seenScored = new Set();
         const scored = places
@@ -2708,12 +4155,12 @@ async function recommendDestinations(payload) {
             bestTime: inferBestTime(p),
             crowdScore: 3,
             mapUrl: p.googleMapsUri || mapUrl(`${p.displayName?.text || city.label} ${city.label}`),
-            photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null,
+            ...googlePhotoFields(p),
             aiScore: scoreExternalPlace(p, { theme, budget, center, startDate: payload.startDate }),
             rating: p.rating || null,
             reviewCount: p.userRatingCount || 0,
-            lat: p.location?.latitude || null,
-            lng: p.location?.longitude || null
+            lat: p.location?.latitude ?? null,
+            lng: p.location?.longitude ?? null
           }))
           .filter((p) => {
             const norm = p.name.replace(/[\s\(\)（）　]/g, '').toLowerCase();
@@ -2722,47 +4169,137 @@ async function recommendDestinations(payload) {
             return true;
           })
           .sort((a, b) => b.aiScore - a.aiScore)
-          .slice(0, max);
+          .slice(0, max)
+          .map((p) => withCityPhotoFallback(p, key));
 
         return {
           source: 'external_google_places_ai_scored',
+          sourceInfo: sourceInfo('live', 'google_places'),
           city: city.label,
           theme,
           pace,
           budget,
-          summary: `${city.label} 여행지 추천 ${scored.length}곳`,
+          summary: recommendationSummary(key, scored.length, lang),
           picks: scored
         };
       }
-    } catch {
-      // fallback to local curated data
+      fallbackReason = 'NO_RESULTS';
+    } catch (err) {
+      fallbackReason = err?.reasonCode || 'GOOGLE_ERROR';
+      if (!err?.reasonCode) warnThrottled('places:recommend', `[places] 추천 조회 실패 → 내장 추천으로 대체: ${redactGoogleKey(err?.message || err)}`);
     }
   }
 
-  const scored = city.highlights
-    .map((p) => ({
-      ...p,
-      city: city.label,
-      aiScore: 70 + themeScore(theme, p) * 10 - p.crowdScore * 2,
-      mapUrl: mapUrl(`${p.name} ${city.label}`)
-    }))
-    .sort((a, b) => b.aiScore - a.aiScore)
-    .slice(0, max);
+  // 자기 사진이 없는 명소 카드는 도시 대표 사진(scope 'city')으로 채운다.
+  const scored = buildCuratedPicks(key, city, theme, lang, max).map((p) => withCityPhotoFallback(p, key));
 
   return {
+    // source는 예전 값 그대로(호환용). 실제 의미는 sourceInfo를 본다.
     source: 'local_curated_fallback',
+    sourceInfo: GOOGLE_PLACES_ENABLED
+      ? sourceInfo('fallback', 'curated+wikimedia', fallbackReason || 'GOOGLE_ERROR')
+      : sourceInfo('curated', 'curated+wikimedia'),
     city: city.label,
     theme,
     pace,
     budget,
-    summary: `${city.label} 여행지 추천 ${scored.length}곳`,
+    summary: recommendationSummary(key, scored.length, lang),
     picks: scored
   };
+}
+
+// 이름 비교용 키(공백·괄호·가운뎃점 등을 빼고 소문자)
+function placeNameKey(name) {
+  return String(name || '').toLowerCase().replace(/[\s()（）[\]・·.,'"`_-]/g, '');
+}
+
+// 장소의 원래(한글) 이름 — 현지화된 카드는 nameKo에 원래 이름이 있다.
+function placeOriginalName(p) {
+  return String(p?.nameKo || p?.name || '').trim();
+}
+
+// 도시의 MUST_ATTRACTIONS 중 highlights와 겹치지 않는 것만(이름·별칭·위키데이터 ID로 비교)
+function mustAttractionsForCity(cityKey) {
+  const city = CITY_DATA[cityKey];
+  if (!city) return [];
+  const highlightKeys = new Set((city.highlights || []).map((h) => placeNameKey(h.name)));
+  const seenQids = new Set((city.highlights || []).map((h) => placeMediaFor(cityKey, h.name)?.wikidata).filter(Boolean));
+  const out = [];
+  for (const m of MUST_ATTRACTIONS) {
+    if (m.cityKey !== cityKey) continue;
+    if ([m.name, ...(m.aliases || [])].some((n) => highlightKeys.has(placeNameKey(n)))) continue;
+    const qid = placeMediaFor(cityKey, m.name)?.wikidata;
+    if (qid && seenQids.has(qid)) continue;
+    if (qid) seenQids.add(qid);
+    out.push(m);
+  }
+  return out;
+}
+
+// 내장 큐레이션 명소 풀: highlights + 겹치지 않는 대표 명소(MUST). 사진·좌표를 붙이고 lang에 맞춰 표기한다(Google 호출 없음).
+function curatedCityPool(cityKey, lang = 'ko') {
+  const c = CITY_DATA[cityKey];
+  if (!c) return [];
+  const highlights = (c.highlights || []).map((h) => ({ ...h, city: c.label, mapUrl: mapUrl(`${h.name} ${c.label}`) }));
+  const must = mustAttractionsForCity(cityKey).map((m) => ({
+    name: m.name,
+    city: c.label,
+    area: m.area || c.label,
+    category: '대표 명소',
+    // 테마파크·먼 당일치기는 하루 전체가 든다(규칙 일정은 '종일' 칸에 혼자 넣는다)
+    bestTime: (m.fullDay || m.dayTrip) ? '09:00-18:00' : '10:00-17:00',
+    stayMin: (m.fullDay || m.dayTrip) ? 480 : 100,
+    crowdScore: 3,
+    ...(m.fullDay ? { fullDay: true } : {}),
+    ...(m.dayTrip ? { dayTrip: true } : {}),
+    mapUrl: mapUrl(`${m.name} ${c.label}`)
+  }));
+  return [...highlights, ...must].map((p) => localizeCuratedPlace(attachPlaceMedia(p, cityKey, p.name), cityKey, lang));
+}
+
+// AI 일정 후보가 모자라면(무료 모드·대체 데이터) 경로 도시의 대표 명소와 사진 데이터(place-images.json)의
+// 같은 도시 명소를 보태 최소 days×2곳(최대 20곳)을 만든다. 이미 있는 장소(이름·위키데이터 ID)는 건너뛴다.
+function expandPicksForAi(picks, cityKeys, lang, days) {
+  const base = Array.isArray(picks) ? [...picks] : [];
+  const target = Math.min(20, Math.max(0, Number(days) || 0) * 2);
+  if (base.length >= target) return base;
+  const seenNames = new Set(base.map((p) => placeNameKey(placeOriginalName(p))));
+  const seenQids = new Set(base.map((p) => p?.wikidata).filter(Boolean));
+  const tryAdd = (p) => {
+    const k = placeNameKey(placeOriginalName(p));
+    if (!k || seenNames.has(k) || (p.wikidata && seenQids.has(p.wikidata))) return;
+    seenNames.add(k);
+    if (p.wikidata) seenQids.add(p.wikidata);
+    base.push(p);
+  };
+  for (const ck of [...new Set(cityKeys || [])]) {
+    const c = CITY_DATA[ck];
+    if (!c) continue;
+    curatedCityPool(ck, lang).forEach(tryAdd);
+    for (const mapKey of PLACE_IMAGES.byKey.keys()) {
+      if (base.length >= target) break;
+      if (!mapKey.startsWith(`${ck}|`)) continue;
+      const name = mapKey.slice(ck.length + 1);
+      tryAdd(localizeCuratedPlace(attachPlaceMedia({
+        name, city: c.label, area: c.label, category: '대표 명소', bestTime: '10:00-17:00', stayMin: 90,
+        mapUrl: mapUrl(`${name} ${c.label}`)
+      }, ck, name), ck, lang));
+    }
+    if (base.length >= target) break;
+  }
+  return base.slice(0, Math.max(target, picks?.length || 0));
+}
+
+function localizeTransferHint(hint, lang) {
+  if (lang === 'ko') return hint;
+  return TRANSFER_HINT_I18N[hint]?.[lang] || hint;
 }
 
 function createItinerary(payload) {
   const key = cityKeyByInput(payload.city);
   const city = CITY_DATA[key] || CITY_DATA.tokyo;
+  const lang = normalizeLang(payload.lang);
+  const T = RULE_PLAN_TEXT[lang] || RULE_PLAN_TEXT.ko;
   const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
   const flight = payload.flight || null;
   const flightLegs = Array.isArray(flight?.legs) ? flight.legs : [];
@@ -2773,50 +4310,24 @@ function createItinerary(payload) {
   const theme = payload.theme || 'mixed';
   const picks = Array.isArray(payload._picks) && payload._picks.length > 0
     ? payload._picks
-    : city.highlights.map((p) => ({ ...p, city: city.label, mapUrl: mapUrl(`${p.name} ${city.label}`), aiScore: 65 }));
+    : city.highlights.map((p) => localizeCuratedPlace(attachPlaceMedia({ ...p, city: city.label, mapUrl: mapUrl(`${p.name} ${city.label}`), aiScore: 65 }, key, p.name), key, lang));
   const routeCities = deriveRouteCities(payload, picks, city.label);
   const dayCitySequence = allocateDaysByCities(routeCities, picks, days, payload._regionDayPlan);
   const prefs = typeof payload._specialPrefs === 'object' && payload._specialPrefs ? payload._specialPrefs : {};
+  // 화면에 쓰는 도시 이름(내부 비교는 한글 label 그대로)
+  const cityDisplay = (label) => {
+    const ck = cityKeyForExactLabel(label);
+    return ck ? localizedCityName(ck, lang) : String(label || '');
+  };
+  const placeKey = (p) => placeOriginalName(p);
 
+  // 도시의 명소 풀(highlights + 대표 명소). 지어낸 "추천 명소 N" 같은 채움 장소는 넣지 않는다.
   const buildCityAttractionPool = (cityLabel) => {
-    const ck = cityKeyByLabel(cityLabel);
-    const c = CITY_DATA[ck];
-    const base = [];
-    if (c?.highlights?.length) {
-      c.highlights.forEach((h) => {
-        base.push({
-          ...h,
-          city: c.label,
-          mapUrl: mapUrl(`${h.name} ${c.label}`)
-        });
-      });
-    }
-    const mustForCity = MUST_ATTRACTIONS
-      .filter((m) => (CITY_DATA[m.cityKey]?.label || '') === cityLabel)
-      .map((m) => ({
-        name: m.name,
-        city: cityLabel,
-        area: m.area || cityLabel,
-        category: '요청 명소',
-        bestTime: '10:00-17:00',
-        stayMin: 100,
-        mapUrl: mapUrl(`${m.name} ${cityLabel}`)
-      }));
-    const synthetic = (c?.areas || [cityLabel]).slice(0, 4).map((a, idx) => ({
-      name: `${cityLabel} 추천 명소 ${idx + 1}`,
-      city: cityLabel,
-      area: a || cityLabel,
-      category: '관광',
-      bestTime: idx % 2 === 0 ? '09:00-11:00' : '14:00-16:00',
-      stayMin: 80,
-      mapUrl: mapUrl(`${cityLabel} ${a || ''} 관광지`)
-    }));
-    const merged = [...base, ...mustForCity, ...synthetic];
     const seen = new Set();
-    return merged.filter((x) => {
-      const key = String(x?.name || '').trim().toLowerCase();
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
+    return curatedCityPool(cityKeyByLabel(cityLabel), lang).filter((x) => {
+      const k = placeNameKey(placeKey(x));
+      if (!k || seen.has(k)) return false;
+      seen.add(k);
       return true;
     });
   };
@@ -2842,8 +4353,8 @@ function createItinerary(payload) {
     return m ? Number(m[1]) : 12;
   };
 
-  const isLikelyIndoor = (p) => /박물관|미술관|시장|쇼핑|수족관|타워|성|신사|절|문화|museum|aquarium|tower|castle|shrine|temple/i.test(`${p.name} ${p.category} ${p.area}`);
-  const isLikelyShopping = (p) => /쇼핑|아울렛|백화점|mall|store|shopping/i.test(`${p.name} ${p.category} ${p.area}`);
+  const isLikelyIndoor = (p) => /박물관|미술관|시장|쇼핑|수족관|타워|성|신사|절|문화|museum|aquarium|tower|castle|shrine|temple|market|博物館|美術館|市場|水族館|タワー|城|神社|寺|文化/i.test(`${p.name} ${p.nameKo || ''} ${p.category} ${p.area}`);
+  const isLikelyShopping = (p) => /쇼핑|아울렛|백화점|mall|store|shopping|ショッピング|百貨店|モール/i.test(`${p.name} ${p.nameKo || ''} ${p.category} ${p.area}`);
   let planPicks = Array.isArray(picks) ? [...picks] : [];
   if (prefs.removeShopping) {
     planPicks = planPicks.filter((p) => !isLikelyShopping(p));
@@ -2853,9 +4364,20 @@ function createItinerary(payload) {
     if (indoor.length > 0) planPicks = [...indoor, ...planPicks.filter((p) => !isLikelyIndoor(p))];
   }
 
-  const morningPool = planPicks.filter((p) => startHour(p.bestTime) < 12);
-  const afternoonPool = planPicks.filter((p) => startHour(p.bestTime) >= 12 && startHour(p.bestTime) < 18);
-  const fallbackPool = planPicks.length > 0 ? planPicks : picks;
+  // 하루 전체가 드는 곳(테마파크·먼 당일치기: 디즈니, 후지큐, 쿠사츠 온천 …)은 반나절 칸에 넣지 않고 '종일' 칸에 혼자 넣는다.
+  const isAllDayPlace = (p) => Boolean(p && !p.freeTime && allDayPlaceKind(p, key));
+  // 야경·석양처럼 해 질 무렵 이후가 좋은 곳(추천 시작 17시 이후)은 오전 칸에 넣지 않고, 오후 칸에 넣을 때는 추천 시간을 쓴다.
+  const isEveningPlace = (p) => Boolean(p && !p.freeTime && startHour(p.bestTime) >= 17);
+  const notEvening = (list) => (Array.isArray(list) ? list : []).filter((p) => !isEveningPlace(p));
+  const clockRangeOf = (timeRange) => {
+    const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/.exec(String(timeRange || ''));
+    return m ? [Number(m[1]) * 60 + Number(m[2]), Number(m[3]) * 60 + Number(m[4])] : null;
+  };
+  const allDayPicks = planPicks.filter(isAllDayPlace);
+  const regularPicks = planPicks.filter((p) => !isAllDayPlace(p));
+  const morningPool = regularPicks.filter((p) => startHour(p.bestTime) < 12);
+  const afternoonPool = regularPicks.filter((p) => startHour(p.bestTime) >= 12);
+  const fallbackPool = regularPicks.length > 0 ? regularPicks : picks.filter((p) => !isAllDayPlace(p));
   const foodsByCity = Object.fromEntries(
     Object.entries(CITY_DATA).map(([k, c]) => [c.label, c.foods || []])
   );
@@ -2877,20 +4399,18 @@ function createItinerary(payload) {
   const extraRecommendations = [];
   const recentNamesByCity = new Map();
   const usedPlaceNamesGlobal = new Set();
-  const syntheticSeqByCity = new Map();
-  const nextSyntheticPlace = (cityLabel) => {
-    const seq = (syntheticSeqByCity.get(cityLabel) || 0) + 1;
-    syntheticSeqByCity.set(cityLabel, seq);
-    return {
-      name: `${cityLabel} 추가 추천지 ${seq}`,
-      city: cityLabel,
-      area: cityLabel,
-      category: '관광',
-      bestTime: seq % 2 === 0 ? '14:00-16:00' : '09:00-11:00',
-      stayMin: 80,
-      mapUrl: mapUrl(`${cityLabel} 관광지 ${seq}`)
-    };
+  // 명소를 다 쓴 칸은 지어낸 장소 이름 대신 "자유 일정 (<지역> 주변 산책)"으로 둔다.
+  const freeSeqByCity = new Map();
+  let usedFreeTime = false;
+  const freeTimeSlot = (cityLabel) => {
+    const seq = freeSeqByCity.get(cityLabel) || 0;
+    freeSeqByCity.set(cityLabel, seq + 1);
+    usedFreeTime = true;
+    const areas = CITY_DATA[cityKeyByLabel(cityLabel)]?.areas || [];
+    const area = areas.length ? localizeCuratedArea(areas[seq % areas.length], lang, cityDisplay(cityLabel)) : cityDisplay(cityLabel);
+    return { freeTime: true, name: T.freeTime, note: T.walkAround(area), city: cityLabel };
   };
+  const blockPlace = (p, dayCityName) => (p.freeTime ? `${p.name} (${p.note})` : `${p.name} (${p.area || dayCityName})`);
   const choosePlace = (pool, fallback, seed, bannedNames = new Set()) => {
     const main = Array.isArray(pool) && pool.length > 0 ? pool : (Array.isArray(fallback) ? fallback : []);
     if (main.length === 0) return null;
@@ -2898,71 +4418,124 @@ function createItinerary(payload) {
     for (let step = 0; step < main.length; step += 1) {
       const idx = (start + step) % main.length;
       const cand = main[idx];
-      const name = String(cand?.name || '');
+      const name = placeKey(cand);
       if (!name || bannedNames.has(name) || usedPlaceNamesGlobal.has(name)) continue;
       return cand;
     }
     return null;
   };
+  // '종일' 칸: 2일 이상 일정에서 항공편 도착·출발이 없는 날(3일 이상이면 첫날·마지막 날 제외)에만,
+  // 일정 기간에 비례한 날 수까지(2~4일 1일, 5~6일 2일 …) 넣는다.
+  const maxAllDayDays = days >= 2 ? Math.max(1, Math.floor((days - 1) / 2)) : 0;
+  let allDayCount = 0;
+  let prevDayAllDay = false;
   for (let i = 0; i < days; i += 1) {
     const dayCity = dayCitySequence[i] || city.label;
-    const dayMorningPool = morningPool.filter((p) => String(p.city || city.label) === dayCity);
-    const dayAfternoonPool = afternoonPool.filter((p) => String(p.city || city.label) === dayCity);
-    const dayFallbackPool = fallbackPool.filter((p) => String(p.city || city.label) === dayCity);
-    const cityExpandedPool = buildCityAttractionPool(dayCity);
-    const poolA = dayMorningPool.length > 0 ? dayMorningPool : (dayFallbackPool.length > 0 ? dayFallbackPool : morningPool);
-    const poolB = dayAfternoonPool.length > 0 ? dayAfternoonPool : (dayFallbackPool.length > 0 ? dayFallbackPool : afternoonPool);
-    const recentSet = new Set(recentNamesByCity.get(dayCity) || []);
-    const a = choosePlace(poolA, fallbackPool, i * 3 + 1, recentSet)
-      || choosePlace(cityExpandedPool, cityExpandedPool, i * 5 + 11, recentSet)
-      || nextSyntheticPlace(dayCity);
-    const banForB = new Set([...(recentNamesByCity.get(dayCity) || []), String(a?.name || '')]);
-    let b = choosePlace(poolB, fallbackPool, i * 3 + 2, banForB)
-      || choosePlace(cityExpandedPool, cityExpandedPool, i * 5 + 17, banForB)
-      || nextSyntheticPlace(dayCity);
-    if (String(a?.name || '') && String(a?.name || '') === String(b?.name || '')) {
-      const alt = choosePlace(dayFallbackPool, fallbackPool, i * 7 + 3, new Set([String(a?.name || '')]))
-        || choosePlace(cityExpandedPool, cityExpandedPool, i * 7 + 5, new Set([String(a?.name || '')]));
-      if (alt) b = alt;
-      else b = nextSyntheticPlace(dayCity);
-    }
-    const dayFoods = foodsByCity[dayCity] && foodsByCity[dayCity].length > 0 ? foodsByCity[dayCity] : (city.foods || []);
-    const dinner = dayFoods[i % Math.max(1, dayFoods.length)];
-    const minStart = (i === 0 && Number.isFinite(day1MinStart)) ? day1MinStart : 0;
-    const maxEnd = (i === days - 1 && Number.isFinite(lastDayMaxEnd)) ? lastDayMaxEnd : (24 * 60);
+    const dayCityName = cityDisplay(dayCity);
+    const dayCityKey = cityKeyByLabel(dayCity) || key;
     if (i === restDayIndex) {
       itinerary.push({
         day: i + 1,
         date: getDateOffset(startDate, i),
         blocks: [
-          `${dayCity} 휴식일: 카페/산책 중심으로 여유 일정`,
-          prefs.publicTransitOnly ? '대중교통 중심으로 가까운 동선만 이동' : '자유 휴식'
+          T.restDay(dayCityName),
+          prefs.publicTransitOnly ? T.transitOnly : T.freeRest
         ]
       });
+      prevDayAllDay = false;
       continue;
     }
+    const minStart = (i === 0 && Number.isFinite(day1MinStart)) ? day1MinStart : 0;
+    const maxEnd = (i === days - 1 && Number.isFinite(lastDayMaxEnd)) ? lastDayMaxEnd : (24 * 60);
+    const prevCity = i > 0 ? (dayCitySequence[i - 1] || dayCity) : dayCity;
+    const transferDay = i > 0 && prevCity !== dayCity;
+    // 야경·석양 명소의 이날 시간: 추천 시간을 저녁 식사 칸과 겹치지 않게 맞춘다
+    // (식사 전에 시작하면 식사 시작까지, 식사 중에 시작하면 식사 뒤로). 이날 일정 안에 안 들어가면 null.
+    const dinnerShown = maxPlacesPerDay >= 3 && Boolean(clampRange(baseRanges.evening, minStart, maxEnd));
+    const eveningRangeFor = (p) => {
+      let r = clockRangeOf(p.bestTime) || baseRanges.afternoon;
+      const [ds, de] = baseRanges.evening;
+      if (dinnerShown && r[0] < de && r[1] > ds) {
+        r = r[0] < ds ? [r[0], ds] : [de, Math.max(r[1], de + 60)];
+      }
+      return clampRange(r, minStart, maxEnd);
+    };
+    // 야경·석양 명소는 그 시간이 이날 일정 안에 들어갈 때만 오후 칸 후보가 된다(출국일 저녁 등은 제외).
+    const eveningFits = (p) => !isEveningPlace(p) || Boolean(eveningRangeFor(p));
+    const fitsB = (list) => (Array.isArray(list) ? list : []).filter(eveningFits);
+    const inDayCity = (p) => String(p.city || city.label) === dayCity;
+    const dayMorningPool = morningPool.filter(inDayCity);
+    const dayAfternoonPool = fitsB(afternoonPool.filter(inDayCity));
+    const dayFallbackPool = fallbackPool.filter(inDayCity);
+    const cityPool = buildCityAttractionPool(dayCity);
+    const cityExpandedPool = cityPool.filter((p) => !isAllDayPlace(p));
+    const poolA = dayMorningPool.length > 0 ? dayMorningPool : (dayFallbackPool.length > 0 ? dayFallbackPool : morningPool);
+    const poolB = dayAfternoonPool.length > 0 ? dayAfternoonPool : (fitsB(dayFallbackPool).length > 0 ? fitsB(dayFallbackPool) : fitsB(afternoonPool));
+    const recentSet = new Set(recentNamesByCity.get(dayCity) || []);
+    const aFromPicks = choosePlace(notEvening(poolA), notEvening(fallbackPool), i * 3 + 1, recentSet);
 
-    const blocks = [];
-    const morningRange = clampRange(baseRanges.morning, minStart, maxEnd);
-    if (morningRange) blocks.push(`오전(${formatRange(morningRange)}): ${a.name} (${a.area || dayCity})`);
-    const afternoonRange = clampRange(baseRanges.afternoon, minStart, maxEnd);
-    if (afternoonRange && maxPlacesPerDay >= 2) {
-      if (b && String(b.name || '') !== String(a?.name || '')) {
-        blocks.push(`오후(${formatRange(afternoonRange)}): ${b.name} (${b.area || dayCity})`);
-      } else {
-        blocks.push(`오후(${formatRange(afternoonRange)}): ${dayCity} 여유 산책/카페`);
+    // 종일 칸 후보: 이 도시의 추천·선택 후보 중 하루가 다 드는 곳 → 없으면(3일 이상, 전날이 종일이 아니고 후보를 다 쓴 날) 도시 명소 풀에서
+    const flightBoundDay = (i === 0 && (Number.isFinite(day1MinStart) || Boolean(prefs.firstDayShort)))
+      || (i === days - 1 && Number.isFinite(lastDayMaxEnd));
+    const middleDay = days < 3 || (i > 0 && i < days - 1);
+    let allDay = null;
+    if (allDayCount < maxAllDayDays && !flightBoundDay && !transferDay && middleDay) {
+      allDay = choosePlace(allDayPicks.filter(inDayCity), [], 0, recentSet);
+      if (!allDay && days >= 3 && !aFromPicks && !prevDayAllDay) {
+        allDay = choosePlace(cityPool.filter(isAllDayPlace), [], 0, recentSet);
       }
     }
-    const dinnerText = dinner ? `${dinner.name} (${dinner.area || dayCity})` : `${dayCity} 로컬 미식 동선`;
+    const allDayRange = allDay ? clampRange([lateStart ? 10 * 60 + 30 : 9 * 60, 18 * 60], minStart, maxEnd) : null;
+    if (!allDayRange) allDay = null;
+
+    const dayFoods = foodsByCity[dayCity] && foodsByCity[dayCity].length > 0 ? foodsByCity[dayCity] : (city.foods || []);
+    const dinner = dayFoods[i % Math.max(1, dayFoods.length)];
+    const blocks = [];
+    const placed = []; // 이날 일정 칸에 실제로 넣은 장소
+    if (allDay) {
+      blocks.push(`종일(${formatRange(allDayRange)}): ${blockPlace(allDay, dayCityName)}`);
+      placed.push(allDay);
+    } else {
+      const a = aFromPicks
+        || choosePlace(notEvening(cityExpandedPool), notEvening(cityExpandedPool), i * 5 + 11, recentSet)
+        || freeTimeSlot(dayCity);
+      const banForB = new Set([...(recentNamesByCity.get(dayCity) || []), a.freeTime ? '' : placeKey(a)].filter(Boolean));
+      let b = choosePlace(poolB, fitsB(fallbackPool), i * 3 + 2, banForB)
+        || choosePlace(fitsB(cityExpandedPool), fitsB(cityExpandedPool), i * 5 + 17, banForB)
+        || freeTimeSlot(dayCity);
+      if (!a.freeTime && !b.freeTime && placeKey(a) === placeKey(b)) {
+        const alt = choosePlace(fitsB(dayFallbackPool), fitsB(fallbackPool), i * 7 + 3, new Set([placeKey(a)]))
+          || choosePlace(fitsB(cityExpandedPool), fitsB(cityExpandedPool), i * 7 + 5, new Set([placeKey(a)]));
+        b = alt || freeTimeSlot(dayCity);
+      }
+      const morningRange = clampRange(baseRanges.morning, minStart, maxEnd);
+      if (morningRange) {
+        blocks.push(`오전(${formatRange(morningRange)}): ${blockPlace(a, dayCityName)}`);
+        placed.push(a);
+      }
+      const afternoonRange = clampRange(baseRanges.afternoon, minStart, maxEnd);
+      if (afternoonRange && maxPlacesPerDay >= 2) {
+        if (b && !(a.freeTime && b.freeTime) && (b.freeTime || placeKey(b) !== placeKey(a))) {
+          // 야경·석양 명소는 추천 시간(예: 20:00-21:30)으로 넣는다('오후'는 낮 12시 이후 전체를 뜻하는 형식 토큰).
+          const bRange = (isEveningPlace(b) && eveningRangeFor(b)) || afternoonRange;
+          blocks.push(`오후(${formatRange(bRange)}): ${blockPlace(b, dayCityName)}`);
+          placed.push(b);
+        } else {
+          blocks.push(`오후(${formatRange(afternoonRange)}): ${T.freeTime} (${T.cafeWalk(dayCityName)})`);
+        }
+      }
+    }
+    const dinnerText = dinner
+      ? `${localizeCuratedFoodName(dinner.name, dayCityKey, lang)} (${localizeCuratedArea(dinner.area, lang, dayCityName) || dayCityName})`
+      : T.localFood(dayCityName);
     const eveningRange = clampRange(baseRanges.evening, minStart, maxEnd);
     if (eveningRange && maxPlacesPerDay >= 3) {
-      const cafeOrDinner = prefs.moreCafes ? `${dayCity} 감성 카페/디저트` : dinnerText;
+      const cafeOrDinner = prefs.moreCafes ? T.cafeDessert(dayCityName) : dinnerText;
       blocks.push(`저녁(${formatRange(eveningRange)}): ${cafeOrDinner}`);
     }
 
-    const prevCity = i > 0 ? (dayCitySequence[i - 1] || dayCity) : dayCity;
-    if (i > 0 && prevCity !== dayCity) {
-      blocks.unshift(`도시 이동: ${prevCity} -> ${dayCity} (${transferHint(prevCity, dayCity)})`);
+    if (transferDay) {
+      blocks.unshift(T.transfer(cityDisplay(prevCity), dayCityName, localizeTransferHint(transferHint(prevCity, dayCity), lang)));
     }
 
     if (blocks.length === 0) {
@@ -2972,17 +4545,17 @@ function createItinerary(payload) {
         if (end > start) {
           blocks.push(`저녁(${formatRange([start, end])}): ${dinnerText}`);
         } else {
-          blocks.push('도착 후 이동/체크인 및 휴식');
+          blocks.push(T.arrivalRest);
         }
       } else if (i === days - 1 && Number.isFinite(lastDayMaxEnd)) {
         const end = Math.min(lastDayMaxEnd, 11 * 60);
         if (end > (8 * 60)) {
-          blocks.push(`오전(${formatRange([8 * 60 + 30, end])}): 체크아웃 & 공항 이동`);
+          blocks.push(`오전(${formatRange([8 * 60 + 30, end])}): ${T.checkoutAirport}`);
         } else {
-          blocks.push('출국 준비 및 공항 이동');
+          blocks.push(T.departurePrep);
         }
       } else {
-        blocks.push('자유 일정');
+        blocks.push(T.freeTime);
       }
     }
 
@@ -2991,59 +4564,64 @@ function createItinerary(payload) {
       date: getDateOffset(startDate, i),
       blocks
     });
+    // 일정에 넣은 실제 장소만 추천 카드 후보로 남긴다("자유 일정" 칸은 장소가 아님).
     const pushExtra = (place, cityLabelForDay) => {
-      if (!place || !place.name) return;
+      if (!place || !place.name || place.freeTime) return;
       extraRecommendations.push({
         name: String(place.name),
+        ...(place.nameKo ? { nameKo: String(place.nameKo) } : {}),
         city: String(place.city || cityLabelForDay || city.label),
-        area: String(place.area || place.city || cityLabelForDay || city.label),
+        area: String(place.area || cityDisplay(place.city || cityLabelForDay || city.label)),
         category: String(place.category || '관광'),
         bestTime: String(place.bestTime || '09:00-17:00'),
         stayMin: Math.max(30, Number(place.stayMin || 90)),
-        mapUrl: place.mapUrl || mapUrl(`${place.name} ${place.city || cityLabelForDay || city.label}`),
+        mapUrl: place.mapUrl || mapUrl(`${placeKey(place)} ${place.city || cityLabelForDay || city.label}`),
         aiScore: Math.max(60, Number(place.aiScore || 85)),
+        ...(place.photoUrl ? { photoUrl: place.photoUrl, photoCredit: place.photoCredit || null } : {}),
+        ...(place.wikidata ? { wikidata: place.wikidata } : {}),
         lat: place.lat || null,
         lng: place.lng || null
       });
     };
-    pushExtra(a, dayCity);
-    pushExtra(b, dayCity);
-    if (a?.name) usedPlaceNamesGlobal.add(String(a.name));
-    if (b?.name) usedPlaceNamesGlobal.add(String(b.name));
-    recentNamesByCity.set(dayCity, [String(a?.name || ''), String(b?.name || '')].filter(Boolean));
+    const realPlaces = placed.filter((p) => p && !p.freeTime && placeKey(p));
+    realPlaces.forEach((p) => {
+      pushExtra(p, dayCity);
+      usedPlaceNamesGlobal.add(placeKey(p));
+    });
+    recentNamesByCity.set(dayCity, realPlaces.map(placeKey));
+    if (allDay) allDayCount += 1;
+    prevDayAllDay = Boolean(allDay);
   }
 
-  const tips = [
-    '첫날은 공항-도심 이동 시간을 최소 2시간 확보',
-    '핫플은 오픈 직후 또는 20시 이후 방문 추천',
-    '하루 도보 18,000보 이상이면 다음날 오전 일정 완화 권장'
-  ];
+  const TT = T.tips;
+  const tips = [...TT.base];
 
   if (outbound?.arrivalTime) {
-    tips.unshift(`도착 ${outbound.arrivalTime} + 이동시간 90분 기준으로 첫날 일정 시작`);
+    tips.unshift(TT.arrival(outbound.arrivalTime));
   }
   if (inbound?.departureTime) {
-    tips.unshift(`출국 ${inbound.departureTime} 2시간 전 공항 도착 기준으로 마지막날 조정`);
+    tips.unshift(TT.departure(inbound.departureTime));
   }
   if (prefs.lastDayAirportBufferMin && Number(prefs.lastDayAirportBufferMin) > 120) {
-    tips.unshift(`마지막날 공항 도착 버퍼 ${prefs.lastDayAirportBufferMin}분 반영`);
+    tips.unshift(TT.airportBuffer(prefs.lastDayAirportBufferMin));
   }
-  if (prefs.indoorFocus) tips.unshift('우천 가능성을 고려해 실내 비중을 높여 구성');
-  if (prefs.removeShopping) tips.unshift('쇼핑 동선 제외 후 관광/체험 중심으로 구성');
-  if (prefs.optimizeTransit || prefs.minimizeTravelTime) tips.unshift('도시/지역 이동 횟수를 줄이는 방향으로 동선 최적화');
-  if (prefs.lowWalking || prefs.strollerFriendly) tips.unshift('도보 부담을 줄이기 위해 구간 집중형 일정으로 구성');
-  if (prefs.publicTransitOnly) tips.unshift('대중교통 전용 이동 기준으로 일정 구성');
-  if (prefs.jrPassMode) tips.unshift('JR 패스 활용 가능 구간 우선으로 동선 제안');
-  if (prefs.nightViewFocus) tips.unshift('야경 명소 시간대를 우선 배치');
-  if (prefs.firstTimeJapan) tips.unshift('일본 첫 여행 기준으로 대표 명소를 우선 반영');
+  if (prefs.indoorFocus) tips.unshift(TT.indoorFocus);
+  if (prefs.removeShopping) tips.unshift(TT.removeShopping);
+  if (prefs.optimizeTransit || prefs.minimizeTravelTime) tips.unshift(TT.optimizeTransit);
+  if (prefs.lowWalking || prefs.strollerFriendly) tips.unshift(TT.lowWalking);
+  if (prefs.publicTransitOnly) tips.unshift(TT.publicTransitOnly);
+  if (prefs.jrPassMode) tips.unshift(TT.jrPassMode);
+  if (prefs.nightViewFocus) tips.unshift(TT.nightViewFocus);
+  if (prefs.firstTimeJapan) tips.unshift(TT.firstTimeJapan);
   if (routeCities.length > 1) {
-    tips.unshift(`다중 도시 일정: ${routeCities.join(' -> ')} 순서로 동선을 구성`);
+    tips.unshift(TT.multiCity(routeCities.map(cityDisplay)));
   }
+  if (usedFreeTime) tips.push(TT.freeTime);
 
   const extraDedup = [];
   const extraSeen = new Set();
   for (const p of extraRecommendations) {
-    const k = `${String(p.city || '').toLowerCase()}|${String(p.name || '').toLowerCase()}`;
+    const k = `${String(p.city || '').toLowerCase()}|${placeNameKey(placeKey(p))}`;
     if (!p.name || extraSeen.has(k)) continue;
     extraSeen.add(k);
     extraDedup.push(p);
@@ -3053,34 +4631,45 @@ function createItinerary(payload) {
     source: 'ai_planner_v1',
     city: city.label,
     theme,
-    summary: `${city.label} ${days}일 맞춤 일정${flightLegs.length ? ' (항공권 시간 반영)' : ''}`,
+    summary: T.summary(cityDisplay(city.label), days, flightLegs.length > 0),
     itinerary,
     tips,
     extraRecommendations: optimizeDayRoute(extraDedup)
   };
 }
 
+// 일정 시작일: 항공편 출발일 → 요청 시작일 → 오늘 (규칙 기반 createItinerary와 같은 순서)
+function itineraryStartDate(payload) {
+  const legs = Array.isArray(payload?.flight?.legs) ? payload.flight.legs : [];
+  return legs[0]?.date || payload?.startDate || new Date().toISOString().slice(0, 10);
+}
+
 function buildAiContext(payload, picks, city) {
   const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
-  const startDate = payload.startDate || new Date().toISOString().slice(0, 10);
+  const startDate = itineraryStartDate(payload);
+  const lang = normalizeLang(payload.lang);
+  const cityKey = cityKeyForExactLabel(city.label) || cityKeyByInput(payload.city);
   return {
+    language: ({ ko: 'Korean', en: 'English', ja: 'Japanese' })[lang],
     city: city.label,
     theme: payload.theme || 'mixed',
     budget: payload.budget || 'mid',
     pace: payload.pace || 'normal',
     days,
     startDate,
-    picks: (picks || []).slice(0, 12).map((p) => ({
+    // 하루 2곳 기준으로 넉넉히(최소 12, 최대 20곳) 넘겨 같은 장소를 여러 날 반복하지 않게 한다.
+    picks: (picks || []).slice(0, Math.min(20, Math.max(12, days * 2))).map((p) => ({
       name: p.name,
       area: p.area,
       category: p.category,
       bestTime: p.bestTime,
       stayMin: p.stayMin
     })),
+    // en/ja 일정이면 내장 맛집 이름·지역·장르도 그 언어 표기로 넘긴다(표기가 없으면 원문).
     foods: (city.foods || []).slice(0, 8).map((f) => ({
-      name: f.name,
-      area: f.area,
-      genre: f.genre
+      name: localizeCuratedFoodName(f.name, cityKey, lang),
+      area: localizeCuratedArea(f.area, lang, CITY_DATA[cityKey] ? localizedCityName(cityKey, lang) : ''),
+      genre: localizeFoodGenre(f.genre, lang)
     })),
     specialPrefs: payload._specialPrefs || {},
     flight: payload.flight || null,
@@ -3149,7 +4738,16 @@ function classifyAiError(provider, err) {
   const embeddedMessage = String(embeddedErr?.message || '').toLowerCase();
   let code = 'unknown';
   let action = '서버 로그의 원문 에러를 확인해 주세요.';
-  if (!raw) {
+  if (err?.reasonCode === 'AI_TRUNCATED') {
+    code = 'output_truncated';
+    action = `${provider} 응답이 길이 제한에 걸려 잘려서 규칙 기반 일정으로 대신 만들었습니다.`;
+  } else if (err?.reasonCode === 'AI_INVALID_OUTPUT') {
+    code = 'invalid_model_response';
+    action = `${provider} 응답 형식이 올바르지 않아 규칙 기반 일정으로 대신 만들었습니다.`;
+  } else if (low.includes('api_key is missing') || low.includes('api key is missing')) {
+    code = 'missing_key';
+    action = `${provider} API 키가 설정되지 않았습니다.`;
+  } else if (!raw) {
     code = 'empty_error';
     action = `${provider} 응답이 비어 있습니다. 모델/네트워크 상태를 다시 확인해 주세요.`;
   } else if (
@@ -3187,12 +4785,186 @@ function classifyAiError(provider, err) {
     code = 'network_error';
     action = '서버 네트워크/방화벽/DNS에서 외부 API 도메인 접근이 가능한지 확인해 주세요.';
   }
+  const reasonCode = code === 'output_truncated' ? 'AI_TRUNCATED'
+    : code === 'invalid_model_response' ? 'AI_INVALID_OUTPUT'
+      : code === 'missing_key' ? 'AI_KEY_MISSING'
+        : 'AI_ERROR';
   return {
     provider,
     code,
+    reasonCode,
     message: raw || 'unknown error',
     action
   };
+}
+
+// AI 응답이 잘렸거나 형식이 틀렸을 때 쓰는 오류 (reasonCode: AI_TRUNCATED | AI_INVALID_OUTPUT)
+class AiOutputError extends Error {
+  constructor(reasonCode, message) {
+    super(message || reasonCode);
+    this.name = 'AiOutputError';
+    this.reasonCode = reasonCode;
+  }
+}
+
+// ── AI 일정 정규화: 클라이언트 렌더러가 읽는 "오전(09:00-11:00): 장소 (지역)" 문자열 블록으로 맞춘다 ──
+const ITINERARY_MAIN_BLOCK_RE = /^(오전|오후|저녁|종일|아침|점심)\((\d{1,2}:\d{2})-(\d{1,2}:\d{2})\):\s*(.+)$/;
+
+function normalizeClockText(value) {
+  const m = /(\d{1,2})\s*[:：]\s*(\d{2})/.exec(String(value || ''));
+  if (!m) return '';
+  const h = Math.min(23, Number(m[1]));
+  const min = Math.min(59, Number(m[2]));
+  return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+function addMinutesToClock(hhmm, minutes) {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  const total = Math.min(23 * 60 + 59, (h * 60) + m + minutes);
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
+function periodForClock(hhmm) {
+  const h = Number(String(hhmm).slice(0, 2));
+  if (h < 12) return '오전';
+  if (h < 17) return '오후';
+  return '저녁';
+}
+
+function formatItineraryBlock(period, start, end, title, area) {
+  const cleanTitle = String(title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!cleanTitle) return '';
+  const cleanArea = String(area || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const suffix = cleanArea && cleanArea !== cleanTitle && !cleanTitle.endsWith(')') ? ` (${cleanArea})` : '';
+  return `${period}(${start}-${end}): ${cleanTitle}${suffix}`;
+}
+
+// 문자열·객체 블록 하나를 클라이언트 형식 문자열로. 못 바꾸면 짧은 일반 문장으로 두거나 버린다.
+function normalizeAiBlock(block) {
+  if (typeof block === 'string') {
+    const s = block.replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    const main = ITINERARY_MAIN_BLOCK_RE.exec(s);
+    if (main) {
+      const start = normalizeClockText(main[2]);
+      const end = normalizeClockText(main[3]);
+      return `${main[1]}(${start}-${end}): ${main[4].trim()}`;
+    }
+    const range = /(\d{1,2}\s*:\s*\d{2})\s*(?:-|~|–|—|to)\s*(\d{1,2}\s*:\s*\d{2})\)?\s*[:：\-–]?\s*(.+)$/.exec(s);
+    if (range) {
+      const start = normalizeClockText(range[1]);
+      const end = normalizeClockText(range[2]);
+      return formatItineraryBlock(periodForClock(start), start, end, range[3], '');
+    }
+    return s.slice(0, 200);
+  }
+  if (!block || typeof block !== 'object') return '';
+  const timeText = String(block.time || block.timeRange || '');
+  const rangeInTime = /(\d{1,2}\s*:\s*\d{2})\s*(?:-|~|–|—|to)\s*(\d{1,2}\s*:\s*\d{2})/.exec(timeText);
+  const start = normalizeClockText(block.start || block.startTime || (rangeInTime ? rangeInTime[1] : timeText));
+  if (!start) return '';
+  const end = normalizeClockText(block.end || block.endTime || (rangeInTime ? rangeInTime[2] : '')) || addMinutesToClock(start, 90);
+  const title = block.title || block.place || block.activity || block.name || block.location || '';
+  const area = block.area || (block.location && block.location !== title ? block.location : '');
+  const period = ['오전', '오후', '저녁', '종일', '아침', '점심'].includes(block.period) ? block.period : periodForClock(start);
+  return formatItineraryBlock(period, start, end, title, area);
+}
+
+function firstArrayField(obj, names) {
+  for (const n of names) {
+    if (Array.isArray(obj?.[n])) return obj[n];
+  }
+  return [];
+}
+
+// 여러 날에 같은 장소가 되풀이되면(저녁 식사 칸 제외) 아직 쓰지 않은 후보(picks)로 바꾼다. 남은 후보가 없으면 그대로 둔다.
+function reduceRepeatedPlaces(itinerary, picks) {
+  const list = (Array.isArray(picks) ? picks : []).filter((p) => p && p.name);
+  const pickKeyOf = (placeText) => {
+    const k = placeNameKey(placeText);
+    if (!k) return '';
+    let best = '';
+    for (const p of list) {
+      const pk = placeNameKey(p.name);
+      if (pk && (k === pk || k.includes(pk)) && pk.length > best.length) best = pk;
+    }
+    return best || k;
+  };
+  const mentioned = new Set();
+  const parsed = itinerary.map((d) => d.blocks.map((b) => {
+    const m = ITINERARY_MAIN_BLOCK_RE.exec(b);
+    if (!m || m[1] === '저녁') return null;
+    const key = pickKeyOf(itineraryPlaceName(b)?.name);
+    if (key) mentioned.add(key);
+    return key ? { m, key } : null;
+  }));
+  const unused = list.filter((p) => !mentioned.has(placeNameKey(p.name)));
+  const seen = new Set();
+  let replaced = 0;
+  const out = itinerary.map((d, di) => ({
+    ...d,
+    blocks: d.blocks.map((b, bi) => {
+      const info = parsed[di][bi];
+      if (!info) return b;
+      if (!seen.has(info.key)) {
+        seen.add(info.key);
+        return b;
+      }
+      const next = unused.shift();
+      if (!next) return b;
+      seen.add(placeNameKey(next.name));
+      replaced += 1;
+      return formatItineraryBlock(info.m[1], normalizeClockText(info.m[2]), normalizeClockText(info.m[3]), next.name, next.area) || b;
+    })
+  }));
+  return { itinerary: out, replaced };
+}
+
+// AI 응답 JSON → { summary, itinerary, tips }. 날짜 수가 모자라거나 관광 블록이 없는 날이 있으면 AiOutputError.
+// picks: AI에 넘긴 후보(반복된 장소를 아직 안 쓴 후보로 바꿀 때 쓴다)
+function normalizeAiItinerary(json, payload, providerLabel, picks = []) {
+  const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
+  const startDate = itineraryStartDate(payload);
+  const rawDays = firstArrayField(json, ['itinerary', 'days', 'schedule']);
+  if (rawDays.length < days) {
+    throw new AiOutputError('AI_INVALID_OUTPUT', `${providerLabel} returned ${rawDays.length}/${days} days`);
+  }
+  const itinerary = rawDays.slice(0, days).map((d, idx) => {
+    const rawBlocks = firstArrayField(d, ['blocks', 'schedule', 'activities', 'items', 'plan', 'events']);
+    const blocks = rawBlocks.map(normalizeAiBlock).filter(Boolean).slice(0, 12);
+    return { day: idx + 1, date: getDateOffset(startDate, idx), blocks };
+  });
+  const emptyDay = itinerary.find((d) => !d.blocks.some((b) => {
+    const m = ITINERARY_MAIN_BLOCK_RE.exec(b);
+    return m && m[1] !== '저녁';
+  }));
+  if (emptyDay) {
+    throw new AiOutputError('AI_INVALID_OUTPUT', `${providerLabel} returned no schedule blocks for day ${emptyDay.day}`);
+  }
+  const dedup = reduceRepeatedPlaces(itinerary, picks);
+  if (dedup.replaced > 0) {
+    console.log(`[itinerary] ${providerLabel} 일정에서 여러 날 반복된 장소 ${dedup.replaced}곳을 아직 쓰지 않은 후보로 바꿨습니다.`);
+  }
+  const tips = (Array.isArray(json?.tips) ? json.tips : [])
+    .filter((t) => typeof t === 'string' && t.trim())
+    .map((t) => t.trim().slice(0, 200))
+    .slice(0, 8);
+  const summary = typeof json?.summary === 'string' ? json.summary.trim().slice(0, 300) : '';
+  return { summary, itinerary: dedup.itinerary, tips, repeatsReplaced: dedup.replaced };
+}
+
+function itineraryMaxOutputTokens(days) {
+  return Number(days) > 5 ? 8192 : 4096;
+}
+
+// 응답에 넣는 AI 오류 목록: 벤더 원문(message)은 빼고 분류 결과만 남긴다(원문은 서버 로그에만).
+function publicAiErrors(errors = []) {
+  return (Array.isArray(errors) ? errors : []).filter(Boolean).map((e) => ({
+    provider: e.provider,
+    code: e.code,
+    reasonCode: e.reasonCode,
+    action: e.action
+  }));
 }
 
 function summarizeAiErrors(errors = []) {
@@ -3211,6 +4983,7 @@ async function probeGemini() {
       temperature: 0,
       topP: 0.1,
       maxOutputTokens: 20,
+      thinkingBudget: 0,
       responseMimeType: 'application/json'
     });
     return { configured: true, ok: true, model: GEMINI_API_MODEL };
@@ -3241,36 +5014,112 @@ async function probeOpenAI() {
   }
 }
 
+// google 모드에서만: Places Text Search 1회(FieldMask=places.id, 결과 1건)로 키·결제·권한을 확인한다.
+async function probePlaces() {
+  if (!GOOGLE_PLACES_ENABLED) return { configured: false, ok: false, reason: 'provider_free' };
+  if (!GOOGLE_MAPS_SERVER_KEY) return { configured: false, ok: false, reasonCode: 'GOOGLE_KEY_MISSING' };
+  try {
+    // 차단(서킷) 중이어도 1회는 실제로 확인한다. 성공하면 차단이 풀린다.
+    const places = await googlePlacesSearchText(
+      { textQuery: 'Tokyo Station', maxResultCount: 1, regionCode: 'JP' },
+      'places.id',
+      'places:probe',
+      { bypassCircuit: true }
+    );
+    return { configured: true, ok: true, results: places.length };
+  } catch (err) {
+    return { configured: true, ok: false, reasonCode: err?.reasonCode || 'GOOGLE_ERROR' };
+  }
+}
+
+function placeImagesSummary() {
+  let withPhoto = 0;
+  let withCoords = 0;
+  let withLabels = 0;
+  for (const v of PLACE_IMAGES.byKey.values()) {
+    if (v.image) withPhoto += 1;
+    if (v.lat !== null) withCoords += 1;
+    if (v.labels?.en || v.labels?.ja) withLabels += 1;
+  }
+  return {
+    places: PLACE_IMAGES.byKey.size,
+    withPhoto,
+    withCoords,
+    withLabels,
+    cityPhotos: PLACE_IMAGES.cities.size,
+    foodGenrePhotos: PLACE_IMAGES.foodGenres.size
+  };
+}
+
+// probe=false: 공개용(비밀값 없음). probe=true: 토큰 확인 후에만 호출되며 실제 외부 호출을 한다.
 async function buildAiDiagnostics({ probe = false } = {}) {
+  const guard = googleGuardState();
   const info = {
     timeoutMs: AI_REQUEST_TIMEOUT_MS,
+    modes: {
+      places: PLACES_PROVIDER,
+      map: MAP_PROVIDER
+    },
+    google: {
+      placesEnabled: GOOGLE_PLACES_ENABLED,
+      serverKeyConfigured: Boolean(GOOGLE_MAPS_SERVER_KEY),
+      serverKeyFromLegacyVar: GOOGLE_MAPS_SERVER_KEY_FROM_LEGACY,
+      browserKeyConfigured: Boolean(GOOGLE_MAPS_BROWSER_KEY),
+      dailyCallLimit: guard.dailyCallLimit,
+      callsToday: guard.callsToday,
+      monthlyCallLimit: guard.monthlyCallLimit,
+      callsThisMonth: guard.callsThisMonth,
+      photoDailyLimit: guard.photoDailyLimit,
+      photoCallsToday: guard.photoCallsToday,
+      photoMonthlyLimit: guard.photoMonthlyLimit,
+      photoCallsThisMonth: guard.photoCallsThisMonth,
+      photoCacheEntries: _placePhotoCache.size,
+      countersResetOnRestart: true,
+      circuitOpen: guard.circuitOpen,
+      circuitReason: guard.circuitReason,
+      circuitOpenUntil: guard.circuitOpenUntil,
+      lastErrorCode: guard.lastErrorCode,
+      lastErrorAt: guard.lastErrorAt
+    },
+    placeImages: placeImagesSummary(),
     providers: {
       gemini: {
         configured: Boolean(GEMINI_API_KEY),
         model: GEMINI_API_MODEL,
-        keyMasked: maskSecret(GEMINI_API_KEY),
         keyFormatOk: looksLikeGeminiKey(GEMINI_API_KEY)
       },
       openai: {
         configured: Boolean(OPENAI_API_KEY),
         model: OPENAI_MODEL,
-        keyMasked: maskSecret(OPENAI_API_KEY),
         keyFormatOk: looksLikeOpenAiKey(OPENAI_API_KEY)
       }
     }
   };
   if (!probe) return info;
-  const [gemini, openai] = await Promise.all([probeGemini(), probeOpenAI()]);
-  info.probe = { gemini, openai, checkedAt: new Date().toISOString() };
+  info.providers.gemini.keyMasked = maskSecret(GEMINI_API_KEY);
+  info.providers.openai.keyMasked = maskSecret(OPENAI_API_KEY);
+  const [gemini, openai, places] = await Promise.all([probeGemini(), probeOpenAI(), probePlaces()]);
+  info.probe = { gemini, openai, places, checkedAt: new Date().toISOString() };
   return info;
+}
+
+// 진단 토큰 비교(길이와 상관없이 일정 시간)
+function diagnosticsTokenMatches(given) {
+  if (!DIAGNOSTICS_TOKEN || typeof given !== 'string' || !given) return false;
+  const a = createHash('sha256').update(given).digest();
+  const b = createHash('sha256').update(DIAGNOSTICS_TOKEN).digest();
+  return timingSafeEqual(a, b);
 }
 
 function normalizeSelectedDestination(pick, cityLabel) {
   if (!pick) return null;
   const name = String(pick.name || pick.label || '').trim();
   if (!name) return null;
+  // en/ja 화면에서 고른 카드는 원래 한글 이름(nameKo)을 함께 보낸다 — 사진·좌표를 찾는 데 쓴다.
+  const nameKo = typeof pick.nameKo === 'string' && /[가-힣]/.test(pick.nameKo) ? pick.nameKo.trim().slice(0, 80) : '';
   return {
     name,
+    ...(nameKo && nameKo !== name ? { nameKo } : {}),
     city: pick.city || cityLabel,
     area: pick.area || pick.city || cityLabel,
     category: pick.category || '추천 여행지',
@@ -3285,12 +5134,22 @@ function mergeSelectedDestinations(userPicks, basePicks, cityLabel) {
     .map((pick) => normalizeSelectedDestination(pick, cityLabel))
     .filter(Boolean);
   if (!normalized.length) return basePicks;
+  // 사용자가 고른 카드가 추천 목록에도 있으면 사진·좌표 등은 서버 데이터에서 이어 붙인다.
+  const baseByName = new Map((basePicks || []).map((p) => [String(p?.name || ''), p]));
+  const mediaFields = ['photoUrl', 'photoCredit', 'lat', 'lng', 'mapUrl', 'wikidata', 'nameKo'];
   const seen = new Set();
   const merged = [];
   normalized.forEach((pick) => {
     if (!seen.has(pick.name)) {
       seen.add(pick.name);
-      merged.push(pick);
+      const base = baseByName.get(pick.name);
+      let out = { ...pick };
+      if (base) mediaFields.forEach((f) => { if (base[f] !== undefined && base[f] !== null) out[f] = base[f]; });
+      else {
+        const ck = cityKeyByLabel(out.city);
+        out = attachPlaceMedia(out, ck, out.nameKo || koPlaceNameForLabel(out.name, ck) || out.name);
+      }
+      merged.push(out);
     }
   });
   for (const pick of basePicks) {
@@ -3333,20 +5192,31 @@ function extractGeminiText(data) {
 
 async function callGeminiGenerateContent(prompt, opts = {}) {
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is missing');
-  const body = {
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: String(prompt || '') }]
-      }
-    ],
-    generationConfig: {
-      temperature: Number(opts.temperature ?? 0.2),
-      topP: Number(opts.topP ?? 0.9),
-      maxOutputTokens: Number(opts.maxOutputTokens ?? 900),
-      responseMimeType: opts.responseMimeType || 'application/json'
-    }
+  const baseGenerationConfig = {
+    temperature: Number(opts.temperature ?? 0.2),
+    topP: Number(opts.topP ?? 0.9),
+    maxOutputTokens: Number(opts.maxOutputTokens ?? 900),
+    responseMimeType: opts.responseMimeType || 'application/json'
   };
+  if (opts.responseSchema) baseGenerationConfig.responseSchema = opts.responseSchema;
+  // 2.5 계열은 생각(thinking) 토큰도 maxOutputTokens를 나눠 쓰므로, 요청 시 예산을 작게 둔다(2.0 계열은 이 필드를 받지 않음).
+  const bodyForModel = (model) => {
+    const generationConfig = { ...baseGenerationConfig };
+    if (opts.thinkingBudget !== undefined && /^gemini-2\.5-/.test(model)) {
+      const budget = Math.max(0, Number(opts.thinkingBudget) || 0);
+      generationConfig.thinkingConfig = { thinkingBudget: /pro/.test(model) ? Math.max(128, budget) : budget };
+    }
+    return {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: String(prompt || '') }]
+        }
+      ],
+      generationConfig
+    };
+  };
+  const timeoutMs = Math.max(AI_REQUEST_TIMEOUT_MS, Number(opts.timeoutMs) || 0);
 
   // Try primary model first, then fallbacks on 429 (with circuit breaker)
   const allModels = [opts.model || GEMINI_API_MODEL, ...GEMINI_FALLBACK_MODELS];
@@ -3362,13 +5232,14 @@ async function callGeminiGenerateContent(prompt, opts = {}) {
     if (tried.has(model)) continue;
     tried.add(model);
 
-    const url = `${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+    // 키는 URL이 아닌 헤더로 보낸다(오류 메시지·로그에 URL이 남아도 키가 새지 않게).
+    const url = `${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent`;
     try {
       const res = await fetchWithTimeout(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      }, AI_REQUEST_TIMEOUT_MS);
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+        body: JSON.stringify(bodyForModel(model))
+      }, timeoutMs);
 
       if (res.ok) {
         const json = await res.json();
@@ -3419,21 +5290,8 @@ async function createItineraryWithOpenAI(payload, picks) {
           properties: {
             day: { type: 'integer' },
             date: { type: 'string' },
-            blocks: {
-              type: 'array',
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  start: { type: 'string' },
-                  end: { type: 'string' },
-                  title: { type: 'string' },
-                  location: { type: 'string' },
-                  tags: { type: 'array', items: { type: 'string' } }
-                },
-                required: ['start', 'end', 'title']
-              }
-            }
+            // 클라이언트 렌더러 형식의 문자열: "오전(09:00-11:00): 장소 (지역)"
+            blocks: { type: 'array', items: { type: 'string' } }
           },
           required: ['day', 'date', 'blocks']
         }
@@ -3464,7 +5322,8 @@ async function createItineraryWithOpenAI(payload, picks) {
         schema,
         strict: true
       }
-    }
+    },
+    max_output_tokens: itineraryMaxOutputTokens(ctx.days)
   };
 
   let json = null;
@@ -3477,13 +5336,17 @@ async function createItineraryWithOpenAI(payload, picks) {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(body)
-    }, AI_REQUEST_TIMEOUT_MS);
+    }, Math.max(AI_REQUEST_TIMEOUT_MS, 30_000));
 
     if (!res.ok) {
       lastError = new Error(`OpenAI error: ${res.status}`);
       continue;
     }
     const data = await res.json();
+    if (data?.status === 'incomplete') {
+      const why = String(data?.incomplete_details?.reason || '');
+      throw new AiOutputError(why === 'max_output_tokens' ? 'AI_TRUNCATED' : 'AI_INVALID_OUTPUT', `OpenAI response incomplete (${why || 'unknown'})`);
+    }
     const text = extractOpenAiText(data);
     const parsed = parseJsonFromText(text);
     if (parsed) {
@@ -3491,71 +5354,152 @@ async function createItineraryWithOpenAI(payload, picks) {
       lastError = null;
       break;
     }
-    lastError = new Error('OpenAI returned unexpected format');
+    lastError = new AiOutputError('AI_INVALID_OUTPUT', 'OpenAI returned unexpected format');
   }
-  if (!json) throw lastError || new Error('OpenAI parse error');
+  if (!json) throw lastError || new AiOutputError('AI_INVALID_OUTPUT', 'OpenAI parse error');
 
   const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
-  if (!Array.isArray(json.itinerary) || json.itinerary.length === 0) {
-    throw new Error('OpenAI returned empty itinerary');
-  }
-  const normalized = json.itinerary.slice(0, days).map((d, idx) => ({
-    day: Number(d.day || (idx + 1)),
-    date: d.date || getDateOffset(payload.startDate || new Date().toISOString().slice(0, 10), idx),
-    blocks: Array.isArray(d.blocks) ? d.blocks : []
-  }));
+  const normalized = normalizeAiItinerary(json, payload, 'OpenAI', ctx.picks);
 
   return {
     source: 'openai_itinerary_v1',
+    provider: 'openai',
     city: city.label,
     theme: payload.theme || 'mixed',
-    summary: json.summary || `${city.label} ${days}일 AI 일정`,
-    itinerary: normalized,
-    tips: Array.isArray(json.tips) ? json.tips : []
+    summary: normalized.summary || `${city.label} ${days}일 AI 일정`,
+    itinerary: normalized.itinerary,
+    tips: normalized.tips
   };
 }
+
+// Gemini responseSchema (OpenAPI 부분집합). blocks는 클라이언트 렌더러 형식의 문자열 배열.
+const GEMINI_ITINERARY_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    summary: { type: 'STRING' },
+    itinerary: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          day: { type: 'INTEGER' },
+          date: { type: 'STRING' },
+          blocks: { type: 'ARRAY', items: { type: 'STRING' } }
+        },
+        required: ['day', 'date', 'blocks']
+      }
+    },
+    tips: { type: 'ARRAY', items: { type: 'STRING' } }
+  },
+  required: ['summary', 'itinerary', 'tips']
+};
 
 async function createItineraryWithGemini(payload, picks) {
   if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is missing');
   const key = cityKeyByInput(payload.city);
   const city = CITY_DATA[key] || CITY_DATA.tokyo;
   const ctx = buildAiContext(payload, picks, city);
-  const prompt = `${AI_SYSTEM_MESSAGE}\nContext:\n${JSON.stringify(ctx, null, 2)}\nRespond with only JSON that matches the schema.`;
+  const days = ctx.days;
+  const prompt = [
+    AI_SYSTEM_MESSAGE,
+    'Output JSON shape (no markdown, no extra keys):',
+    '{"summary": string, "itinerary": [{"day": 1, "date": "YYYY-MM-DD", "blocks": ["오전(09:00-11:00): <place> (<area>)", "오후(13:00-15:00): <place> (<area>)"]}], "tips": [string]}',
+    `The "itinerary" array must contain exactly ${days} entries (day 1 to ${days}); day 1 is ${ctx.startDate} and dates are consecutive.`,
+    `Write summary, tips and any descriptive words in ${ctx.language}; keep place names as given in "picks"/"foods". Give 1 to 4 short tips.`,
+    'Context:',
+    JSON.stringify(ctx)
+  ].join('\n');
 
   const data = await callGeminiGenerateContent(prompt, {
     temperature: 0.28,
-    maxOutputTokens: 900,
+    maxOutputTokens: itineraryMaxOutputTokens(days),
+    thinkingBudget: 0,
+    timeoutMs: 30_000,
     topP: 0.9,
-    responseMimeType: 'application/json'
+    responseMimeType: 'application/json',
+    responseSchema: GEMINI_ITINERARY_SCHEMA
   });
   const _itinModel = data._usedModel || GEMINI_API_MODEL;
+  const candidate = Array.isArray(data?.candidates) ? data.candidates[0] : null;
+  const finishReason = String(candidate?.finishReason || '').toUpperCase();
+  if (finishReason === 'MAX_TOKENS') {
+    throw new AiOutputError('AI_TRUNCATED', `Gemini output truncated (MAX_TOKENS, ${_itinModel})`);
+  }
+  if (!candidate || data?.promptFeedback?.blockReason || (finishReason && finishReason !== 'STOP')) {
+    throw new AiOutputError('AI_INVALID_OUTPUT', `Gemini returned no usable candidate (${finishReason || data?.promptFeedback?.blockReason || 'none'})`);
+  }
   const text = extractGeminiText(data);
   const json = parseJsonFromText(text);
   if (!json) {
-    throw new Error('Gemini returned unexpected format');
+    throw new AiOutputError('AI_INVALID_OUTPUT', 'Gemini returned unexpected format');
   }
-  const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
-  if (!Array.isArray(json.itinerary) || json.itinerary.length === 0) {
-    throw new Error('Gemini returned empty itinerary');
-  }
-  const normalized = json.itinerary.slice(0, days).map((d, idx) => ({
-    day: Number(d.day || (idx + 1)),
-    date: d.date || getDateOffset(payload.startDate || new Date().toISOString().slice(0, 10), idx),
-    blocks: Array.isArray(d.blocks) ? d.blocks : []
-  }));
+  const normalized = normalizeAiItinerary(json, payload, 'Gemini', ctx.picks);
 
   return {
     source: 'gemini_itinerary_v1 (' + _itinModel + ')',
+    provider: 'gemini',
     city: city.label,
     theme: payload.theme || 'mixed',
-    summary: json.summary || `${city.label} ${days}일 AI 일정 (Gemini)`,
-    itinerary: normalized,
-    tips: Array.isArray(json.tips) ? json.tips : []
+    summary: normalized.summary || `${city.label} ${days}일 AI 일정 (Gemini)`,
+    itinerary: normalized.itinerary,
+    tips: normalized.tips
   };
 }
 
+// ── 일정의 각 날에 지도용 좌표를 붙인다: day.places = [{ name, period, lat, lng }] (좌표 모르면 null) ──
+function itineraryPlaceName(blockText) {
+  const m = ITINERARY_MAIN_BLOCK_RE.exec(String(blockText || ''));
+  if (!m) return null;
+  const placeText = m[4].trim();
+  // 끝에 있는 괄호 묶음 하나만 지역으로 본다(이름 안의 괄호는 이름에 남긴다: "A (B) C (지역)" → "A (B) C").
+  const withArea = /^(.+?)\s*\(([^()]*)\)\s*$/.exec(placeText);
+  return { period: m[1], name: (withArea ? withArea[1] : placeText).trim() };
+}
+
+function attachItineraryCoordinates(itinerary, knownPlaces, cityKeys) {
+  const coordByName = new Map();
+  for (const p of knownPlaces || []) {
+    if (!p || !hasLatLng(p)) continue;
+    const point = { lat: Number(p.lat), lng: Number(p.lng) };
+    [p.name, p.nameKo].forEach((n) => {
+      const k = String(n || '').trim();
+      if (k && !coordByName.has(k)) coordByName.set(k, point);
+    });
+  }
+  const lookup = (name) => {
+    if (coordByName.has(name)) return coordByName.get(name);
+    for (const ck of cityKeys || []) {
+      const media = placeMediaFor(ck, name);
+      if (media && media.lat !== null) return { lat: media.lat, lng: media.lng };
+    }
+    const any = placeMediaFor(null, name);
+    if (any && any.lat !== null) return { lat: any.lat, lng: any.lng };
+    // en/ja 일정(특히 AI 일정)은 현지화된 이름(예: 'Otaru Canal', '小樽運河')을 쓴다 → 원래 이름으로 바꿔 찾는다.
+    for (const e of placeLabelMatches(name, cityKeys)) {
+      const media = placeMediaFor(e.ck, e.ko);
+      if (media && media.lat !== null) return { lat: media.lat, lng: media.lng };
+    }
+    return null;
+  };
+  const placeCoords = {};
+  const days = (Array.isArray(itinerary) ? itinerary : []).map((day) => {
+    const places = [];
+    for (const b of (Array.isArray(day?.blocks) ? day.blocks : [])) {
+      const parsed = itineraryPlaceName(b);
+      if (!parsed || !parsed.name) continue;
+      if (FREE_TIME_TITLES.has(parsed.name)) continue; // "자유 일정" 칸은 장소가 아니다
+      const pos = lookup(parsed.name);
+      places.push({ name: parsed.name, period: parsed.period, lat: pos ? pos.lat : null, lng: pos ? pos.lng : null });
+      if (pos) placeCoords[parsed.name] = pos;
+    }
+    return { ...day, places };
+  });
+  return { itinerary: days, placeCoords };
+}
+
+// google 모드 전용. 모든 쿼리가 실패하면 첫 오류(GoogleApiError)를 던진다(폴백 이유를 알 수 있게).
 async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo, lang) {
-  if (!GOOGLE_MAPS_API_KEY) return [];
+  if (!GOOGLE_PLACES_ENABLED) return [];
 
   // Compute centroid from destinations + stay location
   const points = [];
@@ -3575,46 +5519,36 @@ async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo, 
       lng: points.reduce((s, p) => s + p.lng, 0) / points.length
     };
   } else {
+    // 정적 도시 좌표 (Geocoding 호출 없음)
     center = await fetchGoogleCityCenter(cityLabel);
   }
   if (!center) return [];
 
-
-  const endpoint = 'https://places.googleapis.com/v1/places:searchText';
-  const queries = [
-    `${cityLabel} \uC778\uAE30 \uB9DB\uC9D1`,
-    `${cityLabel} \uD604\uC9C0\uC778 \uCD94\uCC9C \uB808\uC2A4\uD1A0\uB791`
-  ];
-  const allPlaces = [];
-  for (const q of queries) {
-    try {
-      const body = {
-        textQuery: q,
-        maxResultCount: 20,
-        languageCode: lang || 'ko',
-        regionCode: 'JP',
-        locationBias: {
-          circle: {
-            center: { latitude: center.lat, longitude: center.lng },
-            radius: 8000
-          }
+  const foodQueryHints = {
+    ko: ['인기 맛집', '현지인 추천 레스토랑'],
+    en: ['popular restaurants', 'local favorite restaurants'],
+    ja: ['人気 グルメ', '地元 おすすめ レストラン']
+  };
+  const queries = (foodQueryHints[lang] || foodQueryHints.ko).map((h) => `${cityLabel} ${h}`);
+  const cacheKey = `recfoods|${cityLabel}|${lang || 'ko'}|${center.lat.toFixed(3)},${center.lng.toFixed(3)}`;
+  let allPlaces = placesCacheGet(cacheKey);
+  if (!allPlaces) {
+    const fieldMask = 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos,places.currentOpeningHours';
+    const settled = await Promise.allSettled(queries.map((q) => googlePlacesSearchText({
+      textQuery: q,
+      maxResultCount: 20,
+      languageCode: lang || 'ko',
+      regionCode: 'JP',
+      locationBias: {
+        circle: {
+          center: { latitude: center.lat, longitude: center.lng },
+          radius: 8000
         }
-      };
-      const r = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-          'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos,places.currentOpeningHours,places.regularOpeningHours'
-        },
-        body: JSON.stringify(body)
-      });
-      if (!r.ok) continue;
-      const data = await r.json();
-      if (data.places) allPlaces.push(...data.places);
-    } catch (err) { console.warn('[api] Suppressed error:', err.message); }
+      }
+    }, fieldMask, 'places:foods')));
+    allPlaces = settledValuesOrThrow(settled).flat();
+    placesCacheSet(cacheKey, allPlaces);
   }
-
 
   const seen = new Set();
   const unique = [];
@@ -3644,11 +5578,11 @@ async function fetchRecommendedFoods(destinations, cityLabel, budget, stayInfo, 
       return {
         name: p.displayName?.text || '맛집', city: cityLabel, genre: localizeType(p.primaryType, lang) || ({ko:'\uC74C\uC2DD\uC810',en:'Restaurant',ja:'\u98F2\u98DF\u5E97'}[lang]||'\uC74C\uC2DD\uC810'),
         area, score: rating, reviewCount, priceLevel, aiFit, mapUrl: p.googleMapsUri || '',
-        photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null,
+        ...googlePhotoFields(p),
         lat: loc ? loc.lat : null, lng: loc ? loc.lng : null,
         distFromCenter: Math.round(distKm * 10) / 10,
         openNow: p.currentOpeningHours?.openNow ?? null,
-        todayHours: formatTodayHours(p.currentOpeningHours || p.regularOpeningHours)
+        todayHours: formatTodayHours(p.currentOpeningHours)
       };
     })
     .filter((f) => f.score >= 3.0 || f.score === null)
@@ -3738,78 +5672,135 @@ async function buildTravelPlan(payload) {
     }
   }
 
-  const mergedPicks = mergeSelectedDestinations(payload._picks, rec.picks, cityLabel);
+  const lang = normalizeLang(payload.lang);
+  const routeCityKeys = [key, ...uniqueAdditionalKeys];
+  // 지어낸 채움 장소(예전 저장 일정의 "<도시> 추천 명소 N")는 추천·일정 후보에서 뺀다.
+  const isSyntheticFiller = (p) => /(추천 명소|추가 추천지) \d+$/.test(String(p?.name || ''));
+  const mergedPicks = mergeSelectedDestinations(payload._picks, rec.picks, cityLabel).filter((p) => !isSyntheticFiller(p));
   rec.picks = mergedPicks;
   const picksForItinerary = mergedPicks.length ? mergedPicks : rec.picks;
+  // AI 후보: 내장 큐레이션 데이터(무료 모드·대체)일 때는 같은 도시의 대표 명소를 보태 최소 days×2곳을 만든다.
+  const aiPicks = rec.sourceInfo?.kind === 'live'
+    ? picksForItinerary
+    : expandPicksForAi(picksForItinerary, routeCityKeys, lang, Math.max(1, Math.min(10, days || 3)));
   let it;
   const aiErrors = [];
   if (payload.useAi) {
     if (USE_GEMINI) {
       try {
-        it = await createItineraryWithGemini({ ...payload, city: key, _picks: picksForItinerary }, picksForItinerary);
+        it = await createItineraryWithGemini({ ...payload, city: key, _picks: aiPicks }, aiPicks);
       } catch (err) {
-        aiErrors.push(classifyAiError('Gemini', err));
+        const classified = classifyAiError('Gemini', err);
+        aiErrors.push(classified);
+        warnThrottled(`itinerary:gemini:${classified.code}`, `[itinerary] Gemini 일정 실패(${classified.code}) → ${OPENAI_API_KEY ? 'OpenAI 시도' : '규칙 기반 일정'}: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
       }
     }
     if (!it && OPENAI_API_KEY) {
       try {
-        it = await createItineraryWithOpenAI({ ...payload, city: key, _picks: picksForItinerary }, picksForItinerary);
+        it = await createItineraryWithOpenAI({ ...payload, city: key, _picks: aiPicks }, aiPicks);
       } catch (err) {
-        aiErrors.push(classifyAiError('OpenAI', err));
+        const classified = classifyAiError('OpenAI', err);
+        aiErrors.push(classified);
+        warnThrottled(`itinerary:openai:${classified.code}`, `[itinerary] OpenAI 일정 실패(${classified.code}) → 규칙 기반 일정: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
       }
     }
   }
-  if (!it) {
+  let itineraryInfo;
+  if (it) {
+    itineraryInfo = sourceInfo('ai', it.provider || 'ai');
+  } else {
     it = createItinerary({ ...payload, city: key, _picks: picksForItinerary });
+    let reason = null;
+    if (payload.useAi) {
+      reason = (!USE_GEMINI && !OPENAI_API_KEY) ? 'AI_KEY_MISSING' : (aiErrors[0]?.reasonCode || 'AI_ERROR');
+    }
+    itineraryInfo = sourceInfo('rule', 'rule_planner', reason);
   }
+  // 추천 카드 = 추천 목록 + 규칙 일정이 더 넣은 장소. 더한 장소에도 사진·좌표·현지화 표기를 붙이고,
+  // 같은 장소가 두 이름으로 두 번 나오지 않게 이름(원래 이름)·위키데이터 ID로 겹침을 없앤다.
+  // 끝으로, 자기 사진이 없는 카드(사진 데이터가 없는 명소·사용자가 고른 장소)는 도시 대표 사진(scope 'city')으로 채운다.
+  const cardCityKey = (p) => cityKeyByLabel(p?.city) || key;
   const mergedRecommendations = (() => {
     const base = Array.isArray(rec.picks) ? [...rec.picks] : [];
     const extra = Array.isArray(it.extraRecommendations) ? it.extraRecommendations : [];
     if (extra.length === 0) return base;
-    const seen = new Set(base.map((p) => `${String(p?.city || '').toLowerCase()}|${String(p?.name || '').toLowerCase()}`));
-    extra.forEach((p) => {
-      const k = `${String(p?.city || '').toLowerCase()}|${String(p?.name || '').toLowerCase()}`;
-      if (!p?.name || seen.has(k)) return;
+    const nameKeyOf = (p) => `${String(p?.city || '').toLowerCase()}|${placeNameKey(placeOriginalName(p))}`;
+    const seen = new Set(base.map(nameKeyOf));
+    const seenQids = new Set(base.map((p) => p?.wikidata).filter(Boolean));
+    extra.forEach((raw) => {
+      if (!raw?.name || isSyntheticFiller(raw)) return;
+      const ck = cityKeyByLabel(raw.city) || key;
+      const p = localizeCuratedPlace(attachPlaceMedia(raw, ck, placeOriginalName(raw)), ck, lang);
+      const k = nameKeyOf(p);
+      if (seen.has(k) || (p.wikidata && seenQids.has(p.wikidata))) return;
       seen.add(k);
+      if (p.wikidata) seenQids.add(p.wikidata);
       base.push(p);
     });
     return base.slice(0, Math.max(10, Math.min(24, base.length)));
-  })();
+  })().map((p) => withCityPhotoFallback(p, cardCityKey(p)));
   // Fetch recommended foods near destinations + stay (for all route cities)
+  const foodCityKeys = routeCityKeys;
   let recommendedFoods = [];
-  try {
-    const stayLoc = payload.stay ? { lat: payload.stay.lat, lng: payload.stay.lng } : null;
-    const foodCities = [rec.city, ...uniqueAdditionalKeys.map((k) => CITY_DATA[k]?.label).filter(Boolean)];
-    const allFoods = await Promise.all(foodCities.map((cl) => {
-      const cityDests = mergedRecommendations.filter((d) => String(d.city || '') === cl);
-      return fetchRecommendedFoods(cityDests.length > 0 ? cityDests : mergedRecommendations, cl, payload.budget, stayLoc, payload.lang || 'ko').catch((e) => { console.warn('[foods] partial failure:', cl, e.message); return []; });
-    }));
-    const seenFoodNames = new Set();
-    for (const foods of allFoods) {
-      for (const f of foods) {
-        const norm = String(f.name || '').trim().toLowerCase();
-        if (!norm || seenFoodNames.has(norm)) continue;
-        seenFoodNames.add(norm);
-        recommendedFoods.push(f);
+  let foodsReason = null;
+  if (GOOGLE_PLACES_ENABLED) {
+    try {
+      const stayLoc = payload.stay ? { lat: payload.stay.lat, lng: payload.stay.lng } : null;
+      const foodCities = [rec.city, ...uniqueAdditionalKeys.map((k) => CITY_DATA[k]?.label).filter(Boolean)];
+      const allFoods = await Promise.all(foodCities.map((cl) => {
+        const cityDests = mergedRecommendations.filter((d) => String(d.city || '') === cl);
+        return fetchRecommendedFoods(cityDests.length > 0 ? cityDests : mergedRecommendations, cl, payload.budget, stayLoc, lang).catch((e) => {
+          if (!foodsReason) foodsReason = e?.reasonCode || 'GOOGLE_ERROR';
+          return [];
+        });
+      }));
+      const seenFoodNames = new Set();
+      for (const foods of allFoods) {
+        for (const f of foods) {
+          const norm = String(f.name || '').trim().toLowerCase();
+          if (!norm || seenFoodNames.has(norm)) continue;
+          seenFoodNames.add(norm);
+          recommendedFoods.push(f);
+        }
       }
+      recommendedFoods.sort((a, b) => (b.aiFit || 0) - (a.aiFit || 0));
+      recommendedFoods = recommendedFoods.slice(0, 20);
+    } catch (err) {
+      foodsReason = err?.reasonCode || 'GOOGLE_ERROR';
+      console.warn('[foods] 추천 맛집 조회 실패:', redactGoogleKey(err?.message || err));
     }
-    recommendedFoods.sort((a, b) => (b.aiFit || 0) - (a.aiFit || 0));
-    recommendedFoods = recommendedFoods.slice(0, 20);
-  } catch (err) { console.warn('[api] Non-critical error:', err.message); }
+  }
+  let foodsInfo;
+  if (recommendedFoods.length > 0) {
+    foodsInfo = sourceInfo('live', 'google_places');
+  } else {
+    // 내장 큐레이션 맛집 (도시별로 섞어서 최대 12곳)
+    recommendedFoods = curatedFoodsForCities(foodCityKeys, payload.budget, lang, 12);
+    foodsInfo = GOOGLE_PLACES_ENABLED
+      ? sourceInfo('fallback', 'curated', foodsReason || 'NO_RESULTS')
+      : sourceInfo('curated', 'curated');
+  }
+
+  // 지도용 좌표: 각 날의 places + 전체 placeCoords
+  const withCoords = attachItineraryCoordinates(it.itinerary, [...mergedRecommendations, ...picksForItinerary, ...aiPicks], foodCityKeys);
 
   return {
     source: 'integrated_travel_planner_v1',
     city: rec.city,
     recommendationSource: rec.source || 'unknown',
+    recommendationInfo: rec.sourceInfo || sourceInfo('curated', 'curated+wikimedia'),
     recommendations: mergedRecommendations,
     recommendedFoods,
-    itinerary: it.itinerary,
+    foodsInfo,
+    itinerary: withCoords.itinerary,
+    placeCoords: withCoords.placeCoords,
     itinerarySource: it.source,
+    itineraryInfo,
     itineraryModel: it.source || null,
     tips: it.tips,
-    summary: `${rec.city} 추천 ${mergedRecommendations.length}곳 + ${it.itinerary.length}일 일정`,
+    summary: planSummary(key, mergedRecommendations.length, it.itinerary.length, lang),
     aiNote: summarizeAiErrors(aiErrors),
-    aiErrors
+    aiErrors: publicAiErrors(aiErrors)
   };
 }
 
@@ -3858,17 +5849,47 @@ function toMinutes(timeText) {
   return (h * 60) + (m || 0);
 }
 
-function parseIsoDurationToMinutes(value) {
-  const text = String(value || '').toUpperCase();
-  const m = /PT(?:(\d+)H)?(?:(\d+)M)?/.exec(text);
-  if (!m) return 0;
-  return (Number(m[1] || 0) * 60) + Number(m[2] || 0);
+// ── 항공·숙소 입력 정리 ──
+const IATA_CODE_RE = /^[A-Z]{3}$/;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function normalizeIata(value) {
+  const v = String(value || '').trim().toUpperCase();
+  return IATA_CODE_RE.test(v) ? v : '';
 }
 
-function isoToDateTimeParts(value) {
-  const raw = String(value || '');
-  if (!raw.includes('T')) return { date: raw.slice(0, 10), time: raw.slice(11, 16) };
-  return { date: raw.slice(0, 10), time: raw.slice(11, 16) };
+function normalizeIsoDate(value) {
+  const v = String(value || '').trim().slice(0, 10);
+  return ISO_DATE_RE.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) ? v : '';
+}
+
+function addDaysIso(isoDate, days) {
+  const t = Date.parse(`${isoDate}T00:00:00Z`);
+  return new Date(t + days * 86400000).toISOString().slice(0, 10);
+}
+
+function dayDiffIso(a, b) {
+  return Math.round((Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86400000);
+}
+
+// 도착 공항: 사용자가 고른 공항 → 선택한 도시의 공항 → NRT
+function flightDestinationAirport(payload, legs = []) {
+  return normalizeIata(payload.to)
+    || normalizeIata(legs[0]?.to)
+    || normalizeIata(CITY_DATA[cityKeyByInput(payload.city)]?.airport)
+    || 'NRT';
+}
+
+// "2026-10-20T08:35:00+09:00" + 분 → 같은 시간대의 "HH:MM" (ICN·일본은 둘 다 UTC+9)
+function addMinutesToIsoClock(iso, minutes) {
+  const raw = String(iso || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(raw) || !(Number(minutes) > 0)) return '';
+  const m = /([+-])(\d{2}):?(\d{2})$/.exec(raw);
+  const hasZone = Boolean(m) || /Z$/i.test(raw);
+  const t = Date.parse(hasZone ? raw : `${raw}Z`); // 시간대 표기가 없으면 적힌 시각 그대로 계산
+  if (Number.isNaN(t)) return '';
+  const offsetMin = m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 0;
+  return new Date(t + (Number(minutes) + offsetMin) * 60000).toISOString().slice(11, 16);
 }
 
 function convertToKRW(amount, currency) {
@@ -3893,75 +5914,180 @@ const TP_CITY_TO_AIRPORT = {
 function tpToAirport(code) { return TP_CITY_TO_AIRPORT[code] || code; }
 
 // ── Travelpayouts API (항공권) ──
-const TRAVELPAYOUTS_BASE = 'https://api.travelpayouts.com/aviasales/v3';
+const TRAVELPAYOUTS_BASE = `${TRAVELPAYOUTS_API_BASE}/aviasales/v3`;
 
+// 외부 공급자(항공·숙소) 호출 실패 — reasonCode는 sourceInfo에 그대로 쓴다.
+class ProviderError extends Error {
+  constructor(reasonCode, message) {
+    super(message || reasonCode);
+    this.name = 'ProviderError';
+    this.reasonCode = reasonCode;
+  }
+}
+
+// Travelpayouts prices_for_dates는 다른 이용자의 최근 검색에서 모은 "캐시 가격"이라 정확한 날짜 조합은 자주 비어 있다.
+// → ① 요청한 날짜 그대로 ② 비면 같은 달(경계면 이웃 달까지) 캐시에서 출발일 ±7일(왕복은 체류 일수 ±3일)을 고른다.
+const TP_NEARBY_DAYS = 7;
+const TP_STAY_TOLERANCE_DAYS = 3;
+const TP_CACHE_TTL_MS = 30 * 60_000;
+const _tpCache = new Map();
+
+function redactTravelpayoutsToken(text) {
+  const s = String(text || '');
+  return TRAVELPAYOUTS_TOKEN ? s.split(TRAVELPAYOUTS_TOKEN).join('***') : s;
+}
+
+async function travelpayoutsPricesForDates(params, label) {
+  const query = new URLSearchParams({ sorting: 'price', direct: 'false', currency: 'krw', ...params });
+  const cacheKey = query.toString();
+  const cached = _tpCache.get(cacheKey);
+  if (cached && (Date.now() - cached.at) < TP_CACHE_TTL_MS) return cached.rows;
+  query.set('token', TRAVELPAYOUTS_TOKEN);
+  let res;
+  try {
+    res = await fetchWithTimeout(`${TRAVELPAYOUTS_BASE}/prices_for_dates?${query}`, {}, AI_REQUEST_TIMEOUT_MS);
+  } catch (err) {
+    warnThrottled('travelpayouts:network', `[travelpayouts] ${label} 요청 실패(네트워크/타임아웃): ${redactTravelpayoutsToken(err?.cause?.code || err?.message || err)}`);
+    throw new ProviderError('PROVIDER_UNAVAILABLE', 'travelpayouts network error');
+  }
+  const text = await res.text().catch(() => '');
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { json = null; }
+  if (!res.ok || !json || json.success === false) {
+    warnThrottled(`travelpayouts:http:${res.status}`, `[travelpayouts] ${label} → HTTP ${res.status} ${redactTravelpayoutsToken(text).replace(/\s+/g, ' ').slice(0, 200)}`);
+    throw new ProviderError('PROVIDER_UNAVAILABLE', `travelpayouts HTTP ${res.status}`);
+  }
+  const rows = Array.isArray(json.data) ? json.data : [];
+  _tpCache.set(cacheKey, { at: Date.now(), rows });
+  while (_tpCache.size > 200) _tpCache.delete(_tpCache.keys().next().value);
+  return rows;
+}
+
+// 가까운 날짜 조회에 쓸 (출발 월, 귀국 월) 조합. 요청 날짜의 달을 먼저, 창(±7일)이 달을 넘으면 이웃 달까지 최대 2개.
+function tpNearbyMonthQueries(departDate, returnDate, isRound, today) {
+  const windowEnd = addDaysIso(departDate, TP_NEARBY_DAYS);
+  if (windowEnd < today) return [];
+  const startCandidate = addDaysIso(departDate, -TP_NEARBY_DAYS);
+  const windowStart = startCandidate < today ? today : startCandidate;
+  const stay = isRound ? Math.max(0, dayDiffIso(returnDate, departDate)) : 0;
+  const reps = [departDate < windowStart ? windowStart : departDate, windowStart, windowEnd];
+  const out = [];
+  const seen = new Set();
+  for (const rep of reps) {
+    const depMonth = rep.slice(0, 7);
+    const retMonth = isRound ? addDaysIso(rep, stay).slice(0, 7) : '';
+    const key = `${depMonth}|${retMonth}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ depMonth, retMonth });
+  }
+  return out.slice(0, 2);
+}
+
+function pickNearbyTravelpayoutsRows(rows, departDate, returnDate, isRound, today) {
+  const stay = isRound ? dayDiffIso(returnDate, departDate) : 0;
+  const seen = new Set();
+  return rows.map((r) => {
+    const d = String(r?.departure_at || '').slice(0, 10);
+    if (!ISO_DATE_RE.test(d) || d < today) return null;
+    const depOff = Math.abs(dayDiffIso(d, departDate));
+    if (depOff > TP_NEARBY_DAYS) return null;
+    let stayOff = 0;
+    if (isRound) {
+      const rd = String(r.return_at || '').slice(0, 10);
+      if (!ISO_DATE_RE.test(rd)) return null;
+      stayOff = Math.abs(dayDiffIso(rd, d) - stay);
+      if (stayOff > TP_STAY_TOLERANCE_DAYS) return null;
+    }
+    const key = `${r.departure_at}|${r.return_at || ''}|${r.airline || ''}|${r.flight_number || ''}|${r.price}`;
+    if (seen.has(key)) return null;
+    seen.add(key);
+    return { row: r, distance: depOff + stayOff };
+  }).filter(Boolean)
+    .sort((a, b) => (a.distance - b.distance) || (Number(a.row.price || 0) - Number(b.row.price || 0)))
+    .slice(0, 30);
+}
+
+// 반환: { items, dateMatch: 'exact'|'nearby'|null }. 설정 없음·HTTP 오류·네트워크 오류는 ProviderError로 던진다.
 async function fetchTravelpayoutsFlights(payload) {
-  if (!TRAVELPAYOUTS_TOKEN) return [];
-  const from = payload.from || 'ICN';
+  if (!TRAVELPAYOUTS_TOKEN) throw new ProviderError('PROVIDER_UNAVAILABLE', 'travelpayouts token missing');
+  const origin = normalizeIata(payload.from) || 'ICN';
   const tripType = payload.tripType || 'oneway';
-  const legs = payload.multiSegments || payload.legs || [];
+  const legs = Array.isArray(payload.multiSegments) && payload.multiSegments.length > 0
+    ? payload.multiSegments
+    : (Array.isArray(payload.legs) ? payload.legs : []);
 
-  // Multi-city: 구간별 각각 조회 후 합산
+  // Multi-city: 구간별 편도로 각각 조회 후 합산
   if (tripType === 'multicity' && legs.length >= 2) {
-    try {
-      const allResults = [];
-      for (const leg of legs) {
-        const params = new URLSearchParams({
-          origin: leg.from || 'ICN',
-          destination: leg.to || 'NRT',
-          departure_at: leg.date || '',
-          sorting: 'price',
-          direct: 'false',
-          currency: 'krw',
-          limit: '10',
-          token: TRAVELPAYOUTS_TOKEN
-        });
-        const res = await fetchWithTimeout(`${TRAVELPAYOUTS_BASE}/prices_for_dates?${params}`, {}, AI_REQUEST_TIMEOUT_MS);
-        if (res.ok) {
-          const json = await res.json();
-          if (json.success && json.data) allResults.push(...json.data);
-        }
+    const allResults = [];
+    let failures = 0;
+    for (const leg of legs.slice(0, 4)) {
+      const legDate = normalizeIsoDate(leg?.date);
+      if (!legDate) continue;
+      try {
+        const rows = await travelpayoutsPricesForDates({
+          origin: normalizeIata(leg.from) || origin,
+          destination: normalizeIata(leg.to) || 'NRT',
+          departure_at: legDate,
+          one_way: 'true',
+          limit: '10'
+        }, 'multicity');
+        allResults.push(...rows);
+      } catch {
+        failures += 1;
       }
-      return allResults.map((item, idx) => normalizeTravelpayoutsFlight(item, idx, tripType));
-    } catch (err) { console.warn('[travelpayouts] multi-city error:', err.message); return []; }
+    }
+    if (allResults.length === 0 && failures > 0) throw new ProviderError('PROVIDER_UNAVAILABLE', 'travelpayouts multicity failed');
+    return {
+      items: allResults.map((item, idx) => normalizeTravelpayoutsFlight(item, idx, tripType)),
+      dateMatch: allResults.length > 0 ? 'exact' : null
+    };
   }
 
   // One-way or round-trip
-  const departDate = payload.departDate || legs[0]?.date || '';
-  const destination = payload.to || legs[0]?.to || 'NRT';
-  const params = new URLSearchParams({
-    origin: from,
-    destination,
+  const isRound = tripType === 'roundtrip';
+  const today = new Date().toISOString().slice(0, 10);
+  const departDate = normalizeIsoDate(payload.departDate || legs[0]?.date) || today;
+  const returnDate = isRound
+    ? (normalizeIsoDate(payload.returnDate || legs[1]?.date) || addDaysIso(departDate, 3))
+    : '';
+  const destination = flightDestinationAirport(payload, legs);
+  const base = { origin, destination, one_way: isRound ? 'false' : 'true' };
+  // dateOffsetDays: 요청 날짜와의 차이(출발일 차이 + 왕복 체류 일수 차이). 순위에서 가까운 날짜를 앞에 둔다.
+  const normalizeAll = (entries, nearby) => entries.map((e, idx) => ({
+    ...normalizeTravelpayoutsFlight(e.row, idx, tripType),
+    nearbyDate: nearby,
+    dateOffsetDays: e.distance
+  }));
+
+  // ① 요청한 날짜 그대로
+  const exact = await travelpayoutsPricesForDates({
+    ...base,
     departure_at: departDate,
-    sorting: 'price',
-    direct: 'false',
-    currency: 'krw',
-    limit: '30',
-    token: TRAVELPAYOUTS_TOKEN
-  });
-  if (tripType === 'oneway') {
-    params.set('one_way', 'true');
-  }
-  if (tripType === 'roundtrip') {
-    const returnDate = payload.returnDate || legs[1]?.date || '';
-    if (returnDate) params.set('return_at', returnDate);
+    ...(isRound ? { return_at: returnDate } : {}),
+    limit: '30'
+  }, 'exact');
+  const exactRows = isRound ? exact.filter((r) => r && r.return_at) : exact;
+  if (exactRows.length > 0) {
+    console.log(`[travelpayouts] ${origin}→${destination} ${departDate}${isRound ? `~${returnDate}` : ''}: ${exactRows.length}건`);
+    return { items: normalizeAll(exactRows.map((row) => ({ row, distance: 0 })), false), dateMatch: 'exact' };
   }
 
-  try {
-    const res = await fetchWithTimeout(`${TRAVELPAYOUTS_BASE}/prices_for_dates?${params}`, {}, AI_REQUEST_TIMEOUT_MS);
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => '');
-      console.warn('[travelpayouts] search error:', res.status, errBody.slice(0, 300));
-      return [];
-    }
-    const json = await res.json();
-    if (!json.success || !json.data) {
-      console.warn('[travelpayouts] no data:', JSON.stringify(json).slice(0, 200));
-      return [];
-    }
-    console.log('[travelpayouts] flights found:', json.data.length);
-    return json.data.map((item, idx) => normalizeTravelpayoutsFlight(item, idx, tripType));
-  } catch (err) { console.warn('[travelpayouts] search error:', err.message); return []; }
+  // ② 가까운 날짜: 월 단위 캐시 가격에서 고른다.
+  const monthRows = [];
+  for (const q of tpNearbyMonthQueries(departDate, returnDate, isRound, today)) {
+    const rows = await travelpayoutsPricesForDates({
+      ...base,
+      departure_at: q.depMonth,
+      ...(isRound ? { return_at: q.retMonth } : {}),
+      limit: '100'
+    }, 'nearby');
+    monthRows.push(...rows);
+  }
+  const picked = pickNearbyTravelpayoutsRows(monthRows, departDate, returnDate, isRound, today);
+  console.log(`[travelpayouts] ${origin}→${destination} ${departDate}${isRound ? `~${returnDate}` : ''}: 요청 날짜 0건 → 가까운 날짜 ${picked.length}건`);
+  if (picked.length > 0) return { items: normalizeAll(picked, true), dateMatch: 'nearby' };
+  return { items: [], dateMatch: null };
 }
 
 function normalizeTravelpayoutsFlight(item, idx, tripType) {
@@ -3976,8 +6102,12 @@ function normalizeTravelpayoutsFlight(item, idx, tripType) {
   const transfers = Number(item.transfers || 0);
   const durationTo = Number(item.duration_to || item.duration || 0);
   const durationBack = Number(item.duration_back || 0);
+  const returnTransfers = Number(item.return_transfers ?? transfers);
   const origin = tpToAirport(item.origin_airport || item.origin || '');
   const dest = tpToAirport(item.destination_airport || item.destination || '');
+  // 캐시 가격 응답에는 도착 시각이 없어 출발 시각 + 소요 시간으로 계산한다(ICN·일본 모두 UTC+9).
+  const depArrival = addMinutesToIsoClock(depAt, durationTo);
+  const retArrival = addMinutesToIsoClock(retAt, durationBack);
 
   const outboundLeg = {
     legIndex: 0,
@@ -3985,7 +6115,7 @@ function normalizeTravelpayoutsFlight(item, idx, tripType) {
     to: dest,
     date: depDate,
     departureTime: depTime,
-    arrivalTime: '',
+    arrivalTime: depArrival,
     durationMin: durationTo,
     stops: transfers,
     airline,
@@ -3994,7 +6124,7 @@ function normalizeTravelpayoutsFlight(item, idx, tripType) {
       from: origin,
       to: dest,
       departureTime: depTime,
-      arrivalTime: '',
+      arrivalTime: depArrival,
       airline,
       airlineCode: airline,
       flightNumber: flightNum,
@@ -4013,16 +6143,16 @@ function normalizeTravelpayoutsFlight(item, idx, tripType) {
       to: origin,
       date: retDate,
       departureTime: retTime,
-      arrivalTime: '',
+      arrivalTime: retArrival,
       durationMin: durationBack,
-      stops: transfers,
+      stops: returnTransfers,
       airline,
       airlineCode: airline,
       segments: [{
         from: dest,
         to: origin,
         departureTime: retTime,
-        arrivalTime: '',
+        arrivalTime: retArrival,
         airline,
         airlineCode: airline,
         flightNumber: '',
@@ -4060,8 +6190,7 @@ function normalizeTravelpayoutsFlight(item, idx, tripType) {
   };
 }
 
-// ── Rakuten Travel API (숙소) ──
-const RAKUTEN_BASE = 'https://openapi.rakuten.co.jp/engine/api/Travel';
+// ── Rakuten Travel API (숙소) — 주소는 RAKUTEN_API_BASE(기본 openapi.rakuten.co.jp) ──
 
 // 도시 중심 좌표 (Rakuten 좌표 기반 검색용)
 const CITY_CENTER_COORDS = {
@@ -4098,14 +6227,78 @@ const CITY_CENTER_COORDS = {
   nara:      { lat: 34.6851, lng: 135.8048 },
   kamakura:  { lat: 35.3192, lng: 139.5466 },
   hakone:    { lat: 35.2326, lng: 139.1070 },
-  nikko:     { lat: 36.7500, lng: 139.5983 }
+  nikko:     { lat: 36.7500, lng: 139.5983 },
+  // 이하: 나머지 도시의 대략적인 중심(시청·중심 역 부근). 지도 중심·거리 추정·Places 위치 편향용.
+  asahikawa: { lat: 43.7707, lng: 142.3650 },
+  hanamaki:  { lat: 39.3886, lng: 141.1169 },
+  yonago:    { lat: 35.4281, lng: 133.3310 },
+  izumo:     { lat: 35.3669, lng: 132.7547 },
+  wakkanai:  { lat: 45.4156, lng: 141.6731 },
+  rishiri:   { lat: 45.2420, lng: 141.2420 },
+  memanbetsu: { lat: 44.0206, lng: 144.2733 },
+  kushiro:   { lat: 42.9849, lng: 144.3820 },
+  nakashibetsu: { lat: 43.5496, lng: 144.9714 },
+  okadama:   { lat: 43.0763, lng: 141.3764 },
+  misawa:    { lat: 40.6833, lng: 141.3694 },
+  odate:     { lat: 40.2717, lng: 140.5647 },
+  shonai:    { lat: 38.7275, lng: 139.8267 },
+  ibaraki:   { lat: 36.3659, lng: 140.4714 },
+  matsumoto: { lat: 36.2381, lng: 137.9720 },
+  nanki_shirahama: { lat: 33.6781, lng: 135.3481 },
+  tajima:    { lat: 35.5444, lng: 134.8203 },
+  tottori:   { lat: 35.5011, lng: 134.2351 },
+  iwakuni:   { lat: 34.1664, lng: 132.2192 },
+  yamaguchi_ube: { lat: 33.9517, lng: 131.2467 },
+  kitakyushu: { lat: 33.8834, lng: 130.8752 },
+  saga:      { lat: 33.2494, lng: 130.2988 },
+  amami:     { lat: 28.3772, lng: 129.4939 },
+  yakushima: { lat: 30.4180, lng: 130.5690 },
+  tanegashima: { lat: 30.7328, lng: 130.9975 },
+  miyako:    { lat: 24.8055, lng: 125.2811 },
+  ishigaki:  { lat: 24.3406, lng: 124.1556 },
+  shimojishima: { lat: 24.8260, lng: 125.1450 },
+  kumejima:  { lat: 26.3410, lng: 126.8050 },
+  kita_daito: { lat: 25.9460, lng: 131.2990 },
+  yonaguni:  { lat: 24.4680, lng: 123.0040 },
+  tokunoshima: { lat: 27.8100, lng: 128.9300 }
 };
 
 let _rakutenLastCall = 0;
 
+function redactRakutenKeys(text) {
+  let s = String(text || '');
+  for (const secret of [RAKUTEN_APP_ID, RAKUTEN_ACCESS_KEY]) {
+    if (secret) s = s.split(secret).join('***');
+  }
+  return s;
+}
+
+// Rakuten 응답의 이미지 주소는 https만 쓴다(http면 https로 올림).
+function httpsImageUrl(url) {
+  const s = String(url || '').trim();
+  if (/^https:\/\//i.test(s)) return s;
+  if (/^http:\/\//i.test(s)) return `https://${s.slice(7)}`;
+  return null;
+}
+
+// 평점: 모든 공급자를 5점 만점으로 맞추고, 리뷰가 없으면 null(평점 없음)로 둔다.
+function normalizeStayRating(value, scale = 5) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const five = scale === 10 ? n / 2 : n;
+  return Math.round(Math.min(5, five) * 10) / 10;
+}
+
+// 반환: 숙소 배열(0건이면 []). 설정 없음·HTTP 오류·네트워크 오류는 ProviderError로 던진다.
 async function fetchRakutenHotels(payload) {
-  if (!RAKUTEN_APP_ID) return [];
-  const cityKey = cityKeyByInput(payload.city);
+  if (!RAKUTEN_APP_ID) throw new ProviderError('PROVIDER_UNAVAILABLE', 'rakuten app id missing');
+  const cityInput = String(payload.city || '').trim() || 'tokyo';
+  const cityKey = cityKeyByInput(cityInput);
+
+  // 도시 좌표: 정적 표(62개 도시) → 동적 도시 중심 → 명소 좌표 → 공항 → 무료 지오코딩(open-meteo)
+  // 반환: { items, dateMatch: 'exact'(요청 날짜 빈방·요금) | 'none'(날짜 조건 없는 목록·최저가) }
+  const loc = await resolveCityCoordsForInput(cityInput);
+  if (!loc) return { items: [], dateMatch: 'exact' };
 
   // Rate limit: 1 req/sec
   const now = Date.now();
@@ -4113,21 +6306,11 @@ async function fetchRakutenHotels(payload) {
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
   _rakutenLastCall = Date.now();
 
-  const checkIn = payload.checkIn || new Date().toISOString().slice(0, 10);
-  const checkOut = payload.checkOut || (() => { const d = new Date(checkIn); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); })();
+  const checkIn = normalizeIsoDate(payload.checkIn) || new Date().toISOString().slice(0, 10);
+  const checkOutRaw = normalizeIsoDate(payload.checkOut);
+  const checkOut = checkOutRaw && checkOutRaw > checkIn ? checkOutRaw : addDaysIso(checkIn, 1);
   const adults = Number(payload.guests) || 2;
   const rooms = Number(payload.rooms) || 1;
-
-  // Resolve city center coordinates
-  let coords = CITY_CENTER_COORDS[cityKey];
-  if (!coords) {
-    const city = CITY_DATA[cityKey];
-    if (city && city.airport) {
-      const ap = JAPAN_AIRPORT_COORDS.find(a => a.code === city.airport);
-      if (ap) coords = { lat: ap.lat, lng: ap.lng };
-    }
-  }
-  if (!coords) return [];
 
   const params = new URLSearchParams({
     applicationId: RAKUTEN_APP_ID,
@@ -4137,43 +6320,57 @@ async function fetchRakutenHotels(payload) {
     checkoutDate: checkOut,
     adultNum: String(Math.min(adults, 10)),
     roomNum: String(Math.min(rooms, 10)),
-    hits: '20',
-    sort: '+roomCharge',
+    // 최저가순(+roomCharge)으로 20건만 받으면 도심 3km 안의 호스텔·캡슐만 남아서, 기본 정렬로 30건을 받아 서버에서 순위를 매긴다.
+    hits: '30',
+    sort: 'standard',
     responseType: 'large',
     datumType: '1',
-    latitude: String(coords.lat),
-    longitude: String(coords.lng),
+    latitude: String(loc.lat),
+    longitude: String(loc.lng),
     searchRadius: '3'
   });
   if (RAKUTEN_ACCESS_KEY) params.set('accessKey', RAKUTEN_ACCESS_KEY);
 
+  // Rakuten 앱 설정의 "허용 사이트"와 맞아야 응답하므로 운영 주소를 Referer/Origin으로 붙인다(서버 호출 전용).
+  // 도메인을 바꾸면 Rakuten 앱 설정의 허용 사이트도 함께 바꿔야 한다.
   const rakutenHeaders = {
     'Referer': 'https://japanjapantravel.onrender.com/',
     'Origin': 'https://japanjapantravel.onrender.com'
   };
+  const normalizedPayload = { ...payload, checkIn, checkOut };
 
+  let res;
   try {
-    const rakutenUrl = `${RAKUTEN_BASE}/VacantHotelSearch/20170426?${params}`;
-    console.log('[rakuten] VacantHotelSearch request:', { city: cityKey, checkIn, checkOut, lat: coords.lat, lng: coords.lng });
-    const res = await fetchWithTimeout(rakutenUrl, { headers: rakutenHeaders }, AI_REQUEST_TIMEOUT_MS);
-    if (!res.ok) {
-      const errBody = await res.text().catch(() => '');
-      console.warn('[rakuten] VacantHotelSearch error:', res.status, errBody.slice(0, 300));
-      // Fallback to SimpleHotelSearch
-      params.delete('checkinDate');
-      params.delete('checkoutDate');
-      params.delete('adultNum');
-      params.delete('roomNum');
-      const res2 = await fetchWithTimeout(`${RAKUTEN_BASE}/SimpleHotelSearch/20170426?${params}`, { headers: rakutenHeaders }, AI_REQUEST_TIMEOUT_MS);
-      if (!res2.ok) return [];
-      const data2 = await res2.json();
-      return normalizeRakutenSimple(data2, payload);
+    const rakutenUrl = `${RAKUTEN_API_BASE}/VacantHotelSearch/20170426?${params}`;
+    console.log('[rakuten] VacantHotelSearch request:', { city: cityKey, checkIn, checkOut, lat: loc.lat, lng: loc.lng });
+    res = await fetchWithTimeout(rakutenUrl, { headers: rakutenHeaders }, AI_REQUEST_TIMEOUT_MS);
+    if (res.ok) {
+      const data = await res.json();
+      const result = normalizeRakutenVacant(data, normalizedPayload);
+      console.log('[rakuten] VacantHotelSearch result:', result.length, 'hotels (raw hotels:', (data.hotels || []).length, ')');
+      return { items: result, dateMatch: 'exact' };
     }
-    const data = await res.json();
-    const result = normalizeRakutenVacant(data, payload);
-    console.log('[rakuten] VacantHotelSearch result:', result.length, 'hotels (raw hotels:', (data.hotels || []).length, ')');
-    return result;
-  } catch (err) { console.warn('[rakuten] error:', err.message); return []; }
+    // 빈 결과는 404(not_found)로 온다. 날짜 없는 SimpleHotelSearch로 한 번 더 찾는다.
+    const errBody = await res.text().catch(() => '');
+    if (res.status !== 404) {
+      warnThrottled(`rakuten:vacant:${res.status}`, `[rakuten] VacantHotelSearch → HTTP ${res.status} ${redactRakutenKeys(errBody).replace(/\s+/g, ' ').slice(0, 200)}`);
+    }
+    params.delete('checkinDate');
+    params.delete('checkoutDate');
+    params.delete('adultNum');
+    params.delete('roomNum');
+    const res2 = await fetchWithTimeout(`${RAKUTEN_API_BASE}/SimpleHotelSearch/20170426?${params}`, { headers: rakutenHeaders }, AI_REQUEST_TIMEOUT_MS);
+    // 날짜 조건이 없는 결과라 그 날짜의 빈방·요금이 아니다(hotelMinCharge 기준 최저가).
+    if (res2.ok) return { items: normalizeRakutenSimple(await res2.json(), normalizedPayload), dateMatch: 'none' };
+    if (res2.status === 404) return { items: [], dateMatch: 'none' };
+    const errBody2 = await res2.text().catch(() => '');
+    warnThrottled(`rakuten:simple:${res2.status}`, `[rakuten] SimpleHotelSearch → HTTP ${res2.status} ${redactRakutenKeys(errBody2).replace(/\s+/g, ' ').slice(0, 200)}`);
+    throw new ProviderError('PROVIDER_UNAVAILABLE', `rakuten HTTP ${res2.status}`);
+  } catch (err) {
+    if (err instanceof ProviderError) throw err;
+    warnThrottled('rakuten:network', `[rakuten] 요청 실패(네트워크/타임아웃): ${err?.cause?.code || err?.message || err}`);
+    throw new ProviderError('PROVIDER_UNAVAILABLE', 'rakuten network error');
+  }
 }
 
 
@@ -4246,7 +6443,7 @@ function normalizeRakutenVacant(data, payload) {
     const isRyokan = /\u65C5\u9928|\u6E29\u6CC9|\u308A\u3087\u304B\u3093|\u304A\u5BBF/.test(nameKo) || dinnerFlag;
     const typeKey = isRyokan ? 'ryokan' : 'hotel';
     const typeLabel = isRyokan ? (lang === 'en' ? 'Ryokan' : lang === 'ja' ? '\u65C5\u9928' : '\uB8CC\uCE78') : (lang === 'en' ? 'Hotel' : lang === 'ja' ? '\u30DB\u30C6\u30EB' : '\uD638\uD154');
-    const rating = Number(basic.reviewAverage || 0);
+    const rating = normalizeStayRating(basic.reviewAverage, 5); // Rakuten 리뷰 평균(5점 만점), 리뷰 없으면 null
     const area = lang === 'ko' ? (koreanizeAddress(basic.address1 + (basic.address2 || ''), city?.label || '') || city?.areas?.[0] || '') : (basic.address1 || '') + (basic.address2 ? ' ' + basic.address2 : '');
 
     return {
@@ -4256,7 +6453,10 @@ function normalizeRakutenVacant(data, payload) {
       type: typeKey,
       typeLabel,
       area,
-      rating: rating > 0 ? rating : 7.5,
+      rating,
+      rated: rating !== null,
+      ratingScale: 5,
+      reviewCount: Number(basic.reviewCount || 0),
       guests,
       rooms,
       checkIn,
@@ -4265,11 +6465,11 @@ function normalizeRakutenVacant(data, payload) {
       pricePerNightKRW,
       totalPriceKRW,
       amenities,
-      aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
+      aiScore: Math.round((rating ?? 3.5) * 200 - (pricePerNightKRW / 1200)),
       deeplink: rakutenDeeplink(basic.hotelNo, basic.planListUrl || basic.hotelInformationUrl || reserveUrl, lang),
-      imageUrl: basic.hotelImageUrl || basic.hotelThumbnailUrl || null,
-      nearestStation: basic.nearestStation || '',
-      access: basic.access || ''
+      imageUrl: httpsImageUrl(basic.hotelImageUrl) || httpsImageUrl(basic.hotelThumbnailUrl),
+      nearestStation: cleanPlaceText(basic.nearestStation, 60),
+      access: cleanPlaceText(basic.access, 160)
     };
   }).filter(h => h.pricePerNightKRW > 0);
 }
@@ -4292,7 +6492,7 @@ function normalizeRakutenSimple(data, payload) {
     const totalPriceKRW = pricePerNightKRW * nights * rooms;
     const nameKo = basic.hotelName || (lang === 'en' ? 'Unknown' : lang === 'ja' ? '\u540D\u79F0\u4E0D\u660E' : '\uC774\uB984 \uC5C6\uC74C');
     const isRyokan = /\u65C5\u9928|\u6E29\u6CC9|\u308A\u3087\u304B\u3093|\u304A\u5BBF/.test(nameKo);
-    const rating = Number(basic.reviewAverage || 0);
+    const rating = normalizeStayRating(basic.reviewAverage, 5);
     const area = lang === 'ko' ? (koreanizeAddress(basic.address1 + (basic.address2 || ''), city?.label || '') || city?.areas?.[0] || '') : (basic.address1 || '') + (basic.address2 ? ' ' + basic.address2 : '');
 
     return {
@@ -4302,16 +6502,21 @@ function normalizeRakutenSimple(data, payload) {
       type: isRyokan ? 'ryokan' : 'hotel',
       typeLabel: isRyokan ? (lang === 'en' ? 'Ryokan' : lang === 'ja' ? '\u65C5\u9928' : '\uB8CC\uCE78') : (lang === 'en' ? 'Hotel' : lang === 'ja' ? '\u30DB\u30C6\u30EB' : '\uD638\uD154'),
       area,
-      rating: rating > 0 ? rating : 7.5,
+      rating,
+      rated: rating !== null,
+      ratingScale: 5,
+      reviewCount: Number(basic.reviewCount || 0),
       guests, rooms, checkIn, checkOut, nights,
       pricePerNightKRW,
       totalPriceKRW,
       amenities: rakutenAmenities(false, false, null, lang),
-      aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
+      aiScore: Math.round((rating ?? 3.5) * 200 - (pricePerNightKRW / 1200)),
+      dateMatch: 'none', // 요청 날짜의 빈방·요금이 아님
+      priceBasis: 'min_charge', // 숙소 최저가(hotelMinCharge) 기준
       deeplink: rakutenDeeplink(basic.hotelNo, basic.planListUrl || basic.hotelInformationUrl, lang),
-      imageUrl: basic.hotelImageUrl || null,
-      nearestStation: basic.nearestStation || '',
-      access: basic.access || ''
+      imageUrl: httpsImageUrl(basic.hotelImageUrl) || httpsImageUrl(basic.hotelThumbnailUrl),
+      nearestStation: cleanPlaceText(basic.nearestStation, 60),
+      access: cleanPlaceText(basic.access, 160)
     };
   }).filter(h => h.pricePerNightKRW > 0);
 }
@@ -4346,16 +6551,14 @@ function buildLegCandidates(leg, index) {
 }
 
 function flightCandidates(payload) {
-  const from = (payload.from || 'ICN').toUpperCase();
-  const cityKey = cityKeyByInput(payload.city || payload.to || 'tokyo');
-  const defaultTo = CITY_DATA[cityKey].airport;
-  const to = (payload.to || defaultTo).toUpperCase();
-  const departDate = payload.departDate || new Date().toISOString().slice(0, 10);
+  const from = normalizeIata(payload.from) || 'ICN';
+  const to = flightDestinationAirport(payload);
+  const departDate = normalizeIsoDate(payload.departDate) || new Date().toISOString().slice(0, 10);
   const tripType = payload.tripType || 'oneway';
 
   let legs = [{ from, to, date: departDate }];
   if (tripType === 'roundtrip') {
-    const returnDate = payload.returnDate || getDateOffset(departDate, 3);
+    const returnDate = normalizeIsoDate(payload.returnDate) || getDateOffset(departDate, 3);
     legs = [{ from, to, date: departDate }, { from: to, to: from, date: returnDate }];
   } else if (tripType === 'multicity') {
     const candidate = Array.isArray(payload.multiSegments) ? payload.multiSegments : [];
@@ -4412,6 +6615,7 @@ function flightCandidates(payload) {
     const deeplinks = buildFlightDeeplinks(tripType, combo);
     return {
       id: `itin_${idx + 1}`,
+      sample: true, // 예시(더미) 데이터 — 실제 가격 아님
       tripType,
       provider: providers.length === 1 ? providers[0] : 'Mixed',
       airlines,
@@ -4464,6 +6668,8 @@ function rankFlights(payload) {
       if (preference === 'cheap') score = 1000000 - f.totalPriceKRW - f.totalStops * 50000;
       else if (preference === 'fast') score = 1000000 - f.totalDurationMin * 180 - f.totalStops * 50000;
       else score = 1000000 - f.totalPriceKRW * 0.7 - f.totalDurationMin * 260 - f.totalStops * 45000;
+      // 가까운 날짜 결과는 요청 날짜에서 하루 멀어질 때마다 점수를 깎아 가까운 날짜가 먼저 오게 한다.
+      score -= Math.max(0, Number(f.dateOffsetDays) || 0) * 30000;
 
       return {
         ...f,
@@ -4482,176 +6688,6 @@ function dateDiffNights(checkIn, checkOut) {
   return Math.max(1, diff);
 }
 
-function normalizeHotelType(type) {
-  const key = String(type || '').toUpperCase();
-  if (key.includes('APARTMENT')) return { key: 'apartment', label: '레지던스' };
-  if (key.includes('HOSTEL') || key.includes('GUEST')) return { key: 'guesthouse', label: '게스트하우스' };
-  if (key.includes('RYOKAN')) return { key: 'ryokan', label: '료칸' };
-  return { key: 'hotel', label: '호텔' };
-}
-
-function cityCodeFromAirport(airportCode) {
-  const code = String(airportCode || '').toUpperCase();
-  if (code === 'NRT' || code === 'HND') return 'TYO';
-  if (code === 'KIX' || code === 'ITM') return 'OSA';
-  if (code === 'CTS') return 'SPK';
-  return code;
-}
-
-async function fetchAmadeusHotelIdsByCity(cityCode) {
-  if (!cityCode) return [];
-  const token = await getAmadeusToken();
-  const params = new URLSearchParams({
-    cityCode,
-    radius: '10',
-    radiusUnit: 'KM',
-    hotelSource: 'ALL'
-  });
-  const endpoint = `${amadeusBaseUrl()}/v1/reference-data/locations/hotels/by-city?${params.toString()}`;
-  const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) {
-    throw new Error(`Amadeus hotel list(city) error: ${res.status}`);
-  }
-  const data = await res.json();
-  const list = Array.isArray(data?.data) ? data.data : [];
-  return list
-    .map((h) => ({
-      id: h.hotelId,
-      name: h.name || '',
-      geoCode: h.geoCode || null,
-      address: h.address || null
-    }))
-    .filter((h) => h.id);
-}
-
-async function fetchAmadeusHotelIdsByGeocode(center) {
-  if (!center) return [];
-  const token = await getAmadeusToken();
-  const params = new URLSearchParams({
-    latitude: String(center.lat),
-    longitude: String(center.lng),
-    radius: '10',
-    radiusUnit: 'KM',
-    hotelSource: 'ALL'
-  });
-  const endpoint = `${amadeusBaseUrl()}/v1/reference-data/locations/hotels/by-geocode?${params.toString()}`;
-  const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) {
-    throw new Error(`Amadeus hotel list error: ${res.status}`);
-  }
-  const data = await res.json();
-  const list = Array.isArray(data?.data) ? data.data : [];
-  return list
-    .map((h) => ({
-      id: h.hotelId,
-      name: h.name || '',
-      geoCode: h.geoCode || null,
-      address: h.address || null
-    }))
-    .filter((h) => h.id);
-}
-
-async function fetchAmadeusHotelOffers(payload) {
-  const cityKey = cityKeyByInput(payload.city || 'tokyo');
-  const city = CITY_DATA[cityKey] || CITY_DATA.tokyo;
-  const checkIn = payload.checkIn || new Date().toISOString().slice(0, 10);
-  const checkOut = payload.checkOut || getDateOffset(checkIn, 2);
-  const guests = Math.max(1, Number(payload.guests || 2));
-  const rooms = Math.max(1, Number(payload.rooms || 1));
-  const nights = dateDiffNights(checkIn, checkOut);
-
-  let hotelIds = [];
-  if (GOOGLE_MAPS_API_KEY) {
-    const center = await fetchGoogleCityCenter(city.label);
-    const byGeo = await fetchAmadeusHotelIdsByGeocode(center);
-    hotelIds = byGeo.slice(0, 20).map((h) => h.id);
-  }
-
-  if (hotelIds.length === 0) {
-    const cityCode = cityCodeFromAirport(city.airport);
-    const byCity = await fetchAmadeusHotelIdsByCity(cityCode);
-    hotelIds = byCity.slice(0, 20).map((h) => h.id);
-  }
-
-  if (hotelIds.length === 0) return [];
-
-  const token = await getAmadeusToken();
-  const params = new URLSearchParams({
-    hotelIds: hotelIds.join(','),
-    adults: String(Math.min(9, guests)),
-    checkInDate: checkIn,
-    checkOutDate: checkOut,
-    roomQuantity: String(Math.max(1, rooms))
-  });
-  const endpoint = `${amadeusBaseUrl()}/v3/shopping/hotel-offers?${params.toString()}`;
-  const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) {
-    throw new Error(`Amadeus hotel offers error: ${res.status}`);
-  }
-  const data = await res.json();
-  const offers = Array.isArray(data?.data) ? data.data : [];
-
-  return offers.map((entry, idx) => {
-    const hotel = entry.hotel || {};
-    const offer = Array.isArray(entry.offers) ? entry.offers[0] : null;
-    const priceCurrency = offer?.price?.currency || 'KRW';
-    const total = Number(offer?.price?.total || 0);
-    const totalPriceKRW = Math.round(convertToKRW(total, priceCurrency));
-    const basePriceKRW = Math.round(convertToKRW(offer?.price?.base || 0, priceCurrency));
-    const taxesKRW = Math.round(convertToKRW(
-      (Array.isArray(offer?.price?.taxes) ? offer.price.taxes : [])
-        .reduce((sum, t) => sum + Number(t.amount || 0), 0),
-      priceCurrency
-    ));
-    const feesKRW = Math.round(convertToKRW(
-      (Array.isArray(offer?.price?.fees) ? offer.price.fees : [])
-        .reduce((sum, f) => sum + Number(f.amount || 0), 0),
-      priceCurrency
-    ));
-    const pricePerNightKRW = Math.round(totalPriceKRW / Math.max(1, nights) / Math.max(1, rooms));
-    const ratingRaw = hotel.rating || hotel.category || '';
-    const ratingNum = Number(ratingRaw) || 0;
-    const rating = ratingNum > 0 ? (ratingNum <= 5 ? ratingNum * 2 : ratingNum) : 0;
-    const amenityList = Array.isArray(hotel.amenities) ? hotel.amenities : [];
-    const hotelType = normalizeHotelType(hotel.type || '');
-    const roomType = offer?.room?.typeEstimated?.category || offer?.room?.typeEstimated?.bedType || '';
-    const boardType = offer?.boardType || offer?.room?.typeEstimated?.mealType || '';
-    const cancellation = Array.isArray(offer?.policies?.cancellations) && offer.policies.cancellations[0]
-      ? (offer.policies.cancellations[0].description || offer.policies.cancellations[0].deadline || '')
-      : '';
-
-    return {
-      id: hotel.hotelId || `amadeus_hotel_${idx + 1}`,
-      name: hotel.name || `${city.label} 호텔`,
-      provider: 'Amadeus',
-      type: hotelType.key,
-      typeLabel: hotelType.label,
-      area: hotel.address?.cityName || city.label,
-      rating: rating ? Number(rating.toFixed(1)) : 0,
-      guests,
-      rooms,
-      checkIn,
-      checkOut,
-      nights,
-      pricePerNightKRW,
-      totalPriceKRW,
-      priceBreakdown: {
-        baseKRW: basePriceKRW,
-        taxesKRW,
-        feesKRW,
-        totalKRW: totalPriceKRW
-      },
-      offerId: offer?.id || '',
-      roomType,
-      boardType,
-      cancellation,
-      amenities: amenityList.slice(0, 6),
-      aiScore: Math.round((rating || 7.5) * 100 - (pricePerNightKRW / 1200)),
-      deeplink: `https://www.booking.com/searchresults.ko.html?ss=${encodeURIComponent(city.label)}&checkin=${checkIn}&checkout=${checkOut}&group_adults=${guests}&no_rooms=${rooms}&group_children=0`
-    };
-  });
-}
-
 function stayCandidates(payload) {
   const cityKey = cityKeyByInput(payload.city || 'tokyo');
   const city = CITY_DATA[cityKey] || CITY_DATA.tokyo;
@@ -4661,40 +6697,33 @@ function stayCandidates(payload) {
   const rooms = Math.max(1, Number(payload.rooms || 1));
   const nights = dateDiffNights(checkIn, checkOut);
 
+  const lang = normalizeLang(payload.lang);
   const providers = ['Agoda', 'Booking', 'Expedia', 'Trip.com', 'Hotels.com'];
-  const amenities = ['조식 포함', '무료 Wi-Fi', '온천', '야외 수영장', '피트니스', '공항 셔틀'];
+  const amenities = ['조식 포함', '무료 Wi-Fi', '온천', '야외 수영장', '피트니스', '공항 셔틀'].map((a) => mockStayText('amenities', a, lang));
   const types = [
-    { key: 'hotel', label: '호텔', price: 1.0 },
-    { key: 'ryokan', label: '료칸', price: 1.5 },
-    { key: 'apartment', label: '레지던스', price: 1.2 },
-    { key: 'guesthouse', label: '게스트하우스', price: 0.75 }
+    { key: 'hotel', label: mockStayText('types', '호텔', lang), price: 1.0 },
+    { key: 'ryokan', label: mockStayText('types', '료칸', lang), price: 1.5 },
+    { key: 'apartment', label: mockStayText('types', '레지던스', lang), price: 1.2 },
+    { key: 'guesthouse', label: mockStayText('types', '게스트하우스', lang), price: 0.75 }
   ];
 
-  const baseNames = [
-    `${city.label} 그랜드 호텔`,
-    `${city.label} 센트럴 스테이`,
-    `${city.label} 파노라마 료칸`,
-    `${city.label} 시티 레지던스`,
-    `${city.label} 마켓 하우스`,
-    `${city.label} 리버사이드`,
-    `${city.label} 미드타운 호텔`,
-    `${city.label} 가든 스테이`,
-    `${city.label} 아카데미아`,
-    `${city.label} 스카이뷰 스테이`,
-    `${city.label} 모던 하우스`,
-    `${city.label} 힐탑 숙소`
-  ];
+  // 예시 숙소 이름: "<도시> 그랜드 호텔" (en/ja는 도시 이름·숙소 이름 모두 해당 언어로)
+  const cityName = lang === 'ko' ? city.label : localizedCityName(cityKey, lang);
+  const baseNames = ['그랜드 호텔', '센트럴 스테이', '파노라마 료칸', '시티 레지던스', '마켓 하우스', '리버사이드',
+    '미드타운 호텔', '가든 스테이', '아카데미아', '스카이뷰 스테이', '모던 하우스', '힐탑 숙소']
+    .map((n) => `${cityName} ${mockStayText('names', n, lang)}`);
 
   return baseNames.map((name, idx) => {
     const type = types[idx % types.length];
     const provider = providers[idx % providers.length];
     const area = city.areas[idx % city.areas.length];
-    const rating = Number((7.2 + ((idx % 8) * 0.3)).toFixed(1));
+    // 예시 데이터 평점도 실데이터와 같은 5점 만점(3.6~4.7)
+    const rating = normalizeStayRating(7.2 + ((idx % 8) * 0.3), 10);
     const basePrice = 65000 + (idx % 6) * 28000;
     const pricePerNightKRW = Math.round(basePrice * type.price + (guests - 2) * 8000 + (rooms - 1) * 20000);
     const totalPriceKRW = pricePerNightKRW * nights * rooms;
     const amenityPack = amenities.filter((_, i) => (i + idx) % 2 === 0).slice(0, 3);
-    const aiScore = Math.round((rating * 100) - (pricePerNightKRW / 1200));
+    const aiScore = Math.round((rating * 200) - (pricePerNightKRW / 1200));
     return {
       id: `stay_${idx + 1}`,
       name,
@@ -4703,6 +6732,9 @@ function stayCandidates(payload) {
       typeLabel: type.label,
       area,
       rating,
+      rated: true,
+      ratingScale: 5,
+      sample: true,
       guests,
       rooms,
       checkIn,
@@ -4735,7 +6767,8 @@ function applyStayFilters(items, filters = {}) {
 
   return items.filter((x) => {
     if (x.pricePerNightKRW < minPrice || x.pricePerNightKRW > maxPrice) return false;
-    if (x.rating < minRating) return false;
+    // 평점 없음(null)은 나쁜 평점이 아니므로 최소 평점 조건으로 걸러내지 않는다(평점순에서는 맨 뒤).
+    if (minRating > 0 && Number.isFinite(x.rating) && x.rating < minRating) return false;
     if (stayType && x.type !== stayType) return false;
     if (providers.length > 0 && !providers.includes(x.provider)) return false;
     if (amenities.length > 0 && !amenities.every((a) => x.amenities.includes(a))) return false;
@@ -4760,13 +6793,15 @@ function rankStays(payload) {
   return filtered
     .map((x) => {
       let score;
+      // 평점은 5점 만점. 평점 없음은 균형 점수에서 중간값(3.5), 평점순에서는 0으로 본다.
+      const rated = Number.isFinite(x.rating);
       if (preference === 'price') score = 1000000 - x.pricePerNightKRW * 6 - x.totalPriceKRW * 0.3;
-      else if (preference === 'rating') score = 1000000 + x.rating * 2000 - x.pricePerNightKRW * 4;
-      else score = 1000000 + x.rating * 1200 - x.pricePerNightKRW * 5;
+      else if (preference === 'rating') score = 1000000 + (rated ? x.rating : 0) * 4000 - x.pricePerNightKRW * 4;
+      else score = 1000000 + (rated ? x.rating : 3.5) * 2400 - x.pricePerNightKRW * 5;
       if (preferredAreas.length > 0 && preferredAreas.some((area) => String(x.area || '').includes(area))) {
         score += 65000;
       }
-      if (preferAirportAccess && (x.amenities || []).some((a) => String(a).includes('공항 셔틀'))) {
+      if (preferAirportAccess && (x.amenities || []).some((a) => /공항 셔틀|airport shuttle|空港シャトル/i.test(String(a)))) {
         score += 28000;
       }
       if (oceanViewStay && (x.amenities || []).some((a) => /오션뷰|바다/.test(String(a)))) {
@@ -4781,245 +6816,55 @@ function rankStays(payload) {
     .sort((a, b) => b.aiScore - a.aiScore);
 }
 
-const amadeusTokenState = {
-  accessToken: '',
-  expiresAt: 0
-};
+// 키 없는 무료 환율 출처 두 곳을 차례로 시도한다. 둘 다 실패하면 이전 실시간 값(없으면 FX_* 또는 대략값)을 그대로 쓴다.
+const FX_SOURCES = [
+  {
+    provider: 'open.er-api',
+    url: 'https://open.er-api.com/v6/latest/JPY',
+    parse: (d) => ({ krw: d?.rates?.KRW, usd: d?.rates?.USD, at: d?.time_last_update_utc })
+  },
+  {
+    provider: 'frankfurter',
+    url: 'https://api.frankfurter.app/latest?from=JPY&to=KRW,USD',
+    parse: (d) => ({ krw: d?.rates?.KRW, usd: d?.rates?.USD, at: d?.date })
+  }
+];
 
 async function refreshFxRate() {
-  // Primary: open.er-api.com (free, no key, daily update)
-  try {
-    const res = await fetch('https://open.er-api.com/v6/latest/JPY');
-    if (res.ok) {
-      const data = await res.json();
-      const krwRate = Number(data?.rates?.KRW || 0);
-      const usdRate = Number(data?.rates?.USD || 0);
-      if (krwRate > 0) fxJpyKrw = krwRate;
-      if (usdRate > 0 && krwRate > 0) fxUsdKrw = krwRate / usdRate;
-      fxLastUpdate = data?.time_last_update_utc || new Date().toISOString();
-      console.log(`[FX] JPY/KRW: ${fxJpyKrw.toFixed(2)}, USD/KRW: ${fxUsdKrw.toFixed(0)}, updated: ${fxLastUpdate}`);
+  for (const src of FX_SOURCES) {
+    try {
+      const res = await fetchWithTimeout(src.url, { headers: { 'User-Agent': OUTBOUND_USER_AGENT } }, 8000);
+      if (!res.ok) {
+        warnThrottled(`fx:${src.provider}`, `[FX] ${src.provider} HTTP ${res.status}`);
+        continue;
+      }
+      const parsed = src.parse(await res.json());
+      const krwRate = Number(parsed.krw || 0);
+      const usdRate = Number(parsed.usd || 0);
+      if (!(krwRate > 0) || !(usdRate > 0)) {
+        warnThrottled(`fx:${src.provider}`, `[FX] ${src.provider} 응답에 KRW/USD 환율이 없습니다.`);
+        continue;
+      }
+      fxJpyKrw = krwRate;
+      fxUsdKrw = krwRate / usdRate;
+      fxLastUpdate = String(parsed.at || new Date().toISOString());
+      fxSource = 'live';
+      fxProvider = src.provider;
+      fxLiveAt = Date.now();
+      console.log(`[FX] JPY/KRW: ${fxJpyKrw.toFixed(2)}, USD/KRW: ${fxUsdKrw.toFixed(0)}, updated: ${fxLastUpdate} (${src.provider})`);
       return;
+    } catch (err) {
+      warnThrottled(`fx:${src.provider}`, `[FX] ${src.provider} 조회 실패: ${err?.cause?.code || err?.message || err}`);
     }
-  } catch (err) { console.warn('[api] Fallback triggered:', err?.message || err); }
-  // Fallback: exchangerate.host
-  try {
-    const res = await fetch('https://api.exchangerate.host/latest?base=USD&symbols=KRW');
-    if (!res.ok) return;
-    const data = await res.json();
-    const rate = Number(data?.rates?.KRW || 0);
-    if (Number.isFinite(rate) && rate > 0) {
-      fxUsdKrw = rate;
-    }
-  } catch (err) {
-    console.warn('[api] Exchange rate fetch error:', err?.message || err);
+  }
+  if (fxSource !== 'live') {
+    warnThrottled('fx:fallback', `[FX] 실시간 환율을 받지 못해 ${fxSource === 'env' ? 'FX_USD_KRW·FX_JPY_KRW 설정값' : '대략값'}을 씁니다 (JPY/KRW ${fxJpyKrw}, USD/KRW ${Math.round(fxUsdKrw)}).`);
   }
 }
 
 refreshFxRate();
 const fxTimer = setInterval(refreshFxRate, 12 * 60 * 60 * 1000);
 if (typeof fxTimer.unref === 'function') fxTimer.unref();
-
-function amadeusBaseUrl() {
-  return AMADEUS_ENV === 'prod' ? 'https://api.amadeus.com' : 'https://test.api.amadeus.com';
-}
-
-async function getAmadeusToken() {
-  if (amadeusTokenState.accessToken && Date.now() < amadeusTokenState.expiresAt) {
-    return amadeusTokenState.accessToken;
-  }
-  const endpoint = `${amadeusBaseUrl()}/v1/security/oauth2/token`;
-  const body = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: AMADEUS_API_KEY,
-    client_secret: AMADEUS_API_SECRET
-  });
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body
-  });
-  if (!res.ok) {
-    throw new Error(`Amadeus token error: ${res.status}`);
-  }
-  const data = await res.json();
-  const expiresIn = Number(data.expires_in || 0);
-  amadeusTokenState.accessToken = data.access_token || '';
-  amadeusTokenState.expiresAt = Date.now() + Math.max(0, (expiresIn - 60)) * 1000;
-  return amadeusTokenState.accessToken;
-}
-
-function cabinLabel(cabin) {
-  const key = String(cabin || '').toUpperCase();
-  if (key === 'ECONOMY') return '이코노미';
-  if (key === 'PREMIUM_ECONOMY') return '프리미엄 이코노미';
-  if (key === 'BUSINESS') return '비즈니스';
-  if (key === 'FIRST') return '퍼스트';
-  return key || '미상';
-}
-
-function baggageLabel(bags) {
-  if (!bags) return '수하물 정보 없음';
-  if (Number.isFinite(bags.quantity)) return `위탁 ${bags.quantity}개`;
-  if (Number.isFinite(bags.weight)) return `위탁 ${bags.weight}${bags.weightUnit || 'KG'}`;
-  return '수하물 정보 없음';
-}
-
-function normalizeAmadeusLeg(itinerary, carrierMap = {}, fareMap = {}) {
-  const segments = Array.isArray(itinerary?.segments) ? itinerary.segments : [];
-  const first = segments[0];
-  const last = segments[segments.length - 1];
-  if (!first || !last) return null;
-  const dep = isoToDateTimeParts(first.departure?.at);
-  const arr = isoToDateTimeParts(last.arrival?.at);
-  const carrierCode = first.carrierCode || '';
-  const carrierName = carrierMap[carrierCode] || carrierCode || 'N/A';
-  const segmentDetails = segments.map((seg) => {
-    const segDep = isoToDateTimeParts(seg.departure?.at);
-    const segArr = isoToDateTimeParts(seg.arrival?.at);
-    const segCarrierCode = seg.carrierCode || '';
-    const segCarrierName = carrierMap[segCarrierCode] || segCarrierCode || 'N/A';
-    const fare = fareMap[seg.id] || {};
-    const cabin = fare.cabin || fare.travelClass || '';
-    const bags = fare.includedCheckedBags || null;
-    return {
-      from: seg.departure?.iataCode || '',
-      to: seg.arrival?.iataCode || '',
-      departureTime: segDep.time,
-      arrivalTime: segArr.time,
-      airline: segCarrierName,
-      airlineCode: segCarrierCode,
-      flightNumber: segCarrierCode && seg.number ? `${segCarrierCode}${seg.number}` : (seg.number || ''),
-      cabin,
-      cabinLabel: cabinLabel(cabin),
-      baggageLabel: baggageLabel(bags)
-    };
-  });
-  return {
-    from: first.departure?.iataCode || '',
-    to: last.arrival?.iataCode || '',
-    date: dep.date,
-    departureTime: dep.time,
-    arrivalTime: arr.time,
-    durationMin: parseIsoDurationToMinutes(itinerary?.duration),
-    stops: Math.max(0, segments.length - 1),
-    airline: carrierName,
-    airlineCode: carrierCode,
-    segments: segmentDetails
-  };
-}
-
-async function fetchAmadeusFlights(payload) {
-  const tripType = payload.tripType || 'oneway';
-  const from = (payload.from || 'ICN').toUpperCase();
-  const cityKey = cityKeyByInput(payload.city || payload.to || 'tokyo');
-  const defaultTo = CITY_DATA[cityKey].airport;
-  const to = (payload.to || defaultTo).toUpperCase();
-  const departDate = payload.departDate || new Date().toISOString().slice(0, 10);
-  const returnDate = payload.returnDate || getDateOffset(departDate, 3);
-
-  let legs = [{ from, to, date: departDate }];
-  if (tripType === 'roundtrip') {
-    legs = [{ from, to, date: departDate }, { from: to, to: from, date: returnDate }];
-  } else if (tripType === 'multicity') {
-    const candidate = Array.isArray(payload.multiSegments) ? payload.multiSegments : [];
-    const normalized = candidate
-      .map((s) => ({
-        from: String(s.from || '').toUpperCase(),
-        to: String(s.to || '').toUpperCase(),
-        date: String(s.date || '')
-      }))
-      .filter((s) => s.from && s.to && s.date);
-    legs = normalized.length >= 2 ? normalized.slice(0, 4) : legs;
-  }
-
-  const token = await getAmadeusToken();
-  const endpoint = `${amadeusBaseUrl()}/v2/shopping/flight-offers`;
-  const body = {
-    currencyCode: 'KRW',
-    originDestinations: legs.map((leg, idx) => ({
-      id: String(idx + 1),
-      originLocationCode: leg.from,
-      destinationLocationCode: leg.to,
-      departureDateTimeRange: { date: leg.date }
-    })),
-    travelers: [{ id: '1', travelerType: 'ADULT' }],
-    sources: ['GDS'],
-    searchCriteria: {
-      maxFlightOffers: 40
-    }
-  };
-
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-  if (!res.ok) {
-    throw new Error(`Amadeus offers error: ${res.status}`);
-  }
-  const data = await res.json();
-  const offers = Array.isArray(data?.data) ? data.data : [];
-  const carrierMap = data?.dictionaries?.carriers || {};
-
-  return offers.map((offer, idx) => {
-    const itineraries = Array.isArray(offer?.itineraries) ? offer.itineraries : [];
-    const fareMap = {};
-    const traveler = Array.isArray(offer?.travelerPricings) ? offer.travelerPricings[0] : null;
-    const fareDetails = Array.isArray(traveler?.fareDetailsBySegment) ? traveler.fareDetailsBySegment : [];
-    fareDetails.forEach((d) => {
-      if (!d?.segmentId) return;
-      fareMap[d.segmentId] = {
-        cabin: d.cabin,
-        travelClass: d.travelClass,
-        includedCheckedBags: d.includedCheckedBags || null
-      };
-    });
-
-    const mappedLegs = itineraries.map((it) => normalizeAmadeusLeg(it, carrierMap, fareMap)).filter(Boolean);
-    const totalDurationMin = mappedLegs.reduce((sum, l) => sum + l.durationMin, 0);
-    const totalStops = mappedLegs.reduce((sum, l) => sum + l.stops, 0);
-    const airlines = Array.from(new Set(mappedLegs.map((l) => l.airline).filter(Boolean)));
-    const airports = Array.from(new Set(mappedLegs.flatMap((l) => [l.from, l.to]).filter(Boolean)));
-    const priceCurrency = offer?.price?.currency || 'KRW';
-    const rawPrice = Number(offer?.price?.total || 0);
-    const totalPriceKRW = Math.round(convertToKRW(rawPrice, priceCurrency));
-    const basePriceKRW = Math.round(convertToKRW(offer?.price?.base || 0, priceCurrency));
-    const feesKRW = Math.round(convertToKRW(
-      (Array.isArray(offer?.price?.fees) ? offer.price.fees : [])
-        .reduce((sum, f) => sum + Number(f.amount || 0), 0),
-      priceCurrency
-    ));
-    const taxesKRW = Math.max(0, Math.round(convertToKRW(
-      (Array.isArray(offer?.price?.taxes) ? offer.price.taxes : [])
-        .reduce((sum, t) => sum + Number(t.amount || 0), 0),
-      priceCurrency
-    )) || (totalPriceKRW - basePriceKRW - feesKRW));
-
-    return {
-      id: offer?.id || `amadeus_${idx + 1}`,
-      tripType,
-      provider: 'Amadeus',
-      airlines,
-      airports,
-      totalPriceKRW,
-      priceBreakdown: {
-        baseKRW: basePriceKRW,
-        taxesKRW,
-        feesKRW,
-        totalKRW: totalPriceKRW
-      },
-      totalDurationMin,
-      totalStops,
-      departureMinute: toMinutes(mappedLegs[0]?.departureTime || '00:00'),
-      deeplinkKayak: buildFlightDeeplink('KAYAK', tripType, mappedLegs),
-      deeplinkSkyscanner: buildFlightDeeplink('Skyscanner', tripType, mappedLegs),
-      legs: mappedLegs
-    };
-  }).filter((x) => x.legs.length > 0);
-}
 
 function normalizePriceLevel(level) {
   if (level === null || level === undefined) return null;
@@ -5065,8 +6910,19 @@ const FOOD_FALLBACK_NAMES = {
   '교자': ['교자노 오쇼', '하마마츠 교자관', '미야코 교자', '교자 전문 텐신']
 };
 
-function genreTokens(genre) {
+// 'ramen'·'寿司' 같은 다른 언어 장르를 한국어 대표 장르('라멘'·'스시')로 맞춘다. 모르면 그대로.
+function canonicalFoodGenre(genre) {
   const g = String(genre || '').trim();
+  if (!g || FOOD_GENRE_SYNONYMS[g]) return g;
+  const low = g.toLowerCase();
+  for (const [ko, list] of Object.entries(FOOD_GENRE_SYNONYMS)) {
+    if (list.some((t) => String(t).toLowerCase() === low)) return ko;
+  }
+  return g;
+}
+
+function genreTokens(genre) {
+  const g = canonicalFoodGenre(genre);
   if (!g) return [];
   const direct = FOOD_GENRE_SYNONYMS[g];
   if (direct) return direct;
@@ -5114,7 +6970,6 @@ function formatTodayHours(hoursObj) {
 }
 
 async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverride = '', maxResultCount = 20, lang = 'ko') {
-  const endpoint = 'https://places.googleapis.com/v1/places:searchText';
   const cleanGenre = String(genre || '').trim();
   const textQuery = String(queryOverride || '').trim() || (cleanGenre ? `${query} ${cleanGenre} 맛집` : `${query} 일본 맛집`);
   const body = {
@@ -5133,20 +6988,15 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
     };
   }
 
-  const response = await fetchWithTimeout(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos,places.currentOpeningHours,places.regularOpeningHours'
-    },
-    body: JSON.stringify(body)
-  }, AI_REQUEST_TIMEOUT_MS);
-
-  if (!response.ok) throw new Error(`Google Places API error: ${response.status}`);
-
-  const data = await response.json();
-  const jpPlaces = (data.places || []).filter((p) => {
+  const fieldMask = 'places.displayName,places.formattedAddress,places.rating,places.userRatingCount,places.googleMapsUri,places.primaryType,places.priceLevel,places.location,places.photos,places.currentOpeningHours';
+  const cacheKey = `foods|${lang || 'ko'}|${textQuery}|${lat ? Number(lat).toFixed(3) : '-'},${lng ? Number(lng).toFixed(3) : '-'}|${body.maxResultCount}`;
+  let rawPlaces = placesCacheGet(cacheKey);
+  if (!rawPlaces) {
+    // 실패 시 GoogleApiError(reasonCode 포함)를 그대로 던진다.
+    rawPlaces = await googlePlacesSearchText(body, fieldMask, 'places:foodSearch');
+    placesCacheSet(cacheKey, rawPlaces);
+  }
+  const jpPlaces = rawPlaces.filter((p) => {
     const addr = String(p.formattedAddress || '');
     if (/한국|대한민국|South Korea|Korea|서울|부산|대구|인천|China|中国|台湾|Taiwan|Thailand|Vietnam|Philippines/i.test(addr)) return false;
     return true;
@@ -5163,9 +7013,11 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
       aiFit: scoreFoodFit(score, priceLevel, budget || 'mid'),
       address: p.formattedAddress || '주소 없음',
       mapUrl: p.googleMapsUri || null,
-      photoUrl: p.photos?.[0]?.name ? `https://places.googleapis.com/v1/${p.photos[0].name}/media?maxWidthPx=400&key=${GOOGLE_MAPS_API_KEY}` : null,
+      ...googlePhotoFields(p),
+      lat: p.location?.latitude ?? null,
+      lng: p.location?.longitude ?? null,
       openNow: p.currentOpeningHours?.openNow ?? null,
-      todayHours: formatTodayHours(p.currentOpeningHours || p.regularOpeningHours)
+      todayHours: formatTodayHours(p.currentOpeningHours)
     };
   });
 }
@@ -5189,15 +7041,11 @@ async function fetchFoodPlacesForCity(query, lat, lng, genre, budget, lang) {
     ? Array.from(new Set([...baseQueries, ...tokenQueries.map((t) => `${query} ${t} 맛집`)]))
     : baseQueries;
 
-  // Cap queries to 3 to reduce API calls
-  const cappedQueries = queries.slice(0, 3);
-  const results = await Promise.all(cappedQueries.map(async (q) => {
-    try {
-      return await fetchPlacesWithGoogle(query, lat, lng, cleanGenre, budget, q, 20, lang);
-    } catch {
-      return [];
-    }
-  }));
+  // 쿼리는 2개까지(비용). 전부 실패하면 첫 오류를 던져 /api/foods가 실제 원인을 알 수 있게 한다.
+  if (!GOOGLE_PLACES_ENABLED) return [];
+  const cappedQueries = queries.slice(0, 2);
+  const settled = await Promise.allSettled(cappedQueries.map((q) => fetchPlacesWithGoogle(query, lat, lng, cleanGenre, budget, q, 20, lang)));
+  const results = settledValuesOrThrow(settled);
 
   const uniq = new Map();
   results.flat().forEach((item) => {
@@ -5210,29 +7058,18 @@ async function fetchFoodPlacesForCity(query, lat, lng, genre, budget, lang) {
   return strict.slice(0, 30);
 }
 
-function classifyGooglePlacesFailure(errorText = '') {
-  const text = String(errorText || '').toLowerCase();
-  if (!text) return 'Google Places 호출 실패(원인 불명)';
-  if (text.includes('403') || text.includes('permission') || text.includes('denied') || text.includes('api key')) {
-    return 'Google Places 권한/키 제한 문제(403/권한 거부)';
-  }
-  if (text.includes('429') || text.includes('quota') || text.includes('rate')) {
-    return 'Google Places 쿼터/요청 한도 초과(429)';
-  }
-  if (text.includes('401') || text.includes('unauthorized')) {
-    return 'Google Places 인증 실패(401)';
-  }
-  if (text.includes('fetch failed') || text.includes('network') || text.includes('timeout')) {
-    return 'Google Places 네트워크/타임아웃 오류';
-  }
-  return `Google Places 오류: ${errorText}`;
+// 레거시 warning 문구: reasonCode(또는 오류 객체) → 짧은 한국어 설명. 원시 오류 문자열은 내보내지 않는다.
+function classifyGooglePlacesFailure(errOrReason) {
+  const code = typeof errOrReason === 'string' ? errOrReason : (errOrReason?.reasonCode || 'GOOGLE_ERROR');
+  return PLACES_REASON_TEXT_KO[code] || PLACES_REASON_TEXT_KO.GOOGLE_ERROR;
 }
 
 function tabelogStyleFoods(payload) {
   const key = cityKeyByInput(payload.city || payload.query);
   const city = CITY_DATA[key];
   const budget = payload.budget || 'mid';
-  const genre = String(payload.genre || '').trim();
+  const lang = normalizeLang(payload.lang);
+  const genre = canonicalFoodGenre(payload.genre);
   const filtered = city.foods.filter((f) => (genre ? isGenreMatchFoodName(`${f.name} ${f.genre}`, genre) : true));
   let sourceList = genre ? filtered : city.foods;
   let source = 'tabelog_style_curated';
@@ -5248,25 +7085,150 @@ function tabelogStyleFoods(payload) {
     source = 'tabelog_style_curated_generated';
   }
   const normalized = sourceList
-    .map((f) => ({
-      ...f,
-      city: city.label,
-      mapUrl: mapUrl(`${f.name} ${city.label}`),
-      aiFit: Math.round(Math.min(100, (f.score / 5) * 40 + 20 + 15 + 10))
-    }))
+    .map((f) => {
+      const localizedName = localizeCuratedFoodName(f.name, key, lang);
+      // 내장 맛집에는 가게 사진이 없어서, 번역하기 전의 원래 장르로 음식 예시 사진(scope 'genre')을 붙인다.
+      return withGenrePhotoFallback({
+        ...f,
+        name: localizedName,
+        ...(localizedName !== f.name ? { nameKo: f.name } : {}),
+        genre: localizeFoodGenre(f.genre, lang),
+        area: localizeCuratedArea(f.area, lang, localizedCityName(key, lang)),
+        city: city.label,
+        mapUrl: mapUrl(`${f.name} ${city.label}`),
+        aiFit: Math.round(Math.min(100, (f.score / 5) * 40 + 20 + 15 + 10))
+      }, f.genre);
+    })
     .sort((a, b) => b.aiFit - a.aiFit);
 
   return { source, city: city.label, budget, list: normalized };
 }
 
+// 추천 맛집 폴백: 여러 도시의 내장 큐레이션 맛집을 번갈아 섞어 최대 max곳
+function curatedFoodsForCities(cityKeys, budget, lang, max = 12) {
+  const lists = [...new Set(cityKeys || [])]
+    .filter((k) => CITY_DATA[k])
+    .map((k) => tabelogStyleFoods({ city: k, budget, lang }).list);
+  const out = [];
+  const seen = new Set();
+  const longest = lists.reduce((m, l) => Math.max(m, l.length), 0);
+  for (let i = 0; i < longest && out.length < max; i += 1) {
+    for (const list of lists) {
+      const f = list[i];
+      if (!f || out.length >= max) continue;
+      const norm = String(f.name || '').trim().toLowerCase();
+      if (!norm || seen.has(norm)) continue;
+      seen.add(norm);
+      // 사진은 tabelogStyleFoods가 붙인 음식 장르 예시 사진(있을 때만). 가게 좌표는 모른다.
+      out.push({ ...f, reviewCount: 0, photoUrl: f.photoUrl || null, lat: null, lng: null });
+    }
+  }
+  return out;
+}
+
+function planSummary(cityKey, recCount, dayCount, lang) {
+  const name = localizedCityName(cityKey, lang);
+  if (lang === 'en') return `${name}: ${recCount} places + ${dayCount}-day itinerary`;
+  if (lang === 'ja') return `${name} おすすめ${recCount}件 + ${dayCount}日間の日程`;
+  return `${name} 추천 ${recCount}곳 + ${dayCount}일 일정`;
+}
+
+
+// 이동비 추정 문구 (ko/en/ja)
+const ROUTE_COST_TEXT = {
+  ko: {
+    walking: '도보 이동', subway1: '지하철 1구간', subway2: '지하철 2~3구간', subway: '지하철/전철', rail: 'JR/사철 이용',
+    longRail: '장거리 전철', shinkansen: '특급/신칸센 추정', approx: (km) => ` (약 ${km}km)`,
+    noDistance: '거리 정보 없음(대략 추정)', needTwo: '장소가 2곳 이상 필요합니다.', aiLang: ''
+  },
+  en: {
+    walking: 'Walk', subway1: 'Subway, 1 zone', subway2: 'Subway, 2-3 zones', subway: 'Subway/train', rail: 'JR/private railway',
+    longRail: 'Long-distance train', shinkansen: 'Limited express/Shinkansen (estimate)', approx: (km) => ` (about ${km} km)`,
+    noDistance: 'No distance data (rough estimate)', needTwo: 'At least 2 places are needed.', aiLang: '영어(English)'
+  },
+  ja: {
+    walking: '徒歩', subway1: '地下鉄 1区間', subway2: '地下鉄 2～3区間', subway: '地下鉄/電車', rail: 'JR/私鉄',
+    longRail: '長距離電車', shinkansen: '特急/新幹線（推定）', approx: (km) => `（約${km}km）`,
+    noDistance: '距離情報なし（概算）', needTwo: '2か所以上の場所が必要です。', aiLang: '일본어(日本語)'
+  }
+};
+
+// lang이 없으면 장소 이름의 글자로 짐작한다(한글 → ko, 가나·한자 → ja, 로마자 → en).
+function routeCostLang(lang, places) {
+  if (['ko', 'en', 'ja'].includes(String(lang || '').toLowerCase())) return String(lang).toLowerCase();
+  const text = (places || []).join(' ');
+  if (/[가-힣]/.test(text)) return 'ko';
+  if (/[぀-ヿ一-鿿]/.test(text)) return 'ja';
+  if (/[A-Za-z]/.test(text)) return 'en';
+  return 'ko';
+}
+
+// 화면에 보이는 장소 이름(한글·현지화 en/ja) → { cityKey, ko(원래 이름) } 목록. 이동비 계산에서 좌표를 찾을 때 쓴다.
+let _placeLabelIndex = null;
+function placeLabelIndex() {
+  if (_placeLabelIndex) return _placeLabelIndex;
+  const list = [];
+  const seen = new Set();
+  const add = (ck, label, ko) => {
+    const l = String(label || '').trim();
+    if (!l || !ko) return;
+    const k = `${ck}|${l.toLowerCase()}|${ko}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+    list.push({ ck, label: l, lower: l.toLowerCase(), ko });
+  };
+  for (const [ck, c] of Object.entries(CITY_DATA)) {
+    (c.highlights || []).forEach((h) => {
+      add(ck, h.name, h.name);
+      add(ck, mustAttractionLatinName(ck, h.name), h.name);
+    });
+  }
+  MUST_ATTRACTIONS.forEach((m) => {
+    add(m.cityKey, m.name, m.name);
+    add(m.cityKey, mustAttractionLatinName(m.cityKey, m.name), m.name);
+  });
+  for (const [k, v] of Object.entries(CURATED_PLACE_I18N)) {
+    const sep = k.indexOf('|');
+    add(k.slice(0, sep), v.en, k.slice(sep + 1));
+    add(k.slice(0, sep), v.ja, k.slice(sep + 1));
+  }
+  for (const [k, v] of PLACE_IMAGES.byKey) {
+    const sep = k.indexOf('|');
+    const ck = k.slice(0, sep);
+    const ko = k.slice(sep + 1);
+    add(ck, ko, ko);
+    add(ck, v.labels?.en, ko);
+    add(ck, v.labels?.ja, ko);
+  }
+  _placeLabelIndex = list;
+  return list;
+}
+
+// 화면 표기 이름(한글·en/ja, 대소문자 무시)이 정확히 같은 항목들. preferredCityKeys의 도시가 앞에 온다.
+function placeLabelMatches(label, preferredCityKeys = []) {
+  const lower = String(label || '').trim().toLowerCase();
+  if (!lower) return [];
+  const prefer = new Set((preferredCityKeys || []).filter(Boolean));
+  return placeLabelIndex()
+    .filter((e) => e.lower === lower)
+    .sort((a, b) => Number(prefer.has(b.ck)) - Number(prefer.has(a.ck)));
+}
+
+// 화면 표기 이름 → 원래 한글 이름(모르면 '')
+function koPlaceNameForLabel(label, cityKey) {
+  return placeLabelMatches(label, [cityKey])[0]?.ko || '';
+}
 
 // ── Route Cost Calculator (AI-based via Gemini) ──
-async function calculateRouteCost(places, city) {
+async function calculateRouteCost(places, city, langInput) {
+  const lang = routeCostLang(langInput, places);
+  const RT = ROUTE_COST_TEXT[lang] || ROUTE_COST_TEXT.ko;
   if (places.length < 2) {
-    return { segments: [], totalDurationMin: 0, totalFareJPY: 0, totalFareKRW: 0, error: 'Need at least 2 places' };
+    return { segments: [], totalDurationMin: 0, totalFareJPY: 0, totalFareKRW: 0, error: RT.needTwo };
   }
 
-  const JPY_TO_KRW = 9.3;
+  // 원화 환산은 현재 환율(실시간 조회 값, 실패 시 FX_* 또는 대략값)을 쓴다.
+  const JPY_TO_KRW = fxJpyKrw;
   const cityKey = cityKeyByInput(city);
   const cityObj = CITY_DATA[cityKey];
   const cityLabel = (cityObj && cityObj.label) ? cityObj.label : city;
@@ -5302,12 +7264,13 @@ JSON 형식:
 - 실제 일본 대중교통 요금 기준으로 현실적으로 계산
 - 500m 이내 가까운 거리는 walking(도보)으로, 요금 0
 - 지하철/전철 기본요금 약 170~200엔 참고
-- 장거리 신칸센은 해당 요금 반영`;
+- 장거리 신칸센은 해당 요금 반영${RT.aiLang ? `\n- tip과 routeTip은 ${RT.aiLang}로 작성` : ''}`;
 
+      // gemini-2.0-flash 고정은 모델 종료(404)로 매번 한 번씩 헛호출이 나서 기본 모델을 쓴다.
       const geminiResp = await callGeminiGenerateContent(prompt, {
-        model: 'gemini-2.0-flash',
         temperature: 0.1,
         maxOutputTokens: 1500,
+        thinkingBudget: 0,
         responseMimeType: 'application/json'
       });
 
@@ -5352,25 +7315,70 @@ JSON 형식:
     }
   }
 
-  // Fallback: Google Directions API (driving mode, transit unavailable in Japan)
-  if (!GOOGLE_MAPS_API_KEY) {
-    return { segments: [], totalDurationMin: 0, totalFareJPY: 0, totalFareKRW: 0, error: 'AI/API 키가 설정되지 않았습니다' };
-  }
-
+  // Fallback: google 모드면 Directions API(비용 가드 적용), 아니면 장소 좌표(place-images.json) 기반 거리 추정.
   const cityNameJa = (cityObj && cityObj.nameJa) ? cityObj.nameJa : cityLabel;
   const segments = [];
   let totalDuration = 0;
   let totalFareJPY = 0;
 
+  const exactCoordFor = (n, ck = cityKey) => {
+    const media = placeMediaFor(ck, n);
+    if (media && media.lat !== null) return { lat: media.lat, lng: media.lng };
+    const h = (CITY_DATA[ck]?.highlights || []).find((x) => x && x.name === n && hasLatLng(x));
+    return h ? { lat: Number(h.lat), lng: Number(h.lng) } : null;
+  };
+  const coordFor = (name) => {
+    const n = String(name || '').trim();
+    const direct = exactCoordFor(n);
+    if (direct) return direct;
+    // 화면은 "장소명 지역"(예: "센소지 아사쿠사", "Senso-ji Temple Asakusa")으로 보낸다.
+    // 한글·en/ja 표기 이름 중 정확히 같거나 가장 긴 앞부분이 맞는 것을 찾아 원래 이름으로 좌표를 찾는다(같은 도시 우선).
+    const lower = n.toLowerCase();
+    const matches = placeLabelIndex()
+      .filter((e) => lower === e.lower || lower.startsWith(`${e.lower} `))
+      .sort((a, b) => (Number(b.ck === cityKey) - Number(a.ck === cityKey)) || (b.label.length - a.label.length));
+    for (const e of matches) {
+      const c = exactCoordFor(e.ko, e.ck);
+      if (c) return c;
+    }
+    // "NRT 공항" 형태
+    const ap = /^([A-Z]{3})\s*(?:공항|airport|空港)/i.exec(n);
+    const apCoord = ap ? JAPAN_AIRPORT_COORDS.find((a) => a.code === ap[1].toUpperCase()) : null;
+    return apCoord ? { lat: apCoord.lat, lng: apCoord.lng } : null;
+  };
+  // 좌표로 구간 추정(직선거리 × 1.3). 좌표가 없으면 대략값.
+  const estimateSegmentFromCoords = (fromPlace, toPlace) => {
+    const a = coordFor(fromPlace);
+    const b = coordFor(toPlace);
+    if (!a || !b) {
+      return {
+        from: fromPlace, to: toPlace,
+        distanceM: 0, durationMin: 20,
+        fareJPY: 200, fareKRW: Math.round(200 * JPY_TO_KRW),
+        mode: 'estimated', estimated: true, tip: RT.noDistance
+      };
+    }
+    const distKm = haversineKm(a, b) * 1.3;
+    const est = estimateTransitFare(distKm);
+    const durationMin = distKm < 0.5 ? Math.max(3, Math.round(distKm * 12)) : Math.round(8 + distKm * 2.5);
+    return {
+      from: fromPlace, to: toPlace,
+      distanceM: Math.round(distKm * 1000), durationMin,
+      fareJPY: est.fareJPY, fareKRW: Math.round(est.fareJPY * JPY_TO_KRW),
+      mode: est.mode, estimated: true,
+      tip: est.tip + RT.approx(distKm.toFixed(1))
+    };
+  };
+
   // Japanese transit fare estimation based on distance
   function estimateTransitFare(distKm) {
-    if (distKm < 0.5) return { fareJPY: 0, mode: 'walking', tip: '도보 이동' };
-    if (distKm < 2) return { fareJPY: 170, mode: 'subway', tip: '지하철 1구간' };
-    if (distKm < 5) return { fareJPY: 200, mode: 'subway', tip: '지하철 2~3구간' };
-    if (distKm < 10) return { fareJPY: 250, mode: 'subway', tip: '지하철/전철' };
-    if (distKm < 20) return { fareJPY: 400, mode: 'rail', tip: 'JR/사철 이용' };
-    if (distKm < 50) return { fareJPY: 800, mode: 'rail', tip: '장거리 전철' };
-    return { fareJPY: Math.round(distKm * 20), mode: 'rail', tip: '특급/신칸센 추정' };
+    if (distKm < 0.5) return { fareJPY: 0, mode: 'walking', tip: RT.walking };
+    if (distKm < 2) return { fareJPY: 170, mode: 'subway', tip: RT.subway1 };
+    if (distKm < 5) return { fareJPY: 200, mode: 'subway', tip: RT.subway2 };
+    if (distKm < 10) return { fareJPY: 250, mode: 'subway', tip: RT.subway };
+    if (distKm < 20) return { fareJPY: 400, mode: 'rail', tip: RT.rail };
+    if (distKm < 50) return { fareJPY: 800, mode: 'rail', tip: RT.longRail };
+    return { fareJPY: Math.round(distKm * 20), mode: 'rail', tip: RT.shinkansen };
   }
 
   // Estimate transit duration from driving duration (transit ~1.5x driving in cities)
@@ -5385,11 +7393,18 @@ JSON 형식:
     const origin = encodeURIComponent(fromPlace + ' ' + cityNameJa + ' Japan');
     const dest = encodeURIComponent(toPlace + ' ' + cityNameJa + ' Japan');
 
+    if (!GOOGLE_PLACES_ENABLED || googleBlockedReason()) {
+      const seg = estimateSegmentFromCoords(fromPlace, toPlace);
+      segments.push(seg);
+      totalDuration += seg.durationMin;
+      totalFareJPY += seg.fareJPY;
+      continue;
+    }
+
     try {
       // Use driving mode (transit returns ZERO_RESULTS in Japan)
-      const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${dest}&mode=driving&language=ja&region=jp&key=${GOOGLE_MAPS_API_KEY}`;
-      const resp = await fetch(url);
-      const data = await resp.json();
+      const url = `${GEOCODE_API_BASE}/maps/api/directions/json?origin=${origin}&destination=${dest}&mode=driving&language=ja&region=jp&key=${encodeURIComponent(GOOGLE_MAPS_SERVER_KEY)}`;
+      const data = await googleApiFetch(url, { label: 'directions' });
 
       if (data.status === 'OK' && data.routes && data.routes.length > 0) {
         const leg = data.routes[0].legs[0];
@@ -5405,28 +7420,22 @@ JSON 형식:
           distanceM, durationMin: transitDurationMin,
           fareJPY: est.fareJPY, fareKRW: Math.round(est.fareJPY * JPY_TO_KRW),
           mode: est.mode, estimated: true,
-          tip: est.tip + ` (約${distKm.toFixed(1)}km)`
+          tip: est.tip + RT.approx(distKm.toFixed(1))
         });
         totalDuration += transitDurationMin;
         totalFareJPY += est.fareJPY;
       } else {
-        segments.push({
-          from: fromPlace, to: toPlace,
-          distanceM: 0, durationMin: 15,
-          fareJPY: 200, fareKRW: Math.round(200 * JPY_TO_KRW),
-          mode: 'estimated', estimated: true, tip: '거리 정보 없음'
-        });
-        totalDuration += 15;
-        totalFareJPY += 200;
+        const seg = estimateSegmentFromCoords(fromPlace, toPlace);
+        segments.push(seg);
+        totalDuration += seg.durationMin;
+        totalFareJPY += seg.fareJPY;
       }
     } catch (err) {
-      console.error('[route-cost] Directions API error:', err.message);
-      segments.push({
-        from: fromPlace, to: toPlace,
-        distanceM: 0, durationMin: 0,
-        fareJPY: 0, fareKRW: 0,
-        mode: 'error', error: err.message, tip: ''
-      });
+      // 원인은 googleApiFetch가 로그로 남긴다. 좌표 기반 추정으로 대신한다.
+      const seg = estimateSegmentFromCoords(fromPlace, toPlace);
+      segments.push(seg);
+      totalDuration += seg.durationMin;
+      totalFareJPY += seg.fareJPY;
     }
 
     if (i < places.length - 2) {
@@ -5443,26 +7452,193 @@ JSON 형식:
   };
 }
 
+// GET /api/place-photo?name=places/{id}/photos/{id}&w=100..1600 (google 모드 전용)
+//  - 서버가 최근 Places 응답에서 받은 사진 이름만 허용(아무 이름으로 과금 호출을 대신 보내 주지 않게)
+//  - skipHttpRedirect=true로 키 없는 photoUri를 받은 뒤 이미지만 전달. 키는 응답에 절대 들어가지 않는다.
+const PLACE_PHOTO_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
+const PLACE_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+// 받은 사진 바이트는 메모리에 잠시 보관한다(같은 사진은 Google을 다시 부르지 않음). 최대 200장·총 30MB, 24시간.
+const PLACE_PHOTO_CACHE_TTL_MS = 24 * 60 * 60_000;
+const PLACE_PHOTO_CACHE_MAX_ENTRIES = 200;
+const PLACE_PHOTO_CACHE_MAX_BYTES = 30 * 1024 * 1024;
+const _placePhotoCache = new Map(); // key: `${name}|${w}` → { at, type, buf }
+let _placePhotoCacheBytes = 0;
+
+function placePhotoCacheGet(key) {
+  const hit = _placePhotoCache.get(key);
+  if (!hit) return null;
+  _placePhotoCache.delete(key);
+  if ((Date.now() - hit.at) > PLACE_PHOTO_CACHE_TTL_MS) {
+    _placePhotoCacheBytes -= hit.buf.length;
+    return null;
+  }
+  _placePhotoCache.set(key, hit); // 최근 사용 순서로 옮긴다(LRU)
+  return hit;
+}
+
+function placePhotoCacheSet(key, type, buf) {
+  const old = _placePhotoCache.get(key);
+  if (old) { _placePhotoCache.delete(key); _placePhotoCacheBytes -= old.buf.length; }
+  _placePhotoCache.set(key, { at: Date.now(), type, buf });
+  _placePhotoCacheBytes += buf.length;
+  while (_placePhotoCache.size > PLACE_PHOTO_CACHE_MAX_ENTRIES || _placePhotoCacheBytes > PLACE_PHOTO_CACHE_MAX_BYTES) {
+    const oldestKey = _placePhotoCache.keys().next().value;
+    const oldest = _placePhotoCache.get(oldestKey);
+    _placePhotoCache.delete(oldestKey);
+    _placePhotoCacheBytes -= oldest ? oldest.buf.length : 0;
+  }
+}
+
+// 응답 본문을 최대 maxBytes까지만 읽는다(넘으면 null). content-length가 한도를 넘으면 읽지 않는다.
+async function readBodyLimited(response, maxBytes) {
+  const declared = Number(response.headers.get('content-length') || 0);
+  if (declared > maxBytes) {
+    try { await response.body?.cancel(); } catch { /* 무시 */ }
+    return null;
+  }
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    const buf = Buffer.from(await response.arrayBuffer());
+    return buf.length > maxBytes ? null : buf;
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) {
+      try { await reader.cancel(); } catch { /* 무시 */ }
+      return null;
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, total);
+}
+
+function sendPlacePhoto(res, type, buf, cacheStatus) {
+  res.writeHead(200, {
+    'Content-Type': type,
+    'Content-Length': buf.length,
+    'Cache-Control': 'public, max-age=86400',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Photo-Cache': cacheStatus
+  });
+  return res.end(buf);
+}
+
+async function handlePlacePhoto(res, parsedUrl) {
+  if (!GOOGLE_PLACES_ENABLED) return sendJson(res, 404, { error: 'Not Found' });
+  const name = String(parsedUrl.searchParams.get('name') || '');
+  if (!PLACE_PHOTO_NAME_RE.test(name)) return sendJson(res, 400, { error: 'Invalid photo name' });
+  if (!isIssuedPlacePhotoName(name)) return sendJson(res, 404, { error: 'Not Found' });
+  const wRaw = Number(parsedUrl.searchParams.get('w') || 400);
+  const w = Number.isFinite(wRaw) ? Math.max(100, Math.min(1600, Math.round(wRaw))) : 400;
+  const cacheKey = `${name}|${w}`;
+  const cached = placePhotoCacheGet(cacheKey);
+  if (cached) return sendPlacePhoto(res, cached.type, cached.buf, 'hit');
+  try {
+    const meta = await googleApiFetch(`${PLACES_API_BASE}/v1/${name}/media?maxWidthPx=${w}&skipHttpRedirect=true`, {
+      label: 'places:photo',
+      bucket: 'photo',
+      headers: { 'X-Goog-Api-Key': GOOGLE_MAPS_SERVER_KEY }
+    });
+    const photoUri = String(meta?.photoUri || '');
+    let host = '';
+    try { host = new URL(photoUri).hostname; } catch { host = ''; }
+    let testHost = '';
+    try { testHost = PLACES_API_BASE !== 'https://places.googleapis.com' ? new URL(PLACES_API_BASE).hostname : ''; } catch { testHost = ''; }
+    const hostOk = host === 'googleusercontent.com' || host.endsWith('.googleusercontent.com') || (testHost && host === testHost);
+    if (!hostOk || !/^https?:\/\//.test(photoUri) || (!testHost && !photoUri.startsWith('https://'))) {
+      return sendJson(res, 502, { error: 'Photo unavailable' });
+    }
+    // 검사한 호스트 밖으로 따라가지 않게 리다이렉트는 오류로 본다.
+    const img = await fetchWithTimeout(photoUri, { headers: { 'User-Agent': OUTBOUND_USER_AGENT }, redirect: 'error' }, GOOGLE_REQUEST_TIMEOUT_MS);
+    const type = String(img.headers.get('content-type') || '').toLowerCase().split(';')[0].trim();
+    if (!img.ok || !PLACE_PHOTO_TYPES.has(type)) {
+      try { await img.body?.cancel(); } catch { /* 무시 */ }
+      return sendJson(res, 502, { error: 'Photo unavailable' });
+    }
+    const buf = await readBodyLimited(img, PLACE_PHOTO_MAX_BYTES);
+    if (!buf || buf.length === 0) return sendJson(res, 502, { error: 'Photo unavailable' });
+    placePhotoCacheSet(cacheKey, type, buf);
+    return sendPlacePhoto(res, type, buf, 'miss');
+  } catch (err) {
+    const reasonCode = err?.reasonCode || 'GOOGLE_ERROR';
+    if (!err?.reasonCode) warnThrottled('google:photo-bytes', `[google] 사진 바이트를 받지 못함(리다이렉트/네트워크): ${redactGoogleKey(err?.cause?.code || err?.message || err)}`);
+    return sendJson(res, reasonCode === 'GOOGLE_ERROR' ? 502 : 503, { error: 'Photo unavailable', reasonCode });
+  }
+}
+
+// open-meteo 일별 예보(무료·키 없음). 좌표별 30분 메모리 캐시.
+const WEATHER_CACHE_TTL_MS = 30 * 60_000;
+const _weatherCache = new Map();
+const WEATHER_DAILY_FIELDS = ['weathercode', 'temperature_2m_max', 'temperature_2m_min', 'precipitation_probability_max'];
+
+// open-meteo daily를 그대로 넘기지 않고, 날짜(YYYY-MM-DD)와 숫자(모르면 null)만 남긴다. 날짜가 이상한 칸은 모든 배열에서 뺀다.
+function sanitizeWeatherDaily(daily) {
+  const times = Array.isArray(daily?.time) ? daily.time : [];
+  const keep = [];
+  times.slice(0, 16).forEach((t, i) => {
+    if (typeof t === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(t)) keep.push(i);
+  });
+  if (keep.length === 0) return null;
+  const out = { time: keep.map((i) => times[i]) };
+  for (const field of WEATHER_DAILY_FIELDS) {
+    const arr = Array.isArray(daily[field]) ? daily[field] : [];
+    out[field] = keep.map((i) => {
+      const v = arr[i];
+      const n = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
+      return Number.isFinite(n) ? n : null;
+    });
+  }
+  return out;
+}
+
+async function fetchWeatherDaily(lat, lng) {
+  const key = `${Number(lat).toFixed(2)},${Number(lng).toFixed(2)}`;
+  const cached = _weatherCache.get(key);
+  if (cached && (Date.now() - cached.at) < WEATHER_CACHE_TTL_MS) return cached.daily;
+  try {
+    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${Number(lat).toFixed(4)}&longitude=${Number(lng).toFixed(4)}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia/Tokyo&forecast_days=10`;
+    const r = await fetchWithTimeout(weatherUrl, { headers: { 'User-Agent': OUTBOUND_USER_AGENT } }, 8000);
+    if (!r.ok) {
+      warnThrottled(`weather:http:${r.status}`, `[weather] open-meteo HTTP ${r.status}`);
+      return null;
+    }
+    const data = await r.json();
+    const daily = data && data.daily && typeof data.daily === 'object' ? sanitizeWeatherDaily(data.daily) : null;
+    if (!daily) return null;
+    _weatherCache.set(key, { at: Date.now(), daily });
+    while (_weatherCache.size > 200) _weatherCache.delete(_weatherCache.keys().next().value);
+    return daily;
+  } catch (err) {
+    warnThrottled('weather:network', `[weather] open-meteo 요청 실패: ${err?.cause?.code || err?.message || err}`);
+    return null;
+  }
+}
+
 async function handleApi(req, res, parsedUrl) {
   try {
-    // Rate limiting
-    const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
-    if (!checkRateLimit(clientIp)) {
+    // Rate limiting — 기본은 소켓 주소, 신뢰하는 프록시(Render·TRUST_PROXY=1) 뒤에서만 X-Forwarded-For의 마지막 값
+    const clientIp = clientIpOf(req);
+    // 카드 사진 프록시는 한 화면에 여러 장을 불러오므로 별도 한도(분당 120회)로 센다.
+    const isPhotoRoute = parsedUrl.pathname === '/api/place-photo';
+    if (!checkRateLimit(isPhotoRoute ? `${clientIp}|photo` : clientIp, isPhotoRoute ? 120 : RATE_LIMIT_MAX_REQUESTS)) {
       return sendJson(res, 429, { error: '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.' });
     }
 
     // CSRF origin validation for POST/PUT/DELETE
     if (!checkCsrf(req)) {
-      return sendJson(res, 403, { error: 'Origin not allowed' });
+      return sendJson(res, 403, { error: '허용되지 않은 출처의 요청입니다.' });
     }
 
     // ── OAuth 로그인 라우트 ──
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/naver') {
-      if (!NAVER_CLIENT_ID) return sendJson(res, 500, { error: 'Naver OAuth not configured' });
-      const state = randomUUID();
-      _oauthStates.set(state, Date.now());
+      if (!NAVER_CLIENT_ID) return sendJson(res, 500, { error: '네이버 로그인이 아직 설정되지 않았어요.' });
+      const { state, cookie } = issueOauthState(req, 'naver');
       const url = `https://nid.naver.com/oauth2.0/authorize?client_id=${NAVER_CLIENT_ID}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/naver/callback')}&response_type=code&state=${state}`;
-      res.writeHead(302, { Location: url });
+      res.writeHead(302, { 'Set-Cookie': cookie, Location: url });
       return res.end();
     }
 
@@ -5470,9 +7646,15 @@ async function handleApi(req, res, parsedUrl) {
       try {
         const code = parsedUrl.searchParams.get('code');
         const state = parsedUrl.searchParams.get('state');
-        if (!state || !_oauthStates.has(state)) { res.writeHead(302, { Location: '/?authError=invalid_state' }); return res.end(); }
-        _oauthStates.delete(state);
-        const tokenData = await oauthFetch(`https://nid.naver.com/oauth2.0/token?grant_type=authorization_code&client_id=${NAVER_CLIENT_ID}&client_secret=${NAVER_CLIENT_SECRET}&code=${code}&state=${state}`);
+        if (!consumeOauthState(req, 'naver', state)) { res.writeHead(302, { 'Set-Cookie': clearOauthStateCookie(req), Location: '/?authError=invalid_state' }); return res.end(); }
+        const naverTokenParams = new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: NAVER_CLIENT_ID,
+          client_secret: NAVER_CLIENT_SECRET,
+          code: code || '',
+          state
+        });
+        const tokenData = await oauthFetch(`https://nid.naver.com/oauth2.0/token?${naverTokenParams.toString()}`);
         const profileData = await oauthFetch('https://openapi.naver.com/v1/nid/me', {
           headers: { Authorization: `Bearer ${tokenData.access_token}` }
         });
@@ -5482,26 +7664,30 @@ async function handleApi(req, res, parsedUrl) {
           email: p.email || '',
           profileImage: p.profile_image || ''
         });
-        const sess = createSession({ userId: user.id, provider: 'naver', nickname: user.nickname, profileImage: user.profileImage });
-        res.writeHead(302, { 'Set-Cookie': sess.cookie, Location: '/' });
+        const sess = createSession({ userId: user.id, provider: 'naver', nickname: user.nickname, profileImage: user.profileImage }, req);
+        res.writeHead(302, { 'Set-Cookie': [sess.cookie, clearOauthStateCookie(req)], Location: '/' });
         return res.end();
       } catch (err) {
         console.error('[Auth/Naver]', err.message);
-        res.writeHead(302, { Location: '/?authError=naver' });
+        res.writeHead(302, { 'Set-Cookie': clearOauthStateCookie(req), Location: '/?authError=naver' });
         return res.end();
       }
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/kakao') {
-      if (!KAKAO_REST_API_KEY) return sendJson(res, 500, { error: 'Kakao OAuth not configured' });
-      const url = `https://kauth.kakao.com/oauth/authorize?client_id=${KAKAO_REST_API_KEY}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/kakao/callback')}&response_type=code`;
-      res.writeHead(302, { Location: url });
+      if (!KAKAO_REST_API_KEY) return sendJson(res, 500, { error: '카카오 로그인이 아직 설정되지 않았어요.' });
+      // 로그인 CSRF 방지: state를 발급해 이 브라우저의 쿠키에도 묶고, 콜백에서 둘을 대조한다.
+      const { state, cookie } = issueOauthState(req, 'kakao');
+      const url = `https://kauth.kakao.com/oauth/authorize?client_id=${KAKAO_REST_API_KEY}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/kakao/callback')}&response_type=code&state=${state}`;
+      res.writeHead(302, { 'Set-Cookie': cookie, Location: url });
       return res.end();
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/kakao/callback') {
       try {
         const code = parsedUrl.searchParams.get('code');
+        const state = parsedUrl.searchParams.get('state');
+        if (!consumeOauthState(req, 'kakao', state)) { res.writeHead(302, { 'Set-Cookie': clearOauthStateCookie(req), Location: '/?authError=invalid_state' }); return res.end(); }
         const params = new URLSearchParams({
           grant_type: 'authorization_code',
           client_id: KAKAO_REST_API_KEY,
@@ -5524,22 +7710,21 @@ async function handleApi(req, res, parsedUrl) {
           email: kakaoAcct.email || '',
           profileImage: kakaoProfile.profile_image_url || ''
         });
-        const sess = createSession({ userId: user.id, provider: 'kakao', nickname: user.nickname, profileImage: user.profileImage });
-        res.writeHead(302, { 'Set-Cookie': sess.cookie, Location: '/' });
+        const sess = createSession({ userId: user.id, provider: 'kakao', nickname: user.nickname, profileImage: user.profileImage }, req);
+        res.writeHead(302, { 'Set-Cookie': [sess.cookie, clearOauthStateCookie(req)], Location: '/' });
         return res.end();
       } catch (err) {
         console.error('[Auth/Kakao]', err.message);
-        res.writeHead(302, { Location: '/?authError=kakao' });
+        res.writeHead(302, { 'Set-Cookie': clearOauthStateCookie(req), Location: '/?authError=kakao' });
         return res.end();
       }
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/google') {
-      if (!GOOGLE_OAUTH_CLIENT_ID) return sendJson(res, 500, { error: 'Google OAuth not configured' });
-      const oauthState = randomUUID();
-      sessionStore.set('oauth_state_' + oauthState, { createdAt: Date.now() });
+      if (!GOOGLE_OAUTH_CLIENT_ID) return sendJson(res, 500, { error: 'Google 로그인이 아직 설정되지 않았어요.' });
+      const { state: oauthState, cookie } = issueOauthState(req, 'google');
       const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_OAUTH_CLIENT_ID}&redirect_uri=${encodeURIComponent(OAUTH_BASE_URL + '/api/auth/google/callback')}&response_type=code&scope=${encodeURIComponent('openid email profile')}&state=${oauthState}`;
-      res.writeHead(302, { Location: url });
+      res.writeHead(302, { 'Set-Cookie': cookie, Location: url });
       return res.end();
     }
 
@@ -5547,11 +7732,10 @@ async function handleApi(req, res, parsedUrl) {
       try {
         const code = parsedUrl.searchParams.get('code');
         const oauthState = parsedUrl.searchParams.get('state');
-        if (!oauthState || !sessionStore.has('oauth_state_' + oauthState)) {
-          res.writeHead(302, { Location: '/?authError=invalid_state' });
+        if (!consumeOauthState(req, 'google', oauthState)) {
+          res.writeHead(302, { 'Set-Cookie': clearOauthStateCookie(req), Location: '/?authError=invalid_state' });
           return res.end();
         }
-        sessionStore.delete('oauth_state_' + oauthState);
         const tokenData = await oauthFetch('https://oauth2.googleapis.com/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -5571,12 +7755,12 @@ async function handleApi(req, res, parsedUrl) {
           email: profileData.email || '',
           profileImage: profileData.picture || ''
         });
-        const sess = createSession({ userId: user.id, provider: 'google', nickname: user.nickname, profileImage: user.profileImage });
-        res.writeHead(302, { 'Set-Cookie': sess.cookie, Location: '/' });
+        const sess = createSession({ userId: user.id, provider: 'google', nickname: user.nickname, profileImage: user.profileImage }, req);
+        res.writeHead(302, { 'Set-Cookie': [sess.cookie, clearOauthStateCookie(req)], Location: '/' });
         return res.end();
       } catch (err) {
         console.error('[Auth/Google]', err.message);
-        res.writeHead(302, { Location: '/?authError=google' });
+        res.writeHead(302, { 'Set-Cookie': clearOauthStateCookie(req), Location: '/?authError=google' });
         return res.end();
       }
     }
@@ -5591,7 +7775,7 @@ async function handleApi(req, res, parsedUrl) {
       destroySession(req);
       res.writeHead(200, {
         'Content-Type': 'application/json',
-        'Set-Cookie': 'sid=; HttpOnly; Path=/; Max-Age=0'
+        'Set-Cookie': `sid=; ${sessionCookieAttributes(req)}; Max-Age=0`
       });
       return res.end(JSON.stringify({ ok: true }));
     }
@@ -5600,7 +7784,7 @@ async function handleApi(req, res, parsedUrl) {
     if (req.method === 'POST' && parsedUrl.pathname === '/api/my-plans/save') {
       const session = parseSession(req);
       if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
-      const payload = await readBody(req);
+      const payload = await readBody(req, BODY_LIMIT_LARGE);
       const plans = readJsonFile('saved_plans.json');
       const plan = {
         id: payload.id || randomUUID(),
@@ -5662,16 +7846,29 @@ async function handleApi(req, res, parsedUrl) {
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/maps-config') {
-      // Return Maps API key for client-side JS loading (key from env, not hardcoded)
-      return sendJson(res, 200, { key: GOOGLE_MAPS_API_KEY || '' });
+      // 지도 공급자. google 모드에서도 브라우저 전용 키만 내려준다(서버 키는 절대 보내지 않음).
+      if (MAP_PROVIDER === 'google') {
+        if (GOOGLE_MAPS_BROWSER_KEY) return sendJson(res, 200, { provider: 'google', key: GOOGLE_MAPS_BROWSER_KEY });
+        warnOnce('maps-browser-key-missing', '[maps] MAP_PROVIDER=google 이지만 GOOGLE_MAPS_BROWSER_KEY가 없어 OpenStreetMap 지도로 응답합니다.');
+      }
+      return sendJson(res, 200, { provider: 'osm' });
+    }
+
+    // Google 장소 사진 프록시 (google 모드 전용, 키는 응답에 절대 나오지 않음)
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/place-photo') {
+      return handlePlacePhoto(res, parsedUrl);
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/health') {
       const diagnostics = await buildAiDiagnostics({ probe: false });
       return sendJson(res, 200, {
         ok: true,
-        app: 'japantravel-suite',
+        app: APP_ID,
+        brand: APP_BRAND,
+        providers: diagnostics.modes,
         supabaseConfigured: hasSupabase(),
+        // 마지막 연결 확인 결과(확인한 적 없으면 null). 헬스 체크 자체는 외부 호출을 하지 않는다.
+        supabaseReachable: hasSupabase() && _supabaseProbe.at ? Boolean(_supabaseProbe.reachable) : null,
         ai: {
           geminiConfigured: Boolean(GEMINI_API_KEY),
           geminiModel: GEMINI_API_MODEL,
@@ -5688,6 +7885,13 @@ async function handleApi(req, res, parsedUrl) {
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/ai-diagnostics') {
       const probe = parsedUrl.searchParams.get('probe') === '1';
+      if (probe) {
+        // 실제 외부 호출(과금 가능)이 일어나므로 토큰이 맞을 때만 허용한다.
+        if (!DIAGNOSTICS_TOKEN) return sendJson(res, 403, { error: '진단 검사가 꺼져 있습니다(DIAGNOSTICS_TOKEN 미설정).' });
+        if (!diagnosticsTokenMatches(String(req.headers['x-diagnostics-token'] || ''))) {
+          return sendJson(res, 403, { error: 'Forbidden' });
+        }
+      }
       return sendJson(res, 200, await buildAiDiagnostics({ probe }));
     }
 
@@ -5697,25 +7901,25 @@ async function handleApi(req, res, parsedUrl) {
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/ai-travel-chat') {
-      const payload = await readBody(req);
+      const payload = await readBody(req, BODY_LIMIT_PLAN);
       const vErr = validatePayload(payload, API_SCHEMAS['ai-travel-chat']);
       if (vErr) return sendJson(res, 400, { error: vErr });
       return sendJson(res, 200, await buildTravelChatPlan(payload));
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/destinations') {
-      const payload = await readBody(req);
+      const payload = await readBody(req, BODY_LIMIT_DEFAULT);
       return sendJson(res, 200, await recommendDestinations(payload));
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/itinerary') {
-      const payload = await readBody(req);
+      const payload = await readBody(req, BODY_LIMIT_DEFAULT);
       const rec = await recommendDestinations({ ...payload, limit: Math.max(6, Math.min(12, Number(payload.days || 3) * 2)) });
       return sendJson(res, 200, createItinerary({ ...payload, _picks: rec.picks }));
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/travel-plan') {
-      const payload = await readBody(req);
+      const payload = await readBody(req, BODY_LIMIT_PLAN);
       // Input sanitization
       if (payload.city && String(payload.city).length > 50) return sendJson(res, 400, { error: 'Invalid city' });
       if (payload.theme && String(payload.theme).length > 30) return sendJson(res, 400, { error: 'Invalid theme' });
@@ -5740,21 +7944,43 @@ async function handleApi(req, res, parsedUrl) {
       return sendJson(res, 200, planResult);
     }
 
+    // ── Supabase 일정 저장소 (로그인 필요, 자기 일정만) ──
+    // user_label 열에 로그인 사용자 id를 넣고, 목록·조회는 그 사용자 것만 돌려준다.
     if (req.method === 'POST' && parsedUrl.pathname === '/api/travel-plan/save') {
-      const payload = await readBody(req);
+      const session = parseSession(req);
+      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
+      const payload = await readBody(req, BODY_LIMIT_LARGE);
+      const vErr = validatePayload(payload, API_SCHEMAS['travel-plan-save']);
+      if (vErr) return sendJson(res, 400, { error: vErr });
+      if (payload.plan !== undefined && (!payload.plan || typeof payload.plan !== 'object' || Array.isArray(payload.plan))) {
+        return sendJson(res, 400, { error: 'plan must be an object' });
+      }
+      if (payload.planKey !== undefined && !/^[A-Za-z0-9_-]{1,80}$/.test(payload.planKey)) {
+        return sendJson(res, 400, { error: 'Invalid planKey' });
+      }
+      if (payload.startDate && !normalizeIsoDate(payload.startDate)) return sendJson(res, 400, { error: 'Invalid startDate' });
+      // 저장소를 쓸 수 없으면 AI·장소 검색을 돌리기 전에 멈춘다.
+      if (await supabaseUnavailableResponse(res)) return;
+      const userId = String(session.userId || '');
+      const planKey = payload.planKey || randomUUID();
+      if (payload.planKey) {
+        // 다른 사용자의 plan_key를 덮어쓰지 못하게 기존 행의 주인을 확인한다.
+        const existing = await supabaseRequest('GET', `travel_plans?select=user_label&plan_key=eq.${encodeURIComponent(planKey)}&limit=1`);
+        if (existing[0] && existing[0].user_label !== userId) return sendJson(res, 404, { error: '일정을 찾을 수 없습니다' });
+      }
       const plan = payload.plan || await buildTravelPlan(payload);
       const cityKey = cityKeyByInput(payload.city || plan.city);
       const row = {
-        plan_key: payload.planKey || randomUUID(),
-        user_label: payload.userLabel || 'guest',
+        plan_key: planKey,
+        user_label: userId,
         city_key: cityKey,
-        city_label: plan.city,
+        city_label: String(plan.city || CITY_DATA[cityKey]?.label || '').slice(0, 80),
         theme: payload.theme || 'mixed',
         budget: payload.budget || 'mid',
-        start_date: payload.startDate || null,
+        start_date: normalizeIsoDate(payload.startDate) || null,
         days: Number(payload.days || plan.itinerary?.length || 0),
-        summary: plan.summary || '',
-        source: plan.source || 'integrated_travel_planner_v1',
+        summary: String(plan.summary || '').slice(0, 500),
+        source: String(plan.source || 'integrated_travel_planner_v1').slice(0, 80),
         payload: plan
       };
       const saved = await supabaseRequest('POST', 'travel_plans?on_conflict=plan_key', [row]);
@@ -5762,74 +7988,74 @@ async function handleApi(req, res, parsedUrl) {
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/travel-plan/list') {
-      const limit = Math.max(1, Math.min(50, Number(parsedUrl.searchParams.get('limit') || 20)));
-      const userLabel = parsedUrl.searchParams.get('userLabel');
-      let route = `travel_plans?select=plan_key,user_label,city_key,city_label,theme,budget,start_date,days,summary,source,created_at&order=created_at.desc&limit=${limit}`;
-      if (userLabel) route += `&user_label=eq.${encodeURIComponent(userLabel)}`;
+      const session = parseSession(req);
+      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
+      if (await supabaseUnavailableResponse(res)) return;
+      const limitRaw = Number(parsedUrl.searchParams.get('limit') || 20);
+      const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(50, Math.floor(limitRaw))) : 20;
+      const route = `travel_plans?select=plan_key,city_key,city_label,theme,budget,start_date,days,summary,source,created_at&user_label=eq.${encodeURIComponent(String(session.userId || ''))}&order=created_at.desc&limit=${limit}`;
       const rows = await supabaseRequest('GET', route);
       return sendJson(res, 200, { plans: rows });
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/travel-plan/get') {
-      const planKey = parsedUrl.searchParams.get('planKey');
+      const session = parseSession(req);
+      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
+      const planKey = String(parsedUrl.searchParams.get('planKey') || '');
       if (!planKey) return sendJson(res, 400, { error: 'planKey is required' });
-      const rows = await supabaseRequest('GET', `travel_plans?select=*&plan_key=eq.${encodeURIComponent(planKey)}&limit=1`);
-      if (!rows[0]) return sendJson(res, 404, { error: 'Plan not found' });
+      if (!/^[A-Za-z0-9_-]{1,80}$/.test(planKey)) return sendJson(res, 400, { error: 'Invalid planKey' });
+      if (await supabaseUnavailableResponse(res)) return;
+      const rows = await supabaseRequest('GET', `travel_plans?select=*&plan_key=eq.${encodeURIComponent(planKey)}&user_label=eq.${encodeURIComponent(String(session.userId || ''))}&limit=1`);
+      if (!rows[0]) return sendJson(res, 404, { error: '일정을 찾을 수 없습니다' });
       return sendJson(res, 200, { plan: rows[0] });
     }
 
-    // Rakuten config for client-side API calls
-  if (req.method === 'GET' && parsedUrl.pathname === '/api/rakuten-config') {
-    return sendJson(res, 200, {
-      appId: RAKUTEN_APP_ID,
-      accessKey: RAKUTEN_ACCESS_KEY
-    });
-  }
+    // (/api/rakuten-config 제거: Rakuten 키는 서버에서만 쓴다. fx-rate 핸들러는 아래에 있음)
 
-  // (fx-rate handler moved to consolidated location below)
-
+    // 항공·숙소: 실시간 공급자 1곳 → 없거나 결과가 없으면 "예시 데이터"(mock, 실제 가격 아님)로 분명히 표시한다.
     if (req.method === 'POST' && parsedUrl.pathname === '/api/flights') {
-      const payload = await readBody(req);
+      const payload = await readBody(req, BODY_LIMIT_SMALL);
+      const vErr = validatePayload(payload, API_SCHEMAS.flights);
+      if (vErr) return sendJson(res, 400, { error: vErr });
       let allCandidates = [];
       let source = 'mock';
-      let sourceNote = '';
+      let dateMatch = null;
+      let reasonCode = TRAVELPAYOUTS_TOKEN ? null : 'PROVIDER_UNAVAILABLE';
 
-      // 1순위: Travelpayouts API (무료 실시간)
+      // 1순위: Travelpayouts (최근 검색 기준 캐시 가격). 요청 날짜가 비면 가까운 날짜까지 찾는다.
       if (TRAVELPAYOUTS_TOKEN) {
         try {
-          allCandidates = await fetchTravelpayoutsFlights(payload);
+          const tp = await fetchTravelpayoutsFlights(payload);
+          allCandidates = tp.items;
+          dateMatch = tp.dateMatch;
           if (allCandidates.length > 0) source = 'travelpayouts_live';
+          else reasonCode = 'NO_LIVE_DATA';
         } catch (err) {
-          console.warn('[travelpayouts] flight fetch error:', err.message);
-          sourceNote = `Travelpayouts 항공 조회 실패: ${err.message}`;
+          reasonCode = err?.reasonCode || 'PROVIDER_UNAVAILABLE';
         }
       }
 
-      // 2순위: Amadeus API (폴백)
-      if (allCandidates.length === 0 && AMADEUS_API_KEY && AMADEUS_API_SECRET) {
-        try {
-          allCandidates = await fetchAmadeusFlights(payload);
-          if (allCandidates.length > 0) source = AMADEUS_ENV === 'prod' ? 'amadeus_live' : 'amadeus_test';
-        } catch (err) {
-          sourceNote += (sourceNote ? ' / ' : '') + `Amadeus 항공 조회 실패: ${err.message}`;
-        }
-      }
-
-      console.log('[flights] source selection:', { travelpayouts: !!TRAVELPAYOUTS_TOKEN, amadeus: !!(AMADEUS_API_KEY && AMADEUS_API_SECRET), candidateCount: allCandidates.length });
-
-      // 3순위: Mock 데이터
+      // 2순위: 예시 데이터
       if (allCandidates.length === 0) {
         allCandidates = flightCandidates(payload);
         source = 'mock';
-        if (!sourceNote) sourceNote = '실데이터 조회 실패로 더미 데이터 사용';
+        dateMatch = null;
       }
+      console.log('[flights] source:', { source, reasonCode, dateMatch, count: allCandidates.length });
 
+      const note = source === 'mock'
+        ? (reasonCode === 'NO_LIVE_DATA'
+          ? '이 날짜 전후로 조회된 항공권 가격이 없어 예시 데이터를 보여드려요. 실제 가격이 아니니 예약 전에 꼭 확인하세요.'
+          : '실시간 항공권 조회를 쓸 수 없어 예시 데이터를 보여드려요. 실제 가격이 아니니 예약 전에 꼭 확인하세요.')
+        : (dateMatch === 'nearby' ? '요청한 날짜의 가격 정보가 없어 가까운 날짜의 최근 검색 가격을 보여드려요.' : '');
       const ranked = rankFlights({ ...payload, _candidates: allCandidates });
       const airports = Array.from(new Set(allCandidates.flatMap((x) => x.airports)));
       const airlines = Array.from(new Set(allCandidates.flatMap((x) => x.airlines)));
       return sendJson(res, 200, {
         source,
-        note: sourceNote,
+        sourceInfo: source === 'mock' ? sourceInfo('mock', 'mock', reasonCode || 'NO_LIVE_DATA') : sourceInfo('live', 'travelpayouts'),
+        note,
+        dateMatch, // 'exact' | 'nearby'(요청 날짜에 가격이 없어 ±7일 안의 가까운 날짜) | null(예시 데이터)
         tripType: payload.tripType || 'oneway',
         preference: payload.preference || 'balanced',
         recommendation: ranked[0] || null,
@@ -5840,47 +8066,62 @@ async function handleApi(req, res, parsedUrl) {
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/stays') {
-      const payload = await readBody(req);
+      const payload = await readBody(req, BODY_LIMIT_SMALL);
+      const vErr = validatePayload(payload, API_SCHEMAS.stays);
+      if (vErr) return sendJson(res, 400, { error: vErr });
       let all = [];
       let source = 'mock';
-      let sourceNote = '';
+      let reasonCode = RAKUTEN_APP_ID ? null : 'PROVIDER_UNAVAILABLE';
+      // 'exact'(요청 날짜의 빈방·요금) | 'none'(그 날짜 빈방이 없어 날짜 조건 없는 숙소 목록·최저가) | null(예시 데이터)
+      let dateMatch = null;
 
       // 1순위: Rakuten Travel API (무료, 일본 특화)
       if (RAKUTEN_APP_ID) {
         try {
-          all = await fetchRakutenHotels(payload);
-          if (all.length > 0) source = 'rakuten_live';
+          const rk = await fetchRakutenHotels(payload);
+          all = rk.items;
+          if (all.length > 0) {
+            source = 'rakuten_live';
+            dateMatch = rk.dateMatch;
+            if (dateMatch === 'none') reasonCode = 'NO_LIVE_DATA';
+          } else reasonCode = 'NO_LIVE_DATA';
         } catch (err) {
-          console.warn('[rakuten] hotel fetch error:', err.message);
-          sourceNote = `Rakuten 호텔 조회 실패: ${err.message}`;
+          reasonCode = err?.reasonCode || 'PROVIDER_UNAVAILABLE';
         }
       }
 
-      // 2순위: Amadeus API (폴백)
-      if (all.length === 0 && AMADEUS_API_KEY && AMADEUS_API_SECRET) {
-        try {
-          all = await fetchAmadeusHotelOffers(payload);
-          if (all.length > 0) source = AMADEUS_ENV === 'prod' ? 'amadeus_live' : 'amadeus_test';
-        } catch (err) {
-          sourceNote += (sourceNote ? ' / ' : '') + `Amadeus 호텔 조회 실패: ${err.message}`;
-        }
-      }
-
-      console.log('[stays] source selection:', { rakuten: !!RAKUTEN_APP_ID, amadeus: !!(AMADEUS_API_KEY && AMADEUS_API_SECRET), hotelCount: all.length });
-
-      // 3순위: Mock 데이터
+      // 2순위: 예시 데이터
       if (all.length === 0) {
         all = stayCandidates(payload);
         source = 'mock';
-        if (!sourceNote) sourceNote = '실데이터 조회 실패로 더미 데이터 사용';
+        dateMatch = null;
       }
+      console.log('[stays] source:', { source, reasonCode, dateMatch, count: all.length });
 
-      const ranked = rankStays({ ...payload, _candidates: all });
+      const note = source === 'mock'
+        ? (reasonCode === 'NO_LIVE_DATA'
+          ? '이 조건으로 예약 가능한 숙소를 찾지 못해 예시 데이터를 보여드려요. 실제 숙소·가격이 아니니 예약 전에 꼭 확인하세요.'
+          : '실시간 숙소 조회를 쓸 수 없어 예시 데이터를 보여드려요. 실제 숙소·가격이 아니니 예약 전에 꼭 확인하세요.')
+        : (dateMatch === 'none'
+          ? '해당 날짜의 빈방 정보가 없어 숙소 목록과 최저가만 보여드려요. 실제 빈방·요금은 예약 페이지에서 확인하세요.'
+          : '');
+      const stayLang = normalizeLang(payload.lang);
+      // 예시 숙소 지역명은 순위를 매긴 뒤(선호 지역은 한글로 비교) 언어에 맞춘다.
+      const ranked = rankStays({ ...payload, _candidates: all })
+        .map((s) => (s.sample && stayLang !== 'ko'
+          ? { ...s, area: localizeCuratedArea(s.area, stayLang, localizedCityName(cityKeyByInput(payload.city || 'tokyo'), stayLang)) }
+          : s));
       const providers = Array.from(new Set(all.map((x) => x.provider)));
       const amenities = Array.from(new Set(all.flatMap((x) => x.amenities || [])));
+      let staysInfo;
+      if (source === 'mock') staysInfo = sourceInfo('mock', 'mock', reasonCode || 'NO_LIVE_DATA');
+      else if (dateMatch === 'none') staysInfo = sourceInfo('fallback', 'rakuten', 'NO_LIVE_DATA'); // 실시간 요금이 아님
+      else staysInfo = sourceInfo('live', 'rakuten');
       return sendJson(res, 200, {
         source,
-        note: sourceNote,
+        sourceInfo: staysInfo,
+        note,
+        dateMatch,
         city: payload.city || 'tokyo',
         total: ranked.length,
         filterOptions: { providers, amenities },
@@ -5896,14 +8137,16 @@ async function handleApi(req, res, parsedUrl) {
         lang: parsedUrl.searchParams.get('lang') || 'ko'
       };
 
-      if (GOOGLE_MAPS_API_KEY) {
+      if (GOOGLE_PLACES_ENABLED) {
+        let reasonCode = null;
         try {
           let foodLat = parsedUrl.searchParams.get('lat');
           let foodLng = parsedUrl.searchParams.get('lng');
           const foodCityKey = cityKeyByInput(payload.city);
           const foodCityLabel = CITY_DATA[foodCityKey].label;
           if (!foodLat || !foodLng) {
-            const foodCenter = await fetchGoogleCityCenter(foodCityLabel);
+            // 정적 도시 좌표 (Geocoding 호출 없음)
+            const foodCenter = resolveCityCenter(foodCityKey);
             if (foodCenter) { foodLat = foodCenter.lat; foodLng = foodCenter.lng; }
           }
           const places = await fetchFoodPlacesForCity(
@@ -5915,21 +8158,26 @@ async function handleApi(req, res, parsedUrl) {
             payload.lang
           );
           if (Array.isArray(places) && places.length > 0) {
-            return sendJson(res, 200, { source: 'google_places', city: payload.city, list: places });
+            return sendJson(res, 200, { source: 'google_places', sourceInfo: sourceInfo('live', 'google_places'), city: payload.city, list: places });
           }
-          const fallback = tabelogStyleFoods(payload);
-          return sendJson(res, 200, { ...fallback, warning: 'Google Places 결과 0건(쿼리/지역 조건), fallback 적용' });
+          reasonCode = 'NO_RESULTS';
         } catch (err) {
-          const fallback = tabelogStyleFoods(payload);
-          return sendJson(res, 200, { ...fallback, warning: classifyGooglePlacesFailure(err.message) });
+          reasonCode = err?.reasonCode || 'GOOGLE_ERROR';
+          if (!err?.reasonCode) warnThrottled('foods:error', `[foods] 맛집 검색 실패: ${redactGoogleKey(err?.message || err)}`);
         }
+        const fallback = tabelogStyleFoods(payload);
+        return sendJson(res, 200, {
+          ...fallback,
+          sourceInfo: sourceInfo('fallback', 'curated', reasonCode),
+          warning: classifyGooglePlacesFailure(reasonCode)
+        });
       }
 
-      return sendJson(res, 200, tabelogStyleFoods(payload));
+      return sendJson(res, 200, { ...tabelogStyleFoods(payload), sourceInfo: sourceInfo('curated', 'curated') });
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/dest-search') {
-      const payload = await readBody(req);
+      const payload = await readBody(req, BODY_LIMIT_SMALL);
       const result = await recommendDestinations({
         city: payload.city || 'tokyo',
         theme: payload.theme || 'mixed',
@@ -5938,12 +8186,22 @@ async function handleApi(req, res, parsedUrl) {
         limit: payload.limit || 20,
         lang: payload.lang || 'ko'
       });
-      return sendJson(res, 200, { source: result.source || 'unknown', destinations: result.picks || [] });
+      return sendJson(res, 200, {
+        source: result.source || 'unknown',
+        sourceInfo: result.sourceInfo || sourceInfo('curated', 'curated+wikimedia'),
+        destinations: result.picks || []
+      });
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/route-cost') {
-      const payload = await readBody(req);
-      const result = await calculateRouteCost(payload.places || [], payload.city || 'tokyo');
+      const payload = await readBody(req, BODY_LIMIT_SMALL);
+      // 장소 이름 목록만 받는다(최대 12곳, 각 80자). 무료 모드에서는 Google 호출 없이 좌표로 거리를 추정한다.
+      const places = Array.isArray(payload.places)
+        ? payload.places.filter((p) => typeof p === 'string' && p.trim()).map((p) => p.trim().slice(0, 80)).slice(0, 12)
+        : [];
+      const city = typeof payload.city === 'string' && payload.city.trim() ? payload.city.trim().slice(0, 50) : 'tokyo';
+      // lang(ko/en/ja)을 보내면 그 언어로, 없으면 장소 이름 글자로 짐작해 안내 문구를 쓴다.
+      const result = await calculateRouteCost(places, city, typeof payload.lang === 'string' ? payload.lang : '');
       return sendJson(res, 200, result);
     }
 
@@ -5955,32 +8213,48 @@ async function handleApi(req, res, parsedUrl) {
         krwToJpy100: Math.round(100 / fxJpyKrw * 100) / 100,
         yen100toKrw: Math.round(100 * fxJpyKrw),
         man1wonToYen: Math.round(10000 / fxJpyKrw),
-        lastUpdate: fxLastUpdate || 'N/A'
+        lastUpdate: fxLastUpdate || 'N/A',
+        // 'live' 실시간 | 'env' 운영자가 정한 고정값(FX_USD_KRW·FX_JPY_KRW) | 'approximate' 코드에 넣은 대략값
+        source: fxSource,
+        provider: fxProvider,
+        approximate: fxSource !== 'live',
+        stale: fxSource === 'live' && (Date.now() - fxLiveAt) > 36 * 60 * 60 * 1000
       });
     }
 
+    // 날씨: /api/cities의 모든 도시(동적 도시 포함)를 서버가 좌표로 바꿔 open-meteo(무료·키 없음)에서 가져온다.
+    // 위치를 모르면 다른 도시 날씨를 보여주지 않고 오류를 돌려준다.
     if (req.method === 'GET' && parsedUrl.pathname === '/api/weather') {
-      const city = parsedUrl.searchParams.get('city') || 'tokyo';
-      const COORDS = {
-        tokyo: [35.68, 139.76], osaka: [34.69, 135.50], kyoto: [35.01, 135.77],
-        sapporo: [43.06, 141.35], fukuoka: [33.59, 130.40], nagoya: [35.18, 136.91],
-        hiroshima: [34.40, 132.46], okinawa: [26.34, 127.77], kanazawa: [36.56, 136.65],
-        sendai: [38.27, 140.87], kobe: [34.69, 135.20]
-      };
-      const [lat, lng] = COORDS[city] || COORDS.tokyo;
-      try {
-        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=Asia/Tokyo&forecast_days=10`;
-        const weatherResp = await fetch(weatherUrl);
-        const weatherData = await weatherResp.json();
-        return sendJson(res, 200, { city, daily: weatherData.daily });
-      } catch (err) {
-        return sendJson(res, 200, { city, error: 'Weather API unavailable' });
+      const cityParam = String(parsedUrl.searchParams.get('city') || 'tokyo').trim().slice(0, 60) || 'tokyo';
+      const loc = await resolveCityCoordsForInput(cityParam);
+      if (!loc) {
+        return sendJson(res, 404, { city: cityParam, error: '이 도시의 위치를 찾지 못해 날씨를 불러오지 못했어요.' });
       }
+      const weather = await fetchWeatherDaily(loc.lat, loc.lng);
+      if (!weather) {
+        return sendJson(res, 502, { city: loc.key || cityParam, error: '날씨 정보를 잠시 불러오지 못했어요. 잠시 후 다시 시도해 주세요.' });
+      }
+      return sendJson(res, 200, {
+        city: loc.key || cityParam,
+        cityLabel: loc.label,
+        lat: Math.round(loc.lat * 10000) / 10000,
+        lng: Math.round(loc.lng * 10000) / 10000,
+        daily: weather
+      });
     }
 
     return sendJson(res, 404, { error: 'Not Found' });
   } catch (err) {
-    return sendJson(res, 400, { error: err.message });
+    if (res.headersSent) {
+      try { res.end(); } catch { /* 이미 닫힘 */ }
+      return;
+    }
+    // 원문 오류는 서버 로그에만 남기고, 응답에는 짧은 안내만 보낸다(원시 오류·비밀값 노출 방지).
+    const status = err instanceof HttpError ? err.status : 500;
+    if (status === 413) return sendJson(res, 413, { error: '요청 내용이 너무 큽니다.' }, { Connection: 'close' });
+    if (status === 400) return sendJson(res, 400, { error: '요청 형식이 올바르지 않습니다.' });
+    console.error(`[api] ${req.method} ${parsedUrl.pathname} 처리 실패:`, redactRakutenKeys(redactTravelpayoutsToken(redactGoogleKey(err?.message || err))));
+    return sendJson(res, 500, { error: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.' });
   }
 }
 
@@ -6007,7 +8281,14 @@ function serveStatic(req, res, parsedUrl) {
       '.css': 'text/css; charset=utf-8',
       '.js': 'application/javascript; charset=utf-8',
       '.json': 'application/json; charset=utf-8',
-      '.webmanifest': 'application/manifest+json; charset=utf-8'
+      '.webmanifest': 'application/manifest+json; charset=utf-8',
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp',
+      '.gif': 'image/gif',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon'
     };
 
     res.writeHead(200, {
@@ -6037,5 +8318,5 @@ process.on('unhandledRejection', (reason) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`JapanTravel prototype server running at http://localhost:${PORT}`);
+  console.log(`${APP_BRAND} — ${APP_TAGLINE.ko} server running at http://localhost:${PORT} (places=${PLACES_PROVIDER}, map=${MAP_PROVIDER})`);
 });
