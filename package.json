@@ -1,12 +1,20 @@
 {
-  "name": "japantravel-suite",
+  "name": "tabimaru",
   "version": "1.0.0",
-  "description": "Japanese travel planning web app",
+  "description": "Tabimaru — AI Japan Trip Planner: places, itineraries, flights, stays and food in one web app",
   "main": "server.js",
+  "private": true,
+  "homepage": "https://japanjapantravel.onrender.com/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wsxc94/tabimaru-japan-travel-planner.git"
+  },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node test_all.js",
+    "build:place-images": "node scripts/build-place-images.js"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20"
   }
 }

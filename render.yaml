@@ -1,29 +1,92 @@
+# Tabimaru — Render Blueprint. 값은 여기에 적지 않는다(sync: false = Render 대시보드에서 직접 입력).
+# 설명·기본값은 README.md의 "환경 변수" 표와 deploy/DEPLOY.md를 본다.
+# 운영 서비스(japanjapantravel.onrender.com)가 대시보드에서 따로 만든 서비스라면 이 파일은 참고용 목록이다.
 services:
   - type: web
+    # 서비스 이름은 운영 주소·기존 서비스와 묶여 있어 이름을 바꾼 뒤에도 그대로 둔다(바꾸면 새 서비스로 만들어짐).
     name: japantravel-suite
-    env: node
+    runtime: node
     plan: free
     buildCommand: "npm install"
     startCommand: node server.js
-    nodeVersion: "20"
     autoDeploy: true
     healthCheckPath: /api/health
     envVars:
-      - key: APP_ENV
-        value: production
+      # ── 장소·지도 공급자 (비워 두면 free / osm: Google 호출 0회) ──
+      - key: PLACES_PROVIDER
+        sync: false
+      - key: MAP_PROVIDER
+        sync: false
+      - key: GOOGLE_MAPS_SERVER_KEY
+        sync: false
+      - key: GOOGLE_MAPS_BROWSER_KEY
+        sync: false
+      # 예전 단일 키. PLACES_PROVIDER=google 이고 서버 키가 없을 때만 서버 키로 쓴다(브라우저로는 보내지 않음).
       - key: GOOGLE_MAPS_API_KEY
         sync: false
-      - key: SUPABASE_URL
+      # google 모드의 호출 상한(UTC 기준, 서버 메모리라 재시작하면 0부터 다시 셈).
+      # 검색·지오코딩·경로: 하루 30 / 월 900, 사진: 하루 30 / 월 900 (비워 두면 이 기본값).
+      - key: GOOGLE_DAILY_CALL_LIMIT
         sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
+      - key: GOOGLE_MONTHLY_CALL_LIMIT
         sync: false
+      - key: GOOGLE_PHOTO_DAILY_LIMIT
+        sync: false
+      - key: GOOGLE_PHOTO_MONTHLY_LIMIT
+        sync: false
+      - key: DIAGNOSTICS_TOKEN
+        sync: false
+      # ── AI 일정·채팅 ──
       - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_API_MODEL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        sync: false
+      - key: AI_REQUEST_TIMEOUT_MS
+        sync: false
+      - key: CHAT_PARSE_STRICT_AI
+        sync: false
+      # ── 항공·숙소 ──
+      - key: TRAVELPAYOUTS_TOKEN
+        sync: false
+      - key: RAKUTEN_APP_ID
+        sync: false
+      - key: RAKUTEN_ACCESS_KEY
+        sync: false
+      # ── 환율 고정값(실시간 조회가 실패할 때만) ──
+      - key: FX_USD_KRW
+        sync: false
+      - key: FX_JPY_KRW
+        sync: false
+      # ── 로그인·세션·보안 ──
+      - key: SESSION_SECRET
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: OAUTH_BASE_URL
+        sync: false
+      # Render에서는 RENDER 변수가 있어 프록시를 자동으로 믿는다. TRUST_PROXY_HOPS는 배포 로그의 [proxy] 분포 줄을 본 뒤에만 바꾼다(deploy/DEPLOY.md "1) 배포 직후 확인"의 1번).
+      - key: TRUST_PROXY
+        sync: false
+      - key: TRUST_PROXY_HOPS
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_ID
         sync: false
       - key: GOOGLE_OAUTH_CLIENT_SECRET
         sync: false
-      - key: SESSION_SECRET
+      - key: NAVER_CLIENT_ID
         sync: false
-      - key: OAUTH_BASE_URL
+      - key: NAVER_CLIENT_SECRET
+        sync: false
+      - key: KAKAO_REST_API_KEY
+        sync: false
+      - key: KAKAO_CLIENT_SECRET
+        sync: false
+      # ── 일정 저장소(Supabase, 선택) ──
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
