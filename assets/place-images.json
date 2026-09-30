@@ -1,0 +1,3475 @@
+{
+  "version": 1,
+  "generatedAt": "2026-09-30T19:24:06.028Z",
+  "places": {
+    "akita|센슈공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/37/Osumi-Yagura_of_Kubota-Castle_20160424.jpg/500px-Osumi-Yagura_of_Kubota-Castle_20160424.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Osumi-Yagura_of_Kubota-Castle_20160424.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "掬茶",
+      "lat": 39.72348,
+      "lng": 140.12324,
+      "wikidata": "Q6133648",
+      "labels": {
+        "en": "Kubota Castle",
+        "ja": "久保田城"
+      }
+    },
+    "akita|오가 반도": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/77/View_of_the_Oga_Peninsula_from_Akita_Marina.jpg/500px-View_of_the_Oga_Peninsula_from_Akita_Marina.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:View_of_the_Oga_Peninsula_from_Akita_Marina.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "掬茶",
+      "lat": 39.91667,
+      "lng": 139.78333,
+      "wikidata": "Q1132109",
+      "labels": {
+        "en": "Oga Peninsula",
+        "ja": "男鹿半島"
+      }
+    },
+    "aomori|네부타 박물관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Nebuta_Museum_Wa_Rasse_20200621.jpg/500px-Nebuta_Museum_Wa_Rasse_20200621.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nebuta_Museum_Wa_Rasse_20200621.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "掬茶",
+      "lat": 40.82956,
+      "lng": 140.73594,
+      "wikidata": "Q11275091",
+      "labels": {
+        "en": "Nebuta Museum Wa Rasse",
+        "ja": "ねぶたの家 ワ・ラッセ"
+      }
+    },
+    "aomori|아오모리 베이브리지": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/37/Aomoribay_bridge.jpg/500px-Aomoribay_bridge.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Aomoribay_bridge.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Sengoku40",
+      "lat": 40.83028,
+      "lng": 140.73667,
+      "wikidata": "Q4778670",
+      "labels": {
+        "en": "Aomori Bay Bridge",
+        "ja": "青森ベイブリッジ"
+      }
+    },
+    "aomori|아오모리 현립미술관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/140913_Aomori_Museum_of_Art_Japan02bs3.jpg/500px-140913_Aomori_Museum_of_Art_Japan02bs3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:140913_Aomori_Museum_of_Art_Japan02bs3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 40.8073,
+      "lng": 140.701,
+      "wikidata": "Q11662266",
+      "labels": {
+        "en": "Aomori Museum of Art",
+        "ja": "青森県立美術館"
+      }
+    },
+    "aomori|오이라세 계곡": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/63/Oirase-keiryu.jpg/500px-Oirase-keiryu.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Oirase-keiryu.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "MaedaAkihiko",
+      "lat": 40.52528,
+      "lng": 140.9745,
+      "wikidata": "Q10942580",
+      "labels": {
+        "en": "Oirase Stream",
+        "ja": "奥入瀬渓流"
+      }
+    },
+    "asahikawa|비에이 청의 호수": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Biei_Blue-pond.jpg/500px-Biei_Blue-pond.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Biei_Blue-pond.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "MaedaAkihiko",
+      "lat": 43.49358,
+      "lng": 142.61403,
+      "wikidata": "Q11661016",
+      "labels": {
+        "en": "Blue Pond",
+        "ja": "青い池"
+      }
+    },
+    "asahikawa|아사히야마 동물원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/43/%E6%97%AD%E5%B1%B1%E5%8B%95%E7%89%A9%E5%9C%92_-_panoramio_%284%29.jpg/500px-%E6%97%AD%E5%B1%B1%E5%8B%95%E7%89%A9%E5%9C%92_-_panoramio_%284%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E6%97%AD%E5%B1%B1%E5%8B%95%E7%89%A9%E5%9C%92_-_panoramio_(4).jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Mamusi Taka",
+      "lat": 43.76805,
+      "lng": 142.47978,
+      "wikidata": "Q993926",
+      "labels": {
+        "en": "Asahiyama Zoo",
+        "ja": "旭川市旭山動物園"
+      }
+    },
+    "asahikawa|우에노팜": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ee/%E4%B8%8A%E9%87%8E%E3%83%95%E3%82%A1%E3%83%BC%E3%83%A0%EF%BC%88UENO_FARM%EF%BC%89_-_panoramio_%281%29.jpg/500px-%E4%B8%8A%E9%87%8E%E3%83%95%E3%82%A1%E3%83%BC%E3%83%A0%EF%BC%88UENO_FARM%EF%BC%89_-_panoramio_%281%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E4%B8%8A%E9%87%8E%E3%83%95%E3%82%A1%E3%83%BC%E3%83%A0%EF%BC%88UENO_FARM%EF%BC%89_-_panoramio_(1).jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "t-konno",
+      "lat": 43.80833,
+      "lng": 142.48575,
+      "wikidata": "Q11360263",
+      "labels": {
+        "en": "Ueno Farm",
+        "ja": "上野ファーム"
+      }
+    },
+    "asahikawa|헤이와도리 쇼핑공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ad/Kaimono_Koen_20250801.jpg/500px-Kaimono_Koen_20250801.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kaimono_Koen_20250801.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Miss 501",
+      "lat": 43.76514,
+      "lng": 142.35892,
+      "wikidata": "Q11482272",
+      "labels": {
+        "en": "Heiwa-dōri Kaimono Kōen",
+        "ja": "平和通買物公園"
+      }
+    },
+    "asahikawa|후라노 라벤더밭": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2d/%E3%83%95%E3%82%A1%E3%83%BC%E3%83%A0%E5%AF%8C%E7%94%B0%EF%BC%88Farm_Tomita%EF%BC%89_-_panoramio_%284%29.jpg/500px-%E3%83%95%E3%82%A1%E3%83%BC%E3%83%A0%E5%AF%8C%E7%94%B0%EF%BC%88Farm_Tomita%EF%BC%89_-_panoramio_%284%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E3%83%95%E3%82%A1%E3%83%BC%E3%83%A0%E5%AF%8C%E7%94%B0%EF%BC%88Farm_Tomita%EF%BC%89_-_panoramio_(4).jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "t-konno",
+      "lat": 43.41889,
+      "lng": 142.42658,
+      "wikidata": "Q10954584",
+      "labels": {
+        "en": "Farm Tomita",
+        "ja": "ファーム富田"
+      }
+    },
+    "fukuoka|다자이후 텐만구": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8b/20100719_Dazaifu_Tenmangu_Shrine_3328.jpg/500px-20100719_Dazaifu_Tenmangu_Shrine_3328.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:20100719_Dazaifu_Tenmangu_Shrine_3328.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Jakub Hałun",
+      "lat": 33.52143,
+      "lng": 130.535,
+      "wikidata": "Q710786",
+      "labels": {
+        "en": "Dazaifu Tenmangū",
+        "ja": "太宰府天満宮"
+      }
+    },
+    "fukuoka|오호리 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/%E5%A4%A7%E6%BF%A0%E5%85%AC%E5%9C%92_%283359545709%29.jpg/500px-%E5%A4%A7%E6%BF%A0%E5%85%AC%E5%9C%92_%283359545709%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E5%A4%A7%E6%BF%A0%E5%85%AC%E5%9C%92_(3359545709).jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "Tzuhsun Hsu from Taipei, Taiwan",
+      "lat": 33.58609,
+      "lng": 130.37643,
+      "wikidata": "Q846710",
+      "labels": {
+        "en": "Ōhori Park",
+        "ja": "大濠公園"
+      }
+    },
+    "fukuoka|캐널시티 하카타": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/Canal_City_Hakata_2011.jpg/500px-Canal_City_Hakata_2011.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Canal_City_Hakata_2011.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "ぱちょぴ（pacyopi）",
+      "lat": 33.59111,
+      "lng": 130.41056,
+      "wikidata": "Q1050353",
+      "labels": {
+        "en": "Canal City Hakata",
+        "ja": "キャナルシティ博多"
+      }
+    },
+    "fukuoka|후쿠오카 타워": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/43/Fukuoka_Tower_October_2011_01.jpg/500px-Fukuoka_Tower_October_2011_01.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Fukuoka_Tower_October_2011_01.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "STA3816",
+      "lat": 33.59331,
+      "lng": 130.3515,
+      "wikidata": "Q847033",
+      "labels": {
+        "en": "Fukuoka Tower",
+        "ja": "福岡タワー"
+      }
+    },
+    "fukushima|고시키누마": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/42/Goshikinuma.jpg/500px-Goshikinuma.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Goshikinuma.jpg",
+      "license": "CC BY 3.0",
+      "artist": "Jordy Meow",
+      "lat": 37.6518,
+      "lng": 140.0803,
+      "wikidata": "Q3214907",
+      "labels": {
+        "en": "Goshiki-numa",
+        "ja": "五色沼"
+      }
+    },
+    "fukushima|쓰루가성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d7/Aizuwakamatsu_Castle_ac_%281%29.jpg/500px-Aizuwakamatsu_Castle_ac_%281%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Aizuwakamatsu_Castle_ac_(1).jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Asturio Cantabrio",
+      "lat": 37.48778,
+      "lng": 139.92972,
+      "wikidata": "Q1365061",
+      "labels": {
+        "en": "Aizuwakamatsu Castle",
+        "ja": "若松城"
+      }
+    },
+    "fukushima|오우치주쿠": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dc/%E5%A4%A7%E5%86%85%E5%AE%BF_-_panoramio_%287%29.jpg/500px-%E5%A4%A7%E5%86%85%E5%AE%BF_-_panoramio_%287%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E5%A4%A7%E5%86%85%E5%AE%BF_-_panoramio_(7).jpg",
+      "license": "CC BY 3.0",
+      "artist": "くろふね",
+      "lat": 37.33417,
+      "lng": 139.86078,
+      "wikidata": "Q3594058",
+      "labels": {
+        "en": "Ōuchi-juku",
+        "ja": "大内宿"
+      }
+    },
+    "hakodate|고료카쿠 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d5/Hakodate_Goryokaku_Panorama_1.JPG/500px-Hakodate_Goryokaku_Panorama_1.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Hakodate_Goryokaku_Panorama_1.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "Keihin nike",
+      "lat": 41.79694,
+      "lng": 140.75694,
+      "wikidata": "Q1196357",
+      "labels": {
+        "en": "Goryōkaku",
+        "ja": "五稜郭"
+      }
+    },
+    "hakodate|아침시장": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/21/Hakodate_Asaichi_Hokkaido_Japan05bs5.jpg/500px-Hakodate_Asaichi_Hokkaido_Japan05bs5.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Hakodate_Asaichi_Hokkaido_Japan05bs5.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 41.77255,
+      "lng": 140.72538,
+      "wikidata": "Q10896697",
+      "labels": {
+        "en": "Hakodate Morning Market",
+        "ja": "函館朝市"
+      }
+    },
+    "hakodate|하코다테 아침시장": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/21/Hakodate_Asaichi_Hokkaido_Japan05bs5.jpg/500px-Hakodate_Asaichi_Hokkaido_Japan05bs5.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Hakodate_Asaichi_Hokkaido_Japan05bs5.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 41.77255,
+      "lng": 140.72538,
+      "wikidata": "Q10896697",
+      "labels": {
+        "en": "Hakodate Morning Market",
+        "ja": "函館朝市"
+      }
+    },
+    "hakodate|하코다테 야경": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Kanemori_Red_Brick_Warehouse_Hakodate_Hokkaido_pref_Japan01n.jpg/500px-Kanemori_Red_Brick_Warehouse_Hakodate_Hokkaido_pref_Japan01n.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kanemori_Red_Brick_Warehouse_Hakodate_Hokkaido_pref_Japan01n.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 41.75889,
+      "lng": 140.70444,
+      "wikidata": "Q3526214",
+      "labels": {
+        "en": "Mount Hakodate",
+        "ja": "函館山"
+      }
+    },
+    "hanamaki|하나마키 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/50/%E8%8A%B1%E5%B7%BB%E6%B8%A9%E6%B3%89_%E3%83%90%E3%83%A9%E5%9C%92%E3%81%A8%E3%83%9B%E3%83%86%E3%83%AB3%E9%A4%A8.jpg/500px-%E8%8A%B1%E5%B7%BB%E6%B8%A9%E6%B3%89_%E3%83%90%E3%83%A9%E5%9C%92%E3%81%A8%E3%83%9B%E3%83%86%E3%83%AB3%E9%A4%A8.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E8%8A%B1%E5%B7%BB%E6%B8%A9%E6%B3%89_%E3%83%90%E3%83%A9%E5%9C%92%E3%81%A8%E3%83%9B%E3%83%86%E3%83%AB3%E9%A4%A8.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "なはん弁",
+      "lat": 39.45256,
+      "lng": 141.06822,
+      "wikidata": "Q11615376",
+      "labels": {
+        "ja": "花巻温泉"
+      }
+    },
+    "hiroshima|원폭돔": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/77/Genbaku_Dome04-r.JPG/500px-Genbaku_Dome04-r.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Genbaku_Dome04-r.JPG",
+      "license": "CC BY 2.5",
+      "artist": "Oilstreet",
+      "lat": 34.39556,
+      "lng": 132.45361,
+      "wikidata": "Q231140",
+      "labels": {
+        "en": "Hiroshima Peace Memorial",
+        "ja": "原爆ドーム"
+      }
+    },
+    "hiroshima|이쓰쿠시마 신사": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0e/Itsukushima_Gate.jpg/500px-Itsukushima_Gate.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Itsukushima_Gate.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "JordyMeow",
+      "lat": 34.29577,
+      "lng": 132.32011,
+      "wikidata": "Q191763",
+      "labels": {
+        "en": "Itsukushima Shrine",
+        "ja": "厳島神社"
+      }
+    },
+    "hiroshima|평화기념공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b2/20181111_Hiroshima_Memorial_Cenotaph-1.jpg/500px-20181111_Hiroshima_Memorial_Cenotaph-1.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:20181111_Hiroshima_Memorial_Cenotaph-1.jpg",
+      "license": "CC0",
+      "artist": "Balon Greyjoy",
+      "lat": 34.39273,
+      "lng": 132.45237,
+      "wikidata": "Q1207208",
+      "labels": {
+        "en": "Hiroshima Peace Memorial Park",
+        "ja": "平和記念公園"
+      }
+    },
+    "hiroshima|히로시마 평화기념공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b2/20181111_Hiroshima_Memorial_Cenotaph-1.jpg/500px-20181111_Hiroshima_Memorial_Cenotaph-1.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:20181111_Hiroshima_Memorial_Cenotaph-1.jpg",
+      "license": "CC0",
+      "artist": "Balon Greyjoy",
+      "lat": 34.39273,
+      "lng": 132.45237,
+      "wikidata": "Q1207208",
+      "labels": {
+        "en": "Hiroshima Peace Memorial Park",
+        "ja": "平和記念公園"
+      }
+    },
+    "hiroshima|히로시마성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/50/HiroshimaCastle.jpg/500px-HiroshimaCastle.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:HiroshimaCastle.jpg",
+      "license": "Public domain",
+      "artist": "Wikimedia Commons",
+      "lat": 34.40275,
+      "lng": 132.45903,
+      "wikidata": "Q41977",
+      "labels": {
+        "en": "Hiroshima Castle",
+        "ja": "広島城"
+      }
+    },
+    "ibaraki|가이라쿠엔": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ec/Kairaku-en%2C_Ibaraki_24.jpg/500px-Kairaku-en%2C_Ibaraki_24.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kairaku-en,_Ibaraki_24.jpg",
+      "license": "CC BY 4.0",
+      "artist": "Σ64",
+      "lat": 36.37306,
+      "lng": 140.45621,
+      "wikidata": "Q71952",
+      "labels": {
+        "en": "Kairaku-en",
+        "ja": "偕楽園"
+      }
+    },
+    "ibaraki|히타치 해변공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a0/Nemophila_and_Ferris_Wheel_in_Hitachi_Seaside_Park.jpg/500px-Nemophila_and_Ferris_Wheel_in_Hitachi_Seaside_Park.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nemophila_and_Ferris_Wheel_in_Hitachi_Seaside_Park.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Miyuki Meinaka",
+      "lat": 36.40056,
+      "lng": 140.59139,
+      "wikidata": "Q10855585",
+      "labels": {
+        "en": "Hitachi Seaside Park",
+        "ja": "国営ひたち海浜公園"
+      }
+    },
+    "ishigaki|이시가키 석회동굴": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 24.36167,
+      "lng": 124.15444,
+      "wikidata": "Q88138926",
+      "labels": {
+        "en": "Ishigaki Stalactite Cave",
+        "ja": "石垣島鍾乳洞"
+      }
+    },
+    "ishigaki|카비라만": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Kabira-Bay-Kabira-park-2019.jpg/500px-Kabira-Bay-Kabira-park-2019.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kabira-Bay-Kabira-park-2019.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Tokyo-Good",
+      "lat": 24.45139,
+      "lng": 124.14444,
+      "wikidata": "Q2654598",
+      "labels": {
+        "en": "Kabira Bay",
+        "ja": "川平湾"
+      }
+    },
+    "iwakuni|긴타이교": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a6/Iwakuni%2C_ponte_kintai-kyo%2C_05.jpg/500px-Iwakuni%2C_ponte_kintai-kyo%2C_05.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Iwakuni,_ponte_kintai-kyo,_05.jpg",
+      "license": "CC BY 3.0",
+      "artist": "Sailko",
+      "lat": 34.1676,
+      "lng": 132.17837,
+      "wikidata": "Q1196460",
+      "labels": {
+        "en": "Kintai Bridge",
+        "ja": "錦帯橋"
+      }
+    },
+    "iwakuni|이와쿠니성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b2/20100724_Iwakuni_Castle_5262.jpg/500px-20100724_Iwakuni_Castle_5262.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:20100724_Iwakuni_Castle_5262.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Jakub Hałun",
+      "lat": 34.17526,
+      "lng": 132.17423,
+      "wikidata": "Q1156906",
+      "labels": {
+        "en": "Iwakuni Castle",
+        "ja": "岩国城"
+      }
+    },
+    "izumo|신지호 석양": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ed/Lake_Shinji%2C_Matsue.jpg/500px-Lake_Shinji%2C_Matsue.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Lake_Shinji,_Matsue.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Bernard Gagnon",
+      "lat": 35.45,
+      "lng": 132.96667,
+      "wikidata": "Q1151248",
+      "labels": {
+        "en": "Lake Shinji",
+        "ja": "宍道湖"
+      }
+    },
+    "izumo|이나사 해변": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2e/Bentenjima_on_Inasa_Beach.jpg/500px-Bentenjima_on_Inasa_Beach.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Bentenjima_on_Inasa_Beach.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Qurren",
+      "lat": 35.40081,
+      "lng": 132.67214,
+      "wikidata": "Q11596453",
+      "labels": {
+        "en": "Inasa Beach",
+        "ja": "稲佐の浜"
+      }
+    },
+    "izumo|이즈모 타이샤": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/21/Izumo-Taisha_Haiden.jpg/500px-Izumo-Taisha_Haiden.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Izumo-Taisha_Haiden.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "MaedaAkihiko",
+      "lat": 35.40194,
+      "lng": 132.68544,
+      "wikidata": "Q696362",
+      "labels": {
+        "en": "Izumo Taisha",
+        "ja": "出雲大社"
+      }
+    },
+    "kagoshima|사쿠라지마": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ac/Kagoshima_and_Sakurajima.jpg/500px-Kagoshima_and_Sakurajima.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kagoshima_and_Sakurajima.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Takobou",
+      "lat": 31.58056,
+      "lng": 130.65806,
+      "wikidata": "Q128841",
+      "labels": {
+        "en": "Sakurajima",
+        "ja": "桜島"
+      }
+    },
+    "kagoshima|센간엔": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fe/Sengan-en2.jpg/500px-Sengan-en2.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sengan-en2.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "STA3816",
+      "lat": 31.61722,
+      "lng": 130.57694,
+      "wikidata": "Q10884282",
+      "labels": {
+        "en": "Sengan-en",
+        "ja": "仙巌園"
+      }
+    },
+    "kagoshima|이부스키 모래찜": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 31.22314,
+      "lng": 130.65506,
+      "wikidata": "Q5984938",
+      "labels": {
+        "en": "Ibusuki Onsen",
+        "ja": "指宿温泉"
+      }
+    },
+    "kanazawa|겐로쿠엔": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b6/131109_Kenrokuen_Kanazawa_Ishikawa_pref_Japan00s3.jpg/500px-131109_Kenrokuen_Kanazawa_Ishikawa_pref_Japan00s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:131109_Kenrokuen_Kanazawa_Ishikawa_pref_Japan00s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 36.56194,
+      "lng": 136.6625,
+      "wikidata": "Q998239",
+      "labels": {
+        "en": "Kenroku-en",
+        "ja": "兼六園"
+      }
+    },
+    "kanazawa|노토반도": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 37.2,
+      "lng": 136.9,
+      "wikidata": "Q691151",
+      "labels": {
+        "en": "Noto Peninsula",
+        "ja": "能登半島"
+      }
+    },
+    "kanazawa|시라카와고": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/02/Ogi_Shirakawa01n3200.jpg/500px-Ogi_Shirakawa01n3200.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Ogi_Shirakawa01n3200.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 36.25666,
+      "lng": 136.90504,
+      "wikidata": "Q1002193",
+      "labels": {
+        "en": "Shirakawa-gō",
+        "ja": "白川郷"
+      }
+    },
+    "kanazawa|오미초 시장": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Omichoichibakan001.jpg/500px-Omichoichibakan001.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Omichoichibakan001.jpg",
+      "license": "CC BY 2.1 jp",
+      "artist": "金沢市",
+      "lat": null,
+      "lng": null,
+      "wikidata": "Q11638507",
+      "labels": {
+        "en": "Ōmichō Market",
+        "ja": "近江町市場"
+      }
+    },
+    "kanazawa|히가시차야 거리": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Higashiyamahigashi_2015.JPG/500px-Higashiyamahigashi_2015.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Higashiyamahigashi_2015.JPG",
+      "license": "CC BY-SA 4.0",
+      "artist": "Kakidai",
+      "lat": 36.57245,
+      "lng": 136.66716,
+      "wikidata": "Q5897562",
+      "labels": {
+        "en": "Higashiyama-Higashi",
+        "ja": "東山ひがし"
+      }
+    },
+    "kitakyushu|고쿠라성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/21/Kokura_castle_from_the_Japanese_garden.jpg/500px-Kokura_castle_from_the_Japanese_garden.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kokura_castle_from_the_Japanese_garden.jpg",
+      "license": "CC BY 2.5",
+      "artist": "Historian",
+      "lat": 33.88444,
+      "lng": 130.87426,
+      "wikidata": "Q581644",
+      "labels": {
+        "en": "Kokura Castle",
+        "ja": "小倉城"
+      }
+    },
+    "kitakyushu|모지코 레트로": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/db/140721_Mojiko_Retro_Kitakyushu_Japan01s3.jpg/500px-140721_Mojiko_Retro_Kitakyushu_Japan01s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:140721_Mojiko_Retro_Kitakyushu_Japan01s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": null,
+      "lng": null,
+      "wikidata": "Q11654979",
+      "labels": {
+        "en": "Mojikō Retro",
+        "ja": "門司港レトロ"
+      }
+    },
+    "kitakyushu|사라쿠라산 야경": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f5/Sarakurayama03.jpg/500px-Sarakurayama03.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sarakurayama03.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Kita-kousuke",
+      "lat": 33.84639,
+      "lng": 130.79639,
+      "wikidata": "Q11581132",
+      "labels": {
+        "en": "Mount Sarakura",
+        "ja": "皿倉山"
+      }
+    },
+    "kobe|고베 하버랜드": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/63/Harborland_district.jpg/500px-Harborland_district.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Harborland_district.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Mass Ave 975",
+      "lat": 34.67906,
+      "lng": 135.18181,
+      "wikidata": "Q5364704",
+      "labels": {
+        "en": "Harborland",
+        "ja": "神戸ハーバーランド"
+      }
+    },
+    "kobe|구마노고도": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6a/Daimonzaka28-640.jpg/500px-Daimonzaka28-640.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Daimonzaka28-640.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 34.45246,
+      "lng": 136.7213,
+      "wikidata": "Q17050475",
+      "labels": {
+        "en": "Kumano Kodō",
+        "ja": "熊野古道"
+      }
+    },
+    "kobe|기타노 이진칸": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/Kitano_Street_Kobe02s3s4272.jpg/500px-Kitano_Street_Kobe02s3s4272.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kitano_Street_Kobe02s3s4272.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 34.70128,
+      "lng": 135.18971,
+      "wikidata": "Q10855753",
+      "labels": {
+        "en": "Kitano-chō and Yamamoto-dōri",
+        "ja": "北野町山本通"
+      }
+    },
+    "kobe|누노비키 허브원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/04/Kobe_Nunobiki_Herb_Garden09bs3200.jpg/500px-Kobe_Nunobiki_Herb_Garden09bs3200.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kobe_Nunobiki_Herb_Garden09bs3200.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 34.71528,
+      "lng": 135.19222,
+      "wikidata": "Q7069905",
+      "labels": {
+        "en": "Nunobiki Herb Garden",
+        "ja": "布引ハーブ園"
+      }
+    },
+    "kobe|아리마 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2c/170811_Rokko-Arima_Ropeway_Kobe_Japan00n.jpg/500px-170811_Rokko-Arima_Ropeway_Kobe_Japan00n.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:170811_Rokko-Arima_Ropeway_Kobe_Japan00n.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 34.79806,
+      "lng": 135.2475,
+      "wikidata": "Q4790673",
+      "labels": {
+        "en": "Arima Onsen",
+        "ja": "有馬温泉"
+      }
+    },
+    "kochi|고치성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/53/Kouchi_kouchijou1.jpg/500px-Kouchi_kouchijou1.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kouchi_kouchijou1.jpg",
+      "license": "Public domain",
+      "artist": "Wikimedia Commons",
+      "lat": 33.56111,
+      "lng": 133.53139,
+      "wikidata": "Q1012815",
+      "labels": {
+        "en": "Kōchi Castle",
+        "ja": "高知城"
+      }
+    },
+    "kochi|카츠라하마": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f3/Kochi_Katsurahama_Daytime_1.JPG/500px-Kochi_Katsurahama_Daytime_1.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kochi_Katsurahama_Daytime_1.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "京浜にけ",
+      "lat": 33.49719,
+      "lng": 133.57503,
+      "wikidata": "Q11536831",
+      "labels": {
+        "en": "Katsurahama",
+        "ja": "桂浜"
+      }
+    },
+    "kochi|히로메 시장": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/be/Entrance_to_Hirome_Ichiba_%286453684561%29.jpg/500px-Entrance_to_Hirome_Ichiba_%286453684561%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Entrance_to_Hirome_Ichiba_(6453684561).jpg",
+      "license": "CC BY 2.0",
+      "artist": "Maarten Heerlien from Voorschoten, The Netherlands",
+      "lat": 33.56056,
+      "lng": 133.53583,
+      "wikidata": "Q11276774",
+      "labels": {
+        "en": "Hirome Market",
+        "ja": "平成浪漫商店街ひろめ市場"
+      }
+    },
+    "kumamoto|구마모토성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/Kumamotojo.jpg/500px-Kumamotojo.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kumamotojo.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Birdman",
+      "lat": 32.80606,
+      "lng": 130.70597,
+      "wikidata": "Q613355",
+      "labels": {
+        "en": "Kumamoto Castle",
+        "ja": "熊本城"
+      }
+    },
+    "kumamoto|스이젠지 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/85/Kumamoto_Suizenji-jojuen01n4272.jpg/500px-Kumamoto_Suizenji-jojuen01n4272.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kumamoto_Suizenji-jojuen01n4272.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 32.7911,
+      "lng": 130.735,
+      "wikidata": "Q1090968",
+      "labels": {
+        "en": "Suizen-ji Jōju-en",
+        "ja": "水前寺成趣園"
+      }
+    },
+    "kumamoto|아소 화산": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/20140516%E9%98%BF%E8%98%87%E5%B1%B1%E5%BA%83%E5%9F%9F.jpg/500px-20140516%E9%98%BF%E8%98%87%E5%B1%B1%E5%BA%83%E5%9F%9F.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:20140516%E9%98%BF%E8%98%87%E5%B1%B1%E5%BA%83%E5%9F%9F.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Sonata",
+      "lat": 32.885,
+      "lng": 131.10417,
+      "wikidata": "Q733710",
+      "labels": {
+        "en": "Mount Aso",
+        "ja": "阿蘇山"
+      }
+    },
+    "kumamoto|아소산": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/20140516%E9%98%BF%E8%98%87%E5%B1%B1%E5%BA%83%E5%9F%9F.jpg/500px-20140516%E9%98%BF%E8%98%87%E5%B1%B1%E5%BA%83%E5%9F%9F.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:20140516%E9%98%BF%E8%98%87%E5%B1%B1%E5%BA%83%E5%9F%9F.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Sonata",
+      "lat": 32.885,
+      "lng": 131.10417,
+      "wikidata": "Q733710",
+      "labels": {
+        "en": "Mount Aso",
+        "ja": "阿蘇山"
+      }
+    },
+    "kumejima|우에구스쿠성터": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/74/%E5%AE%87%E6%B1%9F%E5%9F%8E%E5%9F%8E%E8%B7%A1%EF%BC%88%E4%B9%85%E7%B1%B3%E5%B3%B6%E7%94%BA%EF%BC%89.jpg/500px-%E5%AE%87%E6%B1%9F%E5%9F%8E%E5%9F%8E%E8%B7%A1%EF%BC%88%E4%B9%85%E7%B1%B3%E5%B3%B6%E7%94%BA%EF%BC%89.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E5%AE%87%E6%B1%9F%E5%9F%8E%E5%9F%8E%E8%B7%A1%EF%BC%88%E4%B9%85%E7%B1%B3%E5%B3%B6%E7%94%BA%EF%BC%89.jpg",
+      "license": "CC0",
+      "artist": "Kiken68",
+      "lat": 26.37639,
+      "lng": 126.76917,
+      "wikidata": "Q30926468",
+      "labels": {
+        "en": "Uegusuku Castle",
+        "ja": "宇江城城"
+      }
+    },
+    "kumejima|하테노하마": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/74/Hateno-Hama_beaches_Aerial_photograph.jpg/500px-Hateno-Hama_beaches_Aerial_photograph.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Hateno-Hama_beaches_Aerial_photograph.jpg",
+      "license": "Attribution",
+      "artist": "国土交通省",
+      "lat": 26.34806,
+      "lng": 126.88861,
+      "wikidata": "Q17219306",
+      "labels": {
+        "en": "Hate-no-hama",
+        "ja": "はての浜"
+      }
+    },
+    "kushiro|구시로 습원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/Kushirositsugen_Hosooka_Tenboudai01.jpg/500px-Kushirositsugen_Hosooka_Tenboudai01.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kushirositsugen_Hosooka_Tenboudai01.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "欅 (Keyaki)",
+      "lat": 43.07175,
+      "lng": 144.38856,
+      "wikidata": "Q11648300",
+      "labels": {
+        "en": "Kushiro Wetland",
+        "ja": "釧路湿原"
+      }
+    },
+    "kushiro|누사마이 다리": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/44/Nusamai_Bridge_Kushiro.JPG/500px-Nusamai_Bridge_Kushiro.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nusamai_Bridge_Kushiro.JPG",
+      "license": "CC BY 3.0",
+      "artist": "Midori",
+      "lat": 42.98103,
+      "lng": 144.38556,
+      "wikidata": "Q11481889",
+      "labels": {
+        "en": "Nusamai Bridge",
+        "ja": "幣舞橋"
+      }
+    },
+    "kushiro|와쇼 시장": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/51/Washo.JPG/500px-Washo.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Washo.JPG",
+      "license": "CC BY-SA 4.0",
+      "artist": "Asasa198",
+      "lat": 42.98917,
+      "lng": 144.38,
+      "wikidata": "Q11648269",
+      "labels": {
+        "ja": "釧路和商市場"
+      }
+    },
+    "kyoto|금각사": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/Water_reflection_of_Kinkaku-ji_Temple_a_sunny_day%2C_Kyoto%2C_Japan.jpg/500px-Water_reflection_of_Kinkaku-ji_Temple_a_sunny_day%2C_Kyoto%2C_Japan.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Water_reflection_of_Kinkaku-ji_Temple_a_sunny_day,_Kyoto,_Japan.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Basile Morin",
+      "lat": 35.0395,
+      "lng": 135.7285,
+      "wikidata": "Q270983",
+      "labels": {
+        "en": "Kinkaku-ji Temple",
+        "ja": "鹿苑寺"
+      }
+    },
+    "kyoto|기요미즈데라": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ae/Kiyomizu-dera%2C_Kyoto%2C_November_2016_-02.jpg/500px-Kiyomizu-dera%2C_Kyoto%2C_November_2016_-02.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kiyomizu-dera,_Kyoto,_November_2016_-02.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Martin Falbisoner",
+      "lat": 34.99483,
+      "lng": 135.785,
+      "wikidata": "Q221716",
+      "labels": {
+        "en": "Kiyomizu-dera",
+        "ja": "清水寺"
+      }
+    },
+    "kyoto|니시키 시장": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c7/Nishiki_ichiba_kyoto.jpg/500px-Nishiki_ichiba_kyoto.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nishiki_ichiba_kyoto.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Pitan",
+      "lat": 35.00503,
+      "lng": 135.76614,
+      "wikidata": "Q11650434",
+      "labels": {
+        "en": "Nishiki Market",
+        "ja": "錦市場"
+      }
+    },
+    "kyoto|닌텐도 뮤지엄": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c0/Nintendo_Museum_Entrance.jpg/500px-Nintendo_Museum_Entrance.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nintendo_Museum_Entrance.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Nagomijirap",
+      "lat": 34.89278,
+      "lng": 135.78417,
+      "wikidata": "Q123124346",
+      "labels": {
+        "en": "Nintendo Museum",
+        "ja": "ニンテンドーミュージアム"
+      }
+    },
+    "kyoto|아라시야마 대나무숲": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/97/2021_Sagano_Bamboo_forest_in_Arashiyama%2C_Kyoto%2C_Japan.jpg/500px-2021_Sagano_Bamboo_forest_in_Arashiyama%2C_Kyoto%2C_Japan.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:2021_Sagano_Bamboo_forest_in_Arashiyama,_Kyoto,_Japan.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Naokijp",
+      "lat": 35.00947,
+      "lng": 135.66677,
+      "wikidata": "Q23579173",
+      "labels": {
+        "en": "Bamboo Forest",
+        "ja": "竹林の小径"
+      }
+    },
+    "kyoto|후시미 이나리": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/Fushimiinari-taisha%2C_naihaiden-1.jpg/500px-Fushimiinari-taisha%2C_naihaiden-1.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Fushimiinari-taisha,_naihaiden-1.jpg",
+      "license": "CC0",
+      "artist": "Saigen Jiro",
+      "lat": 34.9672,
+      "lng": 135.77339,
+      "wikidata": "Q714828",
+      "labels": {
+        "en": "Fushimi Inari-taisha",
+        "ja": "伏見稲荷大社"
+      }
+    },
+    "matsumoto|가미코치": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/150920_Gakusawa_wetlands_Kamikochi_Japan03s3.jpg/500px-150920_Gakusawa_wetlands_Kamikochi_Japan03s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:150920_Gakusawa_wetlands_Kamikochi_Japan03s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 36.24697,
+      "lng": 137.63333,
+      "wikidata": "Q1048234",
+      "labels": {
+        "en": "Kamikōchi",
+        "ja": "上高地"
+      }
+    },
+    "matsumoto|마쓰모토성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/Matsumoto_Castle05s5s4592.jpg/500px-Matsumoto_Castle05s5s4592.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Matsumoto_Castle05s5s4592.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 36.23889,
+      "lng": 137.96917,
+      "wikidata": "Q739612",
+      "labels": {
+        "en": "Matsumoto Castle",
+        "ja": "松本城"
+      }
+    },
+    "matsumoto|스노우몽키 파크": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8c/Jigokudani_hotspring_in_Nagano_Japan_001.jpg/500px-Jigokudani_hotspring_in_Nagano_Japan_001.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Jigokudani_hotspring_in_Nagano_Japan_001.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Yosemite",
+      "lat": 36.7328,
+      "lng": 138.4627,
+      "wikidata": "Q5302436",
+      "labels": {
+        "en": "Jigokudani Monkey Park",
+        "ja": "地獄谷野猿公苑"
+      }
+    },
+    "matsumoto|시부 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d2/Shibu-onsen02s3200.jpg/500px-Shibu-onsen02s3200.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Shibu-onsen02s3200.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 36.73444,
+      "lng": 138.43306,
+      "wikidata": "Q11561642",
+      "labels": {
+        "en": "Shibu Onsen",
+        "ja": "渋温泉"
+      }
+    },
+    "matsumoto|카미코치": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/150920_Gakusawa_wetlands_Kamikochi_Japan03s3.jpg/500px-150920_Gakusawa_wetlands_Kamikochi_Japan03s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:150920_Gakusawa_wetlands_Kamikochi_Japan03s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 36.24697,
+      "lng": 137.63333,
+      "wikidata": "Q1048234",
+      "labels": {
+        "en": "Kamikōchi",
+        "ja": "上高地"
+      }
+    },
+    "matsuyama|도고온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/D%C5%8Dgo_Onsen.jpg/500px-D%C5%8Dgo_Onsen.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:D%C5%8Dgo_Onsen.jpg",
+      "license": "CC BY 2.0",
+      "artist": "Arnaud Malon",
+      "lat": 33.85194,
+      "lng": 132.78639,
+      "wikidata": "Q1037748",
+      "labels": {
+        "en": "Dōgo Onsen",
+        "ja": "道後温泉"
+      }
+    },
+    "matsuyama|마쓰야마성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/65/Marunouchi%2C_Matsuyama%2C_Ehime_Prefecture_790-0008%2C_Japan_-_panoramio_%2880%29.jpg/500px-Marunouchi%2C_Matsuyama%2C_Ehime_Prefecture_790-0008%2C_Japan_-_panoramio_%2880%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Marunouchi,_Matsuyama,_Ehime_Prefecture_790-0008,_Japan_-_panoramio_(80).jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Masoud Akbari",
+      "lat": 33.84554,
+      "lng": 132.76572,
+      "wikidata": "Q981357",
+      "labels": {
+        "en": "Matsuyama Castle",
+        "ja": "松山城"
+      }
+    },
+    "memanbetsu|비호로 고개": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/ff/Bihoro_Pass.JPG/500px-Bihoro_Pass.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Bihoro_Pass.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "Jpatokal",
+      "lat": 43.64692,
+      "lng": 144.24975,
+      "wikidata": "Q11609075",
+      "labels": {
+        "en": "Bihoro Pass",
+        "ja": "美幌峠"
+      }
+    },
+    "memanbetsu|시레토코 국립공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f4/140829_Track_Near_Furepe_Falls_Shiretoko_Hokkaido_Japan00s3.jpg/500px-140829_Track_Near_Furepe_Falls_Shiretoko_Hokkaido_Japan00s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:140829_Track_Near_Furepe_Falls_Shiretoko_Hokkaido_Japan00s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 44.16194,
+      "lng": 145.23556,
+      "wikidata": "Q739391",
+      "labels": {
+        "en": "Shiretoko National Park",
+        "ja": "知床国立公園"
+      }
+    },
+    "memanbetsu|시레토코 자연길": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f4/140829_Track_Near_Furepe_Falls_Shiretoko_Hokkaido_Japan00s3.jpg/500px-140829_Track_Near_Furepe_Falls_Shiretoko_Hokkaido_Japan00s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:140829_Track_Near_Furepe_Falls_Shiretoko_Hokkaido_Japan00s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 44.16194,
+      "lng": 145.23556,
+      "wikidata": "Q739391",
+      "labels": {
+        "en": "Shiretoko National Park",
+        "ja": "知床国立公園"
+      }
+    },
+    "memanbetsu|아바시리 유빙관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7a/Tentozan02.JPG/500px-Tentozan02.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tentozan02.JPG",
+      "license": "Public domain",
+      "artist": "221.20",
+      "lat": 44.00106,
+      "lng": 144.23978,
+      "wikidata": "Q11292382",
+      "labels": {
+        "en": "Okhotsk Ryu-hyo Museum",
+        "ja": "オホーツク流氷館"
+      }
+    },
+    "misawa|도와다 호수": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c0/Lake_Towada_from_Ohanabe_2008.jpg/500px-Lake_Towada_from_Ohanabe_2008.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Lake_Towada_from_Ohanabe_2008.jpg",
+      "license": "Public domain",
+      "artist": "Soica2001",
+      "lat": 40.46667,
+      "lng": 140.86667,
+      "wikidata": "Q1196132",
+      "labels": {
+        "en": "Lake Towada",
+        "ja": "十和田湖"
+      }
+    },
+    "misawa|미사와 항공박물관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/80/151101_Misawa_Aviation_%26_Science_Museum%2C_Aomori_Japan03s3.jpg/500px-151101_Misawa_Aviation_%26_Science_Museum%2C_Aomori_Japan03s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:151101_Misawa_Aviation_%26_Science_Museum,_Aomori_Japan03s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 40.70825,
+      "lng": 141.39036,
+      "wikidata": "Q11662211",
+      "labels": {
+        "en": "Misawa Aviation & Science Museum",
+        "ja": "青森県立三沢航空科学館"
+      }
+    },
+    "misawa|오이라세 계류": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/63/Oirase-keiryu.jpg/500px-Oirase-keiryu.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Oirase-keiryu.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "MaedaAkihiko",
+      "lat": 40.52528,
+      "lng": 140.9745,
+      "wikidata": "Q10942580",
+      "labels": {
+        "en": "Oirase Stream",
+        "ja": "奥入瀬渓流"
+      }
+    },
+    "miyako|요나하마에하마 해변": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/02/Miyako_maipama_1.jpg/500px-Miyako_maipama_1.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Miyako_maipama_1.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Paipateroma",
+      "lat": 24.73611,
+      "lng": 125.26111,
+      "wikidata": "Q11361952",
+      "labels": {
+        "en": "Yonaha-Maehama",
+        "ja": "与那覇前浜"
+      }
+    },
+    "miyako|이케마 대교": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2e/Miyako_ikema_bridge.JPG/500px-Miyako_ikema_bridge.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Miyako_ikema_bridge.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "Metatron",
+      "lat": 24.91889,
+      "lng": 125.26194,
+      "wikidata": "Q4520900",
+      "labels": {
+        "en": "Ikema Bridge",
+        "ja": "池間大橋"
+      }
+    },
+    "miyako|히가시헨나자키": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Miyako_higashi_hennazaki.JPG/500px-Miyako_higashi_hennazaki.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Miyako_higashi_hennazaki.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "Metatron",
+      "lat": 24.71889,
+      "lng": 125.46889,
+      "wikidata": "Q5753922",
+      "labels": {
+        "en": "Higashi-hennazaki",
+        "ja": "東平安名岬"
+      }
+    },
+    "miyazaki|아오시마 신사": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4c/Aoshima_jinja%2C_Worship_Hall_01.jpg/500px-Aoshima_jinja%2C_Worship_Hall_01.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Aoshima_jinja,_Worship_Hall_01.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Naokijp",
+      "lat": 31.80467,
+      "lng": 131.47486,
+      "wikidata": "Q2857985",
+      "labels": {
+        "en": "Aoshima Shrine",
+        "ja": "青島神社"
+      }
+    },
+    "miyazaki|우도신궁": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Udo-jingu_Main_hall_001.jpg/500px-Udo-jingu_Main_hall_001.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Udo-jingu_Main_hall_001.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Naokijp",
+      "lat": 31.65028,
+      "lng": 131.46667,
+      "wikidata": "Q704430",
+      "labels": {
+        "en": "Udo Jingū",
+        "ja": "鵜戸神宮"
+      }
+    },
+    "nagasaki|글로버가든": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a4/Nagasaki-Glover-Garden-5415.jpg/500px-Nagasaki-Glover-Garden-5415.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nagasaki-Glover-Garden-5415.jpg",
+      "license": "Public domain",
+      "artist": "Fg2",
+      "lat": 32.73444,
+      "lng": 129.86889,
+      "wikidata": "Q63465",
+      "labels": {
+        "en": "Glover Garden",
+        "ja": "グラバー園"
+      }
+    },
+    "nagasaki|이나사야마 전망대": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/12/Mt.Inasa_2010.jpg/500px-Mt.Inasa_2010.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Mt.Inasa_2010.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "ぱちょぴ",
+      "lat": 32.7527,
+      "lng": 129.8495,
+      "wikidata": "Q3031841",
+      "labels": {
+        "en": "Mount Inasa",
+        "ja": "稲佐山"
+      }
+    },
+    "nagasaki|평화공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9e/Fountain_at_Nagasaki_Peace_Park.jpg/500px-Fountain_at_Nagasaki_Peace_Park.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Fountain_at_Nagasaki_Peace_Park.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "STA3816",
+      "lat": 32.77558,
+      "lng": 129.86312,
+      "wikidata": "Q93490",
+      "labels": {
+        "en": "Nagasaki Peace Park",
+        "ja": "平和公園"
+      }
+    },
+    "nagoya|게로 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/260125_Gero_Onsen_Gero_Gifu_pref_Japan01s3.jpg/500px-260125_Gero_Onsen_Gero_Gifu_pref_Japan01s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:260125_Gero_Onsen_Gero_Gifu_pref_Japan01s3.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "663highland",
+      "lat": 35.80889,
+      "lng": 137.24358,
+      "wikidata": "Q11360701",
+      "labels": {
+        "en": "Gero Onsen",
+        "ja": "下呂温泉"
+      }
+    },
+    "nagoya|나가시마 스파랜드": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/70/Nagashima_spa_land_skyview.jpg/500px-Nagashima_spa_land_skyview.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nagashima_spa_land_skyview.jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "Hideyuki KAMON from Takarazuka / 宝塚市, Hyogo / 兵庫県, Japan / 日本",
+      "lat": 35.0297,
+      "lng": 136.73001,
+      "wikidata": "Q2496699",
+      "labels": {
+        "en": "Nagashima Spa Land",
+        "ja": "ナガシマスパーランド"
+      }
+    },
+    "nagoya|나고야성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Nagoya_Castle%28Larger%29.jpg/500px-Nagoya_Castle%28Larger%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nagoya_Castle(Larger).jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Base64",
+      "lat": 35.18556,
+      "lng": 136.89861,
+      "wikidata": "Q648629",
+      "labels": {
+        "en": "Nagoya Castle",
+        "ja": "名古屋城"
+      }
+    },
+    "nagoya|도요타 산업기술 기념관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b3/Toyota_tecno_museum.jpg/500px-Toyota_tecno_museum.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Toyota_tecno_museum.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Bariston",
+      "lat": 35.1832,
+      "lng": 136.876,
+      "wikidata": "Q7830774",
+      "labels": {
+        "en": "Toyota Commemorative Museum of Industry and Technology",
+        "ja": "トヨタ産業技術記念館"
+      }
+    },
+    "nagoya|오아시스21": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 35.17083,
+      "lng": 136.90944,
+      "wikidata": "Q5359224",
+      "labels": {
+        "en": "Oasis 21",
+        "ja": "オアシス21"
+      }
+    },
+    "nagoya|지브리파크": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/73/Satsuki_and_Mei%E2%80%99s_House_from_observation_platform_-_1.jpg/500px-Satsuki_and_Mei%E2%80%99s_House_from_observation_platform_-_1.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Satsuki_and_Mei%E2%80%99s_House_from_observation_platform_-_1.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Kyu3",
+      "lat": 35.17278,
+      "lng": 137.08972,
+      "wikidata": "Q97125735",
+      "labels": {
+        "en": "Ghibli Park",
+        "ja": "ジブリパーク"
+      }
+    },
+    "nakashibetsu|노츠케 반도": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0e/Notsuke_peninsulas.JPG/500px-Notsuke_peninsulas.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Notsuke_peninsulas.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "100yen",
+      "lat": 43.60028,
+      "lng": 145.29761,
+      "wikidata": "Q11645050",
+      "labels": {
+        "en": "Notsuke Peninsula",
+        "ja": "野付半島"
+      }
+    },
+    "nanki_shirahama|시라라하마 해변": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/131221_Shirarahama_Beach_Shirahama_Wakayama_pref_Japan09bs.jpg/500px-131221_Shirarahama_Beach_Shirahama_Wakayama_pref_Japan09bs.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:131221_Shirarahama_Beach_Shirahama_Wakayama_pref_Japan09bs.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 33.68292,
+      "lng": 135.34375,
+      "wikidata": "Q11580327",
+      "labels": {
+        "en": "Shirarahama",
+        "ja": "白良浜"
+      }
+    },
+    "nanki_shirahama|어드벤처월드": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Panda_Adventure_World_Shirahama.JPG/500px-Panda_Adventure_World_Shirahama.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Panda_Adventure_World_Shirahama.JPG",
+      "license": "Public domain",
+      "artist": "Krisgrotius",
+      "lat": 33.66775,
+      "lng": 135.3758,
+      "wikidata": "Q2587322",
+      "labels": {
+        "en": "Adventure World",
+        "ja": "アドベンチャーワールド"
+      }
+    },
+    "nanki_shirahama|엔게츠섬": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/01/131222_Engetsu_Island_Shirahama_Wakayama_pref_Japan01bs.jpg/500px-131222_Engetsu_Island_Shirahama_Wakayama_pref_Japan01bs.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:131222_Engetsu_Island_Shirahama_Wakayama_pref_Japan01bs.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 33.68998,
+      "lng": 135.33643,
+      "wikidata": "Q5377606",
+      "labels": {
+        "en": "Engetsu Island",
+        "ja": "円月島"
+      }
+    },
+    "niigata|니가타 수족관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c9/%E6%96%B0%E6%BD%9F%E5%B8%82%E6%B0%B4%E6%97%8F%E9%A4%A8%E3%83%9E%E3%83%AA%E3%83%B3%E3%83%94%E3%82%A2%E6%97%A5%E6%9C%AC%E6%B5%B7.jpg/500px-%E6%96%B0%E6%BD%9F%E5%B8%82%E6%B0%B4%E6%97%8F%E9%A4%A8%E3%83%9E%E3%83%AA%E3%83%B3%E3%83%94%E3%82%A2%E6%97%A5%E6%9C%AC%E6%B5%B7.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E6%96%B0%E6%BD%9F%E5%B8%82%E6%B0%B4%E6%97%8F%E9%A4%A8%E3%83%9E%E3%83%AA%E3%83%B3%E3%83%94%E3%82%A2%E6%97%A5%E6%9C%AC%E6%B5%B7.jpg",
+      "license": "CC BY 3.0",
+      "artist": "Saganon",
+      "lat": 37.92363,
+      "lng": 139.02798,
+      "wikidata": "Q11502898",
+      "labels": {
+        "en": "Niigata City Aquarium Marinepia Nihonkai",
+        "ja": "新潟市水族館 マリンピア日本海"
+      }
+    },
+    "niigata|사도섬": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/04/Sadogashima_ISS064.jpg/500px-Sadogashima_ISS064.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sadogashima_ISS064.jpg",
+      "license": "Public domain",
+      "artist": "Image Science and Analysis Laboratory, NASA - Johnson Space Center",
+      "lat": 38.0675,
+      "lng": 138.3975,
+      "wikidata": "Q998623",
+      "labels": {
+        "en": "Sado Island",
+        "ja": "佐渡島"
+      }
+    },
+    "niigata|피아반다이 시장": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 37.92314,
+      "lng": 139.06133,
+      "wikidata": "Q60637648",
+      "labels": {
+        "en": "Pia Bandai",
+        "ja": "ピアBandai"
+      }
+    },
+    "obihiro|도카치가와 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/28/131012_Tokachigawa_Onsen_Otofuke_Hokkaido_Japan01s3.jpg/500px-131012_Tokachigawa_Onsen_Otofuke_Hokkaido_Japan01s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:131012_Tokachigawa_Onsen_Otofuke_Hokkaido_Japan01s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 42.93417,
+      "lng": 143.29611,
+      "wikidata": "Q11404905",
+      "labels": {
+        "en": "Tokachigawa Onsen",
+        "ja": "十勝川温泉"
+      }
+    },
+    "obihiro|마나베 정원": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 42.88442,
+      "lng": 143.20408,
+      "wikidata": "Q24641087",
+      "labels": {
+        "en": "Manabe Garden",
+        "ja": "真鍋庭園"
+      }
+    },
+    "obihiro|반에이 경마": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8a/Kanesa-black_2013obihirokinen.jpg/500px-Kanesa-black_2013obihirokinen.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kanesa-black_2013obihirokinen.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "ZaiReisai",
+      "lat": null,
+      "lng": null,
+      "wikidata": "Q1137436",
+      "labels": {
+        "en": "Ban'ei",
+        "ja": "ばんえい競走"
+      }
+    },
+    "odate|아키타견 박물관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/56/Akita-Inu-Kaikan_110827.jpg/500px-Akita-Inu-Kaikan_110827.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Akita-Inu-Kaikan_110827.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Yauchi",
+      "lat": 40.27319,
+      "lng": 140.56406,
+      "wikidata": "Q11595387",
+      "labels": {
+        "en": "Akita Inu Hozonkai",
+        "ja": "秋田犬保存会"
+      }
+    },
+    "odate|오유 스톤서클": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/Oyu_stone_circles_20180916a.jpg/500px-Oyu_stone_circles_20180916a.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Oyu_stone_circles_20180916a.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "掬茶",
+      "lat": 40.27167,
+      "lng": 140.80389,
+      "wikidata": "Q11437550",
+      "labels": {
+        "en": "Ōyu Stone Circles",
+        "ja": "大湯環状列石"
+      }
+    },
+    "odate|하치만타이": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/25/Hachimann_numa_2008.jpg/500px-Hachimann_numa_2008.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Hachimann_numa_2008.jpg",
+      "license": "Public domain",
+      "artist": "Soica2001",
+      "lat": 39.95778,
+      "lng": 140.85417,
+      "wikidata": "Q3075593",
+      "labels": {
+        "en": "Hachimantai",
+        "ja": "八幡平"
+      }
+    },
+    "oita|벳푸 지옥온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/af/Beppu_Umi-jigoku04n4272.jpg/500px-Beppu_Umi-jigoku04n4272.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Beppu_Umi-jigoku04n4272.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 33.31611,
+      "lng": 131.46889,
+      "wikidata": "Q5709027",
+      "labels": {
+        "en": "Hells of Beppu",
+        "ja": "別府地獄めぐり"
+      }
+    },
+    "oita|유후인": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Lake_Kinrin_with_Morning_fog.jpg/500px-Lake_Kinrin_with_Morning_fog.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Lake_Kinrin_with_Morning_fog.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Tzu-hsun, Hsu",
+      "lat": 33.26603,
+      "lng": 131.36861,
+      "wikidata": "Q11264855",
+      "labels": {
+        "en": "Yufuin Onsen",
+        "ja": "由布院温泉"
+      }
+    },
+    "oita|타카사키야마": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/34/Takasakiyama_esayari_01.jpg/500px-Takasakiyama_esayari_01.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Takasakiyama_esayari_01.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Kamakura",
+      "lat": 33.25197,
+      "lng": 131.52408,
+      "wikidata": "Q11669751",
+      "labels": {
+        "en": "Takasakiyama Natural Zoological Garden",
+        "ja": "高崎山自然動物園"
+      }
+    },
+    "okadama|모에레누마 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d5/Moere02.jpg/500px-Moere02.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Moere02.jpg",
+      "license": "Public domain",
+      "artist": "もんもん",
+      "lat": 43.12447,
+      "lng": 141.42991,
+      "wikidata": "Q1298335",
+      "labels": {
+        "en": "Moerenuma Park",
+        "ja": "モエレ沼公園"
+      }
+    },
+    "okadama|삿포로 맥주박물관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Sapporo_Beer_Museum.JPG/500px-Sapporo_Beer_Museum.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sapporo_Beer_Museum.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "K. Takeda",
+      "lat": 43.07167,
+      "lng": 141.36889,
+      "wikidata": "Q1055944",
+      "labels": {
+        "en": "Sapporo Beer Museum",
+        "ja": "サッポロビール博物館"
+      }
+    },
+    "okadama|오도리 야경": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Odori_Park_%2815982613668%29.jpg/500px-Odori_Park_%2815982613668%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Odori_Park_(15982613668).jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "redlegsfan21",
+      "lat": 43.05972,
+      "lng": 141.34639,
+      "wikidata": "Q3107971",
+      "labels": {
+        "en": "Odori Park",
+        "ja": "大通公園"
+      }
+    },
+    "okayama|고라쿠엔": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1d/250505_Korakuen_Okayama_Japan06s3.jpg/500px-250505_Korakuen_Okayama_Japan06s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:250505_Korakuen_Okayama_Japan06s3.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "663highland",
+      "lat": 34.66766,
+      "lng": 133.93506,
+      "wikidata": "Q1377689",
+      "labels": {
+        "en": "Kōraku-en",
+        "ja": "後楽園"
+      }
+    },
+    "okayama|오카야마성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/36/Okayama_Castle_02.jpg/500px-Okayama_Castle_02.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Okayama_Castle_02.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Reggaeman",
+      "lat": 34.66528,
+      "lng": 133.93611,
+      "wikidata": "Q1013448",
+      "labels": {
+        "en": "Okayama Castle",
+        "ja": "岡山城"
+      }
+    },
+    "okayama|쿠라시키 미관지구": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5a/080727_At_Kurashiki_Bikan_historical_quarter_Kurashiki_Okayama_pref_Japan01s3.jpg/500px-080727_At_Kurashiki_Bikan_historical_quarter_Kurashiki_Okayama_pref_Japan01s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:080727_At_Kurashiki_Bikan_historical_quarter_Kurashiki_Okayama_pref_Japan01s3.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "663highland",
+      "lat": 34.59643,
+      "lng": 133.77088,
+      "wikidata": "Q11386772",
+      "labels": {
+        "en": "Kurashiki Bikan Historical Quarter",
+        "ja": "倉敷美観地区"
+      }
+    },
+    "okinawa|국제거리": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/89/Kokusai-dori08s3s4440.jpg/500px-Kokusai-dori08s3s4440.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kokusai-dori08s3s4440.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 26.21597,
+      "lng": 127.68728,
+      "wikidata": "Q4616917",
+      "labels": {
+        "en": "Kokusai-dōri",
+        "ja": "国際通り"
+      }
+    },
+    "okinawa|아메리칸 빌리지": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/09/Mihama_AV_D_Japan.jpg/500px-Mihama_AV_D_Japan.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Mihama_AV_D_Japan.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Amoriver Information",
+      "lat": 26.31618,
+      "lng": 127.75667,
+      "wikidata": "Q11609171",
+      "labels": {
+        "en": "Mihama Town Resort American Village",
+        "ja": "美浜タウンリゾート・アメリカンビレッジ"
+      }
+    },
+    "okinawa|츄라우미 수족관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/17/%E6%B2%96%E7%B8%84%E7%BE%8E%E3%82%89%E6%B5%B7%E6%B0%B4%E6%97%8F%E9%A4%A8%EF%BC%BF%E5%A4%A7.jpg/500px-%E6%B2%96%E7%B8%84%E7%BE%8E%E3%82%89%E6%B5%B7%E6%B0%B4%E6%97%8F%E9%A4%A8%EF%BC%BF%E5%A4%A7.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E6%B2%96%E7%B8%84%E7%BE%8E%E3%82%89%E6%B5%B7%E6%B0%B4%E6%97%8F%E9%A4%A8%EF%BC%BF%E5%A4%A7.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "sinnosuke uchida",
+      "lat": 26.69439,
+      "lng": 127.87794,
+      "wikidata": "Q1445750",
+      "labels": {
+        "en": "Okinawa Churaumi Aquarium",
+        "ja": "沖縄美ら海水族館"
+      }
+    },
+    "osaka|도톤보리": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7e/%E5%8A%9B%E3%82%92%E5%90%88%E3%82%8F%E3%81%9B%E3%82%88%E3%81%86%E6%97%A5%E6%9C%AC_2014_%E5%A4%A7%E9%98%AA_%2812206068196%29.jpg/500px-%E5%8A%9B%E3%82%92%E5%90%88%E3%82%8F%E3%81%9B%E3%82%88%E3%81%86%E6%97%A5%E6%9C%AC_2014_%E5%A4%A7%E9%98%AA_%2812206068196%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E5%8A%9B%E3%82%92%E5%90%88%E3%82%8F%E3%81%9B%E3%82%88%E3%81%86%E6%97%A5%E6%9C%AC_2014_%E5%A4%A7%E9%98%AA_(12206068196).jpg",
+      "license": "CC BY 2.0",
+      "artist": "Kang-min Liu",
+      "lat": 34.66861,
+      "lng": 135.50139,
+      "wikidata": "Q964876",
+      "labels": {
+        "en": "Dōtonbori",
+        "ja": "道頓堀"
+      }
+    },
+    "osaka|신세카이": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/da/Shinsekai_%2849251920793%29.jpg/500px-Shinsekai_%2849251920793%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Shinsekai_(49251920793).jpg",
+      "license": "CC BY 2.0",
+      "artist": "Dick Thomas Johnson from Tokyo, Japan",
+      "lat": 34.65222,
+      "lng": 135.50611,
+      "wikidata": "Q1049117",
+      "labels": {
+        "en": "Shinsekai",
+        "ja": "新世界"
+      }
+    },
+    "osaka|오사카성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e4/Osaka_Castle_02bs3200.jpg/500px-Osaka_Castle_02bs3200.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Osaka_Castle_02bs3200.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 34.68722,
+      "lng": 135.52583,
+      "wikidata": "Q321242",
+      "labels": {
+        "en": "Osaka Castle",
+        "ja": "大坂城"
+      }
+    },
+    "osaka|우메다 스카이 빌딩": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f9/2018_Umeda_Sky_Building.jpg/500px-2018_Umeda_Sky_Building.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:2018_Umeda_Sky_Building.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Kakidai",
+      "lat": 34.70528,
+      "lng": 135.48972,
+      "wikidata": "Q1151808",
+      "labels": {
+        "en": "Umeda Sky Building",
+        "ja": "梅田スカイビル"
+      }
+    },
+    "osaka|유니버셜 스튜디오 재팬": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Harry_Potter_and_the_Forbidden_Journey_USJ.JPG/500px-Harry_Potter_and_the_Forbidden_Journey_USJ.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Harry_Potter_and_the_Forbidden_Journey_USJ.JPG",
+      "license": "CC BY-SA 4.0",
+      "artist": "Freddo",
+      "lat": 34.6647,
+      "lng": 135.433,
+      "wikidata": "Q1375103",
+      "labels": {
+        "en": "Universal Studios Japan",
+        "ja": "ユニバーサル・スタジオ・ジャパン"
+      }
+    },
+    "rishiri|리시리산 전망": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Mt_Rishiri.jpg/500px-Mt_Rishiri.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Mt_Rishiri.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Japanexperterna.se",
+      "lat": 45.17865,
+      "lng": 141.24192,
+      "wikidata": "Q2154758",
+      "labels": {
+        "en": "Mount Rishiri",
+        "ja": "利尻山"
+      }
+    },
+    "rishiri|페시미사키 전망대": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/54/130726_Cape_Peshi_in_Rishiri_Island_Hokkaido_Japan13bs3.jpg/500px-130726_Cape_Peshi_in_Rishiri_Island_Hokkaido_Japan13bs3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:130726_Cape_Peshi_in_Rishiri_Island_Hokkaido_Japan13bs3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 45.24667,
+      "lng": 141.23194,
+      "wikidata": "Q15621849",
+      "labels": {
+        "en": "Cape Peshi",
+        "ja": "ペシ岬"
+      }
+    },
+    "saga|요시노가리 유적": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/Yoshinogari-iseki_zenkei.JPG/500px-Yoshinogari-iseki_zenkei.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Yoshinogari-iseki_zenkei.JPG",
+      "license": "CC0",
+      "artist": "Saigen Jiro",
+      "lat": 33.325,
+      "lng": 130.384,
+      "wikidata": "Q1049645",
+      "labels": {
+        "en": "Yoshinogari site",
+        "ja": "吉野ヶ里遺跡"
+      }
+    },
+    "saga|우레시노 온천": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 33.09719,
+      "lng": 129.98503,
+      "wikidata": "Q11447797",
+      "labels": {
+        "en": "Ureshino Onsen",
+        "ja": "嬉野温泉"
+      }
+    },
+    "saga|카라쓰성": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/02/Karatsujo.jpg/500px-Karatsujo.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Karatsujo.jpg",
+      "license": "Public domain",
+      "artist": "Wikimedia Commons",
+      "lat": 33.45354,
+      "lng": 129.97819,
+      "wikidata": "Q1073585",
+      "labels": {
+        "en": "Karatsu Castle",
+        "ja": "唐津城"
+      }
+    },
+    "sapporo|노보리베츠 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Noboribetsu_hot_spring_resort01.JPG/500px-Noboribetsu_hot_spring_resort01.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Noboribetsu_hot_spring_resort01.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "欅",
+      "lat": 42.49506,
+      "lng": 141.14406,
+      "wikidata": "Q3888689",
+      "labels": {
+        "en": "Noboribetsu Onsen",
+        "ja": "登別温泉"
+      }
+    },
+    "sapporo|니조시장": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fc/Nijo_fish_Market_2014.jpg/500px-Nijo_fish_Market_2014.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nijo_fish_Market_2014.jpg",
+      "license": "CC BY 3.0",
+      "artist": "Wing1990hk",
+      "lat": 43.05831,
+      "lng": 141.35847,
+      "wikidata": "Q11371661",
+      "labels": {
+        "en": "Nijō fish market",
+        "ja": "二条市場"
+      }
+    },
+    "sapporo|삿포로 TV 타워": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Sapporo_television_tower_01.jpg/500px-Sapporo_television_tower_01.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sapporo_television_tower_01.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "欅 (Keyaki)",
+      "lat": 43.06111,
+      "lng": 141.35639,
+      "wikidata": "Q1063319",
+      "labels": {
+        "en": "Sapporo TV Tower",
+        "ja": "さっぽろテレビ塔"
+      }
+    },
+    "sapporo|삿포로 오도리 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Odori_Park_%2815982613668%29.jpg/500px-Odori_Park_%2815982613668%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Odori_Park_(15982613668).jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "redlegsfan21",
+      "lat": 43.05972,
+      "lng": 141.34639,
+      "wikidata": "Q3107971",
+      "labels": {
+        "en": "Odori Park",
+        "ja": "大通公園"
+      }
+    },
+    "sapporo|오도리 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Odori_Park_%2815982613668%29.jpg/500px-Odori_Park_%2815982613668%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Odori_Park_(15982613668).jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "redlegsfan21",
+      "lat": 43.05972,
+      "lng": 141.34639,
+      "wikidata": "Q3107971",
+      "labels": {
+        "en": "Odori Park",
+        "ja": "大通公園"
+      }
+    },
+    "sapporo|오타루 운하": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fd/Otaru_Hokkaido_Japan.jpg/500px-Otaru_Hokkaido_Japan.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Otaru_Hokkaido_Japan.jpg",
+      "license": "CC BY 2.0",
+      "artist": "Chi ing",
+      "lat": 43.19972,
+      "lng": 141.00167,
+      "wikidata": "Q10959355",
+      "labels": {
+        "en": "Otaru Canal",
+        "ja": "小樽運河"
+      }
+    },
+    "sendai|마쓰시마": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e9/Matsushima_miyagi_z.JPG/500px-Matsushima_miyagi_z.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Matsushima_miyagi_z.JPG",
+      "license": "CC BY-SA 4.0",
+      "artist": "Chensiyuan",
+      "lat": 38.35556,
+      "lng": 141.07639,
+      "wikidata": "Q1144855",
+      "labels": {
+        "en": "Matsushima",
+        "ja": "松島"
+      }
+    },
+    "sendai|센다이성 유적": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ef/Waki-yagura_of_Sendai_Castle_20220910b.jpg/500px-Waki-yagura_of_Sendai_Castle_20220910b.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Waki-yagura_of_Sendai_Castle_20220910b.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "掬茶",
+      "lat": 38.25248,
+      "lng": 140.85616,
+      "wikidata": "Q598621",
+      "labels": {
+        "en": "Sendai Castle",
+        "ja": "仙台城"
+      }
+    },
+    "sendai|즈이호덴": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/14/Sendai_-_Sendai6192.jpg/500px-Sendai_-_Sendai6192.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sendai_-_Sendai6192.jpg",
+      "license": "CC0",
+      "artist": "lumoplank",
+      "lat": 38.25054,
+      "lng": 140.8667,
+      "wikidata": "Q115856",
+      "labels": {
+        "en": "Zuihōden",
+        "ja": "瑞鳳殿"
+      }
+    },
+    "shimojishima|이라부 대교": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6a/Miyako_irabu_ohashi_2014_1.jpg/500px-Miyako_irabu_ohashi_2014_1.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Miyako_irabu_ohashi_2014_1.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Paipateroma",
+      "lat": 24.79917,
+      "lng": 125.23333,
+      "wikidata": "Q4520855",
+      "labels": {
+        "en": "Irabu Bridge",
+        "ja": "伊良部大橋"
+      }
+    },
+    "shizuoka|미호노마쓰바라": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/82/Mount_Fuji_and_Miho_no_Matsubara_20170211-8.jpg/500px-Mount_Fuji_and_Miho_no_Matsubara_20170211-8.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Mount_Fuji_and_Miho_no_Matsubara_20170211-8.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Suicasmo",
+      "lat": 34.995,
+      "lng": 138.52278,
+      "wikidata": "Q869275",
+      "labels": {
+        "en": "Miho no Matsubara",
+        "ja": "三保の松原"
+      }
+    },
+    "shizuoka|쿠노잔 도쇼구": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/231006_Kunozan_Tosho-gu_Shizuoka_Japan13s3.jpg/500px-231006_Kunozan_Tosho-gu_Shizuoka_Japan13s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:231006_Kunozan_Tosho-gu_Shizuoka_Japan13s3.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "663highland",
+      "lat": 34.96474,
+      "lng": 138.46764,
+      "wikidata": "Q712162",
+      "labels": {
+        "en": "Kunōzan Tōshō-gū",
+        "ja": "久能山東照宮"
+      }
+    },
+    "shonai|가모 수족관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f6/Kamo_Aquarium_20160505.jpg/500px-Kamo_Aquarium_20160505.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kamo_Aquarium_20160505.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "掬茶",
+      "lat": 38.76222,
+      "lng": 139.72497,
+      "wikidata": "Q11675955",
+      "labels": {
+        "en": "Kamo Aquarium",
+        "ja": "鶴岡市立加茂水族館"
+      }
+    },
+    "shonai|데와산잔": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ed/View_from_the_top_of_Mt._Gassan_2006-10-28.jpg/500px-View_from_the_top_of_Mt._Gassan_2006-10-28.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:View_from_the_top_of_Mt._Gassan_2006-10-28.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Geomr",
+      "lat": 38.70028,
+      "lng": 140.00028,
+      "wikidata": "Q1155726",
+      "labels": {
+        "en": "Three Mountains of Dewa",
+        "ja": "出羽三山"
+      }
+    },
+    "shonai|사카타 항구": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7b/Port_of_Sakata%2C_-8_Dec._2011_a.jpg/500px-Port_of_Sakata%2C_-8_Dec._2011_a.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Port_of_Sakata,_-8_Dec._2011_a.jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "Jun K from Sakata, Yamagata, Japan",
+      "lat": 38.93111,
+      "lng": 139.81889,
+      "wikidata": "Q11644357",
+      "labels": {
+        "en": "Port of Sakata",
+        "ja": "酒田港"
+      }
+    },
+    "tajima|겐부도": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/10/Genbudo_Park_in_Toyooka_Hyogo.JPG/500px-Genbudo_Park_in_Toyooka_Hyogo.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Genbudo_Park_in_Toyooka_Hyogo.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "Hashi photo",
+      "lat": 35.58843,
+      "lng": 134.80493,
+      "wikidata": "Q11572293",
+      "labels": {
+        "en": "Genbudō",
+        "ja": "玄武洞"
+      }
+    },
+    "tajima|고노토리 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b7/KounotorinoSato_Park_Entrance001.jpg/500px-KounotorinoSato_Park_Entrance001.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:KounotorinoSato_Park_Entrance001.jpg",
+      "license": "CC BY 3.0",
+      "artist": "hashi photo",
+      "lat": 35.54533,
+      "lng": 134.86017,
+      "wikidata": "Q11392912",
+      "labels": {
+        "en": "Hyogo Park of the Oriental White Stork",
+        "ja": "兵庫県立コウノトリの郷公園"
+      }
+    },
+    "tajima|기노사키 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/65/Kinosaki_onsen02_1920.jpg/500px-Kinosaki_onsen02_1920.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kinosaki_onsen02_1920.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 35.62778,
+      "lng": 134.8,
+      "wikidata": "Q11426141",
+      "labels": {
+        "en": "Kinosaki Onsen",
+        "ja": "城崎温泉"
+      }
+    },
+    "tajima|키노사키 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/65/Kinosaki_onsen02_1920.jpg/500px-Kinosaki_onsen02_1920.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kinosaki_onsen02_1920.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 35.62778,
+      "lng": 134.8,
+      "wikidata": "Q11426141",
+      "labels": {
+        "en": "Kinosaki Onsen",
+        "ja": "城崎温泉"
+      }
+    },
+    "takamatsu|리쓰린 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0b/Ritsurin.JPG/500px-Ritsurin.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Ritsurin.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "Leela Soden",
+      "lat": 34.32958,
+      "lng": 134.04389,
+      "wikidata": "Q1071520",
+      "labels": {
+        "en": "Ritsurin Garden",
+        "ja": "栗林公園"
+      }
+    },
+    "takamatsu|야시마 전망대": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/%E6%B5%B7%E4%B8%8A%E3%81%8B%E3%82%89%E3%81%AE%E5%B1%8B%E5%B3%B6.JPG/500px-%E6%B5%B7%E4%B8%8A%E3%81%8B%E3%82%89%E3%81%AE%E5%B1%8B%E5%B3%B6.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E6%B5%B7%E4%B8%8A%E3%81%8B%E3%82%89%E3%81%AE%E5%B1%8B%E5%B3%B6.JPG",
+      "license": "CC BY-SA 4.0",
+      "artist": "屋嶋の仙人",
+      "lat": 34.35583,
+      "lng": 134.10472,
+      "wikidata": "Q11465681",
+      "labels": {
+        "en": "Yashima",
+        "ja": "屋島"
+      }
+    },
+    "takamatsu|타카마츠성 유적": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2c/Takamatsu_castle23.jpg/500px-Takamatsu_castle23.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Takamatsu_castle23.jpg",
+      "license": "Public domain",
+      "artist": "ブレイズマン",
+      "lat": 34.3504,
+      "lng": 134.052,
+      "wikidata": "Q670725",
+      "labels": {
+        "en": "Takamatsu Castle",
+        "ja": "高松城"
+      }
+    },
+    "tanegashima|다네가시마 우주센터": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Global_Precipitation_Measurement_%28GPM%29_pre-launch.jpg/500px-Global_Precipitation_Measurement_%28GPM%29_pre-launch.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Global_Precipitation_Measurement_(GPM)_pre-launch.jpg",
+      "license": "Public domain",
+      "artist": "Bill Ingalls",
+      "lat": 30.4,
+      "lng": 130.97,
+      "wikidata": "Q742683",
+      "labels": {
+        "en": "Tanegashima Space Center",
+        "ja": "種子島宇宙センター"
+      }
+    },
+    "tokushima|나루토 소용돌이": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6f/Naruto_Whirlpools_taken_4-21-2008.jpg/500px-Naruto_Whirlpools_taken_4-21-2008.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Naruto_Whirlpools_taken_4-21-2008.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Hellbuny",
+      "lat": 34.23833,
+      "lng": 134.65139,
+      "wikidata": "Q1350120",
+      "labels": {
+        "en": "Naruto whirlpools",
+        "ja": "鳴門の渦潮"
+      }
+    },
+    "tokushima|비잔 로프웨이": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/23/Bizan01.jpg/500px-Bizan01.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Bizan01.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Wikimedia Commons",
+      "lat": 34.07014,
+      "lng": 134.54508,
+      "wikidata": "Q17224370",
+      "labels": {
+        "en": "Bizan Ropeway",
+        "ja": "眉山ロープウェイ"
+      }
+    },
+    "tokushima|아와오도리 회관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/32/Awa-dance_memorial_hall01s3200.jpg/500px-Awa-dance_memorial_hall01s3200.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Awa-dance_memorial_hall01s3200.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 34.07028,
+      "lng": 134.545,
+      "wikidata": "Q4829638",
+      "labels": {
+        "en": "Awa Odori Kaikan",
+        "ja": "阿波おどり会館"
+      }
+    },
+    "tokyo|긴자 식스": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8e/GINZA_SIX2a.jpg/500px-GINZA_SIX2a.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:GINZA_SIX2a.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "江戸村のとくぞう",
+      "lat": 35.66957,
+      "lng": 139.76408,
+      "wikidata": "Q28685888",
+      "labels": {
+        "en": "GINZA SIX",
+        "ja": "GINZA SIX"
+      }
+    },
+    "tokyo|도쿄 디즈니랜드": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Tokyo_Disneyland_Cinderella_Castle_2023-07-02.jpg/500px-Tokyo_Disneyland_Cinderella_Castle_2023-07-02.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tokyo_Disneyland_Cinderella_Castle_2023-07-02.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "LMP 2001",
+      "lat": 35.63278,
+      "lng": 139.88056,
+      "wikidata": "Q843997",
+      "labels": {
+        "en": "Tokyo Disneyland",
+        "ja": "東京ディズニーランド"
+      }
+    },
+    "tokyo|도쿄 디즈니씨": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/06/Tokyo_Disney_Sea_Mountain.jpg/500px-Tokyo_Disney_Sea_Mountain.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tokyo_Disney_Sea_Mountain.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "CasinoKat",
+      "lat": 35.62667,
+      "lng": 139.88806,
+      "wikidata": "Q1202341",
+      "labels": {
+        "en": "Tokyo DisneySea",
+        "ja": "東京ディズニーシー"
+      }
+    },
+    "tokyo|도쿄 타워": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/58/Tokyo_Tower_2023.jpg/500px-Tokyo_Tower_2023.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tokyo_Tower_2023.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Akonnchiroll",
+      "lat": 35.65861,
+      "lng": 139.74556,
+      "wikidata": "Q183536",
+      "labels": {
+        "en": "Tokyo Tower",
+        "ja": "東京タワー"
+      }
+    },
+    "tokyo|도쿄 해리포터 스튜디오": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/55/Warner_Bros._Studio_Tour_Tokyo_entrance_%282%29_2023-08-17.jpg/500px-Warner_Bros._Studio_Tour_Tokyo_entrance_%282%29_2023-08-17.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Warner_Bros._Studio_Tour_Tokyo_entrance_(2)_2023-08-17.jpg",
+      "license": "CC0",
+      "artist": "Asanagi",
+      "lat": 35.745,
+      "lng": 139.645,
+      "wikidata": "Q117148543",
+      "labels": {
+        "en": "Warner Bros. Studio Tour Tokyo – The Making of Harry Potter",
+        "ja": "ワーナー ブラザース スタジオツアー東京 - メイキング・オブ ハリー・ポッター"
+      }
+    },
+    "tokyo|메구로강": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/85/Meguro_River_Spring_2014%282%29.jpg/500px-Meguro_River_Spring_2014%282%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Meguro_River_Spring_2014(2).jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Aw1805",
+      "lat": 35.62127,
+      "lng": 139.72944,
+      "wikidata": "Q8010297",
+      "labels": {
+        "en": "Meguro River",
+        "ja": "目黒川"
+      }
+    },
+    "tokyo|메이지 신궁": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ed/Courtyard_of_Meiji_Shrine_20190717.jpg/500px-Courtyard_of_Meiji_Shrine_20190717.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Courtyard_of_Meiji_Shrine_20190717.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Tokuzo in Edomura",
+      "lat": 35.67611,
+      "lng": 139.69917,
+      "wikidata": "Q287165",
+      "labels": {
+        "en": "Meiji Jingū",
+        "ja": "明治神宮"
+      }
+    },
+    "tokyo|센소지": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/43/Sensoji_2023.jpg/500px-Sensoji_2023.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sensoji_2023.jpg",
+      "license": "CC0",
+      "artist": "Akonnchiroll",
+      "lat": 35.71456,
+      "lng": 139.79664,
+      "wikidata": "Q615183",
+      "labels": {
+        "en": "Sensō-ji Temple",
+        "ja": "浅草寺"
+      }
+    },
+    "tokyo|시부야 스카이": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6b/Shibuya_Scramble_Square_-_SHIBUYA_SKY_12.jpg/500px-Shibuya_Scramble_Square_-_SHIBUYA_SKY_12.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Shibuya_Scramble_Square_-_SHIBUYA_SKY_12.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Kakidai",
+      "lat": 35.65846,
+      "lng": 139.70226,
+      "wikidata": "Q116281743",
+      "labels": {
+        "en": "SHIBUYA SKY",
+        "ja": "SHIBUYA SKY"
+      }
+    },
+    "tokyo|에노시마": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/Enoshima_06.jpg/500px-Enoshima_06.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Enoshima_06.jpg",
+      "license": "CC BY 4.0",
+      "artist": "Σ64",
+      "lat": 35.29933,
+      "lng": 139.48091,
+      "wikidata": "Q989803",
+      "labels": {
+        "en": "Enoshima",
+        "ja": "江の島"
+      }
+    },
+    "tokyo|오다이바 해변공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e5/Odaiba_Seashore_Park.jpg/500px-Odaiba_Seashore_Park.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Odaiba_Seashore_Park.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Ryoma35988",
+      "lat": 35.63081,
+      "lng": 139.77661,
+      "wikidata": "Q5368576",
+      "labels": {
+        "en": "Odaiba Marine Park",
+        "ja": "お台場海浜公園"
+      }
+    },
+    "tokyo|우에노 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9b/UenoPark_Hanami.jpg/500px-UenoPark_Hanami.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:UenoPark_Hanami.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Sdalu",
+      "lat": 35.71222,
+      "lng": 139.77111,
+      "wikidata": "Q746216",
+      "labels": {
+        "en": "Ueno Imperial Grant Park",
+        "ja": "上野恩賜公園"
+      }
+    },
+    "tokyo|쿠사츠 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/%E8%8D%89%E6%B4%A5%E6%B8%A9%E6%B3%89%E3%81%AE%E6%B9%AF%E7%95%9103.jpg/500px-%E8%8D%89%E6%B4%A5%E6%B8%A9%E6%B3%89%E3%81%AE%E6%B9%AF%E7%95%9103.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E8%8D%89%E6%B4%A5%E6%B8%A9%E6%B3%89%E3%81%AE%E6%B9%AF%E7%95%9103.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "くろふね",
+      "lat": 36.62281,
+      "lng": 138.59664,
+      "wikidata": "Q3137477",
+      "labels": {
+        "en": "Kusatsu Onsen",
+        "ja": "草津温泉"
+      }
+    },
+    "tokyo|후지큐 하이랜드": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5a/170505_Views_of_Fujikyu_Highland_from_Tenjoyama_Park_Fujikawaguchiko_Yamanashi_pref_Japan01s3.jpg/500px-170505_Views_of_Fujikyu_Highland_from_Tenjoyama_Park_Fujikawaguchiko_Yamanashi_pref_Japan01s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:170505_Views_of_Fujikyu_Highland_from_Tenjoyama_Park_Fujikawaguchiko_Yamanashi_pref_Japan01s3.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "663highland",
+      "lat": 35.48749,
+      "lng": 138.78019,
+      "wikidata": "Q1192174",
+      "labels": {
+        "en": "Fuji-Q Highland",
+        "ja": "富士急ハイランド"
+      }
+    },
+    "tottori|돗토리 사구": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/Tottori-Sakyu_Tottori_Japan.JPG/500px-Tottori-Sakyu_Tottori_Japan.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tottori-Sakyu_Tottori_Japan.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "Hashi photo",
+      "lat": 35.54,
+      "lng": 134.2275,
+      "wikidata": "Q780905",
+      "labels": {
+        "en": "Tottori Sand Dunes",
+        "ja": "鳥取砂丘"
+      }
+    },
+    "tottori|모래 미술관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2b/Sand_Museum.JPG/500px-Sand_Museum.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sand_Museum.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "KASEI",
+      "lat": 35.53972,
+      "lng": 134.23806,
+      "wikidata": "Q7415842",
+      "labels": {
+        "en": "Sand Museum",
+        "ja": "砂の美術館"
+      }
+    },
+    "tottori|우라도메 해안": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 35.5904,
+      "lng": 134.326,
+      "wikidata": "Q7899552",
+      "labels": {
+        "en": "Uradome Coast",
+        "ja": "浦富海岸"
+      }
+    },
+    "toyama|글래스 미술관": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e9/TOYAMA%E3%82%AD%E3%83%A9%E3%83%AA.jpg/500px-TOYAMA%E3%82%AD%E3%83%A9%E3%83%AA.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:TOYAMA%E3%82%AD%E3%83%A9%E3%83%AA.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Mapmoe",
+      "lat": 36.68858,
+      "lng": 137.21475,
+      "wikidata": "Q21653817",
+      "labels": {
+        "en": "Toyama Glass Art Museum",
+        "ja": "富山市ガラス美術館"
+      }
+    },
+    "toyama|도야마성 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/dd/Toyama_Castle.jpg/500px-Toyama_Castle.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Toyama_Castle.jpg",
+      "license": "Public domain",
+      "artist": "Wikimedia Commons",
+      "lat": 36.6933,
+      "lng": 137.211,
+      "wikidata": "Q911975",
+      "labels": {
+        "en": "Toyama Castle",
+        "ja": "富山城"
+      }
+    },
+    "toyama|알펜루트": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/61/080504_Tateyama_otani-road_Tateyama_Japan01s3.jpg/500px-080504_Tateyama_otani-road_Tateyama_Japan01s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:080504_Tateyama_otani-road_Tateyama_Japan01s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 36.56955,
+      "lng": 137.53196,
+      "wikidata": "Q6425988",
+      "labels": {
+        "en": "Tateyama Kurobe Alpine Route",
+        "ja": "立山黒部アルペンルート"
+      }
+    },
+    "wakkanai|노샷푸 곶": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ac/NoshappuCape.JPG/500px-NoshappuCape.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:NoshappuCape.JPG",
+      "license": "CC BY 3.0",
+      "artist": "Ippukucho",
+      "lat": 45.44975,
+      "lng": 141.64528,
+      "wikidata": "Q11645315",
+      "labels": {
+        "en": "Cape Noshappu",
+        "ja": "野寒布岬"
+      }
+    },
+    "wakkanai|소야곶": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0a/Birdview_of_Cape_Soya.jpg/500px-Birdview_of_Cape_Soya.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Birdview_of_Cape_Soya.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "SElefant",
+      "lat": 45.52277,
+      "lng": 141.93665,
+      "wikidata": "Q389239",
+      "labels": {
+        "en": "Cape Sōya",
+        "ja": "宗谷岬"
+      }
+    },
+    "wakkanai|왓카나이 공원": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 45.41972,
+      "lng": 141.66694,
+      "wikidata": "Q11596309",
+      "labels": {
+        "en": "Wakkanai Park",
+        "ja": "稚内公園"
+      }
+    },
+    "yakushima|시라타니 운수협곡": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/Shiratani_Unsui_Gorge_11.jpg/500px-Shiratani_Unsui_Gorge_11.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Shiratani_Unsui_Gorge_11.jpg",
+      "license": "CC BY 3.0",
+      "artist": "Σ64",
+      "lat": 30.37997,
+      "lng": 130.57421,
+      "wikidata": "Q11580376",
+      "labels": {
+        "en": "Shiratani Unsui Gorge",
+        "ja": "白谷雲水峡"
+      }
+    },
+    "yakushima|오코 폭포": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Ooko_Falls_08.jpg/500px-Ooko_Falls_08.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Ooko_Falls_08.jpg",
+      "license": "CC BY 3.0",
+      "artist": "Σ64",
+      "lat": 30.29999,
+      "lng": 130.41414,
+      "wikidata": "Q11435119",
+      "labels": {
+        "en": "Ōko Falls",
+        "ja": "大川の滝"
+      }
+    },
+    "yakushima|조몬스기 트레일": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3c/Jomon_Sugi_07.jpg/500px-Jomon_Sugi_07.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Jomon_Sugi_07.jpg",
+      "license": "CC BY 3.0",
+      "artist": "Σ64",
+      "lat": 30.36083,
+      "lng": 130.53194,
+      "wikidata": "Q589967",
+      "labels": {
+        "en": "Jōmon Sugi",
+        "ja": "縄文杉"
+      }
+    },
+    "yamagata|긴잔 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1a/Ginzan_Onsen_in_blue_hour.jpg/500px-Ginzan_Onsen_in_blue_hour.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Ginzan_Onsen_in_blue_hour.jpg",
+      "license": "CC0",
+      "artist": "lumoplank",
+      "lat": 38.56972,
+      "lng": 140.53111,
+      "wikidata": "Q5563313",
+      "labels": {
+        "en": "Ginzan Onsen",
+        "ja": "銀山温泉"
+      }
+    },
+    "yamagata|리사쿠지": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/31/211029_Risshaku-ji_Yamagata_Yamagata_pref_Japan107s3.jpg/500px-211029_Risshaku-ji_Yamagata_Yamagata_pref_Japan107s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:211029_Risshaku-ji_Yamagata_Yamagata_pref_Japan107s3.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "663highland",
+      "lat": 38.31256,
+      "lng": 140.43739,
+      "wikidata": "Q1760419",
+      "labels": {
+        "en": "Yama-dera Temple",
+        "ja": "立石寺"
+      }
+    },
+    "yamagata|자오 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4a/220430_ZaoOnsen_Yamagata_Yamagata_pref_Japan24s3.jpg/500px-220430_ZaoOnsen_Yamagata_Yamagata_pref_Japan24s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:220430_ZaoOnsen_Yamagata_Yamagata_pref_Japan24s3.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "663highland",
+      "lat": 38.1687,
+      "lng": 140.397,
+      "wikidata": "Q7159554",
+      "labels": {
+        "en": "Zaō Onsen",
+        "ja": "蔵王温泉"
+      }
+    },
+    "yamagata|카조 공원": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/bf/220430_Yamagata_Castle_Yamagata_Yamagata_pref_Japan01s3.jpg/500px-220430_Yamagata_Castle_Yamagata_Yamagata_pref_Japan01s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:220430_Yamagata_Castle_Yamagata_Yamagata_pref_Japan01s3.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "663highland",
+      "lat": 38.25542,
+      "lng": 140.32806,
+      "wikidata": "Q11660827",
+      "labels": {
+        "en": "Kajō Park",
+        "ja": "霞城公園"
+      }
+    },
+    "yamaguchi_ube|루리코지": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b9/140720_Ruriko-ji_Yamaguchi_Yamaguchi_pref_Japan02s3.jpg/500px-140720_Ruriko-ji_Yamaguchi_Yamaguchi_pref_Japan02s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:140720_Ruriko-ji_Yamaguchi_Yamaguchi_pref_Japan02s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 34.18983,
+      "lng": 131.47178,
+      "wikidata": "Q11573988",
+      "labels": {
+        "en": "Rurikō-ji Temple",
+        "ja": "瑠璃光寺"
+      }
+    },
+    "yamaguchi_ube|아키요시 동굴": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1e/USMC-090419-M-8097K-001.jpg/500px-USMC-090419-M-8097K-001.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:USMC-090419-M-8097K-001.jpg",
+      "license": "Public domain",
+      "artist": "Wikimedia Commons",
+      "lat": 34.22811,
+      "lng": 131.30347,
+      "wikidata": "Q11595801",
+      "labels": {
+        "en": "Akiyoshidō",
+        "ja": "秋芳洞"
+      }
+    },
+    "yonago|다이센": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/51/Daisen_01.jpg/500px-Daisen_01.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Daisen_01.jpg",
+      "license": "CC BY 2.1 jp",
+      "artist": "kobeoyaji",
+      "lat": 35.37111,
+      "lng": 133.54639,
+      "wikidata": "Q715498",
+      "labels": {
+        "en": "Daisen",
+        "ja": "大山"
+      }
+    },
+    "yonago|미즈키 시게루 로드": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/27/Mizuki_Shigeru_Road_-01.jpg/500px-Mizuki_Shigeru_Road_-01.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Mizuki_Shigeru_Road_-01.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Aimaimyi",
+      "lat": 35.54644,
+      "lng": 133.23125,
+      "wikidata": "Q11548750",
+      "labels": {
+        "en": "Mizuki Shigeru Road",
+        "ja": "水木しげるロード"
+      }
+    },
+    "yonago|카이케 온천": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Kaike_onsen01n3200.jpg/500px-Kaike_onsen01n3200.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kaike_onsen01n3200.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 35.4563,
+      "lng": 133.3618,
+      "wikidata": "Q11580978",
+      "labels": {
+        "en": "Kaike Onsen",
+        "ja": "皆生温泉"
+      }
+    },
+    "yonaguni|일본 최서단 기념비": {
+      "image": null,
+      "filePage": null,
+      "license": null,
+      "artist": "",
+      "lat": 24.44944,
+      "lng": 122.93361,
+      "wikidata": "Q5034876",
+      "labels": {
+        "en": "Cape Irizaki",
+        "ja": "西崎"
+      }
+    },
+    "yonaguni|해저 지형 다이빙": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Yonaguni_Monument_Terraces_midpart_NWW.jpg/500px-Yonaguni_Monument_Terraces_midpart_NWW.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Yonaguni_Monument_Terraces_midpart_NWW.jpg",
+      "license": "CC0",
+      "artist": "Melkov",
+      "lat": 24.43583,
+      "lng": 123.01139,
+      "wikidata": "Q995511",
+      "labels": {
+        "en": "Yonaguni Monument",
+        "ja": "与那国島海底地形"
+      }
+    }
+  },
+  "cities": {
+    "amami": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/07/Amami_beach.jpg/500px-Amami_beach.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Amami_beach.jpg",
+      "license": "CC BY 2.0",
+      "artist": "TANAKA Juuyoh (田中十洋)",
+      "lat": 27.83333,
+      "lng": 129,
+      "wikidata": "Q453510",
+      "labels": {
+        "en": "Amami Islands",
+        "ja": "奄美群島"
+      }
+    },
+    "aomori": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8b/Sceanery_of_the_Aomori_Waterfront_20200621.jpg/500px-Sceanery_of_the_Aomori_Waterfront_20200621.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sceanery_of_the_Aomori_Waterfront_20200621.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "掬茶",
+      "lat": 40.82278,
+      "lng": 140.74694,
+      "wikidata": "Q146790",
+      "labels": {
+        "en": "Aomori",
+        "ja": "青森市"
+      }
+    },
+    "asahikawa": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d8/Asahikawa_Montage.jpg/500px-Asahikawa_Montage.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Asahikawa_Montage.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "水だらけのプール",
+      "lat": 43.77064,
+      "lng": 142.365,
+      "wikidata": "Q200740",
+      "labels": {
+        "en": "Asahikawa",
+        "ja": "旭川市"
+      }
+    },
+    "fukuoka": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Hakata_Port_from_Fukuoka_Tower.jpg/500px-Hakata_Port_from_Fukuoka_Tower.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Hakata_Port_from_Fukuoka_Tower.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "そらみみ",
+      "lat": 33.59014,
+      "lng": 130.40172,
+      "wikidata": "Q26600",
+      "labels": {
+        "en": "Fukuoka",
+        "ja": "福岡市"
+      }
+    },
+    "fukushima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2b/Fukushima_City_with_a_view_of_Fukushima_Station.jpg/500px-Fukushima_City_with_a_view_of_Fukushima_Station.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Fukushima_City_with_a_view_of_Fukushima_Station.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Purplepumpkins",
+      "lat": 37.76081,
+      "lng": 140.47472,
+      "wikidata": "Q161176",
+      "labels": {
+        "en": "Fukushima",
+        "ja": "福島市"
+      }
+    },
+    "hakodate": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/73/View_from_Mt.Hakodate_%28Hakodateyama%29%2CHakodate_Hokkaido%2C_Japan_27_April_2016_-_panoramio.jpg/500px-View_from_Mt.Hakodate_%28Hakodateyama%29%2CHakodate_Hokkaido%2C_Japan_27_April_2016_-_panoramio.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:View_from_Mt.Hakodate_(Hakodateyama),Hakodate_Hokkaido,_Japan_27_April_2016_-_panoramio.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "::::=UT=",
+      "lat": 41.76867,
+      "lng": 140.72892,
+      "wikidata": "Q26418",
+      "labels": {
+        "en": "Hakodate",
+        "ja": "函館市"
+      }
+    },
+    "hanamaki": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/50/%E8%8A%B1%E5%B7%BB%E6%B8%A9%E6%B3%89_%E3%83%90%E3%83%A9%E5%9C%92%E3%81%A8%E3%83%9B%E3%83%86%E3%83%AB3%E9%A4%A8.jpg/500px-%E8%8A%B1%E5%B7%BB%E6%B8%A9%E6%B3%89_%E3%83%90%E3%83%A9%E5%9C%92%E3%81%A8%E3%83%9B%E3%83%86%E3%83%AB3%E9%A4%A8.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E8%8A%B1%E5%B7%BB%E6%B8%A9%E6%B3%89_%E3%83%90%E3%83%A9%E5%9C%92%E3%81%A8%E3%83%9B%E3%83%86%E3%83%AB3%E9%A4%A8.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "なはん弁",
+      "lat": 39.38861,
+      "lng": 141.11692,
+      "wikidata": "Q317827",
+      "labels": {
+        "en": "Hanamaki",
+        "ja": "花巻市"
+      }
+    },
+    "hiroshima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fd/Atomic_Bomb_Dome_and_Motoyaso_River%2C_Hiroshima%2C_Northwest_view_20190417_1.jpg/500px-Atomic_Bomb_Dome_and_Motoyaso_River%2C_Hiroshima%2C_Northwest_view_20190417_1.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Atomic_Bomb_Dome_and_Motoyaso_River,_Hiroshima,_Northwest_view_20190417_1.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "DXR",
+      "lat": 34.38525,
+      "lng": 132.45531,
+      "wikidata": "Q34664",
+      "labels": {
+        "en": "Hiroshima",
+        "ja": "広島市"
+      }
+    },
+    "ibaraki": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ec/Kairaku-en%2C_Ibaraki_24.jpg/500px-Kairaku-en%2C_Ibaraki_24.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kairaku-en,_Ibaraki_24.jpg",
+      "license": "CC BY 4.0",
+      "artist": "Σ64",
+      "lat": 36.36583,
+      "lng": 140.47125,
+      "wikidata": "Q204249",
+      "labels": {}
+    },
+    "ishigaki": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Ishigaki_montage.JPG/500px-Ishigaki_montage.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Ishigaki_montage.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "mti",
+      "lat": 24.3445,
+      "lng": 124.18525,
+      "wikidata": "Q838366",
+      "labels": {
+        "en": "Ishigaki",
+        "ja": "石垣市"
+      }
+    },
+    "iwakuni": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/66/20100724_Iwakuni_5235.jpg/500px-20100724_Iwakuni_5235.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:20100724_Iwakuni_5235.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Jakub Hałun",
+      "lat": 34.16658,
+      "lng": 132.21883,
+      "wikidata": "Q329797",
+      "labels": {
+        "en": "Iwakuni",
+        "ja": "岩国市"
+      }
+    },
+    "izumo": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/53/Izumo-taisha_121538651_f69f257ed0_o.jpg/500px-Izumo-taisha_121538651_f69f257ed0_o.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Izumo-taisha_121538651_f69f257ed0_o.jpg",
+      "license": "CC BY 2.0",
+      "artist": "Blue Lotus",
+      "lat": 35.40162,
+      "lng": 132.68544,
+      "wikidata": "Q825166",
+      "labels": {
+        "en": "Izumo",
+        "ja": "出雲市"
+      }
+    },
+    "kagoshima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/69/Sakurajima_-%E5%9F%8E%E5%B1%B1%E5%B1%95%E6%9C%9B%E5%8F%B0%E3%82%88%E3%82%8A.jpg/500px-Sakurajima_-%E5%9F%8E%E5%B1%B1%E5%B1%95%E6%9C%9B%E5%8F%B0%E3%82%88%E3%82%8A.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sakurajima_-%E5%9F%8E%E5%B1%B1%E5%B1%95%E6%9C%9B%E5%8F%B0%E3%82%88%E3%82%8A.jpg",
+      "license": "CC BY-SA 2.1 jp",
+      "artist": "こたつむり from Hokkaidō, Japan",
+      "lat": 31.59681,
+      "lng": 130.55714,
+      "wikidata": "Q15674",
+      "labels": {
+        "en": "Kagoshima",
+        "ja": "鹿児島市"
+      }
+    },
+    "kanazawa": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/23/%E6%9C%9B%E6%B9%96%E5%8F%B0%EF%BC%92.jpg/500px-%E6%9C%9B%E6%B9%96%E5%8F%B0%EF%BC%92.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E6%9C%9B%E6%B9%96%E5%8F%B0%EF%BC%92.jpg",
+      "license": "CC BY 2.1 jp",
+      "artist": "金沢市",
+      "lat": 36.56106,
+      "lng": 136.6565,
+      "wikidata": "Q191130",
+      "labels": {
+        "en": "Kanazawa",
+        "ja": "金沢市"
+      }
+    },
+    "kita_daito": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cf/Kita_Daito_Jima_ISS.jpg/500px-Kita_Daito_Jima_ISS.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kita_Daito_Jima_ISS.jpg",
+      "license": "Public domain",
+      "artist": "NASA Johnson Space Center",
+      "lat": 25.94472,
+      "lng": 131.30639,
+      "wikidata": "Q1111504",
+      "labels": {
+        "en": "Kitadaito",
+        "ja": "北大東村"
+      }
+    },
+    "kitakyushu": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ad/Kitakyushu_montage2.jpg/500px-Kitakyushu_montage2.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kitakyushu_montage2.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Wikimedia Commons",
+      "lat": 33.88342,
+      "lng": 130.87519,
+      "wikidata": "Q188806",
+      "labels": {
+        "en": "Kitakyūshū",
+        "ja": "北九州市"
+      }
+    },
+    "kobe": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1c/Kobe_Port_Tower_and_Maritime_Museum%2C_November_2016.jpg/500px-Kobe_Port_Tower_and_Maritime_Museum%2C_November_2016.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kobe_Port_Tower_and_Maritime_Museum,_November_2016.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Martin Falbisoner",
+      "lat": 34.69017,
+      "lng": 135.19544,
+      "wikidata": "Q48320",
+      "labels": {
+        "en": "Kobe",
+        "ja": "神戸市"
+      }
+    },
+    "kochi": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1e/%E9%AB%98%E7%9F%A5%E5%9F%8E_%E5%A4%A9%E5%AE%88%E3%81%8B%E3%82%89%E3%81%AE%E6%99%AF%E8%89%B23_Kochi_Castle_-_panoramio.jpg/500px-%E9%AB%98%E7%9F%A5%E5%9F%8E_%E5%A4%A9%E5%AE%88%E3%81%8B%E3%82%89%E3%81%AE%E6%99%AF%E8%89%B23_Kochi_Castle_-_panoramio.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E9%AB%98%E7%9F%A5%E5%9F%8E_%E5%A4%A9%E5%AE%88%E3%81%8B%E3%82%89%E3%81%AE%E6%99%AF%E8%89%B23_Kochi_Castle_-_panoramio.jpg",
+      "license": "CC BY 3.0",
+      "artist": "baggio4ever",
+      "lat": 33.55883,
+      "lng": 133.53122,
+      "wikidata": "Q200251",
+      "labels": {
+        "en": "Kōchi-shi",
+        "ja": "高知市"
+      }
+    },
+    "kumamoto": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a5/Kumamoto_Castle_and_Ky%C5%ABsh%C5%AB_Shinkansen_02.jpg/500px-Kumamoto_Castle_and_Ky%C5%ABsh%C5%AB_Shinkansen_02.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kumamoto_Castle_and_Ky%C5%ABsh%C5%AB_Shinkansen_02.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Hisagi",
+      "lat": 32.803,
+      "lng": 130.70786,
+      "wikidata": "Q199889",
+      "labels": {
+        "en": "Kumamoto",
+        "ja": "熊本市"
+      }
+    },
+    "kumejima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/81/Tatami_ishi.JPG/500px-Tatami_ishi.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tatami_ishi.JPG",
+      "license": "CC BY 3.0",
+      "artist": "Snap55",
+      "lat": 26.34069,
+      "lng": 126.80494,
+      "wikidata": "Q1206086",
+      "labels": {
+        "en": "Kumejima",
+        "ja": "久米島町"
+      }
+    },
+    "kushiro": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/e/eb/Kushiro_montages.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kushiro_montages.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "mti",
+      "lat": 42.98489,
+      "lng": 144.38172,
+      "wikidata": "Q271917",
+      "labels": {
+        "en": "Kushiro",
+        "ja": "釧路市"
+      }
+    },
+    "kyoto": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/150124_At_Yasakakamimachi_Kyoto_Japan02n.jpg/500px-150124_At_Yasakakamimachi_Kyoto_Japan02n.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:150124_At_Yasakakamimachi_Kyoto_Japan02n.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 35.01114,
+      "lng": 135.76693,
+      "wikidata": "Q740246",
+      "labels": {
+        "en": "Kyōto",
+        "ja": "京都"
+      }
+    },
+    "matsumoto": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/Matsumoto_Castle05s5s4592.jpg/500px-Matsumoto_Castle05s5s4592.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Matsumoto_Castle05s5s4592.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 36.238,
+      "lng": 137.97197,
+      "wikidata": "Q213324",
+      "labels": {
+        "en": "Matsumoto",
+        "ja": "松本市"
+      }
+    },
+    "matsuyama": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8d/Matsuyama_%2814074874872%29.jpg/500px-Matsuyama_%2814074874872%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Matsuyama_(14074874872).jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "redlegsfan21",
+      "lat": 33.83917,
+      "lng": 132.76564,
+      "wikidata": "Q200022",
+      "labels": {
+        "en": "Matsuyama",
+        "ja": "松山市"
+      }
+    },
+    "memanbetsu": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/64/Marchen-no-oka01bs10.jpg/500px-Marchen-no-oka01bs10.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Marchen-no-oka01bs10.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 43.91194,
+      "lng": 144.17256,
+      "wikidata": "Q1208839",
+      "labels": {
+        "en": "Memanbetsu",
+        "ja": "女満別町"
+      }
+    },
+    "misawa": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/80/151101_Misawa_Aviation_%26_Science_Museum%2C_Aomori_Japan03s3.jpg/500px-151101_Misawa_Aviation_%26_Science_Museum%2C_Aomori_Japan03s3.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:151101_Misawa_Aviation_%26_Science_Museum,_Aomori_Japan03s3.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 40.68308,
+      "lng": 141.36906,
+      "wikidata": "Q496401",
+      "labels": {
+        "en": "Misawa",
+        "ja": "三沢市"
+      }
+    },
+    "miyako": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/de/Hirara_town1.JPG/500px-Hirara_town1.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Hirara_town1.JPG",
+      "license": "CC BY 3.0",
+      "artist": "Snap55",
+      "lat": 24.79006,
+      "lng": 125.29489,
+      "wikidata": "Q714636",
+      "labels": {
+        "en": "Miyakojima",
+        "ja": "宮古島市"
+      }
+    },
+    "miyazaki": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/79/Route220_TachibanaStreet.jpg/500px-Route220_TachibanaStreet.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Route220_TachibanaStreet.jpg",
+      "license": "Public domain",
+      "artist": "Sanjo",
+      "lat": 31.90772,
+      "lng": 131.42019,
+      "wikidata": "Q204308",
+      "labels": {
+        "en": "Miyazaki",
+        "ja": "宮崎市"
+      }
+    },
+    "nagasaki": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a1/Nagasaki_City_View_from_Glover_Garden%2C_Nagasaki_2014.jpg/500px-Nagasaki_City_View_from_Glover_Garden%2C_Nagasaki_2014.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Nagasaki_City_View_from_Glover_Garden,_Nagasaki_2014.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Tomio344456",
+      "lat": 32.74953,
+      "lng": 129.87964,
+      "wikidata": "Q38234",
+      "labels": {
+        "en": "Nagasaki",
+        "ja": "長崎市"
+      }
+    },
+    "nagoya": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/b3/Japan_Nagoya.png/500px-Japan_Nagoya.png",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Japan_Nagoya.png",
+      "license": "CC BY-SA 3.0",
+      "artist": "Wikimedia Commons",
+      "lat": 35.18139,
+      "lng": 136.90639,
+      "wikidata": "Q11751",
+      "labels": {
+        "en": "Nagoya",
+        "ja": "名古屋市"
+      }
+    },
+    "nakashibetsu": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/14/View_of_kaiyodai.JPG/500px-View_of_kaiyodai.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:View_of_kaiyodai.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "100yen",
+      "lat": 43.55522,
+      "lng": 144.97136,
+      "wikidata": "Q514324",
+      "labels": {
+        "en": "Nakashibetsu",
+        "ja": "中標津町"
+      }
+    },
+    "nanki_shirahama": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/a/a5/Shirahama_montages.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Shirahama_montages.JPG",
+      "license": "CC BY 3.0",
+      "artist": "mti",
+      "lat": 33.67814,
+      "lng": 135.34811,
+      "wikidata": "Q1202728",
+      "labels": {
+        "en": "Shirahama",
+        "ja": "白浜町"
+      }
+    },
+    "niigata": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fd/Niigata_from_Bandaijima_Building_20200906_P4.jpg/500px-Niigata_from_Bandaijima_Building_20200906_P4.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Niigata_from_Bandaijima_Building_20200906_P4.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "皓月旗",
+      "lat": 37.91619,
+      "lng": 139.03639,
+      "wikidata": "Q179691",
+      "labels": {
+        "en": "Niigata",
+        "ja": "新潟市"
+      }
+    },
+    "obihiro": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/80/ObihiroMainSummer.jpg/500px-ObihiroMainSummer.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:ObihiroMainSummer.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Acronyc",
+      "lat": 42.92397,
+      "lng": 143.19611,
+      "wikidata": "Q177149",
+      "labels": {
+        "en": "Obihiro",
+        "ja": "帯広市"
+      }
+    },
+    "oita": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a3/Oita_takasago.jpg/500px-Oita_takasago.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Oita_takasago.jpg",
+      "license": "Public domain",
+      "artist": "Papyrus",
+      "lat": 33.23956,
+      "lng": 131.60936,
+      "wikidata": "Q199609",
+      "labels": {
+        "en": "Ōita-shi",
+        "ja": "大分市"
+      }
+    },
+    "okadama": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a6/%E6%9C%AD%E5%B9%8C%E3%82%BF%E3%83%AF%E3%83%BC%E9%9B%BB%E6%B3%A2%E5%A1%94%E5%B1%95%E6%9C%9B%E5%8F%B0%E3%81%8B%E3%82%89%E6%9C%AD%E5%B9%8C%E9%A7%85%E6%96%B9%E9%9D%A2_-_panoramio.jpg/500px-%E6%9C%AD%E5%B9%8C%E3%82%BF%E3%83%AF%E3%83%BC%E9%9B%BB%E6%B3%A2%E5%A1%94%E5%B1%95%E6%9C%9B%E5%8F%B0%E3%81%8B%E3%82%89%E6%9C%AD%E5%B9%8C%E9%A7%85%E6%96%B9%E9%9D%A2_-_panoramio.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E6%9C%AD%E5%B9%8C%E3%82%BF%E3%83%AF%E3%83%BC%E9%9B%BB%E6%B3%A2%E5%A1%94%E5%B1%95%E6%9C%9B%E5%8F%B0%E3%81%8B%E3%82%89%E6%9C%AD%E5%B9%8C%E9%A7%85%E6%96%B9%E9%9D%A2_-_panoramio.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Hideki Uchida (セラ)",
+      "lat": 43.06194,
+      "lng": 141.35444,
+      "wikidata": "Q37951",
+      "labels": {
+        "en": "Sapporo",
+        "ja": "札幌市"
+      }
+    },
+    "okinawa": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/77/Asahi-machi_Naha_Okinawa01s3s4410.jpg/500px-Asahi-machi_Naha_Okinawa01s3s4410.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Asahi-machi_Naha_Okinawa01s3s4410.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 26.21222,
+      "lng": 127.67917,
+      "wikidata": "Q181966",
+      "labels": {
+        "en": "Okinawa Prefecture",
+        "ja": "沖縄県"
+      }
+    },
+    "osaka": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/ca/Osaka_Castle_03bs3200.jpg/500px-Osaka_Castle_03bs3200.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Osaka_Castle_03bs3200.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 34.69376,
+      "lng": 135.50145,
+      "wikidata": "Q11439906",
+      "labels": {
+        "en": "Ōsaka",
+        "ja": "大阪"
+      }
+    },
+    "rishiri": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/Rishiri_Airport_17-Sept-2018_p2.jpg/500px-Rishiri_Airport_17-Sept-2018_p2.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Rishiri_Airport_17-Sept-2018_p2.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "皓月旗",
+      "lat": 45.19194,
+      "lng": 141.2225,
+      "wikidata": "Q495476",
+      "labels": {
+        "en": "Rishiri Island",
+        "ja": "利尻島"
+      }
+    },
+    "sapporo": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a6/%E6%9C%AD%E5%B9%8C%E3%82%BF%E3%83%AF%E3%83%BC%E9%9B%BB%E6%B3%A2%E5%A1%94%E5%B1%95%E6%9C%9B%E5%8F%B0%E3%81%8B%E3%82%89%E6%9C%AD%E5%B9%8C%E9%A7%85%E6%96%B9%E9%9D%A2_-_panoramio.jpg/500px-%E6%9C%AD%E5%B9%8C%E3%82%BF%E3%83%AF%E3%83%BC%E9%9B%BB%E6%B3%A2%E5%A1%94%E5%B1%95%E6%9C%9B%E5%8F%B0%E3%81%8B%E3%82%89%E6%9C%AD%E5%B9%8C%E9%A7%85%E6%96%B9%E9%9D%A2_-_panoramio.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E6%9C%AD%E5%B9%8C%E3%82%BF%E3%83%AF%E3%83%BC%E9%9B%BB%E6%B3%A2%E5%A1%94%E5%B1%95%E6%9C%9B%E5%8F%B0%E3%81%8B%E3%82%89%E6%9C%AD%E5%B9%8C%E9%A7%85%E6%96%B9%E9%9D%A2_-_panoramio.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Hideki Uchida (セラ)",
+      "lat": 43.06194,
+      "lng": 141.35444,
+      "wikidata": "Q37951",
+      "labels": {
+        "en": "Sapporo",
+        "ja": "札幌市"
+      }
+    },
+    "sendai": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1d/SendaiCity_Skylines_from_Mukaiyama2018.jpg/500px-SendaiCity_Skylines_from_Mukaiyama2018.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:SendaiCity_Skylines_from_Mukaiyama2018.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Nryate",
+      "lat": 38.26822,
+      "lng": 140.86942,
+      "wikidata": "Q46747",
+      "labels": {
+        "en": "Sendai",
+        "ja": "仙台市"
+      }
+    },
+    "shimojishima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6c/Irabujima_sky_view.jpg/500px-Irabujima_sky_view.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Irabujima_sky_view.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Paipateroma",
+      "lat": 24.81611,
+      "lng": 125.15694,
+      "wikidata": "Q705012",
+      "labels": {
+        "en": "Shimoji Island",
+        "ja": "下地島"
+      }
+    },
+    "shizuoka": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ed/Shizuoka_montage.jpg/500px-Shizuoka_montage.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Shizuoka_montage.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Wikimedia Commons",
+      "lat": 34.97556,
+      "lng": 138.3825,
+      "wikidata": "Q174691",
+      "labels": {
+        "en": "Shizuoka",
+        "ja": "静岡市"
+      }
+    },
+    "shonai": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Moat_of_Tsurugaoka_Castle.jpg/500px-Moat_of_Tsurugaoka_Castle.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Moat_of_Tsurugaoka_Castle.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "掬茶",
+      "lat": 38.72722,
+      "lng": 139.82667,
+      "wikidata": "Q734416",
+      "labels": {}
+    },
+    "tajima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7b/Izushi_Toyooka03nt3200.jpg/500px-Izushi_Toyooka03nt3200.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Izushi_Toyooka03nt3200.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 35.5445,
+      "lng": 134.82019,
+      "wikidata": "Q696388",
+      "labels": {}
+    },
+    "takamatsu": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8b/%E9%A6%99%E5%B7%9D%E7%9C%8C%E3%81%AE%E9%A2%A8%E6%99%AF.jpg/500px-%E9%A6%99%E5%B7%9D%E7%9C%8C%E3%81%AE%E9%A2%A8%E6%99%AF.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:%E9%A6%99%E5%B7%9D%E7%9C%8C%E3%81%AE%E9%A2%A8%E6%99%AF.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Arabrity",
+      "lat": 34.34281,
+      "lng": 134.04661,
+      "wikidata": "Q200707",
+      "labels": {
+        "en": "Takamatsu",
+        "ja": "高松市"
+      }
+    },
+    "tanegashima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6c/Tanegashima_ISS048.jpg/500px-Tanegashima_ISS048.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tanegashima_ISS048.jpg",
+      "license": "Public domain",
+      "artist": "Image Science and Analysis Laboratory, NASA - Johnson Space Center",
+      "lat": 30.57389,
+      "lng": 130.98111,
+      "wikidata": "Q696228",
+      "labels": {
+        "en": "Tanegashima",
+        "ja": "種子島"
+      }
+    },
+    "tokunoshima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c4/Tokunoshima.jpg/500px-Tokunoshima.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tokunoshima.jpg",
+      "license": "Public domain",
+      "artist": "Skysoblue",
+      "lat": 27.82,
+      "lng": 128.93222,
+      "wikidata": "Q701847",
+      "labels": {
+        "en": "Tokunoshima",
+        "ja": "徳之島"
+      }
+    },
+    "tokushima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/60/Bizan_Tokushima05s5.jpg/500px-Bizan_Tokushima05s5.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Bizan_Tokushima05s5.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 34.07028,
+      "lng": 134.55494,
+      "wikidata": "Q207309",
+      "labels": {
+        "en": "Tokushima",
+        "ja": "徳島市"
+      }
+    },
+    "tokyo": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ef/Akiba_denkigai.jpg/500px-Akiba_denkigai.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Akiba_denkigai.jpg",
+      "license": "CC0",
+      "artist": "Jmho",
+      "lat": 35.68389,
+      "lng": 139.77444,
+      "wikidata": "Q7473516",
+      "labels": {
+        "en": "Tokyo",
+        "ja": "東京"
+      }
+    },
+    "tottori": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/99/Tottori_castle08_1920.jpg/500px-Tottori_castle08_1920.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tottori_castle08_1920.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "lat": 35.49439,
+      "lng": 134.22161,
+      "wikidata": "Q200731",
+      "labels": {
+        "en": "Tottori",
+        "ja": "鳥取市"
+      }
+    },
+    "toyama": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/64/Toyama_city_%26_Alps.jpg/500px-Toyama_city_%26_Alps.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Toyama_city_%26_Alps.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "名古屋太郎",
+      "lat": 36.69592,
+      "lng": 137.21369,
+      "wikidata": "Q204266",
+      "labels": {
+        "en": "Toyama",
+        "ja": "富山市"
+      }
+    },
+    "wakkanai": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/98/Wakkanai_harbor.JPG/500px-Wakkanai_harbor.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Wakkanai_harbor.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "100yen",
+      "lat": 45.41564,
+      "lng": 141.67308,
+      "wikidata": "Q267894",
+      "labels": {
+        "en": "Wakkanai",
+        "ja": "稚内市"
+      }
+    },
+    "yakushima": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/36/Yakushima_from_Ferry_Amami_20121116.jpg/500px-Yakushima_from_Ferry_Amami_20121116.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Yakushima_from_Ferry_Amami_20121116.jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "tsuda from Tsushima, Aichi, Japan",
+      "lat": 30.35861,
+      "lng": 130.52861,
+      "wikidata": "Q242176",
+      "labels": {
+        "en": "Yakushima",
+        "ja": "屋久島"
+      }
+    },
+    "yamagata": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d4/Zao_winter_gradation_%2851843960455%29.jpg/500px-Zao_winter_gradation_%2851843960455%29.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Zao_winter_gradation_(51843960455).jpg",
+      "license": "CC BY 2.0",
+      "artist": "Raita Futo from Tokyo, Japan",
+      "lat": 38.25542,
+      "lng": 140.33961,
+      "wikidata": "Q205526",
+      "labels": {
+        "en": "Yamagata",
+        "ja": "山形市"
+      }
+    },
+    "yamaguchi_ube": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/57/The_cityscape_of_Yamaguchi_20130821.jpg/500px-The_cityscape_of_Yamaguchi_20130821.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:The_cityscape_of_Yamaguchi_20130821.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "新幹線",
+      "lat": 34.17803,
+      "lng": 131.47378,
+      "wikidata": "Q207876",
+      "labels": {
+        "en": "Yamaguchi",
+        "ja": "山口市"
+      }
+    },
+    "yonago": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/6/6a/Yonago_montage.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Yonago_montage.JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "mti",
+      "lat": 35.42817,
+      "lng": 133.33089,
+      "wikidata": "Q320964",
+      "labels": {
+        "en": "Yonago",
+        "ja": "米子市"
+      }
+    },
+    "yonaguni": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/36/Yonaguni_Island_Aerial_photograph.2012.jpg/500px-Yonaguni_Island_Aerial_photograph.2012.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Yonaguni_Island_Aerial_photograph.2012.jpg",
+      "license": "Attribution",
+      "artist": "国土地理院",
+      "lat": 24.45472,
+      "lng": 122.98722,
+      "wikidata": "Q220701",
+      "labels": {
+        "en": "Yonaguni",
+        "ja": "与那国島"
+      }
+    }
+  },
+  "foodGenres": {
+    "가이세키": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/69/Jisaku_Kaiseki_Ryori_01.jpg/500px-Jisaku_Kaiseki_Ryori_01.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Jisaku_Kaiseki_Ryori_01.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Chris 73 / Wikimedia Commons",
+      "wikidata": "Q175595"
+    },
+    "규탄": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/64/Gyutan_teishoku.JPG/500px-Gyutan_teishoku.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Gyutan_teishoku.JPG",
+      "license": "Public domain",
+      "artist": "Captain76",
+      "wikidata": "Q4892972"
+    },
+    "닭요리": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4b/Cooking_yakitori.jpg/500px-Cooking_yakitori.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Cooking_yakitori.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "竹麦魚(Searobin)",
+      "wikidata": "Q483163"
+    },
+    "덮밥": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/9/94/Tendon_and_unadon_by_avlxyz.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tendon_and_unadon_by_avlxyz.jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "avlxyz",
+      "wikidata": "Q1061842"
+    },
+    "돈카츠": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d5/Tonkatsu_of_Kimukatsu.jpg/500px-Tonkatsu_of_Kimukatsu.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tonkatsu_of_Kimukatsu.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Minseong Kim",
+      "wikidata": "Q1142841"
+    },
+    "두부요리": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/03/Japanese_SilkyTofu_%28Kinugoshi_Tofu%29.JPG/500px-Japanese_SilkyTofu_%28Kinugoshi_Tofu%29.JPG",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Japanese_SilkyTofu_(Kinugoshi_Tofu).JPG",
+      "license": "CC BY-SA 3.0",
+      "artist": "DryPot",
+      "wikidata": "Q177378"
+    },
+    "디저트": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a6/Sakura-mochi_003.jpg/500px-Sakura-mochi_003.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sakura-mochi_003.jpg",
+      "license": "CC0",
+      "artist": "Ocdp",
+      "wikidata": "Q1063096"
+    },
+    "라멘": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/23/Ramen%2C_sopa_de_fideus.jpg/500px-Ramen%2C_sopa_de_fideus.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Ramen,_sopa_de_fideus.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "Mariaaa05",
+      "wikidata": "Q234646"
+    },
+    "면요리": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a8/Fresh_ramen_noodle_001.jpg/500px-Fresh_ramen_noodle_001.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Fresh_ramen_noodle_001.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Kropsoq",
+      "wikidata": "Q17116319"
+    },
+    "소바": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/fd/Wanko_soba.jpg/500px-Wanko_soba.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Wanko_soba.jpg",
+      "license": "CC BY 2.0",
+      "artist": "shiraga from Osaka, JAPAN",
+      "wikidata": "Q7967970"
+    },
+    "스시": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7a/Various_sushi%2C_beautiful_October_night_at_midnight.jpg/500px-Various_sushi%2C_beautiful_October_night_at_midnight.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Various_sushi,_beautiful_October_night_at_midnight.jpg",
+      "license": "CC BY-SA 2.0",
+      "artist": "Yumi Kimura",
+      "wikidata": "Q46383"
+    },
+    "양고기": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/bc/Jingisukan_japanese_mutton_barbecue.jpg/500px-Jingisukan_japanese_mutton_barbecue.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Jingisukan_japanese_mutton_barbecue.jpg",
+      "license": "CC BY 3.0",
+      "artist": "Jesper Rautell Balle",
+      "wikidata": "Q1151092"
+    },
+    "오코노미야키": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/59/Okonomiyaki_001.jpg/500px-Okonomiyaki_001.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Okonomiyaki_001.jpg",
+      "license": "CC BY 2.0",
+      "artist": "ume-y",
+      "wikidata": "Q701075"
+    },
+    "우동": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/ba/Udon_by_udono.jpg/500px-Udon_by_udono.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Udon_by_udono.jpg",
+      "license": "CC BY 2.0",
+      "artist": "udono",
+      "wikidata": "Q471861"
+    },
+    "육류": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d6/4_Kobe_Beef%2C_Kobe_Japan.jpg/500px-4_Kobe_Beef%2C_Kobe_Japan.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:4_Kobe_Beef,_Kobe_Japan.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "Orlando G. Calvo",
+      "wikidata": "Q42085"
+    },
+    "이자카야": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Sake_set.jpg/500px-Sake_set.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sake_set.jpg",
+      "license": "Public domain",
+      "artist": "The Epopt",
+      "wikidata": "Q170219"
+    },
+    "일식": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/f/f7/Breakfast_at_Tamahan_Ryokan%2C_Kyoto.jpg/500px-Breakfast_at_Tamahan_Ryokan%2C_Kyoto.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Breakfast_at_Tamahan_Ryokan,_Kyoto.jpg",
+      "license": "CC BY-SA 3.0",
+      "artist": "MichaelMaggs",
+      "wikidata": "Q234138"
+    },
+    "장어덮밥": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e7/Tokyo_Chikuyotei_Unadon01s2100.jpg/500px-Tokyo_Chikuyotei_Unadon01s2100.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Tokyo_Chikuyotei_Unadon01s2100.jpg",
+      "license": "CC BY 2.5",
+      "artist": "663highland",
+      "wikidata": "Q1352897"
+    },
+    "전골": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/15/Mizore_nabe_of_Matsudo.jpeg/500px-Mizore_nabe_of_Matsudo.jpeg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Mizore_nabe_of_Matsudo.jpeg",
+      "license": "CC BY 2.0",
+      "artist": "t-mizo from Japan",
+      "wikidata": "Q1962004"
+    },
+    "주점": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Sake_set.jpg/500px-Sake_set.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Sake_set.jpg",
+      "license": "Public domain",
+      "artist": "The Epopt",
+      "wikidata": "Q170219"
+    },
+    "카레": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3b/Beef_curry_rice_003.jpg/500px-Beef_curry_rice_003.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Beef_curry_rice_003.jpg",
+      "license": "CC0",
+      "artist": "Ocdp",
+      "wikidata": "Q701870"
+    },
+    "타코야키": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d8/Takoyaki_by_yomi955.jpg/500px-Takoyaki_by_yomi955.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Takoyaki_by_yomi955.jpg",
+      "license": "CC BY 2.0",
+      "artist": "heiwa4126",
+      "wikidata": "Q905527"
+    },
+    "해산물": {
+      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0b/Kaisendon.jpg/500px-Kaisendon.jpg",
+      "filePage": "https://commons.wikimedia.org/wiki/File:Kaisendon.jpg",
+      "license": "CC BY-SA 4.0",
+      "artist": "海鮮ドン",
+      "wikidata": "Q1394677"
+    }
+  }
+}
