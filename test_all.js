@@ -47,14 +47,8 @@ function fetchUrl(urlPath, options = {}) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// Find project directory
-const homeDir = require('os').homedir();
-const onedrive = path.join(homeDir, 'OneDrive');
-let PROJECT = '';
-for (const d of fs.readdirSync(onedrive)) {
-  const c = path.join(onedrive, d, 'codex_project');
-  if (fs.existsSync(c)) { PROJECT = c; break; }
-}
+// Project directory = this file's folder (repo root)
+const PROJECT = __dirname;
 
 async function startServer() {
   const env = { ...process.env, PORT: String(PORT) };
