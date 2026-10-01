@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Tabimaru">
-  <rect width="64" height="64" rx="14" fill="#9c7a39"/>
-  <g fill="#faf8f4">
+  <circle cx="32" cy="32" r="30" fill="#bb3d29"/>
+  <g fill="#fbf7f0" transform="translate(32 33) scale(0.8) translate(-32 -35)">
     <path d="M6 15 Q32 22 58 15 L57 21 Q32 27.5 7 21 Z"/>
     <rect x="13" y="29" width="38" height="5" rx="1"/>
     <rect x="29.5" y="24" width="5" height="6"/>
