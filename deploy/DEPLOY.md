@@ -20,6 +20,7 @@
    | 대부분 항목 2개 이상이고, "마지막 값이 Cloudflare 주소"가 거의 전부 | Render 앞에 Cloudflare가 있음. 서버가 Cloudflare 주소면 한 칸 앞 값을 자동으로 씀 | 없음(기본값 1) |
    | 대부분 항목 N개(2 이상)로 같고, 마지막 값이 Cloudflare 주소가 아님 | Render 앞에 다른 프록시가 한 단 더 있어 모든 방문자가 그 프록시 주소 하나로 보임 → 레이트리밋(분당 60회)을 모두가 나눠 씀 | Render 환경변수 `TRUST_PROXY_HOPS=N`을 넣고 다시 배포 |
    | 항목 수가 요청마다 제각각 | 방문자가 직접 보낸 값이 섞여 있음 | 값을 올리지 말 것. 가장 흔한 개수를 기준으로 다시 판단 |
+   | "0개"가 많고 나머지는 모두 같은 N개 | 0개는 Render 내부 헬스체크(`/api/health`)라 프록시를 거치지 않음. 실제 방문은 N개 | 0개는 빼고 N개 요청만으로 위 표를 다시 적용. 2026-10-01 실측: 방문 요청은 항목 3개·`CF-Connecting-IP` 있음·마지막 값은 Cloudflare 아님 → `TRUST_PROXY_HOPS=3` |
 
    `TRUST_PROXY_HOPS`를 필요보다 크게 잡으면 방문자가 직접 보낸 `X-Forwarded-For` 값이 기준 IP가 되어 레이트리밋을 우회할 수 있습니다. 로그로 확인한 뒤에만 바꾸세요.
 2. `GET /api/health` → `app`이 `tabimaru`, `brand`가 `Tabimaru`, `providers`가 `{ "places": "free", "map": "osm" }`(무료 모드)인지 확인합니다.
