@@ -2,7 +2,7 @@
 
 English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI日本旅行プランナー**
 
-일본 여행 계획을 한 화면에서 만드는 웹 앱입니다. 지역·날짜·일수·테마를 고르거나 AI 채팅으로 조건을 말하면, 여행지 추천과 일자별 일정을 만들고 항공권·숙소·맛집·투어도 함께 찾아 줍니다. 화면은 한국어·영어·일본어를 지원합니다.
+일본 여행 계획을 한 화면에서 만드는 웹 앱입니다. "오사카 3박 4일, 유니버셜은 꼭, 도톤보리는 빼고"처럼 말로 요청하거나 지역·날짜·일수·테마를 고른 뒤 [일정 만들기]를 누르면, 여행지 추천과 일자별 일정을 만들고 항공권·숙소·맛집·투어도 함께 찾아 줍니다. 만든 일정은 끌어 놓기나 버튼으로 직접 고칠 수 있습니다. 화면은 한국어·영어·일본어를 지원하고, 다크 모드는 기기(OS) 설정을 따릅니다.
 
 - **운영 주소:** https://japanjapantravel.onrender.com/ (Render 무료 플랜이라 한동안 접속이 없으면 첫 로딩이 느릴 수 있습니다)
 - **저장소:** https://github.com/wsxc94/tabimaru-japan-travel-planner
@@ -14,22 +14,57 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 - 무료 모드의 추천은 오류 때문에 대신 보여 주는 목록이 아니라 **정상 결과**입니다. 화면에는 "엄선한 추천 장소"로 표시됩니다.
 - **사진:** 명소 카드에는 그 장소를 찍은 사진을 붙입니다. 그 장소의 사진이 없으면 도시 대표 사진을, 내장 맛집에는 음식 장르 예시 사진(라멘·스시 등)을 붙이고, 카드의 출처 줄에 "도시 대표 사진" / "음식 예시 사진"이라고 표시해 실제 장소·가게 사진으로 오해하지 않게 합니다.
 - **영어·일본어 이름:** 명소 이름은 위키데이터의 영어·일본어 이름(`labels`)과 서버의 번역 표로 바꿔 보여 줍니다. 영어·일본어 화면의 카드와 일정에는 한국어가 남지 않습니다(일정 블록 앞의 시간대 표기는 화면이 번역합니다).
-- 첫 화면을 여는 것만으로는 유료 API를 부르지 않습니다. [추천+AI일정 통합 생성]을 눌렀을 때만 일정·항공·숙소·맛집을 한 번씩 조회합니다. AI 일정도 이 버튼을 눌렀을 때만 만듭니다.
+- 첫 화면을 여는 것만으로는 유료 API를 부르지 않습니다. [일정 만들기]를 눌렀을 때만 일정·항공·숙소·맛집을 한 번씩 조회합니다. AI 해석·AI 일정도 이 버튼(또는 [이 내용으로 만들기])을 눌렀을 때만 만듭니다.
 - Google(Places·지도)은 환경변수로 다시 켤 수 있습니다. 켜더라도 결제 오류·한도 초과가 나면 30분 동안 호출을 멈추고, 하루·월 호출 수에 상한(검색 하루 30회·월 900회, 사진 하루 30회·월 900회)을 둡니다. 자세한 방법은 [Google로 다시 전환하기](#google로-다시-전환하기)를 보세요.
+
+## 사용법
+
+### 일정 만들기(주 버튼 하나)
+
+1. **말로 요청하기** 칸에 원하는 여행을 씁니다. 예: "오사카 3일 교토 2일, 유니버셜은 꼭, 도톤보리는 빼고 아침 10시 이후에 시작". 비워 두고 아래 조건(도시·출발일·일수·테마)만 골라도 됩니다.
+2. **[일정 만들기]**를 누릅니다.
+   - 요청칸에 새 글이 있으면 먼저 그 글을 해석하고(채팅 말풍선 아래 칩으로 도시·일수·꼭 갈 곳·제외·조건을 보여 줌), 그 조건으로 일정을 만듭니다.
+   - 같은 글로 다시 누르면 해석은 다시 하지 않고, 앞서 알아들은 꼭 갈 곳·제외·먹고 싶은 것을 그대로 일정 요청에 실어 보냅니다. 요청칸을 비우고 누르면 조건 칸 값만으로 만듭니다.
+   - 이어서 말하면(예: "교토 하루 더 늘려줘") 앞의 대화와 해석을 이어받아 바꾼 부분만 고칩니다.
+3. AI가 넣지 못한 꼭 갈 곳은 채팅에 따로 알려 줍니다. AI 사용량이 몰려 있으면(무료 한도) 기본 일정(규칙 기반)으로 만들고 "잠시 후 다시 만들어 보세요"라고 안내합니다.
+
+### 일정 직접 고치기
+
+| 하고 싶은 것 | 컴퓨터(마우스) | 휴대폰(터치) |
+|---|---|---|
+| 추천 카드를 일정에 넣기 | 카드를 원하는 칸으로 끌어다 놓기(넣을 수 있는 칸만 점선으로 강조) | 카드의 **[+ 일정에 넣기]** → 날짜·시간대 고르기, 또는 카드의 **☰ 손잡이**를 잡고 끌기 |
+| 빈 칸에 장소 넣기 | 칸의 **[+ 장소 추가]** → 후보 칩을 고르거나 이름 직접 입력 | 같음 |
+| 일정 항목 옮기기 | 항목을 다른 날·시간대로 끌기 | 항목의 **[옮기기]**(↔) → 날짜·시간대 고르기, 또는 **☰ 손잡이** 끌기 |
+| 지우기·순서 바꾸기 | ✕ · ▲▼ | 같음(버튼이 늘 보임) |
+
+- 여행지는 오전·오후·종일 칸에, 맛집은 아침·점심·저녁 칸에만 들어갑니다. 맞지 않는 칸에 놓으면 아무것도 바뀌지 않고 안내만 나옵니다.
+- 식사 칸은 하루에 시간대마다 하나입니다. 식사를 다른 식사 칸으로 옮기면 두 식사가 자리를 바꾸고, 찬 칸에 새 맛집을 넣으면 바꿀지 먼저 묻습니다.
+- 직접 고친 일정은 보호합니다. [일정 만들기]·[일정만 다시 만들기]를 누르면 덮어쓸지 먼저 묻고, 항공편·숙소를 바꿔도 일정을 자동으로 다시 만들지 않고 안내만 띄웁니다. ↩ 되돌리기로 이전 상태로 돌아갈 수 있습니다.
+
+### 자동 보관(초안)과 저장
+
+- 만든 일정과 고친 내용은 이 기기 브라우저에 초안 한 개로 자동 보관됩니다(localStorage `tabimaru.draft.v1`, 14일). 새로고침하거나 탭을 닫았다가 다시 열면 "저장하지 않은 일정이 있어요" 띠가 뜨고 **[이어서 편집]** / **[버리기]**를 고를 수 있습니다. 이어서 편집해도 AI를 다시 부르지 않습니다.
+- 직접 고친 일정이 있는 채로 탭을 닫으면 브라우저가 한 번 묻습니다.
+- 다른 기기에서도 보려면 로그인한 뒤 일정 옆의 **[💾 저장]**으로 "내 일정"에 저장합니다. **[📋 내보내기·공유]**는 글·마크다운·PDF·공유하기를 지원합니다.
+
+### 화면 설정
+
+- **다크 모드:** 기기(OS)의 밝게/어둡게 설정을 따릅니다(따로 켜는 버튼은 없음). 지도 타일도 어두운 톤으로 바뀝니다.
+- **언어:** 머리글의 한 · EN · 日 버튼. 고른 언어는 다음 방문에도 유지됩니다.
 
 ## 화면
 
-운영 사이트의 실제 화면입니다(2026-10-01, 무료 모드: 위키미디어 사진 + OpenStreetMap 지도, AI 일정은 Gemini).
+운영 사이트의 실제 화면입니다(2026-10-01, 무료 모드: 위키미디어 사진 + OpenStreetMap 지도, AI 일정은 Gemini). 아래 캡처는 같은 날 진행한 화면 개편(와시 크림·주홍 색, 주 버튼 하나, 일정 칸 버튼) **전에** 찍은 것이라 색·버튼 이름·배치가 지금과 조금 다릅니다. 개편을 배포한 뒤 다시 찍어 바꿀 예정입니다.
 
 ### 여행 조건 + AI 조건 채팅
 
-지역·출발일·일수·테마를 고르고 [추천+AI일정 통합 생성]을 누르거나, "유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고 3박 4일"처럼 자연어로 입력하면 조건을 자동으로 채웁니다. 상단 툴바에서 내보내기·체크리스트·긴급 연락처·회화·날씨·찜·검색 기록을 쓸 수 있고, 한국어/영어/일본어로 바꿀 수 있습니다. 첫 화면을 여는 것만으로는 일정을 만들지 않습니다.
+지역·출발일·일수·테마를 고르고 [일정 만들기]를 누르거나, "유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고 3박 4일"처럼 말로 요청하면 조건을 자동으로 채웁니다. 상단 툴바에서 내보내기·체크리스트·긴급 연락처·회화·날씨·찜·검색 기록을 쓸 수 있고, 한국어/영어/일본어로 바꿀 수 있습니다. 첫 화면을 여는 것만으로는 일정을 만들지 않습니다.
 
 ![여행 조건](docs/screenshots/main.png)
 
 ### 추천 결과: 추천 여행지 + AI 일정
 
-추천 여행지 카드에는 위키미디어 공용 사진과 저작자·라이선스가 붙습니다. 카드는 끌어다 놓아 일정에 넣을 수 있습니다. 일정은 오전·오후·종일 블록과 아침·점심·저녁 맛집 칸으로 나뉘며, 되돌리기/다시 실행과 경로 교통비 계산을 지원합니다. 장소가 모자란 칸은 지어낸 장소 대신 "자유 일정"으로 표시하고, 지도와 교통비 계산에서는 뺍니다.
+추천 여행지 카드에는 위키미디어 공용 사진과 저작자·라이선스가 붙습니다. 카드는 끌어다 놓거나 [+ 일정에 넣기]로 일정에 넣을 수 있습니다([사용법](#일정-직접-고치기)). 일정은 오전·오후·종일 블록과 아침·점심·저녁 맛집 칸으로 나뉘고 항목마다 실제 시각을 보여 주며, 되돌리기/다시 실행과 경로 교통비 계산을 지원합니다. 장소가 모자란 칸은 지어낸 장소 대신 "자유 일정"으로 표시하고, 지도와 교통비 계산에서는 뺍니다.
 
 ![추천 결과](docs/screenshots/plan.png)
 
@@ -67,20 +102,21 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 | 항공권 | Travelpayouts 캐시 가격(요청 날짜가 비면 ±7일, 화면에 "다른 날짜" 표시) | 토큰이 없거나 결과가 없으면 "예시 데이터"로 표시 |
 | 숙소 | Rakuten Travel(좌표 기반, 62개 도시). 날짜 조건 결과가 없으면 최저가 목록("날짜 미확인 최저가" 표시) | 키가 없거나 결과가 없으면 "예시 데이터"로 표시 |
 | 경로 교통비 | AI 계산 또는 좌표 기반 거리 추정 | google 모드에서만 Directions API |
-| 날씨 | Open-Meteo(무료, 키 없음), 모든 도시 | 위치를 모르는 도시는 다른 도시 날씨로 대신하지 않음 |
+| 날씨 | Open-Meteo(무료, 키 없음), 모든 도시, 16일 예보(범위 밖 날짜는 안내) | 위치를 모르는 도시는 다른 도시 날씨로 대신하지 않음 |
 | 환율 | open.er-api(ExchangeRate-API) → Frankfurter(무료) | `FX_USD_KRW`·`FX_JPY_KRW` 고정값 → 코드의 대략값 |
 | 투어 | Klook 위젯 | 8초 안에 안 뜨면 Klook·Viator·GetYourGuide 링크 |
 | 로그인 · 내 일정 | Google · Naver · Kakao OAuth | 키가 없으면 로그인 버튼 숨김 |
 | 플랜 저장소 | Supabase(선택, 로그인 필요) | 없거나 연결되지 않으면 503 |
 
-그 밖에 일정 되돌리기/다시 실행, 계절 추천, 경로 최적화, 한/영/일 다국어(키 468개), 레이트 리밋·보안 헤더·XSS 방어가 있습니다.
+그 밖에 일정 되돌리기/다시 실행, 편집 중 초안 자동 보관, 계절 추천, 경로 최적화, 한/영/일 다국어(키 559개), 다크 모드(OS 설정), 레이트 리밋·보안 헤더·XSS 방어가 있습니다.
 
 ## 출처 표시(폴백 투명성)
 
 API 응답은 기존 필드(`source` 등)를 그대로 두고, 다음 정보 객체를 추가로 보냅니다. 화면은 이 값을 짧은 안내 문구(ko/en/ja)로 바꿔 보여 주고, 내부 이름이나 원시 오류 문자열은 보여 주지 않습니다.
 
 - `POST /api/travel-plan` → `recommendationInfo`, `itineraryInfo`, `foodsInfo`
-- `POST /api/destinations`, `POST /api/dest-search`, `GET /api/foods`, `POST /api/flights`, `POST /api/stays` → `sourceInfo`
+- `POST /api/ai-travel-chat`, `POST /api/destinations`, `POST /api/dest-search`, `GET /api/foods`, `POST /api/flights`, `POST /api/stays` → `sourceInfo`
+- `itineraryInfo`에는 AI 일정 후처리 결과 `postProcess`(고친 블록 수 8가지)와 넣지 못한 꼭 갈 곳 `missingMustVisit`도 붙습니다([ARCHITECTURE.md 6.4](ARCHITECTURE.md#64-의도-계약)).
 
 모양: `{ kind, provider, reasonCode }`
 
@@ -93,7 +129,7 @@ API 응답은 기존 필드(`source` 등)를 그대로 두고, 다음 정보 객
 | `fallback` | 공급자 실패로 무료 데이터를 대신 씀(숙소는 날짜 조건 없는 최저가 목록) | 기본 목록 |
 | `mock` | 실제 가격이 아닌 예시 데이터 | 예시 데이터 |
 
-`reasonCode`는 대체한 이유입니다: `GOOGLE_KEY_MISSING`, `GOOGLE_BILLING_DISABLED`, `GOOGLE_PERMISSION_DENIED`, `GOOGLE_QUOTA_EXCEEDED`, `GOOGLE_ERROR`, `GOOGLE_CIRCUIT_OPEN`, `NO_RESULTS`, `AI_KEY_MISSING`, `AI_TRUNCATED`, `AI_INVALID_OUTPUT`, `AI_ERROR`, `PROVIDER_UNAVAILABLE`, `NO_LIVE_DATA`. 무료 모드의 정상 결과는 `reasonCode: null`입니다. 서버는 실제 공급자 오류(HTTP 상태·사유, 비밀값 제외)를 같은 사유당 10분에 한 번만 로그로 남깁니다. 응답의 `aiErrors`에는 `{ provider, code, reasonCode, action }`만 담고, 공급자 원문 메시지는 서버 로그에만 남깁니다.
+`reasonCode`는 대체한 이유입니다: `GOOGLE_KEY_MISSING`, `GOOGLE_BILLING_DISABLED`, `GOOGLE_PERMISSION_DENIED`, `GOOGLE_QUOTA_EXCEEDED`, `GOOGLE_ERROR`, `GOOGLE_CIRCUIT_OPEN`, `NO_RESULTS`, `AI_KEY_MISSING`, `AI_TRUNCATED`, `AI_INVALID_OUTPUT`, `AI_ERROR`, `AI_BUSY`(Gemini 429 한도·503 과부하: 잠시 후 다시 시도), `PROVIDER_UNAVAILABLE`, `NO_LIVE_DATA`, `NO_GENRE_MATCH`(`/api/foods`에서 그 장르의 가게가 없어 빈 목록). 무료 모드의 정상 결과는 `reasonCode: null`입니다. AI가 응답했어도 쓸 만한 값이 하나도 없으면 `ai`로 표시하지 않습니다(`rule` + `AI_INVALID_OUTPUT`). 서버는 실제 공급자 오류(HTTP 상태·사유, 비밀값 제외)를 같은 사유당 10분에 한 번만 로그로 남깁니다. 응답의 `aiErrors`에는 `{ provider, code, reasonCode, action }`만 담고, 공급자 원문 메시지는 서버 로그에만 남깁니다.
 
 카드 사진에는 `photoCredit: { artist, license, filePage, scope }`가 붙습니다. `scope`는 사진이 무엇을 찍은 것인지 알려 줍니다.
 
@@ -195,17 +231,21 @@ npm test                  # = node test_all.js
 ```
 
 - 실제 네트워크를 쓰지 않습니다. 서버를 벤더 키가 모두 빈 상태로 띄우고(`.env` 값은 쓰지 않음), Google·Gemini·Travelpayouts 주소를 테스트가 띄운 가짜 서버(포트 3205)로 돌립니다. 환율·날씨 같은 그 밖의 외부 호출은 `tests/support/net-guard.js`가 가짜 서버로 보냅니다.
-- 서버(포트 13581)를 설정만 바꿔 여덟 번 띄웁니다: 무료 모드(기본), 무료 모드 사진·영어/일본어 이름, 프록시 신뢰(모든 도시 날씨·X-Forwarded-For 위조), Google 결제 꺼짐(대체 목록 + 30분 차단), Google 정상(사진 프록시·Gemini 잘림/정상/빈 일정·Travelpayouts), 하루 호출 상한, Geocoding 거부, OAuth 로그인 state·AI 오류 원문 제거.
+- 서버(포트 13581)를 설정만 바꿔 열 번 띄웁니다: 무료 모드(기본), 무료 모드 사진·영어/일본어 이름, 프록시 신뢰(모든 도시 날씨·X-Forwarded-For 위조), Google 결제 꺼짐(대체 목록 + 30분 차단), Google 정상(사진 프록시·Gemini 잘림/정상/빈 일정·Travelpayouts), 하루 호출 상한, Geocoding 거부, OAuth 로그인 state·AI 오류 원문 제거, 의도 회귀 표, AI 일정 후처리.
+- **의도 회귀 표(말로 한 요청을 제대로 알아듣는지):** 실제 Gemini로 돌려 본 요청(ai_live P01-P16·X1-X3), 코드 검수 요청(ai_code P01-P19), 정규식 보정 사례(SV-04)를 합친 58줄을 가짜 Gemini 400으로 규칙 해석기에 보내고, 일수·출발일(월·일, 올해/내년)·도시·테마·쇼핑 제외·꼭 갈 곳·제외·미지원 지역·도착/출발/시작 시각·하루 장소 수를 확인합니다. 줄 이름에 감사 ID와 요청이 붙고, 틀리면 어느 필드가 무엇이었는지 한 줄로 보입니다. 이어서 Gemini 해석 정규화(정직한 `sourceInfo`, '쇼핑은 빼줘'인데 테마 shopping 거부, 폼 도시보다 메시지의 도시), 영어·일본어 답변에 한국어가 남지 않는지, 후속 대화("교토 하루 더 늘려줘")를 봅니다.
+- **AI 일정:** 가짜 Gemini가 계약을 어긴 일정(저녁 칸의 관광, 오후 칸의 맛집, 반나절 칸의 USJ, 빠진 꼭 갈 곳, 매일 같은 점심, 지어낸 장소, 제외한 디즈니)을 돌려줘도 서버 후처리가 고치는지, 프롬프트에 요청 원문·꼭 갈 곳·도시별 날짜·`Constraints:`가 들어가는지, 429·503이 `AI_BUSY`가 되는지 봅니다.
+- **직접 배치(샌드박스):** `placeBlock`(식사 맞바꾸기·같은 식사 칸 2개 금지·오전 순서·종류가 다르면 그대로), 추가 창(직접 입력 뒤 카드 추가·강조된 시간대 = 들어간 시간대·[옮기기]), 끌어 놓기 공용 경로와 ☰ 손잡이 터치 끌기, 직접 고친 일정 보호, 요청 의도 전달(`request`·`mustVisit`·`excludedPlaces`·`foodWishes`·`history`·`prevParsed`), 설정 안 된 로그인 버튼 숨김, 초안 복구(유료 호출 0회)를 봅니다.
 - 보안 회귀 검사: 네이버·카카오·Google 로그인 시작 응답의 `oauth_state` 쿠키(HttpOnly, SameSite=Lax, Path=/api/auth, 10분) 값이 이동 주소의 `state`와 같은지 봅니다. 콜백에 쿠키가 없거나, 다른 쿠키이거나, `state`가 없거나, 다른 공급자의 `state`이거나, 한 번 통과한 `state`를 다시 보내면 모두 `/?authError=invalid_state`로 가는지도 봅니다. 토큰 교환은 가짜 서버가 거절하므로 실제 로그인이나 사용자 저장은 일어나지 않습니다. Gemini가 400과 오류 원문을 돌려줘도 `travel-plan`·`ai-travel-chat` 응답의 `aiErrors`에는 `provider`·`code`·`reasonCode`·`action`만 있고 원문은 없어야 합니다.
 - 사진 검사: 도시 대표 사진(`scope: city`, 도시 좌표는 붙이지 않음)과 음식 장르 사진(`scope: genre`)이 Commons 주소·저작자·라이선스와 함께 붙는지, 사진 종류마다 `place-images.json`의 맞는 칸과 같은지, 예시 사진이 없는 장르는 비워 두는지 봅니다.
 - 이름 검사: 영어·일본어 응답의 카드 이름이 `labels`를 쓰는지, 카드·맛집·일정 글자에 한국어가 남지 않는지, 현지화된 이름으로도 지도 좌표를 찾는지 봅니다.
 - 브랜드 검사: `/api/health`의 `app`이 `tabimaru`, 페이지 제목·매니페스트 이름이 Tabimaru인지, 언어를 바꾸면 제목도 바뀌는지, 외부 호출의 User-Agent가 `TabimaruBot/0.1`인지 봅니다. 도메인에 묶인 값(운영 주소, Render 서비스 이름, OAuth 콜백 경로, `sid` 쿠키, localStorage 키, 매니페스트 `start_url`)이 그대로인지도 봅니다.
-- 첫 화면은 `tests/support/browser-sandbox.js`로 `app.js`를 실제로 부팅해, 유료 API를 부르지 않는지 확인합니다. 이어서 [추천+AI일정 통합 생성]을 두 번 눌러도 일정 1회 + 항공·맛집·숙소 각 1회만 부르는지, 카드에 실제 `<img>`와 위키미디어 출처가 붙는지, Leaflet이 일정이 생긴 뒤에만 SRI와 함께 로드되는지, 빈 일정에 안내 문구가 나오는지도 봅니다. 사진·출처 표시 함수(`safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`)와 추천·맛집 카드에는 악성 값(`javascript:`·`data:` 주소, 비슷한 호스트, `/\`·`//` 우회 주소, 따옴표·HTML이 든 이름과 저작자)을 넣습니다. 그래도 사진은 Commons나 `/api/place-photo`, 출처 링크는 Commons 파일 페이지나 Google 기여자 페이지만 남고, 나머지 값은 모두 이스케이프되는지 봅니다.
-- 그 밖에 응답에 키가 섞이지 않는지, 날씨 응답이 날짜·숫자만 담는지, CSRF 출처 검사, 긴급 전화번호 표시 = `tel:` 링크, CSS 변수 자기참조, 한국어 사전 누락, `render.yaml`·`.env.example`·README의 환경변수 목록과 기본값 누락도 검사합니다.
-- 포트 13581과 3205가 비어 있어야 합니다. 2026-10-01 기준 314개 검사가 모두 통과합니다(몇 초 걸림).
+- 첫 화면은 `tests/support/browser-sandbox.js`로 `app.js`를 실제로 부팅해, 유료 API를 부르지 않는지 확인합니다. 이어서 [일정 만들기]를 두 번 눌러도 일정 1회 + 항공·맛집·숙소 각 1회만 부르는지, 카드에 실제 `<img>`와 위키미디어 출처가 붙는지, Leaflet이 일정이 생긴 뒤에만 SRI와 함께 로드되는지, 빈 일정에 안내 문구가 나오는지도 봅니다. 사진·출처 표시 함수(`safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`)와 추천·맛집 카드에는 악성 값(`javascript:`·`data:` 주소, 비슷한 호스트, `/\`·`//` 우회 주소, 따옴표·HTML이 든 이름과 저작자)을 넣습니다. 그래도 사진은 Commons나 `/api/place-photo`, 출처 링크는 Commons 파일 페이지나 Google 기여자 페이지만 남고, 나머지 값은 모두 이스케이프되는지 봅니다.
+- 그 밖에 응답에 키가 섞이지 않는지, 날씨 응답이 날짜·숫자만 담는지, CSRF 출처 검사, 긴급 전화번호 표시 = `tel:` 링크, CSS 변수 자기참조, CSS 중복 사본·키보드 포커스 링·다크 모드 토큰, 사전 누락·중복 키·코드가 쓰는 키(`t('…')`, `data-i18n`)의 ko/en/ja 존재, `index.html` 기본 글자 = ko 사전, `alert(`·`prompt(` 없음, localStorage 새 키는 `tabimaru.draft.v1` 하나, `render.yaml`·`.env.example`·README의 환경변수 목록과 기본값 누락도 검사합니다.
+- 포트 13581과 3205가 비어 있어야 합니다. 2026-10-01 기준 488개 검사가 모두 통과합니다(몇 초 걸림).
+- 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`oauth`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
 - GitHub Actions(`.github/workflows/ci.yml`)가 push와 pull request마다 Node 20으로 `npm test`를 돌립니다.
 
-수동 점검(개발용, CI 제외): `node _test_api.js`는 로컬 서버만 확인합니다. `node _test_api.js --google`을 붙이면 Google Places·Geocoding을 한 번씩 실제로 호출하므로 과금될 수 있습니다.
+수동 점검(개발용, CI 제외): `node _test_api.js`는 로컬 서버만 확인합니다. `node _test_api.js --google`을 붙이면 Google Places·Geocoding을 한 번씩 실제로 호출하므로 과금될 수 있습니다. `node scripts/prompt-matrix.mjs --base http://127.0.0.1:3000`은 실행 중인 서버에 대표 요청 16개를 보내 해석과 날짜별 일정을 표로 보여 줍니다(실제 Gemini 약 32회, 무료 한도를 씀). 화면 손가락 끌기 같은 브라우저 점검 순서는 [ARCHITECTURE.md 14](ARCHITECTURE.md#14-수동-점검-체크리스트)에 있습니다.
 
 ## 환경 변수
 
@@ -257,10 +297,10 @@ npm test                  # = node test_all.js
 
 | 경로 | 설명 |
 |---|---|
-| `POST /api/travel-plan` | 여행지 추천 + 일정 + 추천 맛집. `recommendationInfo`·`itineraryInfo`·`foodsInfo`, 일자별 `places`(지도 좌표), `placeCoords` 포함 |
+| `POST /api/travel-plan` | 여행지 추천 + 일정 + 추천 맛집. 선택 필드 `request`(요청 원문, 600자까지)·`mustVisit`·`excludedPlaces`(각 8개)·`foodWishes`(3개)·`_picks`. 응답에 `recommendationInfo`·`itineraryInfo`(`postProcess`·`missingMustVisit`)·`foodsInfo`, 일자별 `places`(지도 좌표), `placeCoords` 포함 |
 | `POST /api/destinations`, `POST /api/dest-search` | 여행지 추천·검색(`sourceInfo`) |
 | `POST /api/itinerary` | 규칙 기반 일자별 일정 |
-| `POST /api/ai-travel-chat` | 자연어 여행 조건 해석 |
+| `POST /api/ai-travel-chat` | 자연어 여행 조건 해석. 후속 대화용 `history`(최근 12개, 각 500자)·`prevParsed`(4KB 이하). 응답에 `parsed`(꼭 갈 곳·제외·미지원 지역·도착/출발/시작 시각 포함)·`reply`(화면 언어)·`sourceInfo` |
 | `POST /api/flights` | 항공권(`oneway`·`roundtrip`·`multicity`, 필터). `sourceInfo`, `dateMatch`(`exact`·`nearby`·`null`) |
 | `POST /api/stays` | 숙소(가격·평점(5점 만점, 리뷰 없으면 `null`)·편의시설 필터). `sourceInfo`, `dateMatch`(날짜 조건 없는 최저가면 `none`) |
 | `GET /api/foods` | 맛집(`sourceInfo`) |
@@ -285,6 +325,7 @@ server.js                    Node.js API 서버(외부 패키지 없음)
 public/                      프론트엔드(index.html, app.js, styles.css, manifest, favicon.svg)
 assets/place-images.json     무료 모드 사진·좌표·영어/일본어 이름(위키미디어)
 scripts/build-place-images.js  위 파일을 다시 만드는 스크립트(npm run build:place-images)
+scripts/prompt-matrix.mjs    대표 요청 16개의 해석·일정을 실제 서버로 확인하는 수동 점검표(실제 AI 호출)
 test_all.js, tests/support/  통합 테스트와 가짜 벤더 서버·네트워크 차단·DOM 흉내
 _test_api.js                 수동 점검 스크립트(개발용)
 deploy/                      배포 가이드(DEPLOY.md), Supabase 스키마

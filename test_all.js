@@ -274,6 +274,35 @@ function extractBalanced(code, startIdx) {
   return null;
 }
 
+// 객체 리터럴 원문({ ... })에서 바로 아래 단계의 키 이름을 순서대로 뽑는다(문자열·주석 건너뜀). 중복 키 검사용.
+function objectLiteralKeys(src) {
+  const keys = [];
+  let depth = 0;
+  let expectKey = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '/' && src[i + 1] === '/') { const nl = src.indexOf('\n', i); if (nl < 0) break; i = nl; continue; }
+    if (ch === '/' && src[i + 1] === '*') { const end = src.indexOf('*/', i + 2); if (end < 0) break; i = end + 1; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch;
+      let j = i + 1;
+      let text = '';
+      while (j < src.length && src[j] !== quote) { if (src[j] === '\\') { text += src[j + 1]; j += 2; continue; } text += src[j]; j++; }
+      if (depth === 1 && expectKey && /^\s*:/.test(src.slice(j + 1, j + 20))) { keys.push(text); expectKey = false; }
+      i = j;
+      continue;
+    }
+    if (ch === '{' || ch === '[' || ch === '(') { depth++; if (depth === 1) expectKey = true; continue; }
+    if (ch === '}' || ch === ']' || ch === ')') { depth--; continue; }
+    if (depth === 1 && ch === ',') { expectKey = true; continue; }
+    if (depth === 1 && expectKey && /[A-Za-z_$]/.test(ch)) {
+      const m = /^[A-Za-z_$][\w$]*(?=\s*:)/.exec(src.slice(i));
+      if (m) { keys.push(m[0]); expectKey = false; i += m[0].length - 1; }
+    }
+  }
+  return keys;
+}
+
 // ── CSS 사용자 정의 속성 검사 ──
 function cssVariableReport(css) {
   const clean = css.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -311,6 +340,23 @@ async function runTests() {
   const appCode = read('public/app.js');
   const htmlCode = read('public/index.html');
   const cssCode = read('public/styles.css');
+
+  // 개발용 부분 실행: TEST_ONLY=sandbox,intent,itinerary 처럼 고른 단계만 돌린다(npm test·CI는 늘 전체).
+  const only = new Set(String(process.env.TEST_ONLY || '').split(',').map((s) => s.trim()).filter(Boolean));
+  if (only.size > 0) {
+    results.push(`  [partial run: TEST_ONLY=${[...only].join(',')}]`);
+    const start = appCode.indexOf('var I18N = {');
+    const dict = vm.runInNewContext('(' + extractBalanced(appCode, appCode.indexOf('{', start)) + ')', {});
+    if (only.has('sandbox')) await sandboxSchedulingTests(htmlCode, appCode, dict);
+    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, oauth: phaseOauthAndAiErrors, live: phaseGoogleLive, free: phaseFree };
+    const chosen = Object.keys(phases).filter((k) => only.has(k));
+    if (chosen.length) {
+      await mock.start();
+      try { for (const k of chosen) await phases[k](); } finally { await stopServer(); await mock.stop(); }
+    }
+    printResults();
+    return;
+  }
 
   // ── 1. Code Analysis ──
   section('Code Analysis');
@@ -410,6 +456,74 @@ async function runTests() {
   const undefinedInApp = undefinedVarUses(appCode + '\n' + htmlCode, cssReport.defs);
   log(undefinedInApp.length === 0, 'CSS vars used in app.js/index.html are defined in styles.css', undefinedInApp.join(', '));
 
+  // CSS 중복 사본 정리(MC-01): 최상위 규칙은 한 번씩만(반응형 @media 안의 덮어쓰기는 들여쓰기라 세지 않는다)
+  for (const sel of ['.rec-tabs {', '.itin-meal-empty {', '.drop-active .drop-hint']) {
+    const n = (cssCode.match(new RegExp('^' + sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gm')) || []).length;
+    log(n === 1, `CSS: top-level rule "${sel}" appears exactly once (duplicate copies removed)`, `${n} found`);
+  }
+  // 키보드 포커스 링(MC-03): 조작 요소 전체에 :focus-visible 외곽선
+  const focusRule = /:where\([^)]*\bbutton\b[^)]*\ba\b[^)]*\binput\b[^)]*\):focus-visible\s*\{[^}]*outline:\s*2px\s+solid\s+var\(--accent\)/.test(cssCode);
+  log(focusRule, 'CSS: global :focus-visible rule (button, a, input …) draws a 2px accent outline');
+  // 다크 모드(MC-10): 밝은 :root의 색 토큰을 OS 다크 설정(@media)과 data-theme="dark" 양쪽에서 모두 다시 정한다
+  try {
+    const cleanCss = cssCode.replace(/\/\*[\s\S]*?\*\//g, '');
+    const blockAt = (re) => {
+      const idx = cleanCss.search(re);
+      return idx < 0 ? '' : (extractBalanced(cleanCss, cleanCss.indexOf('{', idx)) || '');
+    };
+    const declsOf = (block) => new Map([...block.matchAll(/(--[A-Za-z0-9_-]+)\s*:\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]));
+    const lightRoot = declsOf(blockAt(/(^|\n)\s*:root\s*\{/));
+    const isColorValue = (v) => /^(#[0-9a-f]{3,8}\b|rgba?\(|hsla?\()/i.test(v) || /\brgba?\(/i.test(v);
+    const colorTokens = [...lightRoot].filter(([, v]) => isColorValue(v)).map(([k]) => k);
+    const darkMediaBlock = blockAt(/@media\s*\(prefers-color-scheme:\s*dark\)/);
+    const darkMedia = declsOf(darkMediaBlock);
+    const darkAttr = declsOf(blockAt(/:root\[data-theme="dark"\]\s*\{/));
+    const missMedia = colorTokens.filter((k) => !darkMedia.has(k));
+    const missAttr = colorTokens.filter((k) => !darkAttr.has(k));
+    log(colorTokens.length >= 20 && /:root:not\(\[data-theme="light"\]\)/.test(darkMediaBlock) && missMedia.length === 0 && missAttr.length === 0,
+      `CSS dark mode: prefers-color-scheme dark (:root:not([data-theme=light])) and :root[data-theme=dark] redefine all ${colorTokens.length} light color tokens`,
+      short({ missMedia, missAttr }));
+  } catch (e) { log(false, 'CSS dark mode token check', e.message); }
+
+  // app.js: 예전 '서버 식사 블록 지우기'와 브라우저 대화상자(alert/prompt)는 없어야 한다(인라인 메모·토스트로 대체)
+  log(!appCode.includes('stripServerMealBlocks'), "app.js: no stripServerMealBlocks (AI meal blocks are kept, classifyServerBlocks instead)");
+  const dialogCalls = appCode.match(/\b(?:window\.)?(?:alert|prompt)\s*\(/g) || [];
+  log(dialogCalls.length === 0, 'app.js: no alert( / prompt( calls (toasts and inline editors instead)', dialogCalls.join(', '));
+
+  // i18n: 코드가 t('키')로 쓰는 키와 data-i18n 속성 키는 ko/en/ja 사전에 모두 있어야 한다.
+  // 이미 빠져 있던 키(이 검사를 만들 때 0개)는 아래 허용 목록에 이유와 함께 적는다. 새로 빠진 키는 실패한다.
+  const I18N_KNOWN_MISSING = new Set([]);
+  try {
+    const dictSrcStart = appCode.indexOf('{', i18nStart);
+    const dictSrc = extractBalanced(appCode, dictSrcStart) || '';
+    const codeOutsideDict = appCode.slice(0, dictSrcStart) + appCode.slice(dictSrcStart + dictSrc.length);
+    const literalKeys = new Set([...codeOutsideDict.matchAll(/\bt\('([^'\\]+)'\)/g)].map((m) => m[1]));
+    const attrKeys = new Set([...(htmlCode + '\n' + codeOutsideDict).matchAll(/data-i18n(?:-placeholder|-aria|-title)?="([a-z0-9][a-z0-9-]*)"/g)].map((m) => m[1]));
+    const missingIn = (keys) => [...keys].filter((k) => !I18N_KNOWN_MISSING.has(k))
+      .flatMap((k) => ['ko', 'en', 'ja'].filter((l) => !Object.prototype.hasOwnProperty.call(i18nDict[l] || {}, k)).map((l) => `${l}:${k}`));
+    const missLiteral = missingIn(literalKeys);
+    const missAttr = missingIn(attrKeys);
+    log(literalKeys.size > 200 && missLiteral.length === 0, `I18N: every t('key') literal used in app.js exists in ko/en/ja (${literalKeys.size} keys)`, missLiteral.slice(0, 10).join(', '));
+    log(attrKeys.size > 100 && missAttr.length === 0, `I18N: every data-i18n* key in index.html/app.js exists in ko/en/ja (${attrKeys.size} keys)`, missAttr.slice(0, 10).join(', '));
+    // 같은 키가 두 번 있으면 vm 평가는 뒤 값만 남겨 앞 값을 고친 사람이 헛수고를 한다 → 원문에서 키를 직접 센다.
+    const dupKeys = [];
+    for (const lang of ['ko', 'en', 'ja']) {
+      const at = dictSrc.search(new RegExp('\\n\\s*' + lang + ':\\s*\\{'));
+      const sub = at >= 0 ? (extractBalanced(dictSrc, dictSrc.indexOf('{', at)) || '') : '';
+      const keys = objectLiteralKeys(sub);
+      const seen = new Set();
+      for (const k of keys) { if (seen.has(k)) dupKeys.push(`${lang}:${k}`); seen.add(k); }
+      if (keys.length !== Object.keys(i18nDict[lang] || {}).length + dupKeys.filter((d) => d.startsWith(lang + ':')).length) dupKeys.push(`${lang}: key count mismatch (${keys.length})`);
+    }
+    log(dupKeys.length === 0, 'I18N: no duplicate keys in the ko/en/ja dictionaries', dupKeys.slice(0, 8).join(', '));
+    // index.html의 기본 글자(첫 화면·ko)는 ko 사전 값과 같아야 한다(applyStaticI18n 전 깜빡임·어긋남 방지)
+    const decodeHtml = (s) => s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    const htmlTextDrift = [...htmlCode.matchAll(/<([a-z0-9]+)\b[^>]*\bdata-i18n="([^"]+)"[^>]*>([^<]*)<\/\1>/g)]
+      .filter((m) => typeof (i18nDict.ko || {})[m[2]] === 'string' && decodeHtml(m[3]).trim() !== i18nDict.ko[m[2]].trim())
+      .map((m) => `${m[2]}: "${decodeHtml(m[3]).trim()}" != "${i18nDict.ko[m[2]]}"`);
+    log(htmlTextDrift.length === 0, 'index.html: default text of every data-i18n element equals the ko dictionary value', htmlTextDrift.slice(0, 4).join(' | '));
+  } catch (e) { log(false, 'I18N used-key check', e.message); }
+
   // 브랜드는 한곳에서만 정한다(이름 변경 대비)
   log(/const APP_BRAND = '[^']+';/.test(serverCode) && /const APP_ID = '[^']+';/.test(serverCode), 'Brand: server has APP_BRAND/APP_ID constants');
   log(/var BRAND_NAME = '[^']+';/.test(appCode), 'Brand: client has BRAND_NAME constant');
@@ -432,6 +546,12 @@ async function runTests() {
   const LS_KEYS = ['travelLang', 'travelWishlist', 'travelSearchHistory', 'travelPreferences', 'travelChecklist', 'placeMemos'];
   const missingLs = LS_KEYS.filter((k) => !appCode.includes(`'${k}'`));
   log(missingLs.length === 0, 'Domain-bound: localStorage keys unchanged (' + LS_KEYS.join(', ') + ')', missingLs.join(', '));
+  // 새 키는 편집 중 초안 'tabimaru.draft.v1' 하나만 더해졌다(기존 6개를 대신하지 않는다). 상수(DRAFT_KEY 등)로 쓴 키도 풀어서 본다.
+  const lsConsts = new Map([...appCode.matchAll(/\bvar ([A-Z_]+_KEY) = '([^']+)';/g)].map((m) => [m[1], m[2]]));
+  const lsUsed = new Set([...appCode.matchAll(/localStorage\.(?:getItem|setItem|removeItem)\(\s*(?:'([^']+)'|([A-Z_]+_KEY))/g)].map((m) => m[1] || lsConsts.get(m[2]) || `?${m[2]}`));
+  const lsExtra = [...lsUsed].filter((k) => !LS_KEYS.includes(k) && k !== 'tabimaru.draft.v1');
+  log(lsConsts.get('DRAFT_KEY') === 'tabimaru.draft.v1' && lsUsed.has('tabimaru.draft.v1') && lsExtra.length === 0 && LS_KEYS.every((k) => lsUsed.has(k)),
+    "localStorage: only one new key ('tabimaru.draft.v1') next to the 6 existing ones", short({ used: [...lsUsed], extra: lsExtra }));
   const oauthPaths = ['/api/auth/google/callback', '/api/auth/naver/callback', '/api/auth/kakao/callback'];
   log(serverCode.includes('sid=${sid}.${sig}') && serverCode.includes("'Referer': 'https://japanjapantravel.onrender.com/'") && oauthPaths.every((p) => serverCode.includes(p)),
     "Domain-bound: cookie 'sid', Rakuten Referer and OAuth callback paths unchanged");
@@ -702,6 +822,9 @@ async function runTests() {
     }
   }
 
+  // ── 1d. 직접 배치·편집 보호·의도 전달·로그인 버튼·초안 복구 (app.js 샌드박스) ──
+  await sandboxSchedulingTests(htmlCode, appCode, i18nDict);
+
   // ════════ Server phases ════════
   await mock.start();
   try {
@@ -713,11 +836,356 @@ async function runTests() {
     await phaseDailyCap();
     await phaseGeocodeDenied();
     await phaseOauthAndAiErrors();
+    await phaseIntentRegression();
+    await phaseAiItinerary();
   } finally {
     await stopServer();
     await mock.stop();
   }
   printResults();
+}
+
+// ── 1d. 직접 배치(placeBlock)·추가 창·옮기기·끌어 놓기 공용 경로·편집 보호·의도 전달·로그인 버튼·초안 복구 ──
+// tests/support/browser-sandbox.js(평평한 DOM 흉내)에서 실제 app.js 코드를 부른다. 샌드박스의 confirm()은 늘 false다.
+// 한계: 샌드박스의 document.elementFromPoint()는 늘 null이라 손가락 끌기(pointermove 위치 판정)는 흉내 낼 수 없다.
+// 그래서 터치·마우스가 함께 쓰는 놓기 함수 applyDropToZone(beginDrag(원본), 칸)을 직접 불러 확인하고,
+// 실제 손가락 끌기는 ARCHITECTURE.md '수동 점검' 체크리스트(CDP Input.dispatchTouchEvent)로 본다.
+const CLIENT_BLOCK_RE = /^(오전|오후|저녁|종일|아침|점심)\(\d{2}:\d{2}-\d{2}:\d{2}\): \S.*$/;
+
+function schedulingPlanResponse() {
+  return {
+    ...samplePlanResponse(),
+    recommendations: [
+      { name: '센소지', city: '도쿄', area: '아사쿠사', category: '문화', aiScore: 82 },
+      { name: '도쿄 타워', city: '도쿄', area: '시바', category: '전망', aiScore: 80 },
+      { name: '메이지 신궁', city: '도쿄', area: '하라주쿠', category: '자연/문화', aiScore: 79 }
+    ],
+    recommendedFoods: [
+      { name: '스시다이', city: '도쿄', area: '츠키지', genre: '스시', score: 4.2, aiFit: 88 },
+      { name: '이치란 라멘', city: '도쿄', area: '신주쿠', genre: '라멘', score: 4.0, aiFit: 85 }
+    ],
+    itinerary: [
+      { day: 1, date: futureDate(20), blocks: ['오전(09:00-11:00): 센소지 (아사쿠사)', '점심(12:00-13:00): 이치란 라멘 (신주쿠)', '저녁(18:00-20:00): 스시다이 (츠키지)'] },
+      // 저녁 칸의 관광(식당 아님) → 화면 안전망이 시각을 지킨 채 오후로
+      { day: 2, date: futureDate(21), blocks: ['오후(13:00-15:00): 메이지 신궁 (하라주쿠)', '저녁(19:00-21:00): 도쿄 타워 야경 (시바)'] },
+      // 오전 토큰이지만 09:00-18:00 → 종일 칸에 실제 시각과 함께
+      { day: 3, date: futureDate(22), blocks: ['오전(09:00-18:00): 유니버셜 스튜디오 재팬 (오사카)'] }
+    ],
+    itineraryInfo: { kind: 'ai', provider: 'gemini', reasonCode: null, postProcess: { mealsMoved: 0, sightsRelabeled: 0, allDayMerged: 0, mustInserted: 0, trimmed: 0, shifted: 0, repeatsReplaced: 0, unverified: 0 }, missingMustVisit: [] },
+    itinerarySource: 'gemini_itinerary_v1 (mock)'
+  };
+}
+
+function sandboxRoutes(extra = {}) {
+  return {
+    '/api/cities': { body: { cities: [{ key: 'tokyo', label: '도쿄', airport: 'NRT' }, { key: 'osaka', label: '오사카', airport: 'KIX' }, { key: 'kyoto', label: '교토', airport: 'KIX' }] } },
+    '/api/auth/me': { body: { user: null } },
+    '/api/auth/providers': { body: { naver: false, kakao: true, google: true } },
+    '/api/maps-config': { body: { provider: 'osm' } },
+    '/api/fx-rate': { body: { jpyToKrw: 9.25, usdToKrw: 1370, lastUpdate: '2026-10-01', source: 'live', provider: 'open.er-api', approximate: false, stale: false } },
+    '/api/weather': { body: { city: 'tokyo', cityLabel: '도쿄', daily: { time: [futureDate(0)], weathercode: [1], temperature_2m_max: [20], temperature_2m_min: [12], precipitation_probability_max: [10] } } },
+    '/api/health': { body: { ok: true } },
+    '/api/travel-plan': { body: schedulingPlanResponse() },
+    '/api/flights': { body: { source: 'mock', sourceInfo: { kind: 'mock', provider: 'mock', reasonCode: 'PROVIDER_UNAVAILABLE' }, flights: [], total: 0, filterOptions: { airports: [], airlines: [] } } },
+    '/api/stays': { body: { source: 'mock', sourceInfo: { kind: 'mock', provider: 'mock', reasonCode: 'PROVIDER_UNAVAILABLE' }, stays: [], total: 0, filterOptions: { providers: [], amenities: [] } } },
+    '/api/foods': { body: { source: 'tabelog_style_curated', sourceInfo: { kind: 'curated', provider: 'curated', reasonCode: null }, list: [] } },
+    ...extra
+  };
+}
+
+async function sandboxSchedulingTests(htmlCode, appCode, i18nDict) {
+  section('Manual scheduling, edit protection, intent, login buttons, draft (app.js sandbox)');
+  const PAID = /^\/api\/(travel-plan|ai-travel-chat|flights|stays|foods|dest-search|route-cost|destinations|itinerary)$/;
+  const ko = i18nDict.ko || {};
+  // ── A. 생성 → 직접 배치 ──
+  const sb = createBrowser({ html: htmlCode, fetchRoutes: sandboxRoutes(), location: BASE + '/' });
+  const J = (code) => { const s = sb.run(`JSON.stringify(${code})`); return s === undefined ? undefined : JSON.parse(String(s)); };
+  const blocksOf = (d) => J(`((findItineraryDay(${d}) || {}).blocks || [])`) || [];
+  const idxOf = (d, name) => blocksOf(d).findIndex((b) => b.includes(': ' + name));
+  const count = (p) => sb.env.fetchCalls.filter((c) => c.path === p).length;
+  const badBlocks = (days) => days.flatMap((d) => blocksOf(d).map((b) => [d, b]))
+    .filter(([, b]) => /undefined|NaN/.test(b) || (/^(오전|오후|저녁|종일|아침|점심)\(/.test(b) && !CLIENT_BLOCK_RE.test(b)))
+    .map(([d, b]) => `${d}:${b}`);
+  const periodCount = (d, p) => blocksOf(d).filter((b) => b.startsWith(p + '(')).length;
+  try {
+    await sb.boot(appCode, 'public/app.js');
+    // (7) 설정 안 된 로그인(네이버)은 hidden, 설정된 것은 보인다
+    log(sb.element('loginNaver')?.hidden === true && sb.element('loginKakao')?.hidden === false && sb.element('loginGoogle')?.hidden === false,
+      'login buttons: providers {naver:false} -> #loginNaver.hidden, kakao/google stay visible', short({ naver: sb.element('loginNaver')?.hidden, google: sb.element('loginGoogle')?.hidden }));
+
+    sb.element('btnPlan').click();
+    await sb.settle(20000);
+    log(count('/api/travel-plan') === 1, 'sandbox: plan generated once (empty request box -> form path)', String(count('/api/travel-plan')));
+
+    // (3) 추천 카드마다 [+ 일정에 넣기] 버튼(드래그 없이 배치하는 기본 경로)
+    const destHtml = String(sb.element('destCards')?.innerHTML || '');
+    const foodHtml = String(sb.element('recFoodCards')?.innerHTML || '');
+    log(/class="add-to-plan-btn"[^>]*data-add-source="rec"/.test(destHtml) && /class="add-to-plan-btn"[^>]*data-add-source="recFood"/.test(foodHtml),
+      '#destCards / #recFoodCards: every card has an .add-to-plan-btn (rec / recFood)');
+
+    // (4) AI 일정의 저녁 식사·종일 칸 보존
+    const planHtml = String(sb.element('planResult')?.innerHTML || '');
+    log(planHtml.includes('스시다이') && blocksOf(1).includes('저녁(18:00-20:00): 스시다이 (츠키지)'),
+      "AI dinner block '저녁(18:00-20:00): 스시다이 (츠키지)' is kept and shown (no meal stripping)", short(blocksOf(1)));
+    log(blocksOf(3)[0] === '종일(09:00-18:00): 유니버셜 스튜디오 재팬 (오사카)' && planHtml.includes('09:00–18:00'),
+      "'오전(09:00-18:00): 유니버셜…' -> 종일 slot showing its real time 09:00–18:00", short(blocksOf(3)));
+    log(blocksOf(2).includes('오후(19:00-21:00): 도쿄 타워 야경 (시바)'), "a non-restaurant '저녁(19:00-21:00)' block becomes 오후 with its time kept", short(blocksOf(2)));
+
+    // (1) placeBlock — 식사 맞바꾸기: 점심(이치란) → 저녁 칸(스시다이) 이동은 서로 자리를 바꾼다
+    const swap = J(`placeBlock({ mode: 'move', day: 1, slotKey: 'dinner', from: { day: 1, blockIndex: ${idxOf(1, '이치란 라멘')} } })`);
+    const d1 = blocksOf(1);
+    log(swap?.ok === true && d1.includes('저녁(18:00-20:00): 이치란 라멘 (신주쿠)') && d1.includes('점심(12:00-13:30): 스시다이 (츠키지)')
+      && periodCount(1, '점심') === 1 && periodCount(1, '저녁') === 1 && badBlocks([1]).length === 0,
+      'placeBlock meal swap (lunch -> occupied dinner): both blocks keep the client format, no "undefined", one lunch + one dinner', short({ swap, d1 }));
+    // 같은 식사 칸이 2개 생기지 않는다: 찬 저녁 칸에 새 맛집 → 바꿀지 묻고(샌드박스는 '아니오') 그대로
+    const dialogsBefore = sb.env.dialogs.length;
+    const occupied = J(`placeBlock({ mode: 'add', day: 1, slotKey: 'dinner', name: '모츠나베 라쿠텐치', area: '하카타', kind: 'food' })`);
+    log(occupied?.ok === false && occupied?.reason === 'cancelled' && periodCount(1, '저녁') === 1 && sb.env.dialogs.slice(dialogsBefore).some(([k]) => k === 'confirm'),
+      'placeBlock add into an occupied meal slot asks first; declining leaves exactly one dinner', short({ occupied, d1: blocksOf(1) }));
+    const moveMeal = J(`placeBlock({ mode: 'move', day: 2, slotKey: 'dinner', from: { day: 1, blockIndex: ${idxOf(1, '이치란 라멘')} } })`);
+    const swapBack = J(`placeBlock({ mode: 'move', day: 1, slotKey: 'lunch', from: { day: 2, blockIndex: ${idxOf(2, '이치란 라멘')} } })`);
+    const mealCounts = [1, 2, 3].map((d) => ['아침', '점심', '저녁'].map((p) => periodCount(d, p)));
+    log(moveMeal?.ok && swapBack?.ok && mealCounts.every((row) => row.every((n) => n <= 1)) && blocksOf(1).includes('점심(12:00-13:30): 이치란 라멘 (신주쿠)')
+      && blocksOf(2).includes('저녁(18:00-20:00): 스시다이 (츠키지)') && badBlocks([1, 2, 3]).length === 0,
+      'placeBlock meal moves across days never create two blocks of the same meal period', short({ mealCounts, d1: blocksOf(1), d2: blocksOf(2) }));
+    // 오전 칸에 넣은 블록은 오후 블록보다 앞
+    const morning = J(`placeBlock({ mode: 'add', day: 2, slotKey: 'morning', name: '도쿄 스카이트리', area: '오시아게', kind: 'dest' })`);
+    log(morning?.ok && idxOf(2, '도쿄 스카이트리') >= 0 && idxOf(2, '도쿄 스카이트리') < idxOf(2, '메이지 신궁') && blocksOf(2)[idxOf(2, '도쿄 스카이트리')].startsWith('오전(09:00-12:00)'),
+      'placeBlock into the morning slot lands before the afternoon blocks', short(blocksOf(2)));
+    // 종류가 다르면(맛집 → 여행지 칸, 식사 블록 → 오후 칸) 아무것도 바뀌지 않는다
+    const snapshot = JSON.stringify([blocksOf(1), blocksOf(2), blocksOf(3)]);
+    const mm1 = J(`placeBlock({ mode: 'add', day: 3, slotKey: 'morning', name: '스시 잔마이', area: '츠키지', kind: 'food' })`);
+    const mm2 = J(`placeBlock({ mode: 'move', day: 3, slotKey: 'afternoon', from: { day: 1, blockIndex: ${idxOf(1, '이치란 라멘')} } })`);
+    log(mm1?.reason === 'kind-mismatch' && mm2?.reason === 'kind-mismatch' && JSON.stringify([blocksOf(1), blocksOf(2), blocksOf(3)]) === snapshot,
+      'placeBlock with a mismatched kind (food -> sight slot, meal -> afternoon) changes nothing', short({ mm1, mm2 }));
+
+    // (2) 추가 창: 직접 입력칸에 'A'를 쓰다 닫은 뒤 탐색 카드로 추가 → 카드 이름이 들어간다(예전 입력이 남지 않음)
+    sb.run(`showAddToPlanModal('', { addType: 'food', day: 2, slot: 'lunch' })`);
+    sb.element('modalCustomName').value = 'A';
+    sb.element('modalCancelAdd').click();
+    sb.run(`renderCards('foodCards', [{ name: '규카츠 모토무라', area: '시부야', genre: '규카츠', score: 4.1 }], 'food')`);
+    const foodAddBtn = sb.run(`document.querySelector('.add-to-plan-btn[data-add-source="foodSearch"]')`);
+    if (foodAddBtn) foodAddBtn.click();
+    sb.element('modalDaySelect').value = '3';
+    const lunchBtn = sb.run(`document.querySelector('.slot-btn[data-slot="lunch"]')`);
+    if (lunchBtn) lunchBtn.click();
+    const activeSlots = J(`Array.prototype.map.call(document.querySelectorAll('.slot-btn.active'), function (b) { return b.dataset.slot; })`) || [];
+    const pendingSlot = J('pendingAddSlot');
+    sb.element('modalConfirmAdd').click();
+    const d3 = blocksOf(3);
+    log(d3.includes('점심(12:00-13:30): 규카츠 모토무라 (시부야)') && !d3.some((b) => /\): A( \(|$)/.test(b)),
+      "add modal: typing 'A' in the custom box, closing, then adding a search card inserts the card name (not 'A')", short(d3));
+    log(activeSlots.length === 1 && activeSlots[0] === 'lunch' && pendingSlot === 'lunch' && d3.some((b) => b.startsWith('점심(')),
+      'add modal: the highlighted time slot is the slot the block actually goes into', short({ activeSlots, pendingSlot }));
+    // 여행지 시간 겹침(모든 배치 경로가 placeBlock → fitSightTime): 일부만 겹치면 칸 안의 빈 시간으로, 종일과 겹치면 무엇과 겹치는지 묻는다
+    const fitPartial = J(`fitSightTime({ blocks: ['오후(13:00-15:00): 메이지 신궁 (하라주쿠)'] }, '13:00', '17:00', -1, true)`);
+    const fitAllDay = J(`fitSightTime({ blocks: ['종일(09:00-18:00): 유니버셜 스튜디오 재팬 (오사카)'] }, '13:00', '17:00', -1, true)`);
+    const fitFree = J(`fitSightTime({ blocks: ['오전(09:00-12:00): 도쿄 스카이트리 (오시아게)', '오후(19:00-21:00): 도쿄 타워 야경 (시바)'] }, '13:00', '17:00', -1, true)`);
+    log(fitPartial?.shifted === true && fitPartial.start === '15:00' && fitPartial.end === '17:00' && !fitPartial.conflict
+      && fitAllDay?.shifted === false && fitAllDay?.conflict?.name === '유니버셜 스튜디오 재팬'
+      && fitFree?.shifted === false && !fitFree?.conflict && fitFree?.start === '13:00',
+      'fitSightTime: partial overlap -> free gap 15:00-17:00, all-day overlap -> conflict (USJ), no overlap -> slot time kept', short({ fitPartial, fitAllDay, fitFree }));
+    // 칸의 [+ 장소 추가] → 후보 칩으로 넣기(강조 = 실제 칸). 3일차는 종일 USJ라 먼저 겹침을 묻고(샌드박스 confirm = 아니오) 창을 열어 둔다.
+    const zoneBtn = sb.run(`document.querySelector('.itin-zone-add-btn[data-day="3"][data-slot="afternoon"]')`);
+    if (zoneBtn) zoneBtn.click();
+    const zoneActive = J(`Array.prototype.map.call(document.querySelectorAll('.slot-btn.active'), function (b) { return b.dataset.slot; })`) || [];
+    const chip = sb.run(`document.querySelector('.modal-pick-chip[data-pick-index="1"]')`);
+    if (chip) chip.click();
+    const d3BeforeOverlap = JSON.stringify(blocksOf(3));
+    const overlapDialogsAt = sb.env.dialogs.length;
+    sb.element('modalConfirmAdd').click();
+    const overlapAsk = sb.env.dialogs.slice(overlapDialogsAt).filter(([k]) => k === 'confirm').map(([, m]) => m);
+    const overlapExpected = String(ko['confirm-time-overlap'] || '').replace('{day}', '3일차').replace('{n}', '유니버셜 스튜디오 재팬').replace('{t}', '09:00–18:00');
+    log(overlapAsk.length === 1 && overlapAsk[0] === overlapExpected && JSON.stringify(blocksOf(3)) === d3BeforeOverlap
+      && sb.element('addToPlanModal') && !sb.element('addToPlanModal').classList.contains('hidden'),
+      "time overlap: adding a sight into 3일차 (종일 USJ 09:00-18:00) asks with the overlapping place/time; declining changes nothing and keeps the modal open", short({ overlapAsk, d3: blocksOf(3) }));
+    // 이 아래 수동 배치 검사(칸 추가·옮기기·끌어 놓기·터치)는 겹침 확인에 '예'라고 답한다.
+    sb.run('var __realConfirm = confirm; confirm = function (m) { __realConfirm(m); return /겹쳐요/.test(String(m)); };');
+    sb.element('modalConfirmAdd').click();
+    log(Boolean(zoneBtn && chip) && zoneActive.join() === 'afternoon' && blocksOf(3).includes('오후(13:00-17:00): 도쿄 타워 (시바)'),
+      "slot [+ 장소 추가] + candidate chip: highlighted 'afternoon' and the chip lands in 3일차 오후 (after accepting the overlap)", short({ zoneActive, d3: blocksOf(3) }));
+    // [옮기기] 모드: 2일차 메이지 신궁 → 3일차 오전
+    const moveBtn = sb.run(`document.querySelector('.itin-move-btn[data-day="2"][data-block-index="${idxOf(2, '메이지 신궁')}"]')`);
+    if (moveBtn) moveBtn.click();
+    const moveMode = J('pendingAddMode');
+    sb.element('modalDaySelect').value = '3';
+    const morningBtn = sb.run(`document.querySelector('.slot-btn[data-slot="morning"]')`);
+    if (morningBtn) morningBtn.click();
+    sb.element('modalConfirmAdd').click();
+    log(Boolean(moveBtn) && moveMode === 'move' && idxOf(2, '메이지 신궁') < 0 && blocksOf(3).includes('오전(09:00-12:00): 메이지 신궁 (하라주쿠)'),
+      '[옮기기] move mode moves the block (2일차 오후 -> 3일차 오전) and removes the original', short({ moveMode, d2: blocksOf(2), d3: blocksOf(3) }));
+
+    // (9) 끌어 놓기 공용 경로(마우스 drop·손가락 pointerup 모두 applyDropToZone): 카드 → 칸, 일정 항목 → 다른 날 칸
+    const dropCard = J(`applyDropToZone(beginDrag(document.querySelector('[data-drag-type="dest"][data-drag-index="0"]')), document.querySelector('.itin-period-zone[data-drop-day="2"][data-drop-dest-period="afternoon"]'))`);
+    log(dropCard?.ok === true && blocksOf(2).includes('오후(13:00-17:00): 센소지 (아사쿠사)'), 'drop path: recommendation card -> 2일차 오후 zone (shared by mouse drop and touch drag)', short({ dropCard, d2: blocksOf(2) }));
+    const dropItem = J(`applyDropToZone(beginDrag(document.querySelector('[data-itin-day="2"][data-itin-block-index="${idxOf(2, '도쿄 스카이트리')}"]')), document.querySelector('.itin-period-zone[data-drop-day="1"][data-drop-dest-period="afternoon"]'))`);
+    log(dropItem?.ok === true && idxOf(2, '도쿄 스카이트리') < 0 && blocksOf(1).includes('오후(13:00-17:00): 도쿄 스카이트리 (오시아게)'), 'drop path: itinerary item -> another day (moved, original removed)', short({ dropItem, d1: blocksOf(1) }));
+    const beforeMismatch = JSON.stringify([blocksOf(1), blocksOf(2), blocksOf(3)]);
+    const dropBad = J(`applyDropToZone(beginDrag(document.querySelector('[data-drag-type="food"][data-drag-index="0"]')), document.querySelector('.itin-period-zone[data-drop-day="3"][data-drop-dest-period="morning"]'))`);
+    log(dropBad?.ok === false && dropBad?.reason === 'kind-mismatch' && JSON.stringify([blocksOf(1), blocksOf(2), blocksOf(3)]) === beforeMismatch, 'drop path: a restaurant card on a sight zone is refused without changes', short(dropBad));
+    // 손가락 끌기 처리기(pointerdown/move/up): 샌드박스는 위치 판정을 못 하므로 elementFromPoint를 대상 칸으로 잠시 바꾸고,
+    // 평평한 DOM에는 부모 관계가 없어 ☰ 손잡이를 일정 항목의 자식으로 이어 붙인다. 마우스 포인터는 무시해야 한다(HTML5 drag 사용).
+    const touch = J(`(function () {
+      var item = document.querySelector('[data-itin-day="3"][data-itin-block-index="${idxOf(3, '메이지 신궁')}"]');
+      var zone = document.querySelector('.itin-period-zone[data-drop-day="2"][data-drop-dest-period="afternoon"]');
+      if (!item || !zone) return { missing: true };
+      var handle = document.createElement('span');
+      handle.className = 'drag-handle';
+      handle.parentNode = item; handle.parentElement = item;
+      var realFromPoint = document.elementFromPoint;
+      document.elementFromPoint = function () { return zone; };
+      var fire = function (type, x, y, pointerType) {
+        var ev = new Event(type, { bubbles: true, cancelable: true, pointerType: pointerType || 'touch', pointerId: 7, clientX: x, clientY: y });
+        handle.dispatchEvent(ev);
+        return ev;
+      };
+      var ghosts = function () { return Array.prototype.filter.call(document.body.children, function (c) { return c.classList.contains('touch-drag-ghost'); }).length; };
+      fire('pointerdown', 40, 400, 'mouse');
+      var mouseIgnored = ghosts() === 0 && !document.body.classList.contains('touch-dragging');
+      var down = fire('pointerdown', 40, 400);
+      var during = { ghost: ghosts(), bodyClass: document.body.classList.contains('touch-dragging'), active: document.querySelectorAll('.drop-active').length, prevented: down.defaultPrevented };
+      fire('pointermove', 60, 420);
+      var hover = zone.classList.contains('drop-hover');
+      fire('pointerup', 60, 420);
+      document.elementFromPoint = realFromPoint;
+      return { mouseIgnored: mouseIgnored, during: during, hover: hover, after: { ghost: ghosts(), bodyClass: document.body.classList.contains('touch-dragging'), active: document.querySelectorAll('.drop-active, .drop-hover').length } };
+    })()`) || {};
+    log(touch.mouseIgnored === true && touch.during?.ghost === 1 && touch.during?.bodyClass === true && touch.during?.active > 0 && touch.during?.prevented === true && touch.hover === true
+      && touch.after?.ghost === 0 && touch.after?.bodyClass === false && touch.after?.active === 0
+      && idxOf(3, '메이지 신궁') < 0 && blocksOf(2).includes('오후(13:00-17:00): 메이지 신궁 (하라주쿠)'),
+      'touch drag (☰ handle, pointer events): ghost + compatible zones while dragging, drop moves the block, state cleared; mouse pointers ignored', short({ touch, d2: blocksOf(2) }, 500));
+    sb.run('confirm = __realConfirm;');
+    log(badBlocks([1, 2, 3]).length === 0, 'after all manual edits every block keeps the client format (no undefined/NaN)', short(badBlocks([1, 2, 3])));
+
+    // (5) 편집 보호: 고친 일정은 [일정만 다시 만들기]·항공 선택으로 덮어쓰지 않는다
+    log(J('currentItineraryData.userEdited') === true, 'manual edits mark the itinerary as userEdited');
+    const plansBefore = count('/api/travel-plan');
+    const dialogsAt = sb.env.dialogs.length;
+    sb.element('btnPlanRefresh').click();
+    await sb.settle(5000);
+    log(count('/api/travel-plan') === plansBefore && sb.env.dialogs.slice(dialogsAt).some(([k, m]) => k === 'confirm' && m === ko['confirm-overwrite-edits']),
+      '[일정만 다시 만들기] on an edited plan asks to overwrite (declined) and makes no travel-plan call', short(sb.env.dialogs.slice(dialogsAt)));
+    sb.run(`flightResults = [{ _id: 'f-test-1', tripType: 'oneway', legs: [{ from: 'ICN', to: 'NRT', date: el('startDate').value, departureTime: '09:00', arrivalTime: '11:30' }], totalPriceKRW: 189000, totalDurationMin: 145, totalStops: 0, aiScore: 80 }]`);
+    sb.run(`selectFlightById('f-test-1')`);
+    await sb.settle(5000);
+    const regen = sb.element('planRegenHint');
+    log(count('/api/travel-plan') === plansBefore && Boolean(regen) && !regen.hidden && !regen.classList.contains('hidden'),
+      'selecting a flight after manual edits does not regenerate (0 travel-plan calls) and shows #planRegenHint', short({ calls: count('/api/travel-plan') - plansBefore }));
+    const draftText = sb.run(`localStorage.getItem('tabimaru.draft.v1')`);
+    log(typeof draftText === 'string' && draftText.includes('규카츠 모토무라'), "edits are kept as a local draft ('tabimaru.draft.v1')");
+    const used = sb.env.dialogs.filter(([k]) => k === 'alert' || k === 'prompt');
+    const errs = sb.env.errors.concat(sb.unhandled);
+    log(used.length === 0 && errs.length === 0, 'manual scheduling in the sandbox: no alert/prompt dialogs and no errors', short({ used, errs }, 600));
+
+    // (8) 초안이 있는 상태로 다시 열기 → 안내 띠만, 유료 호출 0회, 지도 라이브러리 미로딩. [이어서 편집]도 호출 0회
+    const sb2 = createBrowser({ html: htmlCode, fetchRoutes: sandboxRoutes(), location: BASE + '/' });
+    sb2.run(`localStorage.setItem('tabimaru.draft.v1', ${JSON.stringify(String(draftText || ''))})`);
+    await sb2.boot(appCode, 'public/app.js');
+    const banner = sb2.element('draftRestoreBanner');
+    const paid2 = sb2.env.fetchCalls.filter((c) => c.sameOrigin && PAID.test(c.path)).map((c) => c.path);
+    const leaflet2 = sb2.env.scriptSrcs.filter((s) => /leaflet/i.test(s));
+    log(Boolean(banner) && !banner.hidden && !banner.classList.contains('hidden') && paid2.length === 0 && leaflet2.length === 0,
+      'boot with a saved draft: restore banner shown, no paid call, Leaflet not loaded', short({ banner: Boolean(banner), paid2, leaflet2 }));
+    const restoreBtn = sb2.run(`document.querySelector('.notice-btn[data-notice-action="draft-restore"]')`);
+    if (restoreBtn) restoreBtn.click();
+    await sb2.settle(5000);
+    const paid3 = sb2.env.fetchCalls.filter((c) => c.sameOrigin && /^\/api\/(travel-plan|ai-travel-chat)$/.test(c.path));
+    log(Boolean(restoreBtn) && String(sb2.element('planResult')?.innerHTML || '').includes('규카츠 모토무라') && paid3.length === 0,
+      '[이어서 편집] restores the same blocks without any AI call', short({ restoreBtn: Boolean(restoreBtn), paid3: paid3.length }));
+    log(sb2.env.errors.concat(sb2.unhandled).length === 0, 'draft boot/restore raises no errors', short(sb2.env.errors.concat(sb2.unhandled), 400));
+  } catch (e) {
+    log(false, 'manual scheduling sandbox', e.stack || e.message);
+  }
+
+  // ── B. 의도 전달: 요청칸 글 + 주 버튼 → 채팅 먼저, 그 결과(꼭 갈 곳·제외·먹고 싶은 것)를 일정 요청에 싣는다 ──
+  try {
+    let chatCalls = 0;
+    const chatRoute = () => {
+      chatCalls += 1;
+      return {
+        body: {
+          reply: '도쿄 3일 여행으로 맞췄어요.',
+          parsed: {
+            cityKey: 'tokyo', cityLabel: '도쿄', days: 3, theme: 'mixed', startDate: futureDate(20), routeCities: ['도쿄'], regionDayPlan: [],
+            wantedPlaces: ['팀랩 플래닛'], excludedPlaces: ['디즈니'], unsupportedPlaces: [], foodKeyword: '라멘, 모츠나베', specialPrefs: { lateStart: true },
+            arrivalTime: '', departureTime: '', startTimeMin: ''
+          },
+          selectedDestinations: [{ name: '팀랩 플래닛', city: '도쿄', area: '도요스' }],
+          sourceInfo: { kind: 'ai', provider: 'gemini', reasonCode: null }
+        }
+      };
+    };
+    // 첫 일정 응답: 서버가 넣지 못한 꼭 갈 곳(missingMustVisit)을 알려 준다 → 채팅에 안내 말풍선
+    let planCalls = 0;
+    const planRoute = () => {
+      planCalls += 1;
+      const body = schedulingPlanResponse();
+      if (planCalls === 1) body.itineraryInfo = { ...body.itineraryInfo, missingMustVisit: ['팀랩 플래닛'] };
+      return { body };
+    };
+    const sc = createBrowser({ html: htmlCode, fetchRoutes: sandboxRoutes({ '/api/ai-travel-chat': chatRoute, '/api/travel-plan': planRoute }), location: BASE + '/' });
+    await sc.boot(appCode, 'public/app.js');
+    // 샌드박스의 insertAdjacentHTML은 아무것도 하지 않으므로, 채팅 말풍선 HTML을 따로 모은다.
+    sc.run(`el('aiChatLog').insertAdjacentHTML = function (pos, html) { this._capturedHtml = (this._capturedHtml || '') + html; }`);
+    const JC = (code) => { const s = sc.run(`JSON.stringify(${code})`); return s === undefined ? undefined : JSON.parse(String(s)); };
+    // 의도 확인 칩(순수 함수): 꼭 갈 곳 = ok, 반영 못 한 곳 = warn, 당일치기로 대신 넣은 지역(나라)은 warn 없음
+    const chipHtml = String(JC(`intentChipsHtml({ cityKey: 'tokyo', days: 3, startDate: '2026-11-20', theme: 'mixed', wantedPlaces: ['센소지', '나라 공원·도다이지'], excludedPlaces: ['도쿄 디즈니랜드'], unsupportedPlaces: ['고야산', '나라'], specialPrefs: { removeShopping: true, maxPlacesPerDay: 2 } })`) || '');
+    const chipText = (key, vars) => String(JC(`fillText(t(${JSON.stringify(key)}), ${JSON.stringify(vars || {})})`) || '');
+    log(chipHtml.includes(`class="intent-chip ok">${chipText('intent-must', { p: '센소지' })}<`) && chipHtml.includes(`class="intent-chip warn">${chipText('intent-unsupported', { p: '고야산' })}<`)
+      && !chipHtml.includes(chipText('intent-unsupported', { p: '나라' }) + '<') && chipHtml.includes(chipText('intent-excluded', { p: '도쿄 디즈니랜드' }))
+      && chipHtml.includes(chipText('intent-cond-no-shopping')) && chipHtml.includes(chipText('intent-cond-max-places', { n: 2 })),
+      'intentChipsHtml: must-visit chips are .ok, unsupported places .warn (not the substituted Nara), excluded and conditions shown', short(chipHtml, 400));
+    // 서버의 화면 언어 표기(parsed.labels)는 요청한 언어와 지금 언어가 같을 때만 칩에 쓴다(다르면 원래 이름)
+    const LABELED = `{ wantedPlaces: ['가이유칸'], excludedPlaces: ['유니버셜 스튜디오 재팬'], foodKeyword: '스시', labels: { wantedPlaces: ['Osaka Aquarium Kaiyukan'], excludedPlaces: ['Universal Studios Japan'], unsupportedPlaces: [], foodKeyword: 'Sushi' } }`;
+    const chipSame = String(JC(`intentChipsHtml(${LABELED}, currentLang)`) || '');
+    const chipOther = String(JC(`intentChipsHtml(${LABELED}, currentLang === 'en' ? 'ja' : 'en')`) || '');
+    log(chipSame.includes(chipText('intent-must', { p: 'Osaka Aquarium Kaiyukan' })) && chipSame.includes(chipText('intent-excluded', { p: 'Universal Studios Japan' })) && chipSame.includes(chipText('intent-food', { f: 'Sushi' }))
+      && chipOther.includes(chipText('intent-must', { p: '가이유칸' })) && chipOther.includes(chipText('intent-excluded', { p: '유니버셜 스튜디오 재팬' })) && !/Kaiyukan|Universal/.test(chipOther),
+      'intentChipsHtml: parsed.labels are shown for the language they were made in; other languages fall back to the original names', short({ chipSame, chipOther }, 500));
+    // 하루 무료 한도(AI_DAILY_LIMIT): 1분 뒤 다시 하라는 안내 대신 한도가 다시 생기는 시각을 알린다
+    const dailyNote = JC(`describeSource('itinerary', { kind: 'rule', provider: 'rule', reasonCode: 'AI_DAILY_LIMIT' }).note`) || '';
+    const busyNote = JC(`describeSource('itinerary', { kind: 'rule', provider: 'rule', reasonCode: 'AI_BUSY' }).note`) || '';
+    log(dailyNote.includes(String(JC(`t('ai-daily-retry')`))) && !dailyNote.includes(String(JC(`t('ai-busy-retry')`))) && dailyNote.includes(String(JC(`srcText().reason.AI_DAILY_LIMIT`)))
+      && busyNote.includes(String(JC(`t('ai-busy-retry')`))),
+      "describeSource: AI_DAILY_LIMIT -> daily-quota cause + 'ai-daily-retry' (AI_BUSY keeps 'ai-busy-retry')", short({ dailyNote, busyNote }, 400));
+    const REQUEST = '도쿄 3일, 팀랩은 꼭, 디즈니는 빼고 라멘이랑 모츠나베 먹고 싶어';
+    sc.element('aiRequest').value = REQUEST;
+    sc.element('btnPlan').click();
+    await sc.settle(20000);
+    const seq = sc.env.fetchCalls.filter((c) => /^\/api\/(ai-travel-chat|travel-plan)$/.test(c.path));
+    const bodyOf = (c) => { try { return JSON.parse(c.body || '{}'); } catch { return {}; } };
+    log(seq[0]?.path === '/api/ai-travel-chat' && seq[1]?.path === '/api/travel-plan' && seq.length === 2,
+      'request box filled + main button -> ai-travel-chat first, then travel-plan once', short(seq.map((c) => c.path)));
+    const planBody = seq[1] ? bodyOf(seq[1]) : {};
+    log(planBody.request === REQUEST && (planBody.mustVisit || []).includes('팀랩 플래닛') && JSON.stringify(planBody.excludedPlaces) === '["디즈니"]'
+      && JSON.stringify(planBody.foodWishes) === '["라멘","모츠나베"]' && Array.isArray(planBody._picks) && planBody._picks[0]?.name === '팀랩 플래닛' && planBody._specialPrefs?.lateStart === true,
+      'travel-plan body carries the chat intent: request / mustVisit / excludedPlaces / foodWishes / _picks / _specialPrefs', short(planBody, 500));
+    const firstChat = seq[0] ? bodyOf(seq[0]) : {};
+    log(firstChat.message === REQUEST && Array.isArray(firstChat.history) && firstChat.history.length === 0 && !firstChat.prevParsed && firstChat.context?.city,
+      'first chat body: message + form context, empty history, no prevParsed', short(firstChat, 300));
+    const chatLogHtml = String(JC(`el('aiChatLog')._capturedHtml || ''`) || '');
+    const lastChips = JC(`(function () { var n = Array.prototype.filter.call(el('aiChatLog').children, function (c) { return c.classList.contains('chat-intent-chips'); }).pop(); return n ? n.innerHTML : ''; })()`) || '';
+    log(chatLogHtml.includes(REQUEST) && chatLogHtml.includes('도쿄 3일 여행으로 맞췄어요.') && lastChips.includes(chipText('intent-must', { p: '팀랩 플래닛' })) && lastChips.includes(chipText('intent-excluded', { p: '디즈니' })),
+      'chat log shows the request, the reply and intent chips (must-visit, excluded)', short({ lastChips }, 300));
+    log(chatLogHtml.includes(chipText('must-missing', { names: '팀랩 플래닛' })), "itineraryInfo.missingMustVisit ['팀랩 플래닛'] -> a 'must-missing' notice in the chat", short(chatLogHtml.slice(-300)));
+    sc.element('aiRequest').value = '교토 하루 더 늘려줘';
+    sc.element('btnPlan').click();
+    await sc.settle(20000);
+    const chats = sc.env.fetchCalls.filter((c) => c.path === '/api/ai-travel-chat');
+    const second = chats[1] ? bodyOf(chats[1]) : {};
+    log(chatCalls === 2 && Array.isArray(second.history) && second.history.length >= 2 && second.history[0]?.role === 'user' && second.history[0]?.content === REQUEST
+      && second.prevParsed && second.prevParsed.cityKey === 'tokyo' && (second.prevParsed.wantedPlaces || []).includes('팀랩 플래닛'),
+      'second chat body sends history (user + assistant) and prevParsed for follow-up merging', short({ chatCalls, history: second.history, prev: second.prevParsed }, 500));
+    // 같은 글로 다시 누르면 채팅을 또 부르지 않는다(의도는 유지)
+    sc.element('btnPlan').click();
+    await sc.settle(20000);
+    const lastPlan = sc.env.fetchCalls.filter((c) => c.path === '/api/travel-plan').pop();
+    log(chatCalls === 2 && lastPlan && bodyOf(lastPlan).request === '교토 하루 더 늘려줘', 'same request text again: no new chat call, intent kept in the travel-plan body', short({ chatCalls }));
+    const errs = sc.env.errors.concat(sc.unhandled);
+    log(errs.length === 0, 'intent flow in the sandbox raises no errors', short(errs, 400));
+  } catch (e) {
+    log(false, 'intent flow sandbox', e.stack || e.message);
+  }
 }
 
 // ── Phase 1: 기본(무료) 모드 — 기존 59개 테스트 + 무료 모드·보안 검사 ──
@@ -1474,6 +1942,415 @@ async function phaseOauthAndAiErrors() {
   checkNoSecrets('OAuth / AI errors', SECRETS);
   checkNoUnexpectedExternal('OAuth / AI errors');
   checkNoFatal('OAuth / AI errors');
+}
+
+// ── 의도 회귀 표·AI 일정 단계 공용 ──
+// 요청마다 다른 X-Forwarded-For(TRUST_PROXY=1)를 붙여 IP당 분당 60회 한도에 걸리지 않게 한다.
+let intentIpSeq = 0;
+function nextIntentIp() {
+  intentIpSeq += 1;
+  return `198.19.${Math.floor(intentIpSeq / 250) % 250}.${(intentIpSeq % 250) + 1}`;
+}
+
+function localIsoDate(d = new Date()) {
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+const USJ = '유니버셜 스튜디오 재팬';
+
+// 감사 ID별 프롬프트와 기대값(SV-04: Gemini가 한도로 실패할 때 실제로 쓰이는 규칙 해석기).
+// 기대값 키: days · md('MM-DD' 또는 목록, 연도는 올해/내년이고 오늘 이후) · month · keepStart(폼 출발일 유지) · city · theme · notTheme · budget
+//           · prefs(참이어야 하는 조건) · maxPlaces · wanted(모두 포함) · noWanted(정규식) · excluded · unsupported(정확히 같은 목록)
+//           · route(모두 포함) · food(정규식) · arrival · departure · startTime
+// ai_live = 실제 Gemini로 돌린 P01-P16·X1-X3, ai_code = 코드 검수 P01-P19(probe1 P01-P16 + 날짜 경계 P17-P19), SV-04 = 정규식 보정 표.
+const INTENT_CASES = [
+  ['ai_live P01', '오사카 3박 4일, 유니버설 스튜디오는 하루 통째로, 도톤보리는 저녁에 꼭 가고 싶어', {}, { city: 'osaka', days: 4, keepStart: true, wanted: [USJ, '도톤보리'], unsupported: [] }],
+  ['ai_live P02', '도쿄 2박3일 부모님 모시고 가요. 많이 안 걷고 여유롭게, 하루 2~3곳만', {}, { city: 'tokyo', days: 3, prefs: ['relaxedPace', 'lowWalking'], maxPlaces: 3 }],
+  ['ai_live P03', '교토 2일, 사찰이랑 정원 위주로. 쇼핑은 빼줘', {}, { city: 'kyoto', days: 2, theme: 'culture', prefs: ['removeShopping'], unsupported: [] }],
+  ['ai_live P04', '후쿠오카 1박2일 먹방 여행, 라멘이랑 모츠나베는 꼭 먹고 싶어', {}, { city: 'fukuoka', days: 2, theme: 'foodie', food: /라멘.*모츠나베|모츠나베.*라멘/, noWanted: /라멘|모츠나베/ }],
+  ['ai_live P05', '삿포로 4일 겨울 여행인데 오타루 당일치기를 하루 넣어줘', {}, { city: 'sapporo', days: 4, wanted: ['오타루 운하'] }],
+  ['ai_live P06', '도쿄 5일 애니·서브컬처 위주로, 아키하바라 이케부쿠로 나카노는 꼭', {}, { city: 'tokyo', days: 5, wanted: ['아키하바라', '이케부쿠로', '나카노'], unsupported: [] }],
+  ['ai_live P07', '5살, 8살 아이 둘 데리고 오키나와 4일, 츄라우미 수족관은 필수', {}, { city: 'okinawa', days: 4, prefs: ['kidsFriendly'], wanted: ['츄라우미 수족관'] }],
+  ['ai_live P08', '오사카 3일 교토 2일 나라 1일로 짜줘', {}, { city: 'osaka', days: 6, route: ['오사카', '교토'], unsupported: ['나라'], wanted: ['나라 공원·도다이지'] }],
+  ['ai_live P09', '도쿄 3일인데 비가 많이 올 것 같아서 실내 위주로', {}, { city: 'tokyo', days: 3, prefs: ['indoorFocus'] }],
+  ['ai_live P10', '오사카 3박4일, 첫날은 밤 9시 도착이라 일정 비워주고 마지막 날은 오전 비행기야', {}, { city: 'osaka', days: 4, arrival: '21:00', departure: '11:00', prefs: ['firstDayShort'] }],
+  ['ai_live P11', 'Tokyo 3 days, first time in Japan, classic highlights, I love sushi', { lang: 'en' }, { city: 'tokyo', days: 3, food: /스시|sushi/i }],
+  ['ai_live P12', '京都で2日間、紅葉の名所を回りたい', { lang: 'ja' }, { city: 'kyoto', days: 2 }],
+  ['ai_live P13', '도쿄', {}, { city: 'tokyo', days: 4, keepStart: true }],
+  ['ai_live P14', '도쿄 3일, 디즈니랜드는 빼고 아침 10시 이후에 시작하고 싶어', {}, { city: 'tokyo', days: 3, excluded: ['도쿄 디즈니랜드'], noWanted: /디즈니/, startTime: '10:00', prefs: ['lateStart'] }],
+  ['ai_live P15', '하코네 1박2일 온천 료칸, 이동은 최소로', {}, { city: 'tokyo', days: 2, theme: 'nature', wanted: ['하코네'], prefs: ['minimizeTravelTime'] }],
+  ['ai_live P16', '오사카 3박4일 저예산, 무료 명소 위주로 1인 50만원', {}, { city: 'osaka', days: 4, budget: 'low', notTheme: 'nature' }],
+  ['ai_live X1', '12월 24일부터 도쿄 3일, 크리스마스 일루미네이션 보고 싶어', {}, { city: 'tokyo', days: 3, md: '12-24' }],
+  ['ai_live X2', '오사카 4일, 유니버셜 스튜디오 하루 종일, 도톤보리 저녁', {}, { city: 'osaka', days: 4, wanted: [USJ, '도톤보리'] }],
+  ['ai_live X3', '京都 2泊3日 お寺めぐり', { lang: 'ja' }, { city: 'kyoto', days: 3, theme: 'culture' }],
+  ['ai_code P01', '11월 20일부터 3박 4일 오사카 여행, 유니버셜 스튜디오 꼭 가고 싶어', {}, { city: 'osaka', days: 4, md: '11-20', wanted: [USJ] }],
+  ['ai_code P02', '10월 15일 출발 도쿄 4일', {}, { city: 'tokyo', days: 4, md: '10-15' }],
+  ['ai_code P03', '12/24 도쿄 2박3일 디즈니랜드 하루 종일', {}, { city: 'tokyo', days: 3, md: '12-24', wanted: ['도쿄 디즈니랜드'] }],
+  ['ai_code P04', '오사카 2박 교토 1박 일정 짜줘, 도톤보리랑 후시미 이나리 꼭', {}, { city: 'osaka', days: 4, route: ['오사카', '교토'], wanted: ['도톤보리', '후시미 이나리'] }],
+  ['ai_code P05', '후쿠오카 3일, 쇼핑 빼고 실내 위주로, 아침 늦게 시작', {}, { city: 'fukuoka', days: 3, notTheme: 'shopping', prefs: ['removeShopping', 'indoorFocus', 'lateStart'] }],
+  ['ai_code P06', '삿포로 5일 여행인데 오타루 당일치기 넣어줘', {}, { city: 'sapporo', days: 5, wanted: ['오타루 운하'] }],
+  ['ai_code P07', '부모님이랑 도쿄 3일, 많이 걷지 않게, 하루 2개만', {}, { city: 'tokyo', days: 3, maxPlaces: 2, prefs: ['lowWalking'] }],
+  ['ai_code P08', 'Tokyo 3 days, teamLab Planets and Shibuya Sky, no shopping', { lang: 'en' }, { city: 'tokyo', days: 3, notTheme: 'shopping', prefs: ['removeShopping'], wanted: ['시부야 스카이'] }],
+  ['ai_code P09', '오키나와 4일 츄라우미 수족관 하루 다 쓰고 싶어', {}, { city: 'okinawa', days: 4, wanted: ['츄라우미 수족관'] }],
+  ['ai_code P10', '교토 2일 기온 근처 숙소, 가성비로', {}, { city: 'kyoto', days: 2, budget: 'low' }],
+  ['ai_code P11', '나고야 2박 3일 히츠마부시 먹고 싶어', {}, { city: 'nagoya', days: 3, food: /히츠마부시/ }],
+  ['ai_code P12', '도쿄 3일 근데 첫날은 저녁 7시 도착이야', {}, { city: 'tokyo', days: 3, arrival: '19:00', prefs: ['firstDayShort'] }],
+  ['ai_code P13', '오사카 4일, 마지막 날 오후 3시 비행기', {}, { city: 'osaka', days: 4, departure: '15:00' }],
+  ['ai_code P14', '도쿄 5일 중 하루는 하코네 온천 당일치기', {}, { city: 'tokyo', days: 5, wanted: ['하코네'] }],
+  ['ai_code P15', '3월 말 교토 벚꽃 여행 3일', {}, { city: 'kyoto', days: 3, month: '03' }],
+  ['ai_code P16', '도쿄 10일 여행', {}, { city: 'tokyo', days: 10 }],
+  ['ai_code P17', '도쿄 3-4일 정도 여행', {}, { city: 'tokyo', days: 4, keepStart: true }],
+  ['ai_code P18', '크리스마스에 도쿄 3일', {}, { city: 'tokyo', days: 3, md: ['12-24', '12-25'] }],
+  ['ai_code P19', 'Osaka 4 days from Nov 20, must see Universal Studios', { lang: 'en' }, { city: 'osaka', days: 4, md: '11-20', wanted: [USJ] }],
+  ['SV-04 day-number', '2일차에 유니버셜 넣어줘', { city: 'osaka' }, { city: 'osaka', days: 4, keepStart: true, wanted: [USJ] }],
+  ['SV-04 neg-shopping', '쇼핑은 빼고 하루 2곳만', {}, { days: 4, notTheme: 'shopping', prefs: ['removeShopping'], maxPlaces: 2 }],
+  ['SV-04 en-no-shopping', 'Tokyo 3 days, no shopping', { lang: 'en' }, { city: 'tokyo', days: 3, notTheme: 'shopping', prefs: ['removeShopping'] }],
+  ['SV-04 budget-not-nature', '저예산 오사카 3일', {}, { city: 'osaka', days: 3, budget: 'low', notTheme: 'nature' }],
+  ['SV-04 walk-focus', '교토 산책 위주 2일', {}, { city: 'kyoto', days: 2, notTheme: 'nature', unsupported: [] }],
+  ['SV-04 ja-days', '札幌に3日間', { lang: 'ja' }, { city: 'sapporo', days: 3 }],
+  ['SV-04 en-date', 'Oct 15 Tokyo 3 days', { lang: 'en' }, { city: 'tokyo', days: 3, md: '10-15' }],
+  ['SV-04 one-char-false-hit', '우리나라 사람이 좋아하는 도쿄 3일', {}, { city: 'tokyo', days: 3, noWanted: /나라/, unsupported: [] }],
+  ['SV-04 shopping-theme', '신사이바시 쇼핑 오사카 2일', {}, { city: 'osaka', days: 2, theme: 'shopping' }],
+  ['SV-04 week', '도쿄 일주일', {}, { city: 'tokyo', days: 7 }],
+  ['SV-04 slash-date', '1/5 출발 삿포로 3일', {}, { city: 'sapporo', days: 3, md: '01-05' }],
+  ['SV-04 ja-alias', '大阪 3日間、ユニバーサル・スタジオに行きたい', { lang: 'ja' }, { city: 'osaka', days: 3, wanted: [USJ] }],
+  ['SV-04 alias-spelling', '유니버설 스튜디오 가고 싶어', {}, { city: 'osaka', wanted: [USJ] }],
+  ['SV-04 ja-nights', '京都 2泊3日', { lang: 'ja' }, { city: 'kyoto', days: 3 }],
+  ['SV-04 excluded-landmark', '도쿄 3일, 디즈니랜드는 빼고', {}, { city: 'tokyo', days: 3, excluded: ['도쿄 디즈니랜드'], noWanted: /디즈니/ }],
+  ['SV-04 theme-word-days', '교토 벚꽃 3일', {}, { city: 'kyoto', days: 3, unsupported: [] }],
+  ['SV-04 foodie-days', '도쿄 맛집 투어 3일', {}, { city: 'tokyo', days: 3, theme: 'foodie', unsupported: [] }],
+  ['SV-04 unknown-region', '오사카 3일 고야산 1일', {}, { city: 'osaka', days: 4, unsupported: ['고야산'] }],
+  ['SV-04 two-cities', '도쿄 3일 오사카 2일', {}, { city: 'tokyo', days: 5, route: ['도쿄', '오사카'], unsupported: [] }],
+  ['SV-04 focus-word-days', '오사카 쇼핑 위주 2일', {}, { city: 'osaka', days: 2, theme: 'shopping', unsupported: [] }],
+  // 2026-10-01 점검(여러 프롬프트): 'A랑 B는 빼고' 목록 부정, 음식·시간 낱말이 장소가 되지 않음, 영어/일본어 must·skip·시작 시각
+  ['S2 N01 list-negation', '11월 20일부터 교토 3일, 기요미즈데라랑 쇼핑은 빼고 후시미 이나리는 꼭 가고, 하루 2곳만 여유롭게, 아침 11시 이후 시작', {}, { city: 'kyoto', days: 3, md: '11-20', wanted: ['후시미 이나리'], excluded: ['기요미즈데라'], noWanted: /기요미즈|쇼핑/, prefs: ['removeShopping', 'lateStart'], maxPlaces: 2, startTime: '11:00' }],
+  ['S2 A01 two-excluded', '도쿄 3일, 디즈니랜드랑 디즈니씨는 빼고 시부야 스카이는 꼭', {}, { city: 'tokyo', days: 3, wanted: ['시부야 스카이'], excluded: ['도쿄 디즈니랜드', '도쿄 디즈니씨'], noWanted: /디즈니/ }],
+  ['S2 N04 comma-excluded', '교토 3일, 금각사, 기요미즈데라는 빼고 은각사는 꼭', {}, { city: 'kyoto', days: 3, wanted: ['은각사'], excluded: ['금각사', '기요미즈데라'], noWanted: /금각사|기요미즈/ }],
+  ['S2 N02 food-not-place', '오사카 2박3일, 유니버설은 말고 나라 당일치기 하루 넣어주고 마지막 날은 오후 3시 비행기야. 저녁엔 꼭 오코노미야키', {}, { city: 'osaka', days: 3, wanted: ['나라 공원·도다이지'], excluded: [USJ], noWanted: /저녁|오코노미야키|유니버/, food: /오코노미야키/, departure: '15:00' }],
+  ['S2 P16 money-not-place', '오사카 3박4일 저예산, 무료 명소 위주로 1인 50만원', {}, { city: 'osaka', days: 4, budget: 'low', prefs: ['lowBudget'], noWanted: /명소|만원|1인/, unsupported: [] }],
+  ['S2 E01 en skip/must/start', 'Kyoto 3 days, skip Kiyomizu-dera, must see Fushimi Inari, start at 11am', { lang: 'en' }, { city: 'kyoto', days: 3, wanted: ['후시미 이나리'], excluded: ['기요미즈데라'], startTime: '11:00' }],
+  ['S2 A04 en must visit', 'Tokyo 2 days, no Disney, must visit teamLab Planets, start at 11am', { lang: 'en' }, { city: 'tokyo', days: 2, wanted: ['팀랩 플래닛'], noWanted: /디즈니/, startTime: '11:00' }],
+  ['S2 J01 ja must/none', '大阪3日間、海遊館は必ず行きたい、USJはなし', { lang: 'ja' }, { city: 'osaka', days: 3, wanted: ['가이유칸'], excluded: [USJ] }],
+  ['S2 en skip mall', 'Tokyo 3 days, skip Ginza Six', { lang: 'en' }, { city: 'tokyo', days: 3, excluded: ['긴자 식스'], noWanted: /긴자/ }]
+];
+
+function intentMismatches(p, exp, ctx) {
+  const out = [];
+  const sp = p.specialPrefs || {};
+  const has = (list, name) => Array.isArray(list) && list.includes(name);
+  if (exp.city && p.cityKey !== exp.city) out.push(`cityKey=${p.cityKey} (want ${exp.city})`);
+  if (exp.days !== undefined && p.days !== exp.days) out.push(`days=${p.days} (want ${exp.days})`);
+  const start = String(p.startDate || '');
+  if (exp.md || exp.month) {
+    const mds = [].concat(exp.md || []);
+    const y = Number(start.slice(0, 4));
+    const thisYear = new Date().getFullYear();
+    if (mds.length && !mds.includes(start.slice(5))) out.push(`startDate=${start} (want ${mds.join('|')})`);
+    if (exp.month && start.slice(5, 7) !== exp.month) out.push(`startDate=${start} (want month ${exp.month})`);
+    if (!(y === thisYear || y === thisYear + 1) || start < localIsoDate()) out.push(`startDate=${start} (want this or next year, not past)`);
+  }
+  if (exp.keepStart && start !== ctx.startDate) out.push(`startDate=${start} (want form date ${ctx.startDate})`);
+  if (exp.theme && p.theme !== exp.theme) out.push(`theme=${p.theme} (want ${exp.theme})`);
+  if (exp.notTheme && p.theme === exp.notTheme) out.push(`theme=${p.theme} (must not be ${exp.notTheme})`);
+  if (exp.budget && p.budget !== exp.budget) out.push(`budget=${p.budget} (want ${exp.budget})`);
+  for (const f of exp.prefs || []) if (sp[f] !== true) out.push(`specialPrefs.${f}=${sp[f]} (want true)`);
+  if (exp.maxPlaces !== undefined && sp.maxPlacesPerDay !== exp.maxPlaces) out.push(`maxPlacesPerDay=${sp.maxPlacesPerDay} (want ${exp.maxPlaces})`);
+  for (const w of exp.wanted || []) if (!has(p.wantedPlaces, w)) out.push(`wantedPlaces=${short(p.wantedPlaces, 120)} (missing ${w})`);
+  if (exp.noWanted && (p.wantedPlaces || []).some((w) => exp.noWanted.test(w))) out.push(`wantedPlaces=${short(p.wantedPlaces, 120)} (must not match ${exp.noWanted})`);
+  for (const x of exp.excluded || []) if (!has(p.excludedPlaces, x)) out.push(`excludedPlaces=${short(p.excludedPlaces, 120)} (missing ${x})`);
+  if (exp.unsupported && JSON.stringify(p.unsupportedPlaces || []) !== JSON.stringify(exp.unsupported)) out.push(`unsupportedPlaces=${short(p.unsupportedPlaces)} (want ${short(exp.unsupported)})`);
+  for (const c of exp.route || []) if (!has(p.routeCities, c)) out.push(`routeCities=${short(p.routeCities)} (missing ${c})`);
+  if (exp.food && !exp.food.test(String(p.foodKeyword || ''))) out.push(`foodKeyword=${p.foodKeyword} (want ${exp.food})`);
+  if (exp.arrival !== undefined && p.arrivalTime !== exp.arrival) out.push(`arrivalTime=${p.arrivalTime} (want ${exp.arrival})`);
+  if (exp.departure !== undefined && p.departureTime !== exp.departure) out.push(`departureTime=${p.departureTime} (want ${exp.departure})`);
+  if (exp.startTime !== undefined && p.startTimeMin !== exp.startTime) out.push(`startTimeMin=${p.startTimeMin} (want ${exp.startTime})`);
+  return out;
+}
+
+// en/ja 답변(SV-06): 한국어가 남는다면 데이터에 있는 장소·도시 이름(현지화 표가 없는 사용자 표기)뿐이어야 한다.
+function hangulOutsidePlaceNames(text, parsed) {
+  let rest = String(text || '');
+  const names = [...(parsed.wantedPlaces || []), ...(parsed.excludedPlaces || []), ...(parsed.unsupportedPlaces || []), ...(parsed.routeCities || []), parsed.cityLabel || '',
+    ...String(parsed.foodKeyword || '').split(/\s*,\s*/)].filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const n of names) rest = rest.split(n).join('');
+  return (rest.match(/[가-힣][가-힣\s·]*/g) || []).map((s) => s.trim()).filter(Boolean);
+}
+
+// ── Phase 8: 의도 회귀 표 — 규칙 해석(25건+), Gemini 해석 정규화, 답변 언어, 후속 대화 (TD-02) ──
+async function phaseIntentRegression() {
+  section('Intent regression (chat parsing: rule table, Gemini normalization, reply language, follow-up)');
+  const GEM = 'GEMKEY-intent-test-5d21aa';
+  mock.reset({ gemini: 'error400' });
+  try {
+    await startServer('intent', { GEMINI_API_KEY: GEM, TRUST_PROXY: '1' });
+  } catch (e) { log(false, 'Server (intent regression) started', e.message); return; }
+  const ctxStart = futureDate(10);
+  const chat = (message, opts = {}) => postJson('/api/ai-travel-chat', {
+    message,
+    context: { city: opts.city || 'tokyo', theme: 'mixed', budget: 'mid', days: opts.days || 4, startDate: ctxStart },
+    lang: opts.lang || 'ko',
+    ...(opts.body || {})
+  }, { ip: nextIntentIp() });
+  const BLOCK_DONE = { ko: '일정을 만드는 중이에요', en: 'Building your itinerary', ja: '日程を作成しています' };
+  try {
+    // (1) 규칙 경로: 가짜 Gemini가 400으로 거절 → 규칙 해석기. 감사 ID마다 한 줄.
+    for (const [id, prompt, opts, exp] of INTENT_CASES) {
+      const r = await chat(prompt, opts);
+      const p = r.json?.parsed || {};
+      const bad = r.status !== 200 ? [`HTTP ${r.status}`] : intentMismatches(p, exp, { startDate: ctxStart });
+      if (r.json?.sourceInfo?.kind !== 'rule') bad.push(`sourceInfo=${short(r.json?.sourceInfo)} (want rule)`);
+      const lang = opts.lang || 'ko';
+      const reply = String(r.json?.reply || '');
+      if (!reply.includes(BLOCK_DONE[lang])) bad.push(`reply not in ${lang}: ${short(reply, 80)}`);
+      if (lang !== 'ko') {
+        const leftover = hangulOutsidePlaceNames(reply + '\n' + (p.reasons || []).join('\n'), p);
+        if (leftover.length) bad.push(`${lang} reply/reasons have Korean outside place names: ${leftover.slice(0, 3).join(' / ')}`);
+      }
+      log(bad.length === 0, `${id} ${prompt}`, bad.join('; '));
+    }
+    const ruleGem = mock.entries('gemini');
+    log(ruleGem.length > 0 && ruleGem.every((e) => !e.isItinerary && e.body?.generationConfig?.responseSchema?.properties?.cityKey),
+      'rule table: every chat call first tried Gemini with the chat responseSchema (refused with 400 -> rule parser)', `${ruleGem.length} calls`);
+
+    // (3) 답변 언어: 한국어로 쓴 요청도 en/ja 화면이면 그 언어로, 알려진 장소 이름은 현지화
+    const en = await chat('도쿄 3일, 디즈니랜드는 빼고', { lang: 'en' });
+    const enReply = String(en.json?.reply || '');
+    log(/Excluded: Tokyo Disneyland/.test(enReply) && hangulOutsidePlaceNames(enReply, {}).length === 0,
+      "reply language en: Korean request -> English reply with 'Excluded: Tokyo Disneyland' and no Korean", short(enReply, 300));
+    const ja = await chat('오사카 3일, 유니버셜은 꼭', { lang: 'ja' });
+    const jaReply = String(ja.json?.reply || '');
+    log(/ユニバーサル・スタジオ・ジャパン/.test(jaReply) && !HANGUL_RE.test(jaReply), 'reply language ja: Korean request -> Japanese reply, USJ in Japanese, no Korean', short(jaReply, 300));
+    const ko = await chat('오사카 3일 교토 2일 나라 1일로 짜줘');
+    const koReply = String(ko.json?.reply || '');
+    log(/꼭 갈 곳/.test(koReply) && /나라/.test(koReply) && /전체 6일은 그대로/.test(koReply) && /지역별 일정 분배/.test(koReply),
+      'reply ko: confirms must-visit, the Nara day-trip substitute, total 6 days and the per-city split', short(koReply, 300));
+
+    // (4) 후속 대화(규칙 경로): 이전 해석 + 대화 기록 + '교토 하루 더 늘려줘' → 오사카 유지, 교토 +1, 이전 조건 유지
+    const prev = {
+      cityKey: 'osaka', cityLabel: '오사카', days: 4, theme: 'mixed', startDate: futureDate(10), routeCities: ['오사카', '교토'],
+      regionDayPlan: [{ cityLabel: '오사카', days: 2, unit: 'day' }, { cityLabel: '교토', days: 2, unit: 'day' }],
+      specialPrefs: { lateStart: true }, wantedPlaces: [USJ]
+    };
+    const history = [{ role: 'user', content: '오사카 2일 교토 2일, 유니버셜은 꼭, 아침은 늦게' }, { role: 'assistant', content: '오사카 4일 여행으로 맞췄어요.' }];
+    const followUpOk = (p) => {
+      const kyoto = (p.regionDayPlan || []).find((x) => x.cityLabel === '교토');
+      const osaka = (p.regionDayPlan || []).find((x) => x.cityLabel === '오사카');
+      return p.cityKey === 'osaka' && (p.routeCities || []).includes('오사카') && (p.routeCities || []).includes('교토') && !(p.routeCities || []).includes('도쿄')
+        && kyoto?.days === 3 && osaka?.days === 2 && p.days === 5 && p.specialPrefs?.lateStart === true && (p.wantedPlaces || []).includes(USJ);
+    };
+    const f1 = await chat('교토 하루 더 늘려줘', { body: { history, prevParsed: prev } });
+    log(followUpOk(f1.json?.parsed || {}) && f1.json?.parsed?.isFollowUp === true,
+      "follow-up (rule): history + prevParsed + '교토 하루 더 늘려줘' -> 오사카 kept, 교토 2->3, total 5, lateStart and USJ kept", short(f1.json?.parsed, 500));
+    // 도시 이름 없는 전체 일수 증감: '이틀 더 늘려줘'는 일수 2가 아니라 +2. 일수를 말하지 않은 후속 대화는 이전 일수를 지킨다.
+    const prevO3 = { cityKey: 'osaka', cityLabel: '오사카', days: 3, theme: 'mixed', startDate: futureDate(10), routeCities: ['오사카'], regionDayPlan: [{ cityLabel: '오사카', days: 3, unit: 'day' }], wantedPlaces: ['도톤보리'] };
+    const histO3 = [{ role: 'user', content: '오사카 3일, 도톤보리 꼭' }, { role: 'assistant', content: '오사카 3일 여행으로 맞췄어요.' }];
+    const dPlus2 = (await chat('이틀 더 늘려줘', { city: 'osaka', days: 3, body: { history: histO3, prevParsed: prevO3 } })).json?.parsed || {};
+    const dPlus1En = (await chat('add one more day', { city: 'osaka', days: 3, lang: 'en', body: { history: histO3, prevParsed: prevO3 } })).json?.parsed || {};
+    const dMinus1 = (await chat('하루 줄여줘', { city: 'osaka', days: 3, body: { history: histO3, prevParsed: prevO3 } })).json?.parsed || {};
+    const dKeep = (await chat('첫날은 오후 3시 도착이야', { city: 'osaka', days: 3, body: { history: histO3, prevParsed: prevO3 } })).json?.parsed || {};
+    log(dPlus2.days === 5 && dPlus1En.days === 4 && dMinus1.days === 2 && dKeep.days === 3 && dKeep.arrivalTime === '15:00'
+      && [dPlus2, dPlus1En, dMinus1, dKeep].every((p) => p.cityKey === 'osaka' && (p.wantedPlaces || []).includes('도톤보리')),
+      "follow-up (rule) whole-trip day delta: '이틀 더 늘려줘' 3->5, 'add one more day' 3->4, '하루 줄여줘' 3->2, no day words keeps 3 (city and must-visit kept)",
+      short({ plus2: dPlus2.days, plus1: dPlus1En.days, minus1: dMinus1.days, keep: [dKeep.days, dKeep.arrivalTime] }));
+
+    // (2) Gemini 해석 정규화(SV-05)
+    mock.reset({ gemini: 'chat_ok' });
+    const ok = await chat('11월에 오사카 4일, 유니버셜 스튜디오는 꼭 가고 싶어');
+    const okGem = mock.entries('gemini').filter((e) => !e.isItinerary).pop() || {};
+    const okGc = okGem.body?.generationConfig || {};
+    log(ok.json?.sourceInfo?.kind === 'ai' && ok.json?.sourceInfo?.provider === 'gemini' && ok.json?.parsed?.cityKey === 'osaka' && ok.json?.parsed?.days === 4
+      && (ok.json?.parsed?.wantedPlaces || []).includes(USJ),
+      "Gemini 'chat_ok' -> sourceInfo { kind: ai, provider: gemini } with the AI values (osaka, 4 days, USJ)", short({ si: ok.json?.sourceInfo, p: ok.json?.parsed }, 400));
+    log((okGc.responseSchema?.properties?.cityKey?.enum || []).includes('osaka') && Number(okGc.maxOutputTokens) === 2048 && !okGc.responseSchema?.properties?.itinerary
+      && [localIsoDate(), new Date().toISOString().slice(0, 10)].some((d) => String(okGem.prompt || '').includes(`Today is ${d}`)),
+      'chat Gemini request: responseSchema (cityKey enum, no itinerary), maxOutputTokens 2048, prompt states today', short(okGc, 200));
+    log(!Object.keys(ok.json?.parsed || {}).some((k) => k.startsWith('_')), 'chat response parsed has no internal _fields');
+    mock.reset({ gemini: 'ok' });
+    const empty = await chat('도쿄 3일');
+    log(empty.json?.sourceInfo?.kind === 'rule' && empty.json?.sourceInfo?.reasonCode === 'AI_INVALID_OUTPUT' && empty.json?.parsed?.days === 3,
+      "Gemini '{}' (no usable field) -> honest sourceInfo { kind: rule, reasonCode: AI_INVALID_OUTPUT }, rule values used", short(empty.json?.sourceInfo));
+    mock.reset({ gemini: 'chat_shopping_neg' });
+    const neg = await chat('도쿄 3일, 쇼핑은 빼줘');
+    log(neg.json?.parsed?.theme !== 'shopping' && neg.json?.parsed?.specialPrefs?.removeShopping === true && neg.json?.sourceInfo?.kind === 'ai',
+      "Gemini theme 'shopping' for '쇼핑은 빼줘' is rejected (theme != shopping, removeShopping true)", short({ theme: neg.json?.parsed?.theme, sp: neg.json?.parsed?.specialPrefs }));
+    mock.reset({ gemini: 'chat_sapporo' });
+    const sap = await chat('札幌に3日間', { city: 'osaka', lang: 'ja' });
+    log(sap.json?.parsed?.cityKey === 'sapporo' && sap.json?.parsed?.days === 3 && !(sap.json?.parsed?.routeCities || []).includes('오사카') && !HANGUL_RE.test(String(sap.json?.reply || '')),
+      'form city osaka + 札幌に3日間 + Gemini sapporo -> sapporo (form city not added to the route), ja reply without Korean', short({ p: sap.json?.parsed?.routeCities, reply: sap.json?.reply }, 300));
+    // AI 해석의 잡음 거르기: 음식·일반 문구·금액·메시지에 없는 장소는 꼭 갈 곳이 아니고, 메시지의 일수가 AI 일수보다 우선, 근거 없는 조건은 버린다
+    mock.reset({ gemini: 'chat_noisy' });
+    const noisy = await chat('도쿄 3일, 센소지는 꼭 가고 라멘 먹고 싶어');
+    const np = noisy.json?.parsed || {};
+    log(noisy.json?.sourceInfo?.kind === 'ai' && np.days === 3 && JSON.stringify(np.wantedPlaces || []) === JSON.stringify(['센소지']) && /라멘/.test(String(np.foodKeyword || ''))
+      && np.specialPrefs?.publicTransitOnly !== true && np.specialPrefs?.removeShopping !== true,
+      "Gemini noise is filtered: wanted ['라멘','무료 명소','1인 50만원','센소지','도쿄 타워'] -> ['센소지'] (food -> foodKeyword), AI days 4 -> message 3, unsupported prefs dropped",
+      short({ days: np.days, wanted: np.wantedPlaces, food: np.foodKeyword, sp: np.specialPrefs }, 400));
+    // 후속 대화(AI 경로): AI가 이전 도시를 그대로 말해도 규칙 병합 결과는 같다
+    mock.reset({ gemini: 'chat_ok' });
+    const f2 = await chat('교토 하루 더 늘려줘', { body: { history, prevParsed: prev } });
+    log(followUpOk(f2.json?.parsed || {}), "follow-up (Gemini): same merge result (오사카 kept, 교토 +1, total 5)", short(f2.json?.parsed, 500));
+    const followGem = mock.entries('gemini').filter((e) => !e.isItinerary).pop() || {};
+    log(/Previous conversation:/.test(String(followGem.prompt || '')) && /Previously parsed conditions/.test(String(followGem.prompt || '')),
+      'follow-up Gemini prompt includes the previous conversation and prevParsed');
+    // 입력 검증
+    const badHistory = await chat('도쿄', { body: { history: 'not-an-array' } });
+    const bigPrev = await chat('도쿄', { body: { prevParsed: { note: 'x'.repeat(5000) }, history } });
+    log(badHistory.status === 400 && bigPrev.status === 400, 'chat validation: history must be an array, prevParsed > 4KB -> 400', `${badHistory.status}/${bigPrev.status}`);
+  } catch (e) { log(false, 'intent regression phase', e.stack || e.message); }
+  checkNoSecrets('Intent regression', [GEM]);
+  checkNoUnexpectedExternal('Intent regression');
+  checkNoFatal('Intent regression');
+}
+
+// ── Phase 9: AI 일정 — 프롬프트 내용, 결정적 후처리, 입력 검증·제외, AI_BUSY (TD-03) ──
+function sightBlocks(day) {
+  return (day?.blocks || []).filter((b) => /^(오전|오후|종일)\(/.test(b) && !/자유 일정|도시 이동|체크아웃|공항/.test(b));
+}
+
+function blockName(b) {
+  return String(b).replace(/^.+?\): /, '').replace(/ \([^()]*\)$/, '');
+}
+
+async function phaseAiItinerary() {
+  section('AI itinerary: prompt contract, post-processing, validation, AI_BUSY');
+  const GEM = 'GEMKEY-itinerary-test-77c3e1';
+  mock.reset({ gemini: 'ok' });
+  try {
+    await startServer('ai-itinerary', { GEMINI_API_KEY: GEM, TRUST_PROXY: '1' });
+  } catch (e) { log(false, 'Server (AI itinerary) started', e.message); return; }
+  const plans = [];
+  const plan = async (city, extra = {}) => {
+    const r = await postJson('/api/travel-plan', { city, theme: 'mixed', days: 2, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: true, ...extra }, { ip: nextIntentIp() });
+    plans.push(r);
+    return r;
+  };
+  const lastItinPrompt = () => String((mock.entries('gemini').filter((e) => e.isItinerary).pop() || {}).prompt || '');
+  const ctxOf = (prompt) => { try { return JSON.parse(prompt.split('Context:\n')[1]); } catch { return null; } };
+  const allBlocks = (r) => (r.json?.itinerary || []).flatMap((d) => d.blocks || []);
+  const POST_KEYS = ['mealsMoved', 'sightsRelabeled', 'allDayMerged', 'mustInserted', 'trimmed', 'shifted', 'repeatsReplaced', 'unverified'];
+  try {
+    // (1) 프롬프트 내용: 요청 원문·꼭 갈 곳·도시별 날짜·제약 문장, 원본 specialPrefs 덩어리 없음
+    const REQUEST = '오사카 2일 교토 2일, 유니버셜은 꼭, 도톤보리는 빼고 라멘 먹고 싶어';
+    const intent = await plan('osaka', {
+      days: 4, request: REQUEST, mustVisit: [USJ], excludedPlaces: ['도톤보리'], foodWishes: ['라멘'],
+      _routeCities: ['오사카', '교토'], _regionDayPlan: [{ cityLabel: '오사카', days: 2, unit: 'day' }, { cityLabel: '교토', days: 2, unit: 'day' }],
+      _specialPrefs: { lateStart: true, maxPlacesPerDay: 2, removeShopping: true }
+    });
+    const prompt = lastItinPrompt();
+    const ctx = ctxOf(prompt) || {};
+    const consIdx = prompt.indexOf('\nConstraints:\n');
+    const consLines = consIdx >= 0 ? prompt.slice(consIdx + 14).split('\n').filter((l) => l.startsWith('- ')) : [];
+    log(ctx.userRequest === REQUEST && prompt.includes(REQUEST), 'itinerary prompt carries the request text (userRequest)', short(ctx.userRequest));
+    log((ctx.mustVisit || []).some((m) => m.name === USJ && m.allDay === true) && prompt.includes(USJ), 'itinerary prompt lists mustVisit (USJ, allDay)', short(ctx.mustVisit));
+    log((ctx.dayPlan || []).map((d) => d.city).join(',') === '오사카,오사카,교토,교토' && ctx.dayPlan?.[2]?.transferFrom === '오사카',
+      'itinerary prompt has dayPlan with the city of each day (+ transferFrom)', short(ctx.dayPlan));
+    log(consLines.length >= 3 && consLines.some((l) => /10:30/.test(l)) && consLines.some((l) => /2 sightseeing/.test(l)) && consLines.some((l) => /shopping/i.test(l)),
+      "itinerary prompt has a 'Constraints:' list (late start, 2 places a day, no shopping)", short(consLines));
+    log(!('specialPrefs' in ctx) && !prompt.includes('"specialPrefs"'), 'itinerary prompt no longer embeds the raw specialPrefs object');
+    log(Array.isArray(ctx.picks) && ctx.picks.length > 0 && ctx.picks.every((p) => 'id' in p && 'city' in p && 'allDay' in p) && !ctx.picks.some((p) => /도톤보리/.test(p.name)),
+      'itinerary prompt picks carry id / city / allDay and leave out the excluded place', short(ctx.picks?.slice(0, 3)));
+    log((ctx.excluded || []).includes('도톤보리') && (ctx.foodWishes || []).includes('라멘'), 'itinerary prompt has excluded + foodWishes', short({ excluded: ctx.excluded, foodWishes: ctx.foodWishes }));
+    log(/종일/.test(prompt) && /점심/.test(prompt) && /ONLY for meals/.test(prompt), "itinerary prompt defines 종일 / 점심 and says 저녁/점심 are 'ONLY for meals'");
+    const iDays = intent.json?.itinerary || [];
+    log(intent.json?.itineraryInfo?.kind === 'ai' && iDays.length === 4 && iDays.every((d) => sightBlocks(d).length <= 2)
+      && iDays.every((d) => (d.blocks || []).every((b) => { const m = /\((\d{2}):(\d{2})-/.exec(b); return !m || Number(m[1]) * 60 + Number(m[2]) >= 630; }))
+      && /^도시 이동: 오사카 -> 교토/.test(iDays[2]?.blocks?.[0] || '') && !allBlocks(intent).some((b) => /도톤보리/.test(b))
+      && allBlocks(intent).filter((b) => b.startsWith(`종일(`) && b.includes(USJ)).length === 1 && (intent.json?.itineraryInfo?.missingMustVisit || []).length === 0,
+      'post-process enforces the intent: ≤2 sights a day, nothing before 10:30, transfer line on day 3, no excluded place, USJ once as 종일', short(iDays.map((d) => d.blocks), 600));
+    const pp = intent.json?.itineraryInfo?.postProcess || {};
+    log(POST_KEYS.every((k) => Number.isInteger(pp[k])) && Array.isArray(intent.json?.itineraryInfo?.missingMustVisit), 'itineraryInfo.postProcess has the 8 counters + missingMustVisit[]', short(intent.json?.itineraryInfo));
+
+    // (2) 후처리 시나리오
+    mock.scenario = { gemini: 'evening_sight' };
+    const ev = await plan('osaka');
+    log(allBlocks(ev).includes('오후(19:00-21:00): 우메다 스카이 빌딩 (우메다)') && ev.json?.itineraryInfo?.postProcess?.sightsRelabeled >= 1 && ev.json?.itineraryInfo?.kind === 'ai',
+      "evening_sight: '저녁(19:00-21:00): 우메다 스카이 빌딩' -> '오후(19:00-21:00)' (time kept, sightsRelabeled)", short(allBlocks(ev)));
+    mock.scenario = { gemini: 'lunch_food_in_afternoon' };
+    const lf = await plan('tokyo');
+    log(allBlocks(lf).includes('점심(12:00-13:30): 스시다이 (츠키지)') && lf.json?.itineraryInfo?.postProcess?.mealsMoved >= 1,
+      "lunch_food_in_afternoon: '오후(12:00-13:30): 스시다이' -> '점심(12:00-13:30)' (mealsMoved)", short(allBlocks(lf)));
+    mock.scenario = { gemini: 'allday_halfslot' };
+    const ad = await plan('osaka', { mustVisit: [USJ] });
+    const ad1 = ad.json?.itinerary?.[0] || {};
+    log(sightBlocks(ad1).length === 1 && /^종일\(09:00-\d{2}:\d{2}\): 유니버셜 스튜디오 재팬/.test(sightBlocks(ad1)[0]) && (ad1.blocks || []).some((b) => /^저녁\(18:00-19:30\): 쿠시카츠 다루마/.test(b))
+      && ad.json?.itineraryInfo?.postProcess?.allDayMerged >= 1,
+      'allday_halfslot: requested USJ in a half-day slot -> that day has one 종일 USJ block, dinner kept (allDayMerged)', short(ad1.blocks));
+    // 요청하지 않은 하루짜리(2일 일정이라 후보에 없음)를 AI가 넣으면 지우고, 같은 날의 다른 관광·저녁은 남기며 빈 낮은 후보로 채운다.
+    const adU = await plan('osaka');
+    const adU1 = adU.json?.itinerary?.[0] || {};
+    log(!allBlocks(adU).some((b) => b.includes(USJ)) && (adU1.blocks || []).includes('오후(13:00-15:00): 오사카성 (주오구)')
+      && (adU1.blocks || []).some((b) => /^저녁\(18:00-19:30\): 쿠시카츠 다루마/.test(b)) && sightBlocks(adU1).length >= 2 && adU.json?.itineraryInfo?.postProcess?.trimmed >= 1,
+      'allday_halfslot without a request: the unoffered all-day USJ is dropped, the same day keeps 오사카성 + dinner and is refilled', short(adU1.blocks));
+    mock.scenario = { gemini: 'missing_must' };
+    const mm = await plan('tokyo', { mustVisit: ['팀랩 플래닛'] });
+    log(allBlocks(mm).filter((b) => b.includes('팀랩 플래닛')).length === 1 && mm.json?.itineraryInfo?.postProcess?.mustInserted === 1 && (mm.json?.itineraryInfo?.missingMustVisit || []).length === 0,
+      "missing_must: mustVisit '팀랩 플래닛' that the AI left out is inserted exactly once (mustInserted 1, missingMustVisit [])", short(allBlocks(mm)));
+    log(/팀랩 플래닛/.test(lastItinPrompt()) && /Schedule every mustVisit exactly once/.test(lastItinPrompt()), 'missing_must: the prompt asked for the must-visit place');
+    mock.scenario = { gemini: 'lunch_repeat' };
+    const lr = await plan('osaka');
+    const lrDays = lr.json?.itinerary || [];
+    const lrSights = lrDays.flatMap((d) => sightBlocks(d).map(blockName));
+    log(lrDays.length === 2 && lrDays.every((d) => (d.blocks || []).includes('점심(12:00-13:00): 점심 식사 (난바)')) && new Set(lrSights).size === lrSights.length && lr.json?.itineraryInfo?.postProcess?.repeatsReplaced >= 1,
+      "lunch_repeat: the daily '점심 식사' stays every day; the repeated sight is replaced by an unused pick", short(lrDays.map((d) => d.blocks)));
+    mock.scenario = { gemini: 'invented_place' };
+    const inv = await plan('tokyo');
+    log(inv.json?.itineraryInfo?.kind === 'ai' && inv.json?.itineraryInfo?.postProcess?.unverified >= 1, 'invented_place: a place found in no candidate/data list is counted in postProcess.unverified', short(inv.json?.itineraryInfo?.postProcess));
+    // 알려진 한계: 도시별 날짜(dayPlan)와 다른 도시의 장소(오사카 날의 후시미 이나리)는 아직 고치지 않는다 → 형식·출처만 본다.
+    mock.scenario = { gemini: 'wrong_city_day' };
+    const wc = await plan('osaka', { days: 4, _routeCities: ['오사카', '교토'], _regionDayPlan: [{ cityLabel: '오사카', days: 2, unit: 'day' }, { cityLabel: '교토', days: 2, unit: 'day' }] });
+    log(wc.json?.itineraryInfo?.kind === 'ai' && (wc.json?.itinerary || []).length === 4 && /^도시 이동: 오사카 -> 교토/.test(wc.json?.itinerary?.[2]?.blocks?.[0] || ''),
+      'wrong_city_day: AI plan kept (kind ai, 4 days) and day 3 starts with the transfer line', short((wc.json?.itinerary || []).map((d) => d.blocks), 500));
+
+    // (3) 입력 검증과 제외
+    const big = await postJson('/api/travel-plan', { city: 'tokyo', days: 2, startDate: futureDate(20), request: 'x'.repeat(700) }, { ip: nextIntentIp() });
+    log(big.status === 400, 'travel-plan: request longer than 600 chars -> 400', String(big.status));
+    mock.scenario = { gemini: 'ok' };
+    const notArray = await plan('tokyo', { mustVisit: '센소지', excludedPlaces: '디즈니', foodWishes: '라멘' });
+    log(notArray.status === 200 && notArray.json?.itineraryInfo?.postProcess?.mustInserted === 0 && !/mustVisit/.test(lastItinPrompt().split('Context:\n')[1] || ''),
+      'travel-plan: mustVisit / excludedPlaces / foodWishes that are not arrays are ignored', short(notArray.json?.itineraryInfo));
+    mock.scenario = { gemini: 'disney_day' };
+    const dz = await plan('tokyo', { days: 3, excludedPlaces: ['디즈니'] });
+    log(!allBlocks(dz).some((b) => /디즈니/.test(b)) && !(dz.json?.recommendations || []).some((r) => /디즈니/.test(r.name)) && (dz.json?.itinerary || []).every((d) => sightBlocks(d).length >= 1),
+      "excludedPlaces ['디즈니']: the AI's Disneyland day is removed and refilled; no Disney card either", short((dz.json?.itinerary || []).map((d) => d.blocks)));
+    const ruleDz = await plan('tokyo', { days: 4, useAi: false, excludedPlaces: ['디즈니'] });
+    log(ruleDz.json?.itineraryInfo?.kind === 'rule' && !allBlocks(ruleDz).some((b) => /디즈니/.test(b)) && !(ruleDz.json?.recommendations || []).some((r) => /디즈니/.test(r.name)),
+      "excludedPlaces ['디즈니'] on the rule planner: no Disneyland/DisneySea block or card", short(allBlocks(ruleDz)));
+
+    // (5) 이 단계의 모든 일정 블록은 클라이언트 형식(시간대 토큰 + HH:MM-HH:MM)이거나 시각 없는 안내 줄이다
+    const malformed = plans.flatMap((r) => allBlocks(r)).filter((b) => (/^(오전|오후|저녁|종일|아침|점심)/.test(b) && !CLIENT_BLOCK_RE.test(b))
+      || (CLIENT_BLOCK_RE.test(b) && (() => { const m = /\((\d{2}):(\d{2})-(\d{2}):(\d{2})\)/.exec(b); return !m || Number(m[1]) > 23 || Number(m[3]) > 23 || Number(m[2]) > 59 || Number(m[4]) > 59 || (m[1] + m[2]) >= (m[3] + m[4]); })()));
+    log(plans.length >= 10 && malformed.length === 0, `every block of ${plans.length} AI/rule plans is a valid client block "오전(09:00-11:00): 장소" or a plain line`, short(malformed.slice(0, 5)));
+
+    // (4) AI_BUSY: 429/503은 규칙 일정 + 'AI_BUSY'(잠시 후 다시 시도 안내)
+    mock.scenario = { gemini: 'error429' };
+    const b429 = await plan('tokyo');
+    const e429 = b429.json?.aiErrors || [];
+    log(b429.json?.itineraryInfo?.kind === 'rule' && b429.json?.itineraryInfo?.reasonCode === 'AI_BUSY' && e429[0]?.code === 'quota_or_rate_limit' && e429.every((e) => !('message' in e))
+      && (b429.json?.itinerary || []).every((d) => d.blocks.length > 0),
+      "Gemini 429 RESOURCE_EXHAUSTED -> rule itinerary, itineraryInfo { kind: rule, reasonCode: AI_BUSY }", short({ ii: b429.json?.itineraryInfo, e429 }));
+    const c429 = await postJson('/api/ai-travel-chat', { message: '도쿄 3일', context: { city: 'tokyo', days: 3 } }, { ip: nextIntentIp() });
+    log(c429.json?.sourceInfo?.kind === 'rule' && c429.json?.sourceInfo?.reasonCode === 'AI_BUSY' && c429.json?.parsed?.days === 3, 'chat with Gemini 429 -> rule parse, sourceInfo reasonCode AI_BUSY', short(c429.json?.sourceInfo));
+    mock.scenario = { gemini: 'error503' };
+    const b503 = await plan('tokyo');
+    log(b503.json?.itineraryInfo?.kind === 'rule' && b503.json?.itineraryInfo?.reasonCode === 'AI_BUSY' && (b503.json?.aiErrors || [])[0]?.code === 'overloaded',
+      'Gemini 503 high demand -> rule itinerary, reasonCode AI_BUSY (code overloaded)', short({ ii: b503.json?.itineraryInfo, errs: b503.json?.aiErrors }));
+    log(mock.entries('gemini').some((e) => e.model === 'gemini-flash-latest' && e.body?.generationConfig?.thinkingConfig?.thinkingBudget === 0),
+      'fallback model gemini-flash-latest is called with thinkingBudget 0');
+    // 하루 무료 한도(PerDay quotaId) 소진은 AI_BUSY('1분 뒤')가 아니라 AI_DAILY_LIMIT + 한도가 다시 생길 때까지 남은 초.
+    // (모델이 몇 시간 쉬게 되므로 이 단계의 마지막에 둔다. 다음 단계는 새 서버 프로세스다.)
+    mock.scenario = { gemini: 'error429_daily' };
+    const bDay = await plan('tokyo');
+    const eDay = bDay.json?.aiErrors || [];
+    log(bDay.json?.itineraryInfo?.kind === 'rule' && bDay.json?.itineraryInfo?.reasonCode === 'AI_DAILY_LIMIT' && eDay[0]?.code === 'daily_quota' && eDay[0]?.reasonCode === 'AI_DAILY_LIMIT'
+      && Number(eDay[0]?.retryAfterSec) > 60 && Number(eDay[0]?.retryAfterSec) <= 86400 && eDay.every((e) => !('message' in e)) && (bDay.json?.itinerary || []).every((d) => d.blocks.length > 0),
+      'Gemini 429 with a PerDay quotaId -> rule itinerary, reasonCode AI_DAILY_LIMIT (code daily_quota, retryAfterSec until the daily reset)', short({ ii: bDay.json?.itineraryInfo, eDay }));
+    const cDay = await postJson('/api/ai-travel-chat', { message: '도쿄 3일', context: { city: 'tokyo', days: 3 } }, { ip: nextIntentIp() });
+    log(cDay.json?.sourceInfo?.kind === 'rule' && cDay.json?.sourceInfo?.reasonCode === 'AI_DAILY_LIMIT' && cDay.json?.parsed?.days === 3,
+      'chat after the daily quota is used up -> rule parse, sourceInfo reasonCode AI_DAILY_LIMIT (not AI_BUSY)', short(cDay.json?.sourceInfo));
+  } catch (e) { log(false, 'AI itinerary phase', e.stack || e.message); }
+  checkNoSecrets('AI itinerary', [GEM]);
+  checkNoUnexpectedExternal('AI itinerary');
+  checkNoFatal('AI itinerary');
 }
 
 function printResults() {

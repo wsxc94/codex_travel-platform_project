@@ -25,11 +25,13 @@
    `TRUST_PROXY_HOPS`를 필요보다 크게 잡으면 방문자가 직접 보낸 `X-Forwarded-For` 값이 기준 IP가 되어 레이트리밋을 우회할 수 있습니다. 로그로 확인한 뒤에만 바꾸세요.
 2. `GET /api/health` → `app`이 `tabimaru`, `brand`가 `Tabimaru`, `providers`가 `{ "places": "free", "map": "osm" }`(무료 모드)인지 확인합니다.
 3. Render 로그의 `[place-images] 197곳 로드 (사진 187곳, 좌표 194곳, en/ja 이름 197곳), 도시 사진 58곳, 음식 장르 사진 23개` 줄로 사진 데이터가 읽혔는지 확인합니다. 파일이 없으면 사진·좌표 없이 동작하고 경고가 남습니다.
-4. 사이트에서 [추천+AI일정 통합 생성]을 눌러 확인합니다.
+4. 사이트에서 [일정 만들기]를 눌러 확인합니다(요청칸에 "오사카 3일, 유니버셜은 꼭, 도톤보리는 빼고"처럼 써 보면 채팅 해석까지 한 번에 확인됩니다).
    - 카드에 사진과 "사진: 저작자 · 라이선스" 표기가 나온다. 도시 대표 사진·음식 예시 사진에는 앞에 "도시 대표 사진" / "음식 예시 사진"이 붙는다.
+   - 채팅 말풍선 아래 의도 칩(꼭 갈 곳·제외·조건)이 나오고, 일정에 꼭 갈 곳이 들어가고 제외한 곳이 없다. AI 한도가 바닥나 있으면 "AI 사용량이 잠시 몰려 기본 일정으로 만들었어요" 안내와 함께 규칙 기반 일정이 나온다(정상 동작).
    - 일정 지도(OpenStreetMap)가 뜨고 "© OpenStreetMap contributors"가 보인다.
-   - 페이지 제목과 머리글이 "Tabimaru — AI 일본 여행 플래너"다(영어·일본어로 바꾸면 제목도 바뀜).
+   - 페이지 제목과 머리글이 "Tabimaru — AI 일본 여행 플래너"다(영어·일본어로 바꾸면 제목도 바뀜). 휴대폰 다크 모드에서는 어두운 화면이 된다.
    - 첫 화면만 열었을 때는 일정·항공·숙소 조회가 일어나지 않는 것이 정상입니다.
+   - 정적 파일(html/js/css)은 `Cache-Control: no-cache` + `ETag`라서 배포 직후에도 새 화면을 받습니다(따로 캐시를 비울 필요 없음).
 5. `[session] SESSION_SECRET이 없어…` 경고가 있으면 `SESSION_SECRET`을 넣습니다.
 6. 저장소 이름을 바꾼 뒤 처음 배포할 때: Render 서비스 Settings → Build & Deploy의 Repository가 `wsxc94/tabimaru-japan-travel-planner`로 보이는지, push 뒤 자동 배포가 도는지 확인합니다. 연결이 끊겼으면 Repository를 다시 고릅니다. GitHub Actions 탭에서 CI 첫 실행이 초록색인지도 봅니다.
 
@@ -51,13 +53,17 @@
 
 필수 값은 없습니다. 운영에서는 아래 "권장"을 넣으세요. 전체 설명은 README의 "환경 변수" 표에 있습니다.
 
+2026-10-01 화면·의도 개편(주 버튼 하나, 채팅 후속 대화, AI 일정 후처리, 직접 배치, 초안 보관, 다크 모드)은 **새 환경변수가 없습니다.** Render 설정을 바꾸지 않고 배포하면 됩니다.
+
+**Gemini 무료 한도는 키 단위로 함께 씁니다.** 로컬 `.env`와 Render에 같은 `GEMINI_API_KEY`를 넣었다면, 로컬에서 시험하거나 `node scripts/prompt-matrix.mjs`(16건 = Gemini 약 32회)를 돌린 만큼 운영의 하루·분당 한도도 줄어듭니다. 한도가 바닥나면 운영 화면은 규칙 기반 일정 + `AI_BUSY` 안내로 바뀝니다(서버는 429·503을 받은 모델을 60초부터 최대 5분까지 쉬게 하고 다음 모델을 씁니다). 시험용 키를 따로 쓰거나, 시험은 몇 건만(`--only`) 돌리세요.
+
 | 구분 | 변수 | 비고 |
 |---|---|---|
 | 권장 | `SESSION_SECRET` | 32바이트 이상 무작위 값. 없으면 재시작 때마다 로그인이 풀림 |
 | 권장 | `PUBLIC_BASE_URL` | `https://japanjapantravel.onrender.com` (CSRF 허용 출처) |
 | 로그인 | `OAUTH_BASE_URL` | 운영 주소와 같은 값. OAuth 콜백 기준 |
-| 로그인 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `KAKAO_REST_API_KEY`, `KAKAO_CLIENT_SECRET` | 없는 공급자의 로그인 버튼은 숨겨짐 |
-| AI | `GEMINI_API_KEY`, `GEMINI_API_MODEL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `AI_REQUEST_TIMEOUT_MS`, `CHAT_PARSE_STRICT_AI` | 없으면 규칙 기반 일정·채팅 해석 |
+| 로그인 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `KAKAO_REST_API_KEY`, `KAKAO_CLIENT_SECRET` | 없는 공급자의 로그인 버튼은 숨겨지고, 그 주소(`/api/auth/<공급자>`)로 직접 들어오면 `/?authError=<공급자>`로 돌려보냄 |
+| AI | `GEMINI_API_KEY`, `GEMINI_API_MODEL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `AI_REQUEST_TIMEOUT_MS`, `CHAT_PARSE_STRICT_AI` | 없으면 규칙 기반 일정·채팅 해석(`AI_KEY_MISSING`). 무료 한도 공유 주의는 위 문단 |
 | 항공 | `TRAVELPAYOUTS_TOKEN` | 없으면 예시 데이터 |
 | 숙소 | `RAKUTEN_APP_ID`, `RAKUTEN_ACCESS_KEY` | 없으면 예시 데이터 |
 | 환율 | `FX_USD_KRW`, `FX_JPY_KRW` | 실시간 조회가 모두 실패할 때만 쓰는 고정값 |

@@ -445,15 +445,21 @@ function createBrowser({ html = '', fetchRoutes = {}, location = 'http://localho
     if (!innerJSON) innerJSON = vm.runInContext('JSON', ctx);
     return innerJSON.parse(text);
   };
-  function routeFor(pathname) {
-    if (Object.prototype.hasOwnProperty.call(fetchRoutes, pathname)) return fetchRoutes[pathname];
+  // 경로별 가짜 응답: { status, body } 또는 (call) => { status, body } (요청 본문·순번에 따라 다르게 답할 때)
+  function routeFor(pathname, call) {
+    if (Object.prototype.hasOwnProperty.call(fetchRoutes, pathname)) {
+      const r = fetchRoutes[pathname];
+      return typeof r === 'function' ? (r(call) || { status: 200, body: {} }) : r;
+    }
     return { status: 200, body: {} };
   }
   function fakeFetch(input, init = {}) {
     const raw = typeof input === 'string' ? input : String(input && input.url || input);
     const u = new URL(raw, location);
-    env.fetchCalls.push({ url: u.href, path: u.pathname, search: u.search, method: String(init.method || 'GET').toUpperCase(), sameOrigin: u.origin === new URL(location).origin });
-    const route = u.origin === new URL(location).origin ? routeFor(u.pathname) : { status: 200, body: {} };
+    // body: 문자열 본문(JSON)은 그대로 남긴다 → 테스트가 요청 필드(request·mustVisit·history 등)를 확인한다.
+    const call = { url: u.href, path: u.pathname, search: u.search, method: String((init && init.method) || 'GET').toUpperCase(), sameOrigin: u.origin === new URL(location).origin, body: init && typeof init.body === 'string' ? init.body : null };
+    env.fetchCalls.push(call);
+    const route = u.origin === new URL(location).origin ? routeFor(u.pathname, call) : { status: 200, body: {} };
     const status = route.status || 200;
     const text = JSON.stringify(route.body === undefined ? {} : route.body);
     const response = {

@@ -1,7 +1,7 @@
 # Tabimaru — Architecture & Feature Documentation
 
 > Tabimaru — AI 일본 여행 플래너(예전 이름 JapanTravel Suite)의 구조, 기능, 알고리즘, 데이터 흐름을 기록합니다. 코드 위치는 줄 번호 대신 **함수 이름**으로 적습니다(줄 번호는 금방 어긋남).
-> 마지막 갱신: 2026-10-01 (이름 변경, 도시·음식 장르 사진, en/ja 이름, 무료 공급자 모드, 출처 표시, Google 비용 가드, 테스트 격리 반영)
+> 마지막 갱신: 2026-10-01 (이름 변경, 도시·음식 장르 사진, en/ja 이름, 무료 공급자 모드, 출처 표시, Google 비용 가드, 테스트 격리, **의도 계약·AI 일정 후처리·직접 배치 통합·초안 보관·와시 톤/다크 모드** 반영)
 >
 > 저장소: https://github.com/wsxc94/tabimaru-japan-travel-planner · 운영: https://japanjapantravel.onrender.com/
 
@@ -22,6 +22,7 @@
 11. [테스트](#11-테스트)
 12. [OAuth 로그인 및 일정 저장](#12-oauth-로그인-및-일정-저장)
 13. [변경 이력](#13-변경-이력)
+14. [수동 점검 체크리스트](#14-수동-점검-체크리스트)
 
 ---
 
@@ -40,11 +41,12 @@ project-root/
   public/
     index.html                # 메인 HTML
     app.js                    # 프론트엔드 JS(빌드 단계 없음)
-    styles.css                # 전체 스타일(밝은 테마, color-scheme: light)
+    styles.css                # 전체 스타일(:root 토큰 — 와시 크림·히노마루 주홍·쪽빛, OS 다크 설정이면 다크 토큰. 반응형 @media는 파일 끝)
     manifest.webmanifest      # PWA 매니페스트
     favicon.svg               # 파비콘
   assets/place-images.json    # 무료 모드 장소·도시·음식 장르 사진, 좌표, en/ja 이름(Wikimedia, 서버가 시작할 때 읽음)
   scripts/build-place-images.js  # 위 파일 생성기(Wikipedia·Wikidata·Commons, 키 없음)
+  scripts/prompt-matrix.mjs   # 대표 요청 16개 의도 점검표(실행 중인 서버 + 실제 AI, 수동 실행)
   test_all.js                 # 통합 테스트(npm test)
   tests/support/              # 가짜 벤더 서버, 네트워크 차단 프리로드, DOM 흉내
   _test_api.js                # 수동 점검 스크립트(개발용)
@@ -162,7 +164,7 @@ HTTP Request
 - **클라이언트 IP**(`clientIpOf()`): 기본은 소켓 주소. Render(`RENDER` 변수) 또는 `TRUST_PROXY=1`일 때만 `X-Forwarded-For`의 뒤에서 `TRUST_PROXY_HOPS`번째 값(기본 마지막 값)을 쓴다 → 첫 항목을 바꿔도 한도를 우회할 수 없다. 고른 값이 Cloudflare 공개 IP 대역(`isCloudflareIp()`, IPv4·IPv6)이면 한 칸 앞 값을 쓴다(여러 방문자가 Cloudflare 주소 하나로 묶이지 않게). `noteProxyShape()`가 첫 요청 1줄과 처음 50개 요청의 항목 수 분포 1줄을 로그로 남긴다(IP는 남기지 않음, 운영 확인 방법은 deploy/DEPLOY.md 1번).
 - **CSRF 허용 출처**: `PUBLIC_BASE_URL`, `OAUTH_BASE_URL`, 요청의 자기 주소(Host), `http://localhost:<PORT>`. `Origin: null`, `*.onrender.com` 부분 일치는 거부. Origin·Referer가 모두 없는 요청(서버 간 호출·CLI)은 통과.
 - **본문 한도**: 항공·숙소·장소 검색·이동비 32KB, 일반 64KB, 일정 생성·AI 채팅 128KB, 일정 저장 500KB.
-- **보안 헤더**: API는 `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`; 정적 파일은 `nosniff`, `X-Frame-Options: SAMEORIGIN`, `Permissions-Policy`. CSP는 아직 없다(추가 시 unpkg.com, `*.tile.openstreetmap.org`, `upload.wikimedia.org`, Rakuten 이미지, Travelpayouts/Klook 스크립트를 허용해야 함).
+- **보안 헤더**: API는 `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`; 정적 파일은 `nosniff`, `X-Frame-Options: SAMEORIGIN`, `Permissions-Policy`. 정적 파일 캐시: 약한 `ETag`(크기-수정 시각)·`Last-Modified`로 `304`를 돌려주고, html/js/css는 `Cache-Control: no-cache`(배포 직후에도 새 파일을 받음), 아이콘·매니페스트·이미지는 `public, max-age=86400`. CSP는 아직 없다(추가 시 unpkg.com, `*.tile.openstreetmap.org`, `upload.wikimedia.org`, Rakuten 이미지, Travelpayouts/Klook 스크립트를 허용해야 함).
 - **세션**: `sid=<uuid>.<HMAC>` 쿠키(HttpOnly, SameSite=Lax, HTTPS면 Secure), 서버 메모리 저장, 7일 만료. `SESSION_SECRET`이 없으면 실행마다 임의 값.
 - **OAuth**: Google·Naver·Kakao 모두 `issueOauthState()`가 `state`를 공급자별 서버 기록과 `oauth_state` 쿠키(HttpOnly, SameSite=Lax, Path=/api/auth, 10분)에 함께 묶는다. 콜백의 `consumeOauthState()`가 쿠키와 timingSafeEqual로 대조하고 한 번만 쓰게 한다(로그인 CSRF 방지). OAuth 설정값은 `envValue()`로 읽어 공백뿐인 값은 미설정으로 본다.
 - **비밀값**: 어떤 응답에도 서버 키·토큰이 나가지 않는다. Gemini 키는 URL이 아니라 `x-goog-api-key` 헤더로 보낸다.
@@ -185,7 +187,7 @@ HTTP Request
 | GET | `/api/cities` | `{cities: [{key, label, airport}]}` |
 | GET | `/api/maps-config` | `{provider:'osm'}` 또는 `{provider:'google', key:<브라우저 키>}` |
 | GET | `/api/place-photo?name=&w=` | google 모드 사진 프록시(이름 정규식 `^places/[A-Za-z0-9_-]+/photos/[A-Za-z0-9_-]+$`, w 100..1600). 잘못된 이름 400, 발급하지 않은 이름 404, 무료 모드 404 |
-| GET | `/api/weather?city=<cityKey>` | 모든 도시. `resolveCityCoordsForInput()` → open-meteo 10일 예보(좌표별 30분 캐시, `sanitizeWeatherDaily()`로 날짜·숫자만). 위치를 모르면 404(다른 도시로 대신하지 않음), 날씨 서버 실패 502 |
+| GET | `/api/weather?city=<cityKey>` | 모든 도시. `resolveCityCoordsForInput()` → open-meteo 16일 예보(`forecast_days=16`, 좌표별 30분 캐시, `sanitizeWeatherDaily()`로 날짜·숫자만). 화면은 여행 날짜가 예보 범위 밖이면 안내한다. 위치를 모르면 404(다른 도시로 대신하지 않음), 날씨 서버 실패 502 |
 | GET | `/api/fx-rate` | `jpyToKrw`, `usdToKrw`, … + `source`(`live`/`env`/`approximate`), `provider`, `approximate`, `stale` |
 
 ### 4.3 여행 플랜(핵심)
@@ -202,8 +204,13 @@ HTTP Request
 ```json
 { "city": "osaka", "theme": "mixed|foodie|culture|shopping|nature", "budget": "low|mid|high",
   "days": 4, "startDate": "2026-10-15", "lang": "ko|en|ja", "useAi": true,
-  "_picks": [], "flight": {}, "stay": {} }
+  "request": "오사카 2일 교토 2일, 유니버셜은 꼭, 도톤보리는 빼고",
+  "mustVisit": ["유니버셜 스튜디오 재팬"], "excludedPlaces": ["도톤보리"], "foodWishes": ["라멘"],
+  "_picks": [], "_routeCities": ["오사카", "교토"], "_regionDayPlan": [{ "cityLabel": "오사카", "days": 2, "unit": "day" }],
+  "_specialPrefs": { "lateStart": true, "maxPlacesPerDay": 2, "removeShopping": true },
+  "flight": {}, "stay": {} }
 ```
+의도 필드(`request`·`mustVisit`·`excludedPlaces`·`foodWishes`·`_picks`)의 한도와 뜻은 [6.4 의도 계약](#64-의도-계약)에 있다.
 
 #### `/api/travel-plan` 응답(주요 필드)
 ```json
@@ -223,7 +230,10 @@ HTTP Request
                   "places": [{ "name": "오사카성", "period": "오전", "lat": 34.687, "lng": 135.526 }] }],
   "placeCoords": { "오사카성": { "lat": 34.687, "lng": 135.526 } },
   "itinerarySource": "gemini_itinerary_v1 (gemini-2.5-flash) | openai_itinerary_v1 | ai_planner_v1(규칙 기반, 예전 이름 그대로)",
-  "itineraryInfo": { "kind": "ai|rule", "provider": "gemini|openai|rule_planner", "reasonCode": null },
+  "itineraryInfo": { "kind": "ai|rule", "provider": "gemini|openai|rule_planner", "reasonCode": null,
+                     "postProcess": { "mealsMoved": 0, "sightsRelabeled": 1, "allDayMerged": 0, "mustInserted": 1,
+                                      "trimmed": 0, "shifted": 3, "repeatsReplaced": 0, "unverified": 0 },
+                     "missingMustVisit": [] },
   "tips": [], "summary": "…", "aiNote": "", "aiErrors": [],
   "budgetBreakdown": { "meal": {}, "transport": {}, "activity": {}, "days": 4, "budgetTier": "mid" }
 }
@@ -232,8 +242,9 @@ HTTP Request
 
 #### 출처 정보 객체 `{ kind, provider, reasonCode }`
 - `kind`: `live`(실시간 공급자) · `ai` · `curated`(무료 모드 정상 결과) · `fallback`(공급자 실패로 무료 데이터 사용) · `mock`(예시 데이터) · `rule`(규칙 기반 일정)
-- `reasonCode`: `GOOGLE_KEY_MISSING`, `GOOGLE_BILLING_DISABLED`, `GOOGLE_PERMISSION_DENIED`, `GOOGLE_QUOTA_EXCEEDED`, `GOOGLE_ERROR`, `GOOGLE_CIRCUIT_OPEN`, `NO_RESULTS`, `AI_KEY_MISSING`, `AI_TRUNCATED`, `AI_INVALID_OUTPUT`, `AI_ERROR`, `PROVIDER_UNAVAILABLE`, `NO_LIVE_DATA`
-- `itineraryInfo`: `useAi`가 없으면 `{rule, reasonCode:null}`, AI 키가 없으면 `AI_KEY_MISSING`, 그 밖에는 첫 AI 오류의 `reasonCode`. 빈 AI 일정은 절대 `ai`로 표시하지 않는다.
+- `reasonCode`: `GOOGLE_KEY_MISSING`, `GOOGLE_BILLING_DISABLED`, `GOOGLE_PERMISSION_DENIED`, `GOOGLE_QUOTA_EXCEEDED`, `GOOGLE_ERROR`, `GOOGLE_CIRCUIT_OPEN`, `NO_RESULTS`, `AI_KEY_MISSING`, `AI_TRUNCATED`, `AI_INVALID_OUTPUT`, `AI_ERROR`, `AI_BUSY`, `AI_DAILY_LIMIT`, `PROVIDER_UNAVAILABLE`, `NO_LIVE_DATA`, `NO_GENRE_MATCH`(`/api/foods` 전용)
+- `itineraryInfo`: `useAi`가 없으면 `{rule, reasonCode:null}`, AI 키가 없으면 `AI_KEY_MISSING`, 그 밖에는 첫 AI 오류의 `reasonCode`(분당 429·503은 `AI_BUSY`, 시도한 모델이 모두 하루 무료 한도(quotaId `…PerDay…`)로 막히면 `AI_DAILY_LIMIT` + `aiErrors[].retryAfterSec` = 태평양 시간 자정까지 남은 초, 400 등은 `AI_ERROR`). 빈 AI 일정은 절대 `ai`로 표시하지 않는다. `postProcess`는 후처리를 거친 일정(AI 일정, 꼭 갈 곳이 있는 규칙 일정)에만, `missingMustVisit`(문자열 배열)은 늘 붙는다.
+- `aiErrors[]`: `{provider, code, reasonCode, action}` + 모델 쿨다운 중이면 `retryAfterSec`(초). `code`는 `quota_or_rate_limit`·`overloaded`·`invalid_key`·`output_truncated`·`invalid_model_response` 등(`classifyAiError()`).
 
 ### 4.4 항공권/숙소
 | Method | Path | 설명 |
@@ -361,13 +372,25 @@ Gemini (1순위) -> OpenAI (2순위) -> 규칙 기반 (3순위)
 **규칙 기반** `createItinerary()`: 도시별 관광지 풀, 다도시 순회 시 `allocateDaysByCities()`로 일수 배분, 오전/오후/저녁 배치, 항공편 시간(첫날 도착·마지막 날 출발)과 `specialPrefs`(늦은 출발, 실내, 휴식일 등) 반영.
 
 **Gemini** `createItineraryWithGemini()`:
-- `responseMimeType: application/json` + `responseSchema`(`GEMINI_ITINERARY_SCHEMA`), 프롬프트에 정확한 출력 모양과 일수를 적는다.
-- `maxOutputTokens` 4096(6일 이상 8192), 2.5 계열은 `thinkingBudget: 0`, temperature 0.28, 타임아웃 30초.
-- `finishReason: MAX_TOKENS` → `AI_TRUNCATED`, 후보 없음·차단·STOP 외 → `AI_INVALID_OUTPUT`.
+- 프롬프트 = `AI_SYSTEM_MESSAGE`(블록 형식·시간대 토큰 규칙, 6.4) + `aiIntentInstructions()`(요청 원문·꼭 갈 곳·제외·dayPlan·foodWishes가 있을 때만 한 줄씩) + 출력 모양 예시 + 정확한 일수 + `Constraints:` 목록(`aiConstraintLines()`) + `Context:` JSON(`buildAiContext()`).
+- `buildAiContext()`의 `picks`는 `{id, name, area, category, bestTime, stayMin, city, allDay}`, `foods`는 경로 도시마다 8곳(전체 16곳, `city` 포함), 그 밖에 `maxPlacesPerDay`, 있을 때만 `userRequest`·`mustVisit[{name, area, allDay}]`·`excluded`·`dayPlan[{day, date, city, transferFrom}]`(도시 2곳 이상)·`foodWishes`·`constraints`. 원본 `specialPrefs` 객체는 넣지 않는다(조건은 문장으로).
+- `responseMimeType: application/json` + `responseSchema`(`GEMINI_ITINERARY_SCHEMA`, `properties.itinerary`가 있음 — 테스트의 가짜 Gemini는 이것으로 일정 요청과 채팅 요청을 가른다).
+- `maxOutputTokens` 4096(6일 이상 8192), 2.5 계열과 flash 별칭(`gemini-flash-latest`)은 `thinkingBudget: 0`, temperature 0.28, 타임아웃 30초.
+- `finishReason: MAX_TOKENS` → `AI_TRUNCATED`, 후보 없음·차단·STOP 외 → `AI_INVALID_OUTPUT`. 429·503(과부하·high demand)은 `classifyAiError()`가 `AI_BUSY`로 분류한다. 429 본문에 하루 한도 quotaId(`PerDay`)가 있으면 그 모델을 태평양 시간 자정까지(최대 6시간) 쉬게 하고, 모든 시도가 하루 한도면 `daily_quota` → `AI_DAILY_LIMIT`.
 
-**OpenAI** `createItineraryWithOpenAI()`: Responses API + `json_schema`(strict), `max_output_tokens` 동일, `status: incomplete`면 잘림으로 처리.
+**OpenAI** `createItineraryWithOpenAI()`: 같은 시스템 문장·`Constraints:`·컨텍스트, Responses API + `json_schema`(strict), `max_output_tokens` 동일, `status: incomplete`면 잘림으로 처리.
 
-**정규화** `normalizeAiItinerary()` / `normalizeAiBlock()`: 문자열·객체 블록을 모두 클라이언트 형식 문자열로 바꾸고 날짜는 서버가 계산한다. 일수가 모자라거나 관광 블록(저녁 제외)이 없는 날이 있으면 `AI_INVALID_OUTPUT` → 규칙 기반 일정.
+**정규화** `normalizeAiItinerary()` / `normalizeAiBlock()`: 문자열·객체 블록을 모두 클라이언트 형식 문자열로 바꾸고 날짜는 서버가 계산한다. 시각이 하나뿐인 블록("09:00 센소지")은 끝 = 시작 + 후보 `stayMin`(없으면 90분). 일수가 모자라거나 관광 블록(오전·오후·종일)이 없는 날이 있으면 `AI_INVALID_OUTPUT` → 규칙 기반 일정(아침·점심·저녁만 있는 날도 빈 날, 항공편 때문에 관광 시간이 거의 없는 첫날·마지막 날은 예외).
+
+**후처리** `postProcessItinerary(itinerary, opts)`(결정적, AI 일정 전체 + 규칙 일정은 꼭 갈 곳 넣기만 `ruleMode`): 
+1. 식사·관광 분류 — 저녁·점심 칸의 관광·자유 일정은 시각을 지킨 채 오전/오후로(`sightsRelabeled`), 오전·오후 칸의 맛집(foods 이름과 일치할 때만)은 15시 전 점심·뒤 저녁(`mealsMoved`). 식사는 시간대마다 하루 하나.
+2. 종일 병합 — 하루가 다 드는 후보(allDay)가 반나절 칸에 있거나 6시간 이상이면 그날 관광을 '종일' 하나로(식사는 남김, `allDayMerged`).
+3. 제외 — `excludedPlaces`('디즈니' → 디즈니랜드·디즈니씨)와 쇼핑 제외일 때의 쇼핑 장소를 쓰지 않은 후보로 바꾸거나 지움.
+4. 꼭 갈 곳 — 첫 자유 일정 칸 → 관광이 가장 적은 날의 빈 시간(15:00 우선) → 관광 2곳 이상인 날의 마지막 관광 순. allDay인 곳은 중간 날의 '종일'. 못 넣으면 `missingMustVisit`(`mustInserted`).
+5. 제약 — 시작 시각(늦은 시작 10:30·`startTimeMin`·첫날 도착+90분)보다 이른 블록은 미루고, 마지막 날 출발−120분을 넘는 블록은 당기거나 지움, 겹침은 연쇄로 미룸(`shifted`·`trimmed`), 하루 관광 수 제한(꼭 갈 곳 우선), 시간대 토큰을 실제 시각에 다시 맞춤.
+6. 반복 — 여러 날 되풀이된 후보(picks·꼭 갈 곳)는 아직 쓰지 않은 후보로(`repeatsReplaced`). 식사·자유 일정은 대상이 아니다.
+7. 도시 이동 날의 첫 줄을 규칙 일정과 같은 이동 문구로, 관광이 하나도 없는 날은 남은 후보나 자유 일정으로 채움, 후보·데이터 어디에도 없는 관광 이름 수를 셈(`unverified`).
+- 알려진 한계: `dayPlan`과 다른 도시의 장소(오사카 날의 후시미 이나리)는 아직 고치지 않는다. 후보가 아닌 관광(예: picks에 없는 금각사)이 반복되면 그대로 남는다.
 
 **일정 블록 형식**(클라이언트 렌더러가 읽는 모양):
 ```json
@@ -378,10 +401,61 @@ Gemini (1순위) -> OpenAI (2순위) -> 규칙 기반 (3순위)
 `attachItineraryCoordinates()`가 블록의 장소 이름을 추천 카드·`place-images.json` 좌표와 맞춰 `places`와 `placeCoords`를 만든다(지도용).
 
 ### 6.3 여행 채팅 해석
-- **규칙 기반** `parseTravelChatInput()`: `extractRequestedLocality()`(지역·랜드마크), `extractAirportCodeFromText()`, `cityKeyByAirport()`, `extractWantedPlacesFromMessage()`, `matchMustAttractions()`, `parseSpecialPrefsFromText()`.
-- **AI**: `parseTravelChatWithGemini()`(maxOutputTokens 1200, thinkingBudget 0), `parseTravelChatWithOpenAI()`(Responses API + JSON Schema). `normalizeTravelChatParsed()`가 규칙 기반 결과와 병합한다.
+- **규칙 기반** `parseTravelChatInput()`(Gemini가 한도로 실패할 때 실제로 쓰이는 경로): 부정된 구절("디즈니랜드는 빼고", "쇼핑은 빼줘", `NEG_SHOPPING_RE`)을 지운 글(`stripNegatedPhrases()`)로 도시·꼭 갈 곳을 찾고, 빼 달라고 한 대표 명소·도시 명소는 `excludedPlaces`로. 날짜(N월 M일·10月15日·Oct 15·M/D·크리스마스, 지난 날짜는 다음 해), 일수(`parseExplicitDaysFromText()`: 날짜·'N일차'를 먼저 지우고 N박M일·범위(큰 값)·日間·nights+1·일주일), 도시별 일수(`extractRegionDayPlanFromText()`, 데이터가 없는 지역 '나라 1일'은 `unsupportedPlaces` + 전체 일수에 더함 — 'N일' 표현이 도시별 일수보다 많을 때만), `parseSpecialPrefsFromText()`(늦은 시작·`startTimeMin`, 도착 `arrivalTime`·`firstDayShort`, 출발 `departureTime`(시각 없는 '오전 비행기' = 11:00), 하루 N곳, 실내, 적게 걷기, 아이 동반, 이동 최소 등).
+- **AI**: `parseTravelChatWithGemini()` — `responseSchema: geminiChatSchema()`(cityKey enum = 내장 도시 키, required cityKey·days·theme), `CHAT_PARSE_RULES` + 오늘 날짜, maxOutputTokens 2048, thinkingBudget 0(잘리면 `AI_TRUNCATED`). `parseTravelChatWithOpenAI()`(Responses API + JSON Schema). `normalizeTravelChatParsed()`가 규칙 결과와 병합하면서 AI 값을 실제로 쓴 필드 수(`_aiFieldCount`)를 센다: 0이면 `source: rule_based`, `sourceInfo {rule, reasonCode: AI_INVALID_OUTPUT}`(키가 없으면 `AI_KEY_MISSING`, 한도면 `AI_BUSY`). 부정된 테마(쇼핑은 빼줘 + AI shopping)는 거부하고 `removeShopping`, 메시지에서 찾은 도시(`_cityFromMessage`)가 AI와 다르면 메시지를 믿고, 폼 도시는 경로에 넣지 않는다. 출발일은 메시지에 날짜 말이 있을 때만 AI 값을 쓴다.
+- **답변** `buildTravelChatReply(parsed, lang)`: `CHAT_REPLY_TEXT` ko/en/ja. 도시·일수·출발일(일수를 말하지 않았으면 가정했다고 밝힘) → 꼭 갈 곳 → 제외 → 테마 → 맛집 → 조건 → 미지원 지역(당일치기 데이터가 있으면 대체 문장) → 도시가 2곳 이상일 때만 지역별 분배 → 도착 공항 → '일정을 만드는 중이에요…'. en/ja에서는 장소 이름을 `localizePlaceLabel()`로 바꾼다.
 - 모르는 지역이면 `ensureDynamicCityProfile()`이 동적 도시(`custom_…`)를 만든다: 좌표는 google 모드면 Geocoding, 아니면 open-meteo 지오코딩.
-- **멀티턴**: 클라이언트가 `history`(최근 대화)와 `prevParsed`를 보내고, `buildTravelChatPlan()`이 빈 필드를 이전 조건으로 채운다(`routeCities`는 항상 병합).
+- **멀티턴**: 클라이언트가 `history`와 `prevParsed`를 보내면(`sanitizeChatHistory()`·`sanitizePrevParsed()`), 폼 대신 이전 조건을 기본값으로 쓰고 `applyFollowUpRules()`가 이번 메시지에서 분명히 바꾼 것만 덮어쓴다: "대신·바꿔"가 있을 때만 도시 변경, "X 하루 더/줄여"(`parseCityDayDeltas()`)는 이전 분배에 더하고 전체 일수도 1~10일 안에서 같이 바꿈, 이전 꼭 갈 곳·제외·조건·출발일 유지. 응답의 `parsed`에서는 `_`로 시작하는 내부 필드를 뺀다(`publicChatParsed()`).
+
+### 6.4 의도 계약
+말로 한 요청이 일정까지 그대로 전달되도록 클라이언트·서버·테스트가 같은 이름을 쓴다.
+
+**`POST /api/ai-travel-chat` 요청**
+| 필드 | 한도 | 뜻 |
+|---|---|---|
+| `message` | — | 요청 원문 |
+| `context` | — | 폼 값 `{city, theme, budget, days, startDate}` |
+| `lang` | `ko`·`en`·`ja` | 답변(`reply`)·이유(`reasons`) 언어 |
+| `history` | 배열(아니면 400), 마지막 12개, 각 500자 | `[{role, content}]`, role은 `user` 또는 `assistant` |
+| `prevParsed` | 객체(아니면 400), JSON 4KB 이하(넘으면 400), 알려진 필드만 | 직전 응답의 `parsed` |
+
+**응답**: `parsed`(`cityKey`·`cityLabel`·`days`·`startDate`·`theme`·`budget`·`wantedPlaces`·`excludedPlaces`·`unsupportedPlaces`·`foodKeyword`·`routeCities`·`regionDayPlan`·`specialPrefs`·`arrivalTime`·`departureTime`·`startTimeMin`('HH:MM' 또는 '')·`reasons`·`isFollowUp`·`labels`), `reply`, `selectedDestinations`, `sourceInfo {kind:'ai'|'rule', provider, reasonCode}`, `aiErrors`.
+- `parsed.labels {wantedPlaces[], excludedPlaces[], unsupportedPlaces[], foodKeyword}`: 화면 언어 표기(원래 배열과 같은 순서·길이). 화면의 의도 칩은 요청한 언어와 지금 언어가 같을 때 이 표기를 쓰고, `/api/travel-plan`에는 원래(한국어) 이름을 보낸다.
+- `parsed.specialPrefs`는 꺼진(false) 조건을 빼고 보낸다(`prevParsed` 4KB 한도). 저예산이면 `lowBudget: true`.
+- AI 해석 정규화(`normalizeTravelChatParsed()`): AI가 낸 꼭 갈 곳은 표준 이름으로 바꾸고(`canonicalWantedName()`), 음식(`isFoodWord()` → 메시지에 있을 때만 `foodKeyword`로)·일반 표현('명소')·금액·숫자와 메시지(후속이면 이전 조건)에 근거가 없는 이름은 버린다. 메시지에 일수가 있으면 규칙 해석 일수가 AI 값보다 우선이고(주말 같은 표현만 AI 값), AI가 켠 조건·도착/출발/시작 시각은 메시지에 근거 낱말이 있을 때만 받는다(`PREF_EVIDENCE_RE`). 'A랑 B는 빼고'·'skip A and B'는 이름마다 제외(`findExcludedPlaceNames()`).
+- 후속 대화의 전체 일수 증감(`parseGlobalDayDelta()`: '하루 더 늘려줘'·'이틀 더'·'add one more day'·'하루 줄여줘')은 도시가 하나면 그 도시에, 여럿이면 마지막 도시에서 더하고 뺀다. 일수를 말하지 않은 후속 대화는 이전 일수·분배를 지킨다.
+
+**`POST /api/travel-plan` 의도 필드**(`sanitizePlanIntent()`, 배열이 아니면 무시)
+| 필드 | 한도 | 서버가 하는 일 |
+|---|---|---|
+| `request` | 500자 사용(스키마 maxLength 600, 넘으면 400) | 프롬프트 `userRequest` |
+| `mustVisit` | 문자열 8개(각 60자) | `resolveMustVisit()`: 후보 → 대표 명소 별칭 → 도시 명소 → 쓴 이름 그대로(데이터에 없으면 합성 후보). 후처리가 꼭 넣고, 못 넣으면 `missingMustVisit` |
+| `excludedPlaces` | 문자열 8개 | `resolveExcludedNameKeys()`/`isExcludedPlace()`: 추천 카드·AI 후보·규칙 일정·후처리 모두에서 뺀다 |
+| `foodWishes` | 문자열 3개 | 프롬프트 `foodWishes`(저녁 맛집 고를 때) |
+| `_picks` | 객체 8개(이름 80자) | 채팅이 고른 장소(`selectedDestinations`)를 후보 앞에 |
+| `_routeCities`·`_regionDayPlan`·`_specialPrefs` | — | 경로 도시·도시별 일수(→ `dayPlan`)·조건(→ `Constraints:` 문장) |
+
+**응답**: `itineraryInfo.postProcess{mealsMoved, sightsRelabeled, allDayMerged, mustInserted, trimmed, shifted, repeatsReplaced, unverified}`(계약 8개) + 진단용 `mealsAdded`·`sightsAdded`·`indoorSwapped`, `itineraryInfo.missingMustVisit[]`, AI가 바쁘면 `itineraryInfo {kind:'rule', reasonCode:'AI_BUSY'}`, 하루 한도를 다 썼으면 `reasonCode:'AI_DAILY_LIMIT'`.
+
+**후보와 후처리에서 지키는 의도**(AI·규칙 공통):
+- 요청하지 않은 하루짜리(USJ·디즈니·나라·노보리베츠 등)는 4일 이하 일정의 후보·규칙 일정에서 빼고 추천 카드로만 남긴다(5일 이상은 4일마다 1곳, 요청한 하루짜리 수만큼 줄임, 저예산이면 테마파크 제외). AI가 후보에도 꼭 갈 곳에도 없는 하루짜리를 넣으면 후처리 (d-0)이 지우고 빈 낮을 남은 후보로 채운다.
+- '오타루 당일치기를 하루'는 그 꼭 갈 곳을 당일치기(09:00-18:00)로, 먼 당일치기 날 저녁은 '<지역> 현지 식사'. 저녁이 좋은 꼭 갈 곳(도톤보리 등 추천 시작 17시 이후)은 저녁 빈 시간으로 옮긴다.
+- 실내 위주(`indoorFocus`)면 실내 후보(`EXTRA_PLACES`의 박물관·수족관·전망대 등)를 앞에 두고, 하루 바깥 관광은 1곳까지. 저예산(`lowBudget`)이면 유료 테마파크·전망대·수족관은 요청하지 않았으면 무료 명소로 바꾼다.
+- AI 일정의 빈 저녁·빈 낮은 맛집(먹고 싶은 것 우선)·남은 후보로 채운다(관광 목표 하루 3곳, 여유·적게 걷기·아이 동반은 2곳).
+
+**블록 형식과 시간대(period) 토큰** — 모든 언어에서 토큰은 한국어 그대로, 화면이 `tPeriod()`로 번역:
+- `'<period>(HH:MM-HH:MM): <이름> (<지역>)'`, period ∈ 오전·오후·종일·아침·점심·저녁. 그 밖의 줄(도시 이동 안내 등)은 시각 없는 안내 줄.
+- 오전 = 12시 전에 시작하는 관광, 오후 = 12시 이후 관광(저녁 시간대 관광도 실제 시각과 함께 오후, 예: `오후(19:00-21:00): 우메다 스카이 빌딩 (우메다)`), 종일 = 하루가 다 드는 곳(allDay 후보)만.
+- 점심·저녁(아침)은 **식사 전용**이고 시간대마다 하루 하나. 식사 판정 단어 `FOOD_WORD_RE`(서버·클라이언트 같은 정의)는 저녁·점심 칸이 식사인지 볼 때만 쓰고, 오전·오후 칸을 식사로 옮기는 것은 맛집(foods) 이름과 일치할 때만(카페·산책 오판 방지).
+
+**클라이언트 배치 계약**(`public/app.js`):
+- `SLOT_DEFS` = `morning`(오전 09:00-12:00) · `afternoon`(오후 13:00-17:00) · `allday`(종일 09:00-18:00) · `breakfast`(아침 08:00-09:30) · `lunch`(점심 12:00-13:30) · `dinner`(저녁 18:00-20:00), 각 `kind` dest/food. 블록 문자열은 `formatPlanBlock()` 하나로만 만든다.
+- `placeBlock({day, slotKey, name, area, kind, mode:'add'|'move', from:{day, blockIndex}, window:{start, end}, silent})` 하나로 끌어 놓기·추가 창·[옮기기]·터치 끌기를 모두 처리한다: 종류가 다르면 `kind-mismatch`(변화 없음), 식사 칸은 1개(식사→식사 이동은 맞바꿈, 그 밖에는 바꿀지 확인), 같은 날 같은 이름은 확인, 삽입은 시작 시각 순(같으면 아침<오전<종일<점심<오후<저녁), 같은 시간대의 다른 날로 옮기면 시각 유지. 성공하면 `userEdited`.
+- 여행지 시간 겹침은 모든 경로에서 `fitSightTime()`이 본다(그날의 오전·오후·종일 여행지, 자유 일정·식사 제외): 반나절 칸 안에 60분 이상 빈 시간이 있으면 그 시간으로 넣고(토스트에 실제 시각), 없거나 종일 칸이면 `confirm-time-overlap`으로 겹치는 장소·시각을 밝혀 묻는다(취소하면 변화 없음, 추가 창은 열어 둠). 받아들인 겹침은 '확인할 점'에 `alert-time-overlap`으로 남는다. `window`는 '🌙 저녁 이후' 칸처럼 기본 시각 대신 쓸 시간 창(`nightDropWindow()`).
+- 생성 중 편집 보호: 직접 고칠 때마다 `itinEditSeq`가 늘고, `runPlan()`은 시작할 때 값과 응답 때 값을 비교해 그 사이에 고쳤으면 `confirm-overwrite-during-build`로 다시 묻는다(취소하면 고친 일정 유지 + 추천만 갱신, `regen-kept-edits`). 말로 한 요청은 채팅 해석 전 값을 넘긴다.
+- 예산 단계: 숨은 `#budget`(`currentBudgetTier()`/`setBudgetTier()`)에 채팅 `parsed.budget`(low·mid·high)을 담아 `/api/travel-plan`·채팅 `context`·`/api/foods`·`/api/dest-search`에 싣는다. 요청 의도를 지우면 mid. 화면 합계(`#budgetSummary`)는 일정을 다시 그릴 때마다 `computeBudget()`과 같게 다시 그린다.
+- 서버 일정은 `classifyServerBlocks()`(서버 후처리와 같은 규칙의 멱등 안전망)를 한 번 거쳐 그린다. 예전의 '서버 식사 블록 지우기'는 없다.
+- 편집 중 초안: localStorage `tabimaru.draft.v1` 하나(`{v:1, savedAt, itinerary, latestDestList, latestRecFoodList, selectedFlight, selectedStay, form}`, 14일, 1.5M자 이하). 기존 localStorage 키 6개(8.7)는 그대로.
 
 ---
 
@@ -415,20 +489,21 @@ Google `primaryType`을 언어별 카테고리명으로 바꾼다(예: tourist_a
 ## 8. 프론트엔드 아키텍처
 
 ### 8.1 주요 UI 섹션 (index.html)
-1. **여행 조건** — 도시/날짜/일수/테마/예산 + AI 채팅
-2. **추천 결과** — 탭(여행지/맛집) + 일정 타임라인 + 일정 지도
+1. **여행 조건**(제목 `#section-conditions`) — 말로 요청하기(`#aiRequest` + 채팅 기록 `#aiChatLog`, [이 내용으로 만들기] `#btnAiAssist`) → 조건 칸(도시/출발일/일수/테마) → 섹션 끝의 주 버튼 하나 [일정 만들기] `#btnPlan`
+2. **추천과 내 일정** — 탭(여행지/맛집, 데스크톱은 왼쪽 열 sticky·모바일은 가로 카드 줄) + 일정 조작(다시 만들기·되돌리기·[💾 저장] `#btnPlanSave`·[📋 내보내기·공유] `#btnPlanExport`, 안내 띠 `#planRegenHint`) + 일정 분석 알림 `#scheduleAlerts` + 일정 타임라인 `#planResult` + 예상 비용 + 일정 지도·날씨
 3. **탐색** — 여행지·맛집 독립 검색
 4. **항공권 탐색** — 편도/왕복/다구간 + 필터/정렬
 5. **숙소 탐색** — 체크인아웃/인원/필터
 6. **투어** — Klook 위젯(8초 안에 안 뜨면 바로가기 링크)
 
 ### 8.2 첫 화면(부팅) — 유료 API를 부르지 않는다
-부팅 IIFE: `applyBrand()` → `initCityOptions()`(`/api/cities`) → `renderInitialEmptyStates()`(빈 상태 카드: [추천+AI일정 통합 생성]을 누르라는 안내) → 출발일 기본값(오늘+14일) → `loadKlookWidget()` → `loadMapConfig()`(`/api/maps-config`) → `initExchangeRateChip()`(`/api/fx-rate`). 별도로 `/api/auth/me`, `/api/auth/providers`를 부른다. 자동 클릭·자동 검색은 없다.
+부팅 IIFE: `applyBrand()` → `initCityOptions()`(`/api/cities`, 실패하면 2초·5초 뒤 재시도, 끝내 실패하면 [다시 시도]와 버튼 잠금) → `renderInitialEmptyStates()`(빈 상태 카드: [일정 만들기]를 누르라는 안내) → 출발일 기본값(오늘+14일) → `loadKlookWidget()` → `loadMapConfig()`(`/api/maps-config`) → `initExchangeRateChip()`(`/api/fx-rate`) → `offerDraftRestore()`(초안이 있으면 안내 띠만). 별도로 `/api/auth/me`, `/api/auth/providers`(응답 전에는 로그인 버튼 3개를 `hidden`, 설정된 것만 보임)를 부른다. 자동 클릭·자동 검색은 없다.
 
-[추천+AI일정 통합 생성] → `runPlan(extra, syncAux=true)`: `/api/travel-plan` 1회 → 탐색>여행지 탭은 같은 추천을 재사용(`/api/dest-search` 호출 없음) → `searchFlights()`·`searchFoods()`·`searchStays()` 각 1회 + `refreshInlineWeather()`. `beginPlanBusy()`/`endPlanBusy()`가 생성·채팅·새로고침 버튼을 모두 잠그고, 요청 순번으로 오래된 응답을 버린다.
+[일정 만들기] `#btnPlan`(주 버튼 하나): 직접 고친 일정이면 `confirmOverwriteIfEdited()`로 먼저 묻는다. 요청칸에 새 글이 있으면 `runChatPlan()` → `/api/ai-travel-chat`(`history`·`prevParsed` 포함) → 의도 상태(`aiRequestText`·`aiWantedNames`·`aiExcludedPlaces`·`aiFoodWishes`·`aiMustVisit`)를 채우고 의도 칩(`appendIntentChips()`) → `runPlan()`. 같은 글이면 의도를 유지한 채 `runPlan()`, 빈칸이면 `resetAiIntentState()` 뒤 `runPlan()`. 도시를 직접 바꾸거나 불러오기·초안 복구를 하면 의도를 지운다.
+`runPlan(extra, syncAux=true)`: `buildPlanPayload()`(의도 필드는 값이 있을 때만) → `/api/travel-plan` 1회 → 탐색>여행지 탭은 같은 추천을 재사용(`/api/dest-search` 호출 없음) → `searchFlights()`·`searchFoods()`·`searchStays()` 각 1회 + `refreshInlineWeather()`. `beginPlanBusy()`/`endPlanBusy()`가 생성·채팅·새로고침 버튼을 모두 잠그고, 요청 순번으로 오래된 응답을 버린다. 요청에는 시간 제한(`fetchWithTimeout()`, 일정·채팅 90초, 나머지 30초)이 있고, 생성 중에는 로딩 카드, 8초가 지나면 '무료 서버가 깨어나는 중' 안내, 끝나면 완료 토스트를 띄운다. `itineraryInfo.missingMustVisit`이 있으면 채팅에 'must-missing' 안내를 덧붙인다.
 
 ### 8.3 출처 안내
-`SOURCE_TEXT`(ko/en/ja) + `normalizeInfo()` / `legacyInfo()`(정보 객체가 없는 예전 응답) / `describeSource()` / `renderSourceNote()`. 예: 무료 모드 추천은 "추천 여행지: 엄선한 추천 장소", AI 키 없음은 "AI가 설정되지 않아 기본 일정으로 만들었어요.", 예시 데이터는 "예시 데이터"(항공·숙소 카드에 '예시' 표시, 일정에 넣기 비활성). 원시 오류·내부 ID는 보여주지 않는다(`friendlyError()`).
+`SOURCE_TEXT`(ko/en/ja) + `normalizeInfo()` / `legacyInfo()`(정보 객체가 없는 예전 응답) / `describeSource()` / `renderSourceNote()`. 예: 무료 모드 추천은 "추천 여행지: 엄선한 추천 장소", AI 키 없음은 "AI가 설정되지 않아 기본 일정으로 만들었어요.", 예시 데이터는 "예시 데이터"(항공·숙소 카드에 '예시' 표시, 일정에 넣기 비활성). 일정이 `AI_BUSY`면 '1분쯤 뒤 다시'(`ai-busy-retry`), `AI_DAILY_LIMIT`이면 "오늘 AI 무료 사용량을 다 써서 기본 일정으로 만들었어요." + 한도가 다시 생기는 시각(한국 시간 오후 4~5시, `ai-daily-retry`)을 덧붙인다. 원시 오류·내부 ID는 보여주지 않는다(`friendlyError()`).
 
 ### 8.4 사진
 `cardPhoto(url, name, credit)`가 실제 `<img>`를 그리고, 캡처 단계 `error` 리스너가 실패 시 첫 글자 타일로 바꾼다. 위키미디어 사진은 `photoCreditHtml()`로 "사진: 저작자 · 라이선스"를 파일 페이지 링크와 함께 표시한다(CC BY-SA 조건). `photoCredit.scope`가 `city`·`genre`이면 `photoScopeLabel()`이 앞에 "도시 대표 사진" / "음식 예시 사진"(en City photo / Example photo, ja 都市の写真 / 料理のイメージ)을 붙이고 대체 텍스트에도 넣는다. 이미지 주소는 `safeImageUrl(url, kind)`(장소: 같은 서버 `/api/place-photo`와 `upload.wikimedia.org/wikipedia/commons/`만, 숙소: https Rakuten 호스트만, 프로필: https만), 출처 링크는 `safeCreditUrl()`(Commons 파일 페이지·Google 기여자 페이지만).
@@ -440,7 +515,7 @@ Google `primaryType`을 언어별 카테고리명으로 바꾼다(예: tourist_a
 - 좌표는 `buildCoordIndex()`가 `day.places`, `placeCoords`, 추천·맛집 카드에서 모은다. 좌표가 없으면 지도를 숨기고 짧은 안내(`#itinMapNote`)를 보여준다. 일자별 경로선은 `DAY_COLORS`.
 
 ### 8.6 다국어
-`I18N` 사전(ko/en/ja, 각 468개 키, 세 언어 키 집합 동일) + `t()` + `applyLanguage(lang)`(data-i18n / -placeholder / -title / -aria 처리, 카드·패널·출처 줄 다시 그리기). 선택 언어는 localStorage `travelLang`(저장소가 막힌 브라우저에서도 부팅되도록 try/catch).
+`I18N` 사전(ko/en/ja, 각 567개 키, 세 언어 키 집합 동일, 중복 키 없음) + `t()` + `applyLanguage(lang)`(data-i18n / -placeholder / -title / -aria 처리, 카드·패널·출처 줄·의도 칩 다시 그리기). 부팅 때 `applyStaticI18n()`이 ko에서도 사전 값을 적용하고, `index.html`의 기본 글자는 ko 사전 값과 같게 둔다(테스트가 비교). 일본어 글자에는 `lang="ja"`와 시스템 일본어 글꼴(`:lang(ja)`)을 쓴다. 선택 언어는 localStorage `travelLang`(저장소가 막힌 브라우저에서도 부팅되도록 try/catch).
 
 브랜드: `BRAND_NAME`('Tabimaru') + 사전 키 `brand-subtitle`. `applyBrand()`가 `[data-brand]` 글자, `document.title`("Tabimaru — <부제>"), meta description(`meta-description`)을 언어에 맞춰 바꾸고, 내보내기·인쇄·공유 제목은 `shareTitle()`("Tabimaru 여행 일정" 등)을 쓴다. `index.html`의 기본 `<title>`과 `manifest.webmanifest`의 `name`은 "Tabimaru — AI 일본 여행 플래너", `short_name`은 "Tabimaru"다.
 
@@ -457,14 +532,30 @@ localStorage 키:
 | `travelPreferences` | 선호도 학습(도시/테마/항공사/숙소 지역) |
 | `travelChecklist` | 여행 준비 체크리스트 |
 | `placeMemos` | 장소 메모 |
+| `tabimaru.draft.v1` | 편집 중 일정 초안 1개(새 키, 6.4). `renderItineraryTimeline` 뒤 500ms에 보관, 14일 안이면 다음 방문에 [이어서 편집]/[버리기] 안내 |
 
-localStorage는 출처(도메인) 단위라, 도메인을 바꾸면 사용자의 찜·메모·체크리스트가 옮겨지지 않는다.
+localStorage는 출처(도메인) 단위라, 도메인을 바꾸면 사용자의 찜·메모·체크리스트가 옮겨지지 않는다. 모든 읽기·쓰기는 try/catch로 감싸 저장소가 막힌 브라우저에서도 동작한다.
 
 ### 8.8 여행자 편의 기능
 - 일정 내보내기(텍스트/마크다운/Web Share, PDF 인쇄)
 - 체크리스트(6개 그룹 25+ 항목, 진행률)
 - 긴급 정보: `EMERGENCY_CONTACTS` 한 필드(`tel`)에서 표시 번호와 `tel:` 링크를 함께 만든다(`telLink()`). 번호 출처는 코드 주석에 기록.
-- 일본어 회화(7개 카테고리, 클립보드 복사·검색), 날씨 예보(`/api/weather`), 일정 분석(하루 3곳 초과·충돌·중복 경고), 장소 메모, 환율 칩
+- 일본어 회화(7개 카테고리, 클립보드 복사·검색), 날씨 예보(`/api/weather`), 일정 분석(하루 3곳 초과·충돌·중복 경고 — 같은 종류는 날짜를 묶어 한 줄, `<details>`로 접힘), 장소 메모(인라인 입력, `alert`/`prompt` 없음), 환율 칩
+
+### 8.9 일정 직접 배치
+- 일정 보드(`renderItineraryTimeline()`): 하루를 시간 순서로 그린다(`itinDayLayout()`): 아침 → (찬 종일) → 오전 → 점심 → 오후 → (빈 종일) → 저녁 → 🌙 저녁 이후. 여행지 칸은 `.itin-period-zone[data-drop-type=dest][data-drop-dest-period]`(칸마다 [+ 장소 추가] `.itin-zone-add-btn`), 오후 블록 가운데 저녁 식사 시작(없으면 18:00) 뒤에 시작하는 관광은 '🌙 저녁 이후' 칸(`.itin-night-zone`, `data-drop-dest-period="night"`)에 모은다(블록 형식은 그대로 '오후(…)'). 식사 칸은 아침·점심·저녁(빈 칸 `.itin-meal-empty`·찬 칸 `.itin-slot[data-drop-meal]`, 같은 시간대 두 번째부터 `.itin-slot-extra`). '📍 여행지/🍴 맛집' 구역 머리는 없다. 찬 칸의 머리 시각은 실제 항목 범위, 빈 칸은 기본 시각, 접힌 칸은 시각 없음. 항목은 자기 시각(`.itin-slot-time`)을 보이고 `_blockIndex`로 정확히 그 블록을 가리킨다(▲▼·✕·[옮기기] `.itin-move-btn`·☰ `.drag-handle`). 첫 관광보다 앞의 안내 줄은 `.itin-plain-top`, 그 밖의 안내 줄(도시 이동 등)은 바로 앞 항목이 있는 칸 아래.
+- 숙소 결과는 처음 2줄 분량(한 줄 칸 수 = 실제 grid 열 수, 최소 3장)만 보이고 [더보기] `#btnStayMore`로 2줄씩 늘린다(항공 `#btnFlightMore`와 같은 방식). 항공·숙소 카드 목록은 안쪽 세로 스크롤 상자를 두지 않는다.
+- 마우스: HTML5 drag(`dragstart`가 `text/plain` + `application/x-tabimaru`, `markCompatibleZones(kind)`가 종류가 맞는 칸에만 `.drop-active`, 올린 칸 `.drop-hover`), `drop` → `clearDragState()` → `applyDropToZone()` → `placeBlock()`. 요청칸 등에 놓아도 글이 들어가지 않는다.
+- 터치: Pointer Events, ☰ 손잡이를 잡았을 때만(`pointerType !== 'mouse'`). `.touch-drag-ghost`·`body.touch-dragging`, `elementFromPoint()`로 칸 판정, 화면 위·아래 72px에서 자동 스크롤, 끄는 동안에만 `touchmove` 기본 동작을 막는다. 놓으면 같은 `applyDropToZone()`.
+- 드래그 없이: 카드 [+ 일정에 넣기] `.add-to-plan-btn[data-add-source=rec|recFood|destSearch|foodSearch]` → 추가 창(`#addToPlanModal`, 제목 `#modalHeading`, 날짜 `#modalDaySelect`, 시간대 `.slot-btn`, 직접 넣기면 후보 칩 `#modalPickList > .modal-pick-chip`(`.active`·이미 넣은 곳 `.is-used`) + 직접 입력 `#modalCustomName`). 창은 열 때마다 입력·선택을 비우고, 강조된 시간대(`.slot-btn.active`) = 실제로 들어갈 칸(`pendingAddSlot`). [옮기기]는 같은 창의 이동 모드.
+- 편집 보호: `placeBlock`·삭제·▲▼·날짜 옮기기·일수 맞추기가 `currentItineraryData.userEdited = true`. 새로 만들기 전에는 확인을 묻고, 항공·숙소 선택이 바뀌면 `regenerateAfterTripChange()`가 다시 만들지 않고 고정 블록(✈·🏨)만 다시 그린 뒤 `#planRegenHint`를 띄운다. 출발일·일수를 일정과 다르게 바꾸면 `#tripChangeBanner`(날짜만 옮기기·일수 맞추기·새로 만들기).
+- 키보드·스크린리더: 창·패널은 `role=dialog`·`aria-modal`·`aria-labelledby`, Esc로 가장 위 하나를 닫고 연 버튼으로 포커스를 돌려준다. 닫힌 사이드 패널은 `inert`.
+
+### 8.10 디자인 토큰·다크 모드
+- `:root` 토큰: 바탕 `--bg-0..3`(와시 크림), 선 `--line-1..3`·입력칸 테두리 `--line-input`, 글자 `--fg-1..4`, 행동색 `--accent`(히노마루 주홍: 주 버튼·포커스 링·브랜드 점), 선택 상태 `--primary`(쪽빛 채움 + `--bg-0` 글자), `--ok`·`--warn`·`--info`, `--on-accent`, `--scrim`, `--header-bg`, 모서리 `--r-sm..xl`·`--r-pill`. 대비는 WCAG 4.5:1(입력칸 테두리 3:1) 이상으로 맞춘 값이다.
+- 다크 모드: `@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {…} }`와 `:root[data-theme="dark"]`에 같은 다크 값(토글 UI 없음, OS 설정을 따름). 지도 타일은 CSS 필터로 어둡게. 테스트가 밝은 `:root`의 색 토큰을 두 다크 블록이 모두 다시 정하는지 본다.
+- 전역 `:focus-visible`(2px 주홍), 비활성 버튼은 회색 채움(대비 5:1 이상), 터치 기기(`pointer: coarse`)는 버튼 40px 이상·✕·[옮기기] 늘 보임.
+- 브랜드 자산: favicon = 주홍 원 + 크림 토리이, manifest `background_color #fbf7f0`·`theme_color #bb3d29`, meta theme-color 밝게 `#fbf7f0`/어둡게 `#15120f`.
 
 ---
 
@@ -472,30 +563,36 @@ localStorage는 출처(도메인) 단위라, 도메인을 바꾸면 사용자의
 
 ### 9.1 통합 플랜 생성
 ```
-[추천+AI일정 통합 생성] 클릭 (첫 화면에서는 호출 없음)
+[일정 만들기] 클릭 (첫 화면에서는 호출 없음; 요청칸에 새 글이 있으면 먼저 9.2)
   |
   +-- POST /api/travel-plan -> buildTravelPlan()
+  |    +-- sanitizePlanIntent() (request·mustVisit·excludedPlaces·foodWishes·_picks)
   |    +-- recommendDestinations()
   |    |    +-- free:   buildCuratedPicks() + attachPlaceMedia()  -> recommendationInfo curated
   |    |    +-- google: fetchGoogleAttractions() (googleApiFetch: 서킷·일일 상한·캐시)
   |    |               -> 실패 시 buildCuratedPicks()             -> recommendationInfo fallback + reasonCode
   |    +-- mergeSelectedDestinations() (사용자 선택 + 추천, 사진·좌표 유지)
+  |    +-- resolveMustVisit() / resolveExcludedNameKeys() -> 후보 정리, dayPlan(도시 2곳 이상)
   |    +-- useAi면 createItineraryWithGemini() -> createItineraryWithOpenAI() -> createItinerary()
-  |    |    -> itineraryInfo (ai | rule + reasonCode)
+  |    |    -> postProcessItinerary() (AI 일정 전체, 규칙 일정은 꼭 갈 곳만)
+  |    |    -> itineraryInfo (ai | rule + reasonCode, postProcess, missingMustVisit)
   |    +-- 추천 맛집: google 모드 fetchRecommendedFoods(), 비면 curatedFoodsForCities() -> foodsInfo
   |    +-- attachItineraryCoordinates() -> itinerary[].places, placeCoords
   |
-  +-- 프론트엔드: 추천 카드(사진·저작자) / 추천 맛집 / 일정 타임라인 / 지도(OSM)
+  +-- 프론트엔드: classifyServerBlocks() -> 추천 카드(사진·저작자) / 추천 맛집 / 일정 타임라인 / 지도(OSM) / 초안 보관
   +-- 같은 조건으로 /api/flights, /api/foods, /api/stays 각 1회 + /api/weather
 ```
 
 ### 9.2 AI 채팅 플랜
 ```
-사용자 자연어 입력 -> POST /api/ai-travel-chat -> buildTravelChatPlan()
-  +-- parseTravelChatInput() (규칙) + Gemini/OpenAI 해석 -> normalizeTravelChatParsed()
+요청칸 글 + [일정 만들기] -> POST /api/ai-travel-chat {message, context, lang, history, prevParsed} -> buildTravelChatPlan()
+  +-- parseTravelChatInput() (규칙) + Gemini(responseSchema)/OpenAI 해석 -> normalizeTravelChatParsed()
+  +-- 후속 대화면 applyFollowUpRules()
   +-- 모르는 지역: ensureDynamicCityProfile()
-  +-- recommendDestinations() 로 원하는 장소 후보
-  -> 프론트엔드: 조건 반영(syncCityDependents: 숙소/맛집 도시·도착 공항·투어·날씨) -> runPlan() (9.1과 동일)
+  +-- recommendDestinations() 로 원하는 장소 후보(selectedDestinations, 제외한 곳은 뺌)
+  +-- buildTravelChatReply(lang) + sourceInfo
+  -> 프론트엔드: 조건 반영(syncCityDependents: 숙소/맛집 도시·도착 공항·투어·날씨) + 의도 칩
+     -> runPlan() (9.1과 동일, 본문에 request·mustVisit·excludedPlaces·foodWishes·_picks)
 ```
 
 ### 9.3 항공권 검색
@@ -544,9 +641,24 @@ POST /api/flights
   5. `GOOGLE_DAILY_CALL_LIMIT=3` — 상한 이상 호출 없음, 이후 `GOOGLE_QUOTA_EXCEEDED`
   6. Geocoding HTTP 200 + `REQUEST_DENIED`(결제) → `GOOGLE_BILLING_DISABLED`·차단, 예전 `GOOGLE_MAPS_API_KEY`는 브라우저로 나가지 않음
   7. OAuth·AI 오류 — 네이버·카카오·Google `/api/auth/<공급자>`의 302 + `oauth_state` 쿠키(HttpOnly, SameSite=Lax, Path=/api/auth, Max-Age=600, 값 = Location의 `state`). 콜백에 쿠키 없음·다른 쿠키·`state` 없음·다른 공급자의 `state`·통과한 `state` 재사용 → `/?authError=invalid_state`, 실패한 콜백은 `sid`를 주지 않음. 쿠키 = `state`이면 검사를 통과해 토큰 교환을 한 번 시도하고 state 쿠키를 지움(가짜 서버가 토큰 교환을 401로 거절하므로 `data/users.json`에 쓰지 않음). 가짜 Gemini가 400 + 오류 원문으로 답해도 `travel-plan`·`ai-travel-chat`의 `aiErrors` 항목은 `provider`·`code`·`reasonCode`·`action`만 담고 응답 본문에 원문이 없음
-- **정적 검사**: 모든 JS `node --check`, I18N(ko에 ja/en 전용 키 없음, ja 값에 한국어 없음), CSS 변수 자기참조·순환·미정의, 브랜드(`APP_BRAND`/`APP_ID`/`BRAND_NAME`/User-Agent, index.html `<title>`, manifest `name`·`short_name`, 부제 ko/en/ja, `public/*`에 예전 이름 없음, package.json `name`, README 제목·저장소 링크, 문서 머리글), 도메인에 묶인 값(localStorage 키, `sid` 쿠키, Rakuten Referer, OAuth 콜백 경로, `start_url`, Render 서비스 이름), `render.yaml`·`.env.example`·README의 환경변수 목록과 Google 상한 기본값.
-- **첫 화면**: `tests/support/browser-sandbox.js`가 index.html 요소로 최소 DOM을 만들고 `app.js`를 실제로 부팅한다(fetch 기록, 가상 타이머, `click()`은 실제 리스너 호출). 부팅 중 유료 엔드포인트·자동 클릭·Google Maps JS 로드가 없어야 하고, 부팅 뒤 `document.title`이 "Tabimaru — AI 일본 여행 플래너"여야 하며(언어를 바꾸면 en/ja 표기로), 긴급 연락처의 표시 번호와 `tel:` 번호가 모두 같아야 한다. [추천+AI일정 통합 생성]을 두 번 눌러도 `/api/travel-plan` 1회 + 항공·맛집·숙소 각 1회(`/api/dest-search` 0회)여야 하고, 카드의 `<img>`·위키미디어 출처 링크, 도시 대표 사진 표시, 일정이 생긴 뒤의 Leaflet(SRI) 로드, 빈 일정 안내 문구도 확인한다. 같은 흉내 안에서 `safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`과 `renderCards`(추천·맛집)에 악성 값(`javascript:`·`data:`, 비슷한 호스트, userinfo, `/\`·`//` 우회, http Commons, Commons가 아닌 경로, 따옴표·HTML이 든 이름·저작자·라이선스)을 넣어, `src`는 Commons나 `/api/place-photo`, 출처 `href`는 `commons.wikimedia.org/wiki/`나 Google `/maps/contrib/`로만 시작하고 끼워 넣은 태그·`on*` 속성이 없는지 본다.
+  8. 의도 회귀(`phaseIntentRegression()`, `TRUST_PROXY=1` + 요청마다 다른 X-Forwarded-For로 레이트리밋 회피) — 가짜 Gemini `error400`으로 규칙 해석기를 강제하고 `INTENT_CASES` 67줄(ai_live P01-P16·X1-X3, ai_code P01-P19, SV-04 보정 사례, S2 여러 프롬프트 점검: 'A랑 B는 빼고'·'금각사, 기요미즈데라는 빼고'·'저녁엔 꼭 오코노미야키'·금액·영어 must/skip/start·일본어 必ず/なし)을 확인한다. 기대값은 `days`·출발일 월-일(연도는 올해 또는 내년, 오늘 이후)·`keepStart`(날짜 말이 없으면 폼 날짜)·`cityKey`·`theme`/`notTheme`·`budget`·조건 플래그·`maxPlacesPerDay`·`wantedPlaces`/`noWanted`·`excludedPlaces`·`unsupportedPlaces`(정확히)·`routeCities`·`foodKeyword`·도착/출발/시작 시각. 줄 이름 = 감사 ID + 요청, 실패 사유 = 틀린 필드 목록. en/ja 줄은 답변·이유에 장소 이름 말고 한국어가 없는지도 본다. 이어서 Gemini 정규화(`chat_ok` → `sourceInfo ai`, `{}` → `rule/AI_INVALID_OUTPUT`, `chat_shopping_neg` + '쇼핑은 빼줘' → shopping 거부, `chat_sapporo` + 폼 오사카 → 삿포로, `chat_noisy` → 음식·일반 문구·금액·메시지에 없는 장소·틀린 일수·근거 없는 조건을 거름, 채팅 요청의 responseSchema·2048·오늘 날짜), 한국어 요청의 en/ja 답변, 후속 대화(규칙·AI 둘 다 오사카 유지·교토 +1·전체 5일·조건 유지, 전체 일수 증감 '이틀 더'·'add one more day'·'하루 줄여줘', 일수 말이 없으면 유지), `history`/`prevParsed` 검증 400
+  9. AI 일정(`phaseAiItinerary()`) — 프롬프트 계약(`userRequest`·`mustVisit`·`dayPlan`·`Constraints:`·원본 specialPrefs 없음·picks의 `id`/`city`/`allDay`·`종일`/`점심`/`ONLY for meals`·`excluded`·`foodWishes`), 후처리 시나리오(`evening_sight`·`lunch_food_in_afternoon`·`allday_halfslot`(요청한 USJ는 종일로 합침, 요청하지 않은 USJ는 지우고 같은 날 다른 관광·저녁은 남김)·`missing_must`·`lunch_repeat`·`invented_place`·`wrong_city_day`·`disney_day`)와 `postProcess` 개수, 700자 `request` 400, 배열이 아닌 의도 필드 무시, 제외(디즈니) AI·규칙 일정 모두, 모든 블록이 클라이언트 형식, `error429`/`error503` → `AI_BUSY`(채팅 포함), `gemini-flash-latest`의 `thinkingBudget: 0`, 마지막에 `error429_daily`(PerDay quotaId) → `AI_DAILY_LIMIT`·`daily_quota`·`retryAfterSec`(일정·채팅)
+- **가짜 Gemini 시나리오**(`tests/support/mock-vendor.js`의 `mock.scenario = { gemini }`): `ok`·`max_tokens`·`empty_days`·`error400`·`error429`·`error429_daily`·`error503`, 채팅 `chat_ok`·`chat_shopping_neg`·`chat_sapporo`·`chat_noisy`(그 밖에는 `{}`), 일정 `ITINERARY_SCENARIOS`. 일정 요청은 `generationConfig.responseSchema.properties.itinerary`로 가른다. 기록(`mock.entries('gemini')`)에 요청 본문과 `prompt`가 남는다.
+- **정적 검사**: 모든 JS `node --check`, I18N(ko에 ja/en 전용 키 없음, ja 값에 한국어 없음, 중복 키 없음(원문에서 직접 셈), 코드의 `t('…')` 리터럴·`data-i18n*` 키가 ko/en/ja에 모두 있음 — 이미 빠져 있던 키는 `I18N_KNOWN_MISSING` 허용 목록(지금 0개), `index.html` 기본 글자 = ko 사전), CSS 변수 자기참조·순환·미정의, CSS 중복 사본(최상위 `.rec-tabs {`·`.itin-meal-empty {`·`.drop-active .drop-hint` 각 1번), 전역 `:focus-visible`, 다크 블록 2개가 밝은 `:root` 색 토큰을 모두 다시 정함, app.js에 `stripServerMealBlocks`·`alert(`·`prompt(` 없음, localStorage 새 키는 `tabimaru.draft.v1` 하나, 브랜드(`APP_BRAND`/`APP_ID`/`BRAND_NAME`/User-Agent, index.html `<title>`, manifest `name`·`short_name`, 부제 ko/en/ja, `public/*`에 예전 이름 없음, package.json `name`, README 제목·저장소 링크, 문서 머리글), 도메인에 묶인 값(localStorage 키, `sid` 쿠키, Rakuten Referer, OAuth 콜백 경로, `start_url`, Render 서비스 이름), `render.yaml`·`.env.example`·README의 환경변수 목록과 Google 상한 기본값.
+- **첫 화면**: `tests/support/browser-sandbox.js`가 index.html 요소로 최소 DOM을 만들고 `app.js`를 실제로 부팅한다(fetch 기록, 가상 타이머, `click()`은 실제 리스너 호출). 부팅 중 유료 엔드포인트·자동 클릭·Google Maps JS 로드가 없어야 하고, 부팅 뒤 `document.title`이 "Tabimaru — AI 일본 여행 플래너"여야 하며(언어를 바꾸면 en/ja 표기로), 긴급 연락처의 표시 번호와 `tel:` 번호가 모두 같아야 한다. [일정 만들기]를 두 번 눌러도 `/api/travel-plan` 1회 + 항공·맛집·숙소 각 1회(`/api/dest-search` 0회)여야 하고, 카드의 `<img>`·위키미디어 출처 링크, 도시 대표 사진 표시, 일정이 생긴 뒤의 Leaflet(SRI) 로드, 빈 일정 안내 문구도 확인한다. 같은 흉내 안에서 `safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`과 `renderCards`(추천·맛집)에 악성 값(`javascript:`·`data:`, 비슷한 호스트, userinfo, `/\`·`//` 우회, http Commons, Commons가 아닌 경로, 따옴표·HTML이 든 이름·저작자·라이선스)을 넣어, `src`는 Commons나 `/api/place-photo`, 출처 `href`는 `commons.wikimedia.org/wiki/`나 Google `/maps/contrib/`로만 시작하고 끼워 넣은 태그·`on*` 속성이 없는지 본다.
+- **직접 배치·의도 전달(샌드박스, `sandboxSchedulingTests()`)**: `fetch` 기록에 요청 본문(`body`)이 남고, 경로별 가짜 응답은 함수로도 줄 수 있다(`(call) => ({ body })`). 확인 항목:
+  - 로그인 공급자 `{naver:false}` → `#loginNaver.hidden`
+  - 카드의 `.add-to-plan-btn`(rec·recFood), AI 저녁 블록 보존, `오전(09:00-18:00)` → 종일 칸 + 실제 시각, 식당이 아닌 저녁 블록 → 오후
+  - `placeBlock` 식사 맞바꾸기(형식·`undefined` 없음), 같은 식사 칸 2개 금지(찬 칸은 확인 → 샌드박스 confirm은 false), 오전 칸이 오후보다 앞, 종류가 다르면 변화 없음
+  - 추가 창: 직접 입력 'A'를 쓰다 닫은 뒤 탐색 카드 추가 → 카드 이름, 강조된 시간대 = 들어간 시간대, [+ 장소 추가] + 후보 칩, [옮기기] 모드
+  - 시간 겹침: `fitSightTime()`(일부 겹침 → 빈 시간 15:00-17:00, 종일과 겹침 → conflict, 겹침 없음 → 칸 시각), 종일 USJ 날에 넣으면 `confirm-time-overlap`(장소·시각 포함)을 묻고 거절하면 변화 없음·창 유지. 이후 수동 배치 검사는 겹침 확인에만 '예'로 답한다(다른 확인은 그대로 '아니오')
+  - 끌어 놓기 공용 `applyDropToZone(beginDrag(원본), 칸)`(카드·일정 항목·종류 불일치), ☰ 손잡이 Pointer Events(`elementFromPoint`를 잠시 대상 칸으로 바꾸고 손잡이를 항목 자식으로 이어 붙여서): 고스트·`body.touch-dragging`·호환 칸 강조 → 놓으면 이동·상태 정리, 마우스 포인터는 무시
+  - 편집 보호: 고친 뒤 [일정만 다시 만들기] → 확인 문구 + `travel-plan` 0회, 항공 선택 → 0회 + `#planRegenHint`
+  - 초안: `tabimaru.draft.v1` 보관 → 초안이 있는 부팅은 안내 띠·유료 호출 0회·Leaflet 미로딩, [이어서 편집]도 AI 호출 0회
+  - 의도 전달: 요청칸 글 + 주 버튼 → `ai-travel-chat` 먼저, `travel-plan` 본문의 `request`·`mustVisit`·`excludedPlaces`·`foodWishes`·`_picks`·`_specialPrefs`, 두 번째 채팅 본문의 `history`·`prevParsed`, 같은 글이면 채팅 재호출 없음, 의도 칩(`intentChipsHtml`: 꼭 갈 곳 `.ok`, 반영 못 함 `.warn`, 당일치기로 대신 넣은 나라는 `.warn` 없음, `parsed.labels`는 요청한 언어일 때만), `describeSource`의 `AI_DAILY_LIMIT` 안내(`ai-daily-retry`), `missingMustVisit` 안내 말풍선
+  - 한계: 평평한 DOM이라 부모 관계·위치 판정(`elementFromPoint`)이 없다. 실제 손가락 끌기·스크롤·레이아웃은 14장의 수동 점검으로 본다.
 - 각 단계 끝에서 모든 응답 본문·헤더에 서버 키·토큰이 없는지, 서버 로그에 크래시가 없는지 확인한다.
+- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`oauth`·`live`·`free`). `npm test`·CI는 늘 전체(2026-10-01 기준 488개).
 - CI: `.github/workflows/ci.yml`(push·PR, Node 20).
 
 ---
@@ -555,7 +667,7 @@ POST /api/flights
 
 ### 12.1 소셜 로그인 (Naver / Kakao / Google)
 - OAuth 2.0 Authorization Code Flow, `/api/auth/{provider}`(리다이렉트) + `/api/auth/{provider}/callback`
-- 세 공급자 모두 `state`를 발급해 `oauth_state` 쿠키에 묶고, 콜백에서 쿠키·서버 기록과 대조한다(없거나 틀리거나 재사용하면 `/?authError=invalid_state`). 설정이 없는 공급자는 한국어 안내(JSON)로 답하고, 화면은 설정된 공급자의 버튼만 보여 준다.
+- 세 공급자 모두 `state`를 발급해 `oauth_state` 쿠키에 묶고, 콜백에서 쿠키·서버 기록과 대조한다(없거나 틀리거나 재사용하면 `/?authError=invalid_state`). 설정이 없는 공급자의 `/api/auth/<공급자>`는 `302 /?authError=<공급자>`로 첫 화면에 돌려보내고, 화면은 `/api/auth/providers` 응답 전에는 버튼을 모두 숨겼다가 설정된 공급자의 버튼만 보여 준다(`hidden` 속성). 내 일정 API가 401이면 로그아웃 상태로 바꾸고 로그인 창을 연다.
 - 세션: HMAC 서명 쿠키(`sid=uuid.signature`) + 서버 메모리 Map, 7일 만료
 - 사용자 정보: `data/users.json`
 
@@ -592,3 +704,38 @@ POST /api/flights
 | 2026-10-01 | 테스트 격리(가짜 벤더 서버·네트워크 차단·DOM 흉내), `npm test`, GitHub Actions CI, 문서 갱신 |
 | 2026-10-01 | **이름 변경: JapanTravel Suite → Tabimaru**(저장소 `wsxc94/tabimaru-japan-travel-planner`, `APP_ID`·health `app` = `tabimaru`, User-Agent `TabimaruBot/0.1`). 운영 주소·Render 서비스 이름·OAuth 콜백·`sid`·localStorage 키·Supabase 테이블은 그대로 |
 | 2026-10-01 | 도시 대표 사진(`cities`, `scope: city`)·음식 장르 예시 사진(`foodGenres`, `scope: genre`), 위키데이터 en/ja 이름(`labels`), 온천 사진 검토 규칙(`--review-baths`), Google 호출 상한 검색·사진 분리(하루 30·월 900), 사진 바이트 캐시, Cloudflare 프록시 IP 처리와 `[proxy]` 로그, OAuth state 쿠키 바인딩, 날씨 응답 정리, 지어낸 채움 장소 대신 "자유 일정" |
+| 2026-10-01 | **의도가 일정까지 가게**: 주 버튼 하나([일정 만들기]), 채팅 `history`·`prevParsed`·후속 대화 병합, 채팅 `responseSchema`·정직한 `sourceInfo`·3개 언어 답변·의도 칩, 일정 요청 `request`·`mustVisit`·`excludedPlaces`·`foodWishes`, 프롬프트 계약(식사 전용 점심·저녁, 저녁 관광은 오후, 종일, `Constraints:`, `dayPlan`), 결정적 후처리 `postProcessItinerary()`(`postProcess`·`missingMustVisit`), `AI_BUSY`(429·503), 규칙 해석기 보정(날짜·일수·부정·별칭·일본어). **직접 배치 통합**: `SLOT_DEFS` + `placeBlock()`(끌어 놓기·추가 창·[옮기기]·☰ 터치 끌기), 편집 보호, 초안 `tabimaru.draft.v1`. 화면: 와시 크림·히노마루 주홍·쪽빛 토큰, 다크 모드(OS 설정), CSS 중복 사본 정리, 포커스 링, 헤더 두 줄(스크롤하면 도구 줄만 남음, 툴바 라벨은 툴바 폭·언어별 컨테이너 쿼리로 단계적으로 줄임). 맛집은 지어낸 가게 이름 대신 빈 목록(`NO_GENRE_MATCH`)·'찾기' 안내. 날씨 16일, 정적 파일 ETag. 테스트 470개(의도 회귀 표·AI 일정 후처리·직접 배치 샌드박스) |
+| 2026-10-01 | **여러 프롬프트 점검 반영**: AI 해석 잡음 거르기(음식·일반 표현·금액·근거 없는 이름·조건), 메시지 일수 우선, 'A랑 B는 빼고' 목록 제외, 전체 일수 증감 후속 대화, 실내 위주·저예산 후보, 요청하지 않은 하루짜리는 카드로만(AI가 넣으면 후처리가 지움), 당일치기 현지 식사, 빈 저녁·빈 낮 채우기, `AI_DAILY_LIMIT`(하루 무료 한도), 의도 칩 `parsed.labels`. **직접 배치**: 모든 경로의 여행지 시간 겹침 검사(`fitSightTime()`), 생성 중 편집 보호(`itinEditSeq`), 시간순 보드·'🌙 저녁 이후' 칸, 예산 단계 전달·합계 다시 그리기, 숙소 [더보기]. 테스트 488개 |
+
+---
+
+## 14. 수동 점검 체크리스트
+
+자동 테스트(11장)가 흉내 낼 수 없는 부분(실제 브라우저의 손가락 끌기·레이아웃·실제 Gemini 답)을 사람이 볼 때의 순서다. 실제 키가 든 `.env`는 출력하거나 복사하지 않는다.
+
+### 14.1 로컬 서버(Google 호출 0회)
+```powershell
+$env:PORT='3005'; $env:PLACES_PROVIDER='free'; $env:MAP_PROVIDER='osm'; $env:GOOGLE_DAILY_CALL_LIMIT='0'; $env:GOOGLE_MONTHLY_CALL_LIMIT='0'
+node server.js
+```
+`.env`에 Gemini 키가 있으면 AI가 실제로 불린다(무료 한도는 운영과 같은 키라면 함께 줄어든다). AI 없이 보려면 `$env:GEMINI_API_KEY=' '`(공백 = 미설정)로 띄운다.
+
+### 14.2 휴대폰 터치 배치(헤드리스 Chrome + CDP)
+1. `chrome.exe --headless=new --remote-debugging-port=9222 --user-data-dir=<임시 폴더>`로 띄우고, `/json/new`로 탭을 연 뒤 WebSocket(Node 20+의 전역 `WebSocket`)으로 붙는다.
+2. `Emulation.setDeviceMetricsOverride {width:390, height:844, deviceScaleFactor:3, mobile:true}` + `Emulation.setTouchEmulationEnabled {enabled:true, maxTouchPoints:5}`, `Page.navigate http://127.0.0.1:3005/`.
+3. 요청칸 없이 [일정 만들기]를 누르고 일정이 그려질 때까지 기다린다.
+4. 일정 항목의 ☰(`.drag-handle`) 가운데 좌표를 `getBoundingClientRect()`로 얻고, `Input.dispatchTouchEvent`를 `touchStart`(손잡이) → `touchMove` 몇 번(다른 날 '오후' 칸 `.itin-period-zone[data-drop-day="2"][data-drop-dest-period="afternoon"]`의 가운데까지) → `touchEnd` 순서로 보낸다. 칸이 화면 밖이면 화면 아래 72px 안에 손가락을 두어 자동 스크롤을 확인한다.
+5. 확인: 끄는 동안 `.touch-drag-ghost`가 손가락을 따라오고 맞는 칸만 점선(`.drop-active`), 올린 칸은 실선(`.drop-hover`), 놓으면 그 칸에 항목이 생기고 원래 자리에서 사라짐(`.just-added` 잠깐), 끄는 동안 페이지가 스크롤되지 않음(`window.scrollY` 그대로, 자동 스크롤 구간 제외), 카드 본문(손잡이 밖)을 쓸면 스크롤만 됨.
+6. 버튼 경로: 카드 [+ 일정에 넣기] → 날짜·시간대 → [추가], 항목 [옮기기] → 다른 날 오전, 칸 [+ 장소 추가] → 후보 칩. 강조된 시간대와 실제로 들어간 칸이 같은지 본다.
+7. 마우스(1280×900): `Input.setInterceptDrags {enabled:true}` 뒤 `Input.dispatchMouseEvent`로 카드를 끌고, `Input.dragIntercepted`로 받은 `data`를 `Input.dispatchDragEvent`(dragEnter → dragOver → drop)로 칸에 보낸다. 맞지 않는 칸은 강조되지 않고 놓아도 바뀌지 않아야 한다.
+8. 다크 모드: `Emulation.setEmulatedMedia {features:[{name:'prefers-color-scheme', value:'dark'}]}`로 바꿔 대비·지도 톤을 눈으로 본다.
+
+### 14.3 프롬프트 매트릭스(실제 AI, SV-09)
+```powershell
+node scripts/prompt-matrix.mjs --base http://127.0.0.1:3005            # P01-P16·N01-N03·A01-A04·후속 F01-F02 전부(Gemini 약 60회 — 하루 무료 한도에 주의)
+node scripts/prompt-matrix.mjs --base http://127.0.0.1:3005 --only P01,P14 --gap 5000 --json out.json
+```
+- 본문은 화면(`runChatPlan` → `applyAiConditions` → `buildPlanPayload`)과 같다: `mustVisit`·`excludedPlaces`·`foodWishes`·`_picks`·채팅이 정한 `budget`, 후속 대화는 `history`·`prevParsed`.
+- 요청 사이를 4초 이상 띄우고, `AI_BUSY`(429/503)면 60초 쉬고 한 번만 다시 시도한다. `AI_DAILY_LIMIT`(하루 무료 한도 소진)이면 다시 시도하지 않는다. 한도가 바닥나면 나머지는 규칙 결과(`sourceInfo.kind: rule`)로 나오므로, 표의 출처 칸을 보고 AI 결과인지 먼저 확인한다.
+- 볼 것: 해석(도시·일수·꼭 갈 곳·제외·조건)이 11장의 `INTENT_CASES` 기대값과 같은지, 일정 블록이 식사 칸에 관광을 넣지 않는지, 꼭 갈 곳이 한 번씩 들어갔는지, 제외한 곳이 없는지, 늦은 시작·하루 장소 수가 지켜지는지, en/ja 답변에 한국어가 없는지.
+- 운영 서버로 돌릴 때는 `--base https://japanjapantravel.onrender.com`(첫 요청은 깨우느라 50초쯤 걸림), 몇 개만(`--only`) 돌린다.

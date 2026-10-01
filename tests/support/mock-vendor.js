@@ -10,7 +10,14 @@
  *   places:        'ok' | 'billing403' | 'empty'
  *   geocode:       'ok' | 'denied-billing'
  *   directions:    'ok' | 'denied'
- *   gemini:        'ok' | 'max_tokens' | 'empty_days' | 'error400' (모든 호출에 400 + 벤더 원문 GEMINI_ERROR_TEXT)
+ *   gemini:        'ok' | 'max_tokens' | 'empty_days'
+ *                  | 'error400' (모든 호출에 400 + 벤더 원문 GEMINI_ERROR_TEXT)
+ *                  | 'error429' (모든 호출에 429 RESOURCE_EXHAUSTED) | 'error503' (모든 호출에 503 high demand)
+ *                  | 'error429_daily' (모든 호출에 429 + PerDay quotaId: 하루 무료 한도 소진)
+ *                  채팅 해석(일정이 아닌 요청)용: 'chat_ok' | 'chat_shopping_neg' | 'chat_sapporo' | 'chat_noisy' (그 밖에는 '{}')
+ *                  일정용(ITINERARY_SCENARIOS): 'evening_sight' | 'lunch_food_in_afternoon' | 'allday_halfslot' | 'missing_must'
+ *                  | 'lunch_repeat' | 'wrong_city_day' | 'invented_place' | 'disney_day' (그 밖에는 'ok' 일정)
+ *                  일정 요청 판별: generationConfig.responseSchema.properties.itinerary 가 있으면 일정(채팅 해석도 responseSchema를 보낸다).
  *   travelpayouts: 'ok' | 'empty' | 'error'
  *   weather:       'ok' | 'hostile' (open-meteo 응답에 예상 밖 필드·HTML·잘못된 날짜를 섞음)
  *
@@ -99,15 +106,52 @@ function fakePlaces(textQuery, count = 5) {
   });
 }
 
-function geminiItinerary(days, startDate) {
+const OK_BLOCKS = [
+  '오전(09:00-11:00): 센소지 (아사쿠사)',
+  '오후(13:00-15:00): 메이지 신궁 (하라주쿠)',
+  '저녁(18:00-19:30): 저녁 식사 (신주쿠)'
+];
+
+// 일정 시나리오: 날짜 순번(i, 0부터) → 그날의 블록. 서버 후처리(postProcessItinerary)가 계약대로 고치는지 본다.
+const ITINERARY_SCENARIOS = {
+  ok: () => OK_BLOCKS,
+  // 저녁 칸에 든 관광 → 서버가 시각을 지킨 채 '오후(19:00-21:00)'로 바꿔야 한다
+  evening_sight: () => ['오전(09:00-11:00): 오사카성 (주오구)', '저녁(19:00-21:00): 우메다 스카이 빌딩 (우메다)'],
+  // 오후 칸에 든 맛집(foods 이름) → '점심(12:00-13:30)'으로
+  lunch_food_in_afternoon: () => ['오전(09:00-11:00): 센소지 (아사쿠사)', '오후(12:00-13:30): 스시다이 (츠키지)', '오후(14:00-16:00): 메이지 신궁 (하라주쿠)'],
+  // 하루가 다 드는 곳(USJ)이 반나절 칸에 → 그날 관광은 '종일' 하나(식사는 남김)
+  allday_halfslot: () => ['오전(09:00-11:00): 유니버셜 스튜디오 재팬 (오사카)', '오후(13:00-15:00): 오사카성 (주오구)', '저녁(18:00-19:30): 쿠시카츠 다루마 (신세카이)'],
+  // 꼭 갈 곳(mustVisit)을 빼먹은 일정 → 서버가 넣어야 한다
+  missing_must: () => ['오전(09:00-11:00): 센소지 (아사쿠사)', '오후(13:00-15:00): 메이지 신궁 (하라주쿠)'],
+  // 매일 같은 '점심 식사' → 식사는 반복 정리 대상이 아니다(매일 남는다)
+  lunch_repeat: (i) => [i === 0 ? '오전(09:00-11:00): 오사카성 (주오구)' : '오전(09:00-11:00): 우메다 스카이 빌딩 (우메다)', '점심(12:00-13:00): 점심 식사 (난바)', '오후(14:00-16:00): 도톤보리 (난바)'],
+  // 오사카 날(1일차)에 교토 명소
+  wrong_city_day: (i) => (i === 0
+    ? ['오전(09:00-11:00): 후시미 이나리 타이샤 (후시미)', '오후(13:00-15:00): 오사카성 (주오구)', '저녁(18:00-19:30): 쿠시카츠 다루마 (신세카이)']
+    : ['오전(09:00-11:00): 기요미즈데라 (히가시야마)', '오후(13:00-15:00): 금각사 (기타구)', '저녁(18:00-19:30): 저녁 식사 (기온)']),
+  // 후보·내장 데이터 어디에도 없는 장소(지어낸 이름) → postProcess.unverified로 센다
+  invented_place: () => ['오전(09:00-11:00): 하늘정원 비밀 전망대 (어딘가)', '오후(13:00-15:00): 메이지 신궁 (하라주쿠)', '저녁(18:00-19:30): 저녁 식사 (신주쿠)'],
+  // 빼 달라고 한 곳(excludedPlaces ['디즈니'])을 AI가 그래도 넣은 일정 → 후처리가 지워야 한다
+  disney_day: () => ['종일(09:00-18:00): 도쿄 디즈니랜드 (지바 우라야스)', '저녁(18:30-20:00): 스시다이 (츠키지)']
+};
+
+// 채팅 해석 시나리오(키가 맞는 JSON). 'chat_ok'의 출발일은 오늘 + 30일.
+function chatScenarioJson(name) {
+  const future = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  if (name === 'chat_ok') return { cityKey: 'osaka', cityLabel: '오사카', days: 4, startDate: future, wantedPlaces: ['유니버셜 스튜디오 재팬'], theme: 'mixed' };
+  if (name === 'chat_shopping_neg') return { cityKey: 'tokyo', cityLabel: '도쿄', days: 3, theme: 'shopping' };
+  if (name === 'chat_sapporo') return { cityKey: 'sapporo', cityLabel: '삿포로', days: 3, theme: 'mixed', routeCities: ['삿포로'] };
+  // 실제 Gemini가 낸 잡음(검증에서 본 형태): 음식·일반 문구·금액·메시지에 없는 장소를 꼭 갈 곳으로, 틀린 일수, 근거 없는 조건
+  if (name === 'chat_noisy') return { cityKey: 'tokyo', cityLabel: '도쿄', days: 4, theme: 'mixed', wantedPlaces: ['라멘', '무료 명소', '1인 50만원', '센소지', '도쿄 타워'], specialPrefs: { publicTransitOnly: true, removeShopping: true } };
+  return {};
+}
+
+function geminiItinerary(days, startDate, scenario = 'ok') {
+  const blocksFor = ITINERARY_SCENARIOS[scenario] || ITINERARY_SCENARIOS.ok;
   const itinerary = Array.from({ length: days }, (_, i) => ({
     day: i + 1,
     date: startDate || '2026-05-01',
-    blocks: [
-      '오전(09:00-11:00): 센소지 (아사쿠사)',
-      '오후(13:00-15:00): 메이지 신궁 (하라주쿠)',
-      '저녁(18:00-19:30): 저녁 식사 (신주쿠)'
-    ]
+    blocks: blocksFor(i)
   }));
   return { summary: '테스트용 AI 일정', itinerary, tips: ['교통카드를 준비하세요'] };
 }
@@ -257,8 +301,20 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
       let parsed = {};
       try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
       const prompt = String(parsed?.contents?.[0]?.parts?.[0]?.text || '');
-      const isItinerary = Boolean(parsed?.generationConfig?.responseSchema);
-      record({ kind: 'gemini', model: decodeURIComponent(gem[1]), path: p, query: url.search, method: req.method, headers, body: parsed, isItinerary });
+      // 채팅 해석도 responseSchema(cityKey enum 등)를 보내므로, 일정 요청은 스키마에 itinerary 속성이 있는지로 가른다.
+      const isItinerary = Boolean(parsed?.generationConfig?.responseSchema?.properties?.itinerary);
+      record({ kind: 'gemini', model: decodeURIComponent(gem[1]), path: p, query: url.search, method: req.method, headers, body: parsed, prompt, isItinerary });
+      if (sc.gemini === 'error429') {
+        return sendJson(res, 429, { error: { code: 429, message: 'Resource has been exhausted (e.g. check quota). (mock)', status: 'RESOURCE_EXHAUSTED' } });
+      }
+      if (sc.gemini === 'error429_daily') {
+        // 하루 무료 한도(PerDay quotaId) 소진: 서버는 AI_DAILY_LIMIT으로 알려야 한다(분당 429의 AI_BUSY와 구분)
+        return sendJson(res, 429, { error: { code: 429, message: 'You exceeded your current quota. * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20 (mock)', status: 'RESOURCE_EXHAUSTED',
+          details: [{ '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests', quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier', quotaValue: '20' }] }, { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '47s' }] } });
+      }
+      if (sc.gemini === 'error503') {
+        return sendJson(res, 503, { error: { code: 503, message: 'The model is overloaded due to high demand. Please try again later. (mock)', status: 'UNAVAILABLE' } });
+      }
       if (sc.gemini === 'error400') {
         return sendJson(res, 400, {
           error: {
@@ -269,7 +325,7 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
           }
         });
       }
-      if (!isItinerary) return sendJson(res, 200, geminiResponse('{}', 'STOP'));
+      if (!isItinerary) return sendJson(res, 200, geminiResponse(JSON.stringify(chatScenarioJson(sc.gemini)), 'STOP'));
       const days = Number((/exactly (\d+) entries/.exec(prompt) || [])[1] || 2);
       if (sc.gemini === 'max_tokens') {
         return sendJson(res, 200, geminiResponse('{"summary":"잘린 응답","itinerary":[{"day":1,"date":"2026-05-01","blocks":["오전(09:00-11:00): 센소지', 'MAX_TOKENS'));
@@ -278,7 +334,7 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
         const empty = { summary: '빈 일정', itinerary: Array.from({ length: days }, (_, i) => ({ day: i + 1, date: '2026-05-01', blocks: [] })), tips: [] };
         return sendJson(res, 200, geminiResponse(JSON.stringify(empty), 'STOP'));
       }
-      return sendJson(res, 200, geminiResponse(JSON.stringify(geminiItinerary(days)), 'STOP'));
+      return sendJson(res, 200, geminiResponse(JSON.stringify(geminiItinerary(days, null, sc.gemini)), 'STOP'));
     }
 
     // ── Travelpayouts (Aviasales Data API v3) ──
@@ -343,4 +399,4 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
   };
 }
 
-module.exports = { createMockVendor, JPEG_BYTES, FREE_EXTERNAL_HOSTS, GEMINI_ERROR_TEXT };
+module.exports = { createMockVendor, JPEG_BYTES, FREE_EXTERNAL_HOSTS, GEMINI_ERROR_TEXT, ITINERARY_SCENARIOS };
