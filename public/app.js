@@ -161,13 +161,41 @@ var dragData = null;
 var pendingAddPlace = null;
 var pendingAddType = 'dest';
 var pendingAddSlot = 'afternoon';
+var pendingAddMode = 'add';      // 'add' | 'move' (일정 추가 창을 '옮기기'로 쓸 때)
+var pendingMoveFrom = null;      // { day, blockIndex }
 let selectedStayId = '';
 let selectedStay = null;
+// 직접 입력한 항공·숙소는 검색 결과와 따로 보관한다(다시 검색해도 사라지지 않게).
+var manualFlights = [];
+var manualStays = [];
 let aiPreferredAreas = [];
 let aiPreferAirportAccess = false;
 let aiRouteCities = [];
 let aiRegionDayPlan = [];
 let aiSpecialPrefs = {};
+// 말로 한 요청(채팅)에서 알아낸 의도. /api/travel-plan 본문(request·mustVisit·excludedPlaces·foodWishes·_picks)으로 보낸다.
+var chatHistory = [], lastParsedConditions = null, aiRequestText = '', aiMustVisit = [], aiWantedNames = [], aiExcludedPlaces = [], aiFoodWishes = [];
+// 요청칸(#aiRequest)의 글 중 이미 처리한(채팅으로 적용했거나 조건 변경으로 무효가 된) 문장. 같은 글로 주 버튼을 다시 누르면 채팅을 또 부르지 않는다.
+var aiRequestHandledText = '';
+
+function resetAiIntentState(keepHandledText) {
+  chatHistory = [];
+  lastParsedConditions = null;
+  aiRequestText = '';
+  aiMustVisit = [];
+  aiWantedNames = [];
+  aiExcludedPlaces = [];
+  aiFoodWishes = [];
+  aiPreferredAreas = [];
+  aiPreferAirportAccess = false;
+  aiRouteCities = [];
+  aiRegionDayPlan = [];
+  aiSpecialPrefs = {};
+  // 예산도 말로 한 요청에서만 정해지므로 함께 표준으로 되돌린다(저장한 일정을 불러오면 그 값으로 다시 채운다).
+  setBudgetTier('mid');
+  var box = document.getElementById('aiRequest');
+  aiRequestHandledText = keepHandledText && box ? String(box.value || '').trim() : '';
+}
 
 // -- Undo/Redo History Stack --
 const _itinHistory = [];
@@ -327,23 +355,49 @@ function resolveAirportCode(text) {
   return match ? match.code : upper.slice(0, 3);
 }
 
-async function postJson(url, payload) {
-  const res = await fetch(url, {
+// 요청 시간 제한: 일정 생성·채팅 해석(AI)은 90초, 나머지는 30초. 시간이 다 되면 요청을 끊고 안내 문구를 던진다.
+var LONG_REQUEST_RE = /\/api\/(travel-plan|ai-travel-chat)$/;
+
+function requestTimeoutMs(url) {
+  return LONG_REQUEST_RE.test(String(url || '').split('?')[0]) ? 90000 : 30000;
+}
+
+// fetch + 시간 제한. AbortController가 없는 환경(오래된 브라우저·테스트 샌드박스)에서는 그냥 fetch한다.
+// readBody(res)가 있으면 본문 읽기까지 시간 제한 안에서 끝낸다.
+async function fetchWithTimeout(url, init, timeoutMs, readBody) {
+  var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+  var timer = ctrl ? setTimeout(function() { ctrl.abort(); }, timeoutMs || requestTimeoutMs(url)) : null;
+  try {
+    var res = await fetch(url, Object.assign({}, init || {}, ctrl ? { signal: ctrl.signal } : {}));
+    return readBody ? await readBody(res) : res;
+  } catch (err) {
+    if (ctrl && ctrl.signal.aborted) throw new Error(t('err-timeout'));
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function postJson(url, payload, opts) {
+  return fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
-  });
-  if (!res.ok) {
-    if (res.status === 429) throw new Error(t('err-rate-limit'));
-    if (res.status === 400) {
-      var serverMsg = '';
-      try { var errData = await res.json(); serverMsg = String(errData.error || ''); } catch (e) { serverMsg = ''; }
-      // 서버의 영문 검증 문구(예: "days must be a number")는 그대로 보여주지 않는다.
-      throw new Error(isLocalizedMessage(serverMsg) ? serverMsg : t('err-input'));
+  }, opts && opts.timeoutMs, async function(res) {
+    if (!res.ok) {
+      if (res.status === 429) throw new Error(t('err-rate-limit'));
+      if (res.status === 400) {
+        var serverMsg = '';
+        try { var errData = await res.json(); serverMsg = String(errData.error || ''); } catch (e) { serverMsg = ''; }
+        // 서버의 영문 검증 문구(예: "days must be a number")는 그대로 보여주지 않는다.
+        throw new Error(isLocalizedMessage(serverMsg) ? serverMsg : t('err-input'));
+      }
+      var httpErr = new Error('HTTP ' + res.status);
+      httpErr.status = res.status;
+      throw httpErr;
     }
-    throw new Error('HTTP ' + res.status);
-  }
-  return res.json();
+    return res.json();
+  });
 }
 
 // 사용자에게 그대로 보여줘도 되는(이미 한국어/일본어로 된) 짧은 문구인지
@@ -356,13 +410,16 @@ function isLocalizedMessage(msg) {
 // 버튼 기본 문구는 언어 사전에서 다시 가져온다(검색 버튼이 '검색'으로 바뀌던 문제 방지).
 var BUTTON_LABEL_KEYS = { btnPlan: 'btn-plan', btnFlights: 'btn-flights', btnStays: 'btn-stays', btnFood: 'btn-food', btnDestSearch: 'btn-search', btnAiAssist: 'btn-ai-assist', btnPlanRefresh: 'btn-refresh-plan' };
 
+// 일정 생성 버튼은 '일정 만드는 중…', 나머지 검색 버튼은 '처리 중…'
+var PLAN_BUSY_LABEL_IDS = { btnPlan: true, btnAiAssist: true, btnPlanRefresh: true };
+
 function setLoading(btnId, loading) {
   var btn = el(btnId);
   if (!btn) return;
   if (loading) {
     if (!btn.classList.contains('btn-loading')) btn._origText = btn.textContent;
     btn.disabled = true;
-    btn.textContent = t('loading') || 'Loading...';
+    btn.textContent = t(PLAN_BUSY_LABEL_IDS[btnId] ? 'btn-plan-busy' : 'loading') || 'Loading...';
     btn.classList.add('btn-loading');
     btn.setAttribute('aria-busy', 'true');
   } else {
@@ -398,11 +455,99 @@ function endPlanBusy() {
     if (b.classList.contains('btn-loading')) setLoading(id, false);
     else b.disabled = false;
   });
+  // [일정만 다시 만들기]·저장·내보내기·되돌리기는 일정이 있을 때만 켠다.
+  updatePlanControls();
 }
 
 function showCardLoading(containerId) {
   var c = el(containerId);
   if (c) c.innerHTML = '<div class="card loading-card"><div class="spinner"></div></div>';
+}
+
+// ── 일정 생성 중 안내(UX-03) ──
+// 일정이 없으면 일정 칸에 로딩 카드를, 이미 있으면 그 위에 한 줄 안내를 띄운다.
+// 8초가 지나도 끝나지 않으면 '무료 서버가 깨어나는 중' 안내를 덧붙인다(Render 무료 서버는 처음 요청이 느리다).
+var PLAN_WAKING_MS = 8000;
+var planLoadingTimer = null;
+var planWakingShown = false;
+
+function planLoadingHolder() {
+  var box = el('planResult');
+  return box ? box.querySelector('.loading-card, .plan-busy-note') : null;
+}
+
+function planWakingHtml() {
+  return '<p class="plan-waking" style="flex:1 1 100%;margin:0">' + escapeHtml(t('server-waking')) + '</p>';
+}
+
+// 이미 있는 일정 위에 얹는 '만드는 중' 한 줄. 기다리는 동안 보드를 고쳐 다시 그려도 다시 붙인다.
+function planBusyNoteHtml() {
+  return '<div class="plan-busy-note" role="status"><p class="plan-building-text">' + escapeHtml(t('plan-building')) + '</p>' +
+    (planWakingShown ? planWakingHtml() : '') + '</div>';
+}
+
+function showPlanLoading() {
+  var box = el('planResult');
+  if (!box || planLoadingTimer) return;
+  var hasPlan = Boolean(currentItineraryData && itineraryHasContent(currentItineraryData.itinerary));
+  var text = '<p class="plan-building-text">' + escapeHtml(t('plan-building')) + '</p>';
+  planWakingShown = false;
+  if (hasPlan) {
+    box.insertAdjacentHTML('afterbegin', planBusyNoteHtml());
+  } else {
+    box.innerHTML = '<div class="card loading-card" role="status"><div class="spinner"></div>' + text + '</div>';
+  }
+  planLoadingTimer = setTimeout(function() {
+    planWakingShown = true;
+    var holder = planLoadingHolder();
+    if (holder && !holder.querySelector('.plan-waking') && typeof holder.insertAdjacentHTML === 'function') {
+      holder.insertAdjacentHTML('beforeend', planWakingHtml());
+    }
+  }, PLAN_WAKING_MS);
+}
+
+// 끝나면(성공·실패) 안내를 거둔다. 일정이 없던 자리의 로딩 카드는 errorText(실패) 또는 첫 화면 안내로 바꾼다.
+function hidePlanLoading(errorText) {
+  if (planLoadingTimer) { clearTimeout(planLoadingTimer); planLoadingTimer = null; }
+  planWakingShown = false;
+  var box = el('planResult');
+  if (!box) return;
+  Array.prototype.forEach.call(box.querySelectorAll('.plan-busy-note'), function(n) { if (n.remove) n.remove(); });
+  if (!box.querySelector('.loading-card')) return;
+  if (currentItineraryData) { renderItineraryTimeline(); return; }
+  box.innerHTML = errorText
+    ? '<div class="itin-summary empty-state plan-error" role="alert">' + escapeHtml(errorText) + '</div>'
+    : '<div class="itin-summary empty-state" data-i18n="empty-plan">' + escapeHtml(t('empty-plan')) + '</div>';
+}
+
+// 일정이 준비되면: 토스트, (말로 요청했다면) 채팅 안내, 휴대폰·태블릿(≤960px)은 일정 제목으로 화면 이동
+function announcePlanReady(opts, replacingEdits) {
+  opts = opts || {};
+  showMemoToast(t(replacingEdits ? 'regen-undo-hint' : 'plan-ready'), replacingEdits ? 4000 : 2500);
+  if (opts.fromChat) appendAiChat('assistant', t('chat-done'));
+  var mainTrigger = opts.fromChat || opts.trigger === 'btnPlan' || opts.trigger === 'btnAiAssist';
+  if (!mainTrigger || !(window.innerWidth <= 960)) return;
+  var heading = document.querySelector('h3[data-i18n="ai-itinerary"]');
+  if (heading && typeof heading.scrollIntoView === 'function') {
+    try { heading.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (e) {}
+  }
+}
+
+// 일정 조작 버튼 상태(UX-04): 일정이 없으면 다시 만들기·저장·내보내기를 끄고, 되돌리기·다시 실행은 기록 위치에 맞춘다.
+function setButtonDisabled(id, disabled) {
+  var b = el(id);
+  if (!b || b.classList.contains('btn-loading')) return;
+  b.disabled = Boolean(disabled);
+}
+
+function updatePlanControls() {
+  var hasPlan = Boolean(currentItineraryData);
+  var hasContent = hasPlan && itineraryHasContent(currentItineraryData.itinerary);
+  setButtonDisabled('btnPlanRefresh', !hasPlan || planBusyCount > 0);
+  setButtonDisabled('btnPlanSave', !hasContent);
+  setButtonDisabled('btnPlanExport', !hasContent);
+  setButtonDisabled('btnItinUndo', !(_itinHistoryIdx > 0));
+  setButtonDisabled('btnItinRedo', !(_itinHistoryIdx >= 0 && _itinHistoryIdx < _itinHistory.length - 1));
 }
 
 function friendlyError(err) {
@@ -427,22 +572,107 @@ function validateDates() {
   if (departDate && departDate.value && departDate.value < today) {
     departDate.value = today;
   }
-  var checkInDate = el('stayCheckIn');
+  var returnDate = el('returnDate');
+  if (returnDate && returnDate.value && departDate && departDate.value && returnDate.value < departDate.value) {
+    returnDate.value = departDate.value;
+  }
+  var checkInDate = el('checkIn');
   if (checkInDate && checkInDate.value && checkInDate.value < today) {
     checkInDate.value = today;
+    // 체크인을 오늘로 당기면 체크아웃이 체크인보다 앞서지 않게 다시 맞춘다.
+    var checkOutDate = el('checkOut');
+    if (checkOutDate && checkOutDate.value && checkOutDate.value <= today) checkOutDate.value = addDays(today, 1);
   }
 }
 
+// 날짜 입력칸은 오늘 이전을 고르지 못하게 한다(지난 날짜는 검색 전에 validateDates가 오늘로 고친다).
+function applyDateMins() {
+  var today = todayDateString();
+  ['startDate', 'departDate', 'returnDate', 'checkIn', 'checkOut'].forEach(function(id) {
+    var input = el(id);
+    if (input) input.setAttribute('min', today);
+  });
+}
+
+applyDateMins();
+
+// 도시 목록(무료)을 불러온다. 서버가 깨어나는 중이면 비어 올 수 있어 2초·5초 뒤 두 번 더 시도한다.
+// 성공하면 true. 끝내 실패하면 조건 칸에 [다시 시도] 안내를 띄우고 생성 버튼을 잠근다.
+var CITY_RETRY_DELAYS_MS = [2000, 5000];
+var citiesReady = false;
+
+function waitMs(ms) {
+  return new Promise(function(resolve) { setTimeout(resolve, ms); });
+}
+
+async function fetchCityList() {
+  try {
+    var res = await fetchWithTimeout('/api/cities', {}, 30000);
+    if (!res.ok) return [];
+    var data = await res.json();
+    return Array.isArray(data && data.cities) ? data.cities.filter(function(c) { return c && c.key && c.label; }) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+function setPlanButtonsWaitingForCities(waiting) {
+  ['btnPlan', 'btnAiAssist'].forEach(function(id) {
+    var b = el(id);
+    if (!b || b.classList.contains('btn-loading')) return;
+    b.disabled = Boolean(waiting);
+  });
+}
+
+function showCitiesError(show) {
+  var old = el('citiesErrorNote');
+  if (!show) { if (old) old.remove(); return; }
+  if (old) return;
+  var heading = el('section-conditions');
+  var note = document.createElement('div');
+  note.id = 'citiesErrorNote';
+  note.className = 'source-note warn';
+  note.setAttribute('role', 'alert');
+  note.innerHTML = '<span data-i18n="err-cities">' + escapeHtml(t('err-cities')) + '</span> ' +
+    '<button type="button" class="retry-cities-btn" data-i18n="btn-retry">' + escapeHtml(t('btn-retry')) + '</button>';
+  if (heading && heading.parentNode) heading.parentNode.insertBefore(note, heading.nextSibling);
+  else if (document.body) document.body.appendChild(note);
+}
+
 async function initCityOptions() {
-  const data = await getCachedOrFetch('/api/cities');
-  const cities = (data.cities || []).sort((a, b) => a.label.localeCompare(b.label, 'ko'));
+  setPlanButtonsWaitingForCities(true);
+  var list = await fetchCityList();
+  for (var attempt = 0; list.length === 0 && attempt < CITY_RETRY_DELAYS_MS.length; attempt++) {
+    await waitMs(CITY_RETRY_DELAYS_MS[attempt]);
+    list = await fetchCityList();
+  }
+  if (list.length === 0) {
+    showCitiesError(true);
+    return false;
+  }
+  applyCityList(list);
+  return true;
+}
+
+// 도시 선택의 첫 묶음(자주 가는 순)
+var POPULAR_CITY_KEYS = ['tokyo', 'osaka', 'kyoto', 'fukuoka', 'sapporo', 'okinawa', 'nagoya'];
+
+function applyCityList(list) {
+  const cities = list.slice().sort((a, b) => a.label.localeCompare(b.label, 'ko'));
   cityCatalog = cities;
   for (const c of cities) {
     if (!AIRPORTS.some((a) => a.code === c.airport)) {
       AIRPORTS.push({ code: c.airport, nameKo: `${c.label} 공항`, cityKo: c.label, country: 'JP' });
     }
   }
-  const options = cities.map((c) => `<option value="${escapeHtml(c.key)}">${escapeHtml(localPlaceName(c.label))} (${escapeHtml(c.airport)})</option>`).join('');
+  // 인기 도시 묶음을 먼저, 나머지는 가나다순 묶음으로(UX-07). 묶음 이름은 언어를 바꾸면 relabelCityOptions가 바꾼다.
+  const optionHtml = (c) => `<option value="${escapeHtml(c.key)}">${escapeHtml(localPlaceName(c.label))} (${escapeHtml(c.airport)})</option>`;
+  const popular = POPULAR_CITY_KEYS.map((k) => cities.find((c) => c.key === k)).filter(Boolean);
+  const rest = cities.filter((c) => POPULAR_CITY_KEYS.indexOf(c.key) < 0);
+  const options = popular.length
+    ? `<optgroup label="${escapeHtml(t('city-popular'))}" data-city-group="popular">${popular.map(optionHtml).join('')}</optgroup>` +
+      (rest.length ? `<optgroup label="${escapeHtml(t('city-all'))}" data-city-group="all">${rest.map(optionHtml).join('')}</optgroup>` : '')
+    : cities.map(optionHtml).join('');
   el('city').innerHTML = options;
   el('foodCity').innerHTML = options;
   el('stayCity').innerHTML = options;
@@ -451,7 +681,22 @@ async function initCityOptions() {
   el('foodCity').value = 'tokyo';
   el('stayCity').value = 'tokyo';
   if (el('destSearchCity')) el('destSearchCity').value = 'tokyo';
+  citiesReady = true;
+  showCitiesError(false);
+  setPlanButtonsWaitingForCities(false);
 }
+
+// [다시 시도]: 도시 목록을 다시 받고, 받으면 도시에 딸린 기본값(도착 공항·다구간·투어 링크)을 채운다.
+document.addEventListener('click', function(e) {
+  var retry = e.target && e.target.closest ? e.target.closest('.retry-cities-btn') : null;
+  if (!retry) return;
+  retry.disabled = true;
+  fetchCityList().then(function(list) {
+    if (list.length === 0) { retry.disabled = false; showMemoToast(t('err-cities')); return; }
+    applyCityList(list);
+    onCitiesLoaded();
+  });
+});
 
 function upsertCityOption(cityMeta) {
   if (!cityMeta || !cityMeta.key || !cityMeta.label) return;
@@ -480,6 +725,9 @@ function relabelCityOptions() {
     Array.from(select.options).forEach(function(o) {
       var c = cityCatalog.find(function(x) { return x.key === o.value; });
       if (c) o.textContent = localPlaceName(c.label) + ' (' + (c.airport || 'N/A') + ')';
+    });
+    Array.prototype.forEach.call(select.querySelectorAll('optgroup[data-city-group]'), function(g) {
+      g.label = t(g.getAttribute('data-city-group') === 'popular' ? 'city-popular' : 'city-all');
     });
   });
 }
@@ -517,7 +765,8 @@ function aiScoreBadge(score) {
   if (score == null) return '';
   var n = Number(score);
   var cls = n >= 80 ? 'ai-high' : n >= 50 ? 'ai-mid' : 'ai-low';
-  return '<span class="ai-badge ' + cls + '">' + n + '</span>';
+  var title = escapeHtml(fillText(t('ai-score-title'), { n: n }));
+  return '<span class="ai-badge ' + cls + '" title="' + title + '">' + n + '</span>';
 }
 
 // 서버가 en/ja 화면에서는 분류를 현지화해 보내므로(localizeCuratedCategory) 세 언어 키워드를 함께 본다.
@@ -670,20 +919,105 @@ document.addEventListener('error', function(e) {
   }
 }, true);
 
+// 이름표는 data-i18n을 달아 언어를 바꾸면 지난 말풍선의 이름표도 함께 바뀐다(본문은 그때 언어 그대로).
 function appendAiChat(role, text) {
   const box = el('aiChatLog');
   if (!box) return;
   const cls = role === 'user' ? 'user' : 'assistant';
-  const label = role === 'user' ? t('chat-user') : 'AI';
-  box.insertAdjacentHTML('beforeend', `<div class="chat-msg ${cls}"><strong>${escapeHtml(label)}</strong><br>${escapeHtml(text)}</div>`);
+  const labelKey = role === 'user' ? 'chat-user' : 'chat-ai-name';
+  box.insertAdjacentHTML('beforeend', '<div class="chat-msg ' + cls + '"><strong data-i18n="' + labelKey + '">' + escapeHtml(t(labelKey)) + '</strong><br>' + escapeHtml(text) + '</div>');
   box.scrollTop = box.scrollHeight;
 }
 
-// 첫 안내 말풍선은 언어를 바꾸면 함께 바뀌도록 사전 키를 달아 둔다.
-function appendAiChatIntro() {
-  const box = el('aiChatLog');
-  if (!box) return;
-  box.insertAdjacentHTML('beforeend', '<div class="chat-msg assistant"><strong>AI</strong><br><span data-i18n="chat-placeholder">' + escapeHtml(t('chat-placeholder')) + '</span></div>');
+// ── 채팅 의도 확인 칩(UX-06): 무엇을 알아들었는지 assistant 말풍선 아래에 보여 준다 ──
+// 언어를 바꾸면 다시 그릴 수 있게 칩 묶음과 해석 결과를 기억해 둔다.
+var chatIntentRecords = [];
+
+function intentChipsHtml(parsed, labelLang) {
+  var p = parsed || {};
+  var chips = [];
+  var add = function(text, cls) { if (text) chips.push('<span class="intent-chip' + (cls ? ' ' + cls : '') + '">' + escapeHtml(text) + '</span>'); };
+  var plan = Array.isArray(p.regionDayPlan) ? p.regionDayPlan.filter(function(x) { return x && x.cityLabel && Number(x.days) > 0; }) : [];
+  if (plan.length > 1) {
+    add(plan.map(function(x) { return localPlaceName(x.cityLabel) + ' ' + fillText(t('intent-days'), { n: Number(x.days) }); }).join(' → '));
+  } else if (p.cityKey) {
+    add(cityNameByKey(p.cityKey) || localPlaceName(p.cityLabel || ''));
+  }
+  if (Number(p.days) > 0) {
+    var md = shortDateLabel(p.startDate);
+    add(fillText(t('intent-days'), { n: Number(p.days) }) + (md ? ' (' + fillText(t('intent-start'), { date: md }) + ')' : ''));
+  }
+  if (p.theme) {
+    var themeKey = 'theme-' + p.theme;
+    var themeName = t(themeKey) === themeKey ? String(p.theme) : t(themeKey);
+    add(fillText(t('intent-theme'), { t: themeName }));
+  }
+  // 서버가 화면 언어 표기(parsed.labels, 원래 배열과 같은 순서)를 주면 칩에는 그 표기를 쓴다(en/ja에 한국어 이름이 섞이지 않게).
+  // labels는 요청할 때의 언어로 만들어지므로, 그 뒤 언어를 바꿨으면 원래 이름(ko) 또는 내장 이름표로 보인다.
+  var lb = p.labels && typeof p.labels === 'object' && (!labelLang || labelLang === currentLang) ? p.labels : {};
+  var shown = function(list, i, fallback) {
+    var arr = Array.isArray(list) ? list : [];
+    var v = typeof arr[i] === 'string' ? arr[i].trim() : '';
+    return v || localPlaceName(fallback);
+  };
+  if (p.foodKeyword) add(fillText(t('intent-food'), { f: (typeof lb.foodKeyword === 'string' && lb.foodKeyword.trim()) || String(p.foodKeyword) }));
+  // 예산: 표준(mid)이 아닐 때만 보인다(저예산 → 무료·저렴한 곳 위주로 짜도록 서버에 전달됨)
+  if (p.budget === 'low') add(t('intent-budget-low'));
+  else if (p.budget === 'high') add(t('intent-budget-high'));
+  // 조건(서버 답장의 '조건' 줄과 같은 순서): 쇼핑 제외·늦은 시작·하루 N곳 등
+  var sp = p.specialPrefs && typeof p.specialPrefs === 'object' ? p.specialPrefs : {};
+  var maxPlaces = Number(sp.maxPlacesPerDay);
+  var startAt = p.startTimeMin || sp.startTimeMin || '';
+  if (sp.indoorFocus) add(t('intent-cond-indoor'));
+  if (sp.lateStart || startAt) add(fillText(t('intent-cond-late-start'), { t: startAt || '10:30' }));
+  if (maxPlaces > 0) add(fillText(t('intent-cond-max-places'), { n: maxPlaces }));
+  if (sp.addRestDay || sp.doNothingDay) add(t('intent-cond-rest-day'));
+  if (sp.publicTransitOnly) add(t('intent-cond-transit'));
+  if (sp.removeShopping) add(t('intent-cond-no-shopping'));
+  if (sp.lowWalking || sp.strollerFriendly) add(t('intent-cond-low-walking'));
+  if (sp.kidsFriendly) add(t('intent-cond-kids'));
+  if (sp.relaxedPace && !(maxPlaces > 0)) add(t('intent-cond-relaxed'));
+  if (sp.nightViewFocus) add(t('intent-cond-night-view'));
+  if (p.arrivalTime) add(fillText(t('intent-cond-arrival'), { t: p.arrivalTime }));
+  if (p.departureTime) add(fillText(t('intent-cond-departure'), { t: p.departureTime }));
+  // 이름(비교용, 원래 표기) + 칩 표기(labels). labels 배열은 원래 배열과 길이가 같을 때만 같은 자리 값을 쓴다.
+  var named = function(list, labelList, max) {
+    var src = Array.isArray(list) ? list : [];
+    var lbl = Array.isArray(labelList) && labelList.length === src.length ? labelList : [];
+    var out = [];
+    src.forEach(function(x, i) {
+      var n = typeof x === 'string' ? x.trim() : (x && x.name ? String(x.name).trim() : '');
+      if (n && out.length < max) out.push({ name: n, label: shown(lbl, i, n) });
+    });
+    return out;
+  };
+  var wanted = named(p.wantedPlaces, lb.wantedPlaces, 8);
+  wanted.forEach(function(w) { add(fillText(t('intent-must'), { p: w.label }), 'ok'); });
+  named(p.excludedPlaces, lb.excludedPlaces, 8).forEach(function(x) { add(fillText(t('intent-excluded'), { p: x.label })); });
+  // 서버가 당일치기로 대신 넣은 지역(예: 나라 → '나라 공원·도다이지')은 '반영 못 함'으로 보이지 않는다.
+  named(p.unsupportedPlaces, lb.unsupportedPlaces, 5).forEach(function(u) {
+    var substituted = wanted.some(function(w) { return w.name.indexOf(u.name) >= 0; });
+    if (!substituted) add(fillText(t('intent-unsupported'), { p: u.label }), 'warn');
+  });
+  return chips.join('');
+}
+
+function appendIntentChips(parsed) {
+  var box = el('aiChatLog');
+  if (!box || typeof document.createElement !== 'function') return;
+  var html = intentChipsHtml(parsed, currentLang);
+  if (!html) return;
+  var node = document.createElement('div');
+  node.className = 'chat-intent-chips';
+  node.innerHTML = html;
+  box.appendChild(node);
+  chatIntentRecords.push({ node: node, parsed: parsed, lang: currentLang });
+  box.scrollTop = box.scrollHeight;
+}
+
+function rerenderIntentChips() {
+  chatIntentRecords = chatIntentRecords.filter(function(r) { return r.node && r.node.isConnected !== false; });
+  chatIntentRecords.forEach(function(r) { r.node.innerHTML = intentChipsHtml(r.parsed, r.lang); });
 }
 
 // 숙박 수 = 여행 일수 - 1 (3일 여행 = 2박). 체크아웃은 돌아오는 항공편 날짜와 같다(당일치기도 최소 1박).
@@ -700,6 +1034,18 @@ function syncDatesToDependentForms() {
   el('checkOut').value = addDays(start, tripNights(days));
 }
 
+// 예산 단계(low·mid·high). 말로 한 요청에서만 정해지고, 요청 의도를 지우면 표준(mid)으로 돌아간다.
+var BUDGET_TIERS = ['low', 'mid', 'high'];
+
+function currentBudgetTier() {
+  var v = el('budget') ? String(el('budget').value || '') : '';
+  return BUDGET_TIERS.indexOf(v) >= 0 ? v : 'mid';
+}
+
+function setBudgetTier(tier) {
+  if (el('budget')) el('budget').value = BUDGET_TIERS.indexOf(tier) >= 0 ? tier : 'mid';
+}
+
 function applyAiConditions(parsed) {
   if (!parsed) return;
   if (parsed.cityKey && cityCatalog.some((c) => c.key === parsed.cityKey)) {
@@ -710,8 +1056,8 @@ function applyAiConditions(parsed) {
   if (parsed.theme && ['mixed', 'foodie', 'culture', 'shopping', 'nature'].includes(parsed.theme)) {
     el('theme').value = parsed.theme;
   }
-  if (false) { // budget removed
-  }
+  // 예산(저예산·가성비 → low, 프리미엄 → high)은 화면에 고르는 칸이 없어 숨은 #budget에 담아 다음 요청에 싣는다.
+  if (['low', 'mid', 'high'].includes(parsed.budget)) setBudgetTier(parsed.budget);
   if (Number.isFinite(Number(parsed.days))) {
     el('days').value = Math.max(1, Math.min(10, Number(parsed.days)));
   }
@@ -799,12 +1145,14 @@ function renderCards(targetId, items, mode) {
             <div class="card-info-row">${escapeHtml(x.category || '')} · ${escapeHtml(x.area || x.city || '')}</div>
             <div class="card-scores">${aiScoreBadge(x.aiScore)} ${starRating(x.score)}</div>
             ${photoCreditHtml(x.photoCredit, x.photoUrl)}
+            <span class="drag-hint" aria-hidden="true">${escapeHtml(t('drag-handle'))}</span>
           </div>
         </div>
-        <span class="drag-hint">${escapeHtml(t('drag-handle'))}</span>
+        <span class="drag-handle" aria-hidden="true" title="${escapeHtml(t('drag-handle'))}">☰</span>
         <div class="link-row">
+          <button type="button" class="add-to-plan-btn" data-add-type="dest" data-add-index="${index}" data-add-source="rec">${escapeHtml(t('add-to-plan'))}</button>
           <a href="${escapeHtml(safeLinkUrl(x.mapUrl) || '#')}" target="_blank" rel="noreferrer">${escapeHtml(t('map-link'))}</a>
-          <button type="button" class="rec-delete-btn" data-delete-type="dest" data-delete-index="${index}">✕</button>
+          <button type="button" class="rec-delete-btn" data-delete-type="dest" data-delete-index="${index}" aria-label="${escapeHtml(t('aria-hide-pick'))}" title="${escapeHtml(t('aria-hide-pick'))}">✕</button>
         </div>
       </article>`;
     }
@@ -847,8 +1195,8 @@ function flightCardTemplate(x) {
           timeRangeText(s.departureTime, s.arrivalTime),
           `${s.from}(${airportCityByCode(s.from)}) ~ ${s.to}(${airportCityByCode(s.to)})`,
           s.flightNumber || '',
-          s.cabinLabel || '',
-          s.baggageLabel || ''
+          cabinText(s.cabin),
+          baggageText(s)
         ].filter(Boolean);
         return `<div class="flight-leg-row"><span class="airline-badge" title="${escapeHtml(s.airline || '')}">${escapeHtml(s.airlineCode || '')}</span>${escapeHtml(parts.join(' · '))}</div>`;
       });
@@ -886,6 +1234,21 @@ function flightCardTemplate(x) {
   </article>`;
 }
 
+// 좌석 등급은 서버의 한국어 표기(cabinLabel) 대신 등급 코드를 화면 언어로 바꿔 보여 준다.
+var CABIN_KEYS = { ECONOMY: 'cabin-economy', PREMIUM_ECONOMY: 'cabin-premium', PREMIUM: 'cabin-premium', BUSINESS: 'cabin-business', FIRST: 'cabin-first' };
+
+function cabinText(code) {
+  var key = CABIN_KEYS[String(code || '').toUpperCase().replace(/[\s-]+/g, '_')];
+  return key ? t(key) : '';
+}
+
+// 수하물은 실제 값이 있을 때만 보인다('정보 없음'은 표시하지 않는다).
+function baggageText(seg) {
+  var v = seg ? (seg.baggage != null ? seg.baggage : seg.baggageAllowance) : null;
+  if (v == null || v === '' || v === false) return '';
+  return t('baggage-label') + String(v);
+}
+
 // 요금 내역 한 줄(기본·세금·수수료)
 function priceBreakdownText(pb) {
   return t('fare-base') + formatKRW(pb.baseKRW) + t('fare-tax') + formatKRW(pb.taxesKRW) + t('fare-fee') + formatKRW(pb.feesKRW);
@@ -899,8 +1262,13 @@ function timeRangeText(dep, arr) {
   return d || a;
 }
 
+// 직접 입력한 항공편(manualFlights)은 검색 결과 앞에 늘 보인다.
+function allFlights() {
+  return manualFlights.concat(flightResults);
+}
+
 function renderFlightCards(reset = false) {
-  refreshFlightSelection();
+  if (refreshFlightSelection()) { renderPlanExtras(); renderItineraryTimeline(); }
   if (reset) {
     visibleFlightCount = getFlightCardsPerRow();
   }
@@ -911,7 +1279,7 @@ function renderFlightCards(reset = false) {
     return b.aiScore - a.aiScore;
   });
 
-  const cards = sorted.slice(0, visibleFlightCount);
+  const cards = manualFlights.concat(sorted.slice(0, visibleFlightCount));
   el('flightCards').innerHTML = cards.length > 0 ? cards.map(flightCardTemplate).join('') : '<div class="card">' + t('no-results') + '</div>';
 
   const moreBtn = el('btnFlightMore');
@@ -935,6 +1303,42 @@ function isFreeTimePlace(name) {
   return FREE_TIME_NAME_RE.test(String(name || '').trim());
 }
 
+// ── 일정 칸(시간대) 정의: 모든 배치 경로(끌어 놓기·추가 창·옮기기·터치)가 이 표 하나를 쓴다 ──
+var SLOT_DEFS = {
+  morning: { period: '오전', start: '09:00', end: '12:00', kind: 'dest' },
+  afternoon: { period: '오후', start: '13:00', end: '17:00', kind: 'dest' },
+  allday: { period: '종일', start: '09:00', end: '18:00', kind: 'dest' },
+  breakfast: { period: '아침', start: '08:00', end: '09:30', kind: 'food' },
+  lunch: { period: '점심', start: '12:00', end: '13:30', kind: 'food' },
+  dinner: { period: '저녁', start: '18:00', end: '20:00', kind: 'food' }
+};
+var PERIOD_TO_SLOT = { '오전': 'morning', '오후': 'afternoon', '종일': 'allday', '아침': 'breakfast', '점심': 'lunch', '저녁': 'dinner' };
+// 시작 시각이 같을 때의 순서(아침 < 오전 < 종일 < 점심 < 오후 < 저녁)
+var PERIOD_SORT_ORDER = { '아침': 0, '오전': 1, '종일': 2, '점심': 3, '오후': 4, '저녁': 5 };
+var MEAL_SLOT_KEYS = ['breakfast', 'lunch', 'dinner'];
+var DEST_SLOT_KEYS = ['morning', 'afternoon', 'allday'];
+
+// 식당 판정 단어(서버 SV-02와 같은 정의). 저녁·점심 블록이 식사인지 볼 때만 쓴다.
+var FOOD_WORD_RE = /라멘|라면|스시|초밥|이자카야|우동|소바|야키토리|야키니쿠|돈카츠|규카츠|카레|타코야키|오코노미야키|모츠나베|히츠마부시|텐동|식당|맛집|레스토랑|식사|ramen|sushi|izakaya|udon|soba|yakitori|yakiniku|tonkatsu|curry|takoyaki|okonomiyaki|restaurant|dinner|lunch|meal|ラーメン|寿司|居酒屋|うどん|そば|焼肉|とんかつ|カレー|たこ焼き|お好み焼き|食堂|レストラン|食事/i;
+
+// 블록 문자열은 이 함수 하나로만 만든다: '<period>(HH:MM-HH:MM): <이름> (<지역>)'
+function formatPlanBlock(period, start, end, name, area) {
+  var place = String(name || '').trim();
+  var where = String(area || '').trim();
+  return period + '(' + start + '-' + end + '): ' + place + (where ? ' (' + where + ')' : '');
+}
+
+// 'HH:MM' → 분. 형식이 아니면 NaN
+function timeToMin(hhmm) {
+  var m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+  return m ? Number(m[1]) * 60 + Number(m[2]) : NaN;
+}
+
+function padTime(hhmm) {
+  var m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
+  return m ? String(m[1]).padStart(2, '0') + ':' + m[2] : String(hhmm || '');
+}
+
 function parseItineraryBlock(text) {
   var s = String(text || '');
   if (/^\s{2,}/.test(s) && s.indexOf('\uD83D\uDCA1') >= 0) {
@@ -955,7 +1359,8 @@ function groupItineraryBlocks(blocks) {
     var parsed = parseItineraryBlock(blocks[i]);
     if (parsed.type === 'main') {
       if (current) groups.push(current);
-      current = Object.assign({}, parsed, { subs: [], tips: [] });
+      // _blockIndex: day.blocks \uC548\uC758 \uC6D0\uB798 \uC704\uCE58(\u25B2\u25BC\u00B7\u2715\u00B7\uC62E\uAE30\uAE30\uAC00 \uC815\uD655\uD788 \uC774 \uBE14\uB85D\uC744 \uAC00\uB9AC\uD0A4\uAC8C \uD55C\uB2E4)
+      current = Object.assign({}, parsed, { subs: [], tips: [], _blockIndex: i });
     } else if (parsed.type === 'sub' && current) {
       current.subs.push(parsed);
     } else if (parsed.type === 'tip' && current) {
@@ -963,7 +1368,7 @@ function groupItineraryBlocks(blocks) {
     } else {
       if (current) groups.push(current);
       current = null;
-      groups.push(parsed);
+      groups.push(Object.assign({}, parsed, { _blockIndex: i }));
     }
   }
   if (current) groups.push(current);
@@ -974,13 +1379,14 @@ function isMealPeriod(period) {
   return period === '\uC800\uB141' || period === '\uC544\uCE68' || period === '\uC810\uC2EC';
 }
 
+// \uC77C\uC815 \uBCF4\uB4DC \uC0C9: \uC624\uC804 ok, \uC624\uD6C4 warn, \uC885\uC77C info, \uC544\uCE68\u00B7\uC810\uC2EC\u00B7\uC800\uB141\uC740 \uBAA8\uB450 accent
 function periodColor(period) {
-  var map = { '\uC624\uC804': '#059669', '\uC624\uD6C4': '#d97706', '\uC885\uC77C': '#dc2626', '\uC800\uB141': '#7c3aed', '\uC544\uCE68': '#ea580c', '\uC810\uC2EC': '#0284c7' };
-  return map[period] || '#6b7280';
+  var map = { '\uC624\uC804': 'var(--ok)', '\uC624\uD6C4': 'var(--warn)', '\uC885\uC77C': 'var(--info)', '\uC800\uB141': 'var(--accent)', '\uC544\uCE68': 'var(--accent)', '\uC810\uC2EC': 'var(--accent)' };
+  return map[period] || 'var(--fg-3)';
 }
 
 function periodIcon(period) {
-  var map = { '\uC624\uC804': '\uD83C\uDF05', '\uC624\uD6C4': '\uD83C\uDF1E', '\uC885\uC77C': '\uD83C\uDF1F', '\uC800\uB141': '\uD83C\uDF07', '\uC544\uCE68': '\uD83C\uDF73', '\uC810\uC2EC': '\uD83C\uDF5C' };
+  var map = { '\uC624\uC804': '\uD83C\uDF05', '\uC624\uD6C4': '\u2600\uFE0F', '\uC885\uC77C': '\uD83C\uDF1F', '\uC800\uB141': '\uD83C\uDF07', '\uC544\uCE68': '\uD83C\uDF73', '\uC810\uC2EC': '\uD83C\uDF5C' };
   return map[period] || '';
 }
 
@@ -993,19 +1399,151 @@ function extractPlaceName(blockText) {
   return '';
 }
 
-function stripServerMealBlocks() {
-  if (!currentItineraryData || !currentItineraryData.itinerary) return;
-  for (var i = 0; i < currentItineraryData.itinerary.length; i++) {
-    var day = currentItineraryData.itinerary[i];
-    var cleaned = [];
-    for (var j = 0; j < day.blocks.length; j++) {
-      var b = day.blocks[j];
-      var parsed = parseItineraryBlock(b);
-      if (parsed.type === 'main' && parsed.period === '\uC800\uB141') continue;
-      cleaned.push(b);
-    }
-    day.blocks = cleaned;
+// \u2500\u2500 \uC77C\uC815 \uBE14\uB85D \uBC30\uC5F4 \uB2E4\uB8E8\uAE30(\uBE14\uB85D = main \uD55C \uC904 + \uB4A4\uB530\uB974\uB294 \uB4E4\uC5EC\uC4F4 \uC124\uBA85\u00B7\uD301 \uC904) \u2500\u2500
+
+// idx \uBE14\uB85D\uACFC \uADF8 \uC544\uB798 \uC124\uBA85\u00B7\uD301 \uC904\uC758 \uAC1C\uC218
+function blockGroupLength(blocks, idx) {
+  var n = 1;
+  if (parseItineraryBlock(blocks[idx]).type !== 'main') return 1;
+  while (idx + n < blocks.length) {
+    var p = parseItineraryBlock(blocks[idx + n]);
+    if (p.type !== 'sub' && p.type !== 'tip') break;
+    n++;
   }
+  return n;
+}
+
+// idx \uBE14\uB85D(\uC124\uBA85\u00B7\uD301 \uD3EC\uD568)\uC744 \uB5BC\uC5B4 \uB0B8\uB2E4. \uB5BC\uC5B4 \uB0B8 \uC904 \uBC30\uC5F4\uC744 \uB3CC\uB824\uC900\uB2E4.
+function removeBlockGroup(dayData, idx) {
+  if (!dayData || !Array.isArray(dayData.blocks) || idx < 0 || idx >= dayData.blocks.length) return [];
+  return dayData.blocks.splice(idx, blockGroupLength(dayData.blocks, idx));
+}
+
+function blockSortValue(parsed) {
+  var start = timeToMin(parsed.startTime);
+  return { start: Number.isFinite(start) ? start : 9999, order: PERIOD_SORT_ORDER[parsed.period] != null ? PERIOD_SORT_ORDER[parsed.period] : 9 };
+}
+
+// \uC2DC\uC791 \uC2DC\uAC01 \uC21C\uC73C\uB85C(\uAC19\uC73C\uBA74 \uC544\uCE68<\uC624\uC804<\uC885\uC77C<\uC810\uC2EC<\uC624\uD6C4<\uC800\uB141) \uB4E4\uC5B4\uAC08 \uC790\uB9AC\uC5D0 \uC904\uB4E4\uC744 \uB123\uACE0, \uB123\uC740 \uC704\uCE58\uB97C \uB3CC\uB824\uC900\uB2E4.
+function insertBlockSorted(dayData, lines) {
+  var newParsed = parseItineraryBlock(lines[0]);
+  var nv = blockSortValue(newParsed);
+  var insertIdx = dayData.blocks.length;
+  for (var i = 0; i < dayData.blocks.length; i++) {
+    var p = parseItineraryBlock(dayData.blocks[i]);
+    if (p.type !== 'main') continue;
+    var v = blockSortValue(p);
+    if (v.start > nv.start || (v.start === nv.start && v.order > nv.order)) { insertIdx = i; break; }
+  }
+  Array.prototype.splice.apply(dayData.blocks, [insertIdx, 0].concat(lines));
+  return insertIdx;
+}
+
+function findItineraryDay(dayNum) {
+  if (!currentItineraryData || !Array.isArray(currentItineraryData.itinerary)) return null;
+  return currentItineraryData.itinerary.find(function(d) { return d && Number(d.day) === Number(dayNum); }) || null;
+}
+
+// \uADF8\uB0A0 \uD55C \uC2DC\uAC04\uB300(period)\uC758 main \uBE14\uB85D\uB4E4(\uD654\uBA74 \uC21C\uC11C = \uC2DC\uC791 \uC2DC\uAC01, \uAC19\uC73C\uBA74 \uC6D0\uB798 \uC21C\uC11C)
+function periodBlocks(dayData, period) {
+  var out = [];
+  (dayData && dayData.blocks || []).forEach(function(b, i) {
+    var p = parseItineraryBlock(b);
+    if (p.type === 'main' && p.period === period) out.push({ index: i, parsed: p });
+  });
+  out.sort(function(a, b) {
+    var sa = timeToMin(a.parsed.startTime), sb = timeToMin(b.parsed.startTime);
+    sa = Number.isFinite(sa) ? sa : 9999; sb = Number.isFinite(sb) ? sb : 9999;
+    return sa - sb || a.index - b.index;
+  });
+  return out;
+}
+
+// \uC774\uB0A0 \uBE44\uC5B4 \uC788\uB294 \uCCAB \uC2DD\uC0AC \uCE78(\uC544\uCE68\u2192\uC810\uC2EC\u2192\uC800\uB141). \uBAA8\uB450 \uCC28 \uC788\uC73C\uBA74 ''
+function firstEmptyMealSlot(dayData) {
+  for (var i = 0; i < MEAL_SLOT_KEYS.length; i++) {
+    if (periodBlocks(dayData, SLOT_DEFS[MEAL_SLOT_KEYS[i]].period).length === 0) return MEAL_SLOT_KEYS[i];
+  }
+  return '';
+}
+
+function normalizePlaceKey(name) {
+  return String(name || '').toLowerCase().normalize('NFKC').replace(/[\s()\uFF08\uFF09\u30FB\u00B7'"`.,-]/g, '');
+}
+
+function namesMatch(a, b) {
+  var x = normalizePlaceKey(a);
+  var y = normalizePlaceKey(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  var shorter = x.length <= y.length ? x : y;
+  var longer = shorter === x ? y : x;
+  return shorter.length >= 4 && longer.indexOf(shorter) >= 0;
+}
+
+// \u2500\u2500 \uC11C\uBC84 \uC77C\uC815 \uBD84\uB958 \uC548\uC804\uB9DD(FN-04): \uC11C\uBC84 \uD6C4\uCC98\uB9AC(SV-02)\uC640 \uAC19\uC740 \uADDC\uCE59\uC774\uB77C \uC774\uBBF8 \uC815\uB9AC\uB41C \uC77C\uC815\uC5D0\uB294 \uBCC0\uD654\uAC00 \uC5C6\uB2E4(\uBA71\uB4F1) \u2500\u2500
+// a) \uC2DD\uB2F9 \uADFC\uAC70: \uCD94\uCC9C \uB9DB\uC9D1 \uC774\uB984 + FOOD_WORD_RE
+// b) \uC800\uB141\u00B7\uC810\uC2EC\uC778\uB370 \uC2DD\uB2F9\uC774 \uC544\uB2C8\uBA74(\uC790\uC720 \uC77C\uC815 \uD3EC\uD568) \u2192 \uC624\uD6C4(\uC2DC\uAC01 \uC720\uC9C0)
+// c) \uC624\uC804\u00B7\uC624\uD6C4\uC778\uB370 \uCD94\uCC9C \uB9DB\uC9D1 \uC774\uB984\uACFC \uAC19\uC73C\uBA74 \u2192 15\uC2DC \uC804 \uC2DC\uC791\uC740 \uC810\uC2EC, \uC544\uB2C8\uBA74 \uC800\uB141(\uADF8\uB0A0 \uADF8 \uC2DD\uC0AC \uCE78\uC774 \uBE44\uC5B4 \uC788\uC744 \uB54C\uB9CC, \uC774\uB984 \uC77C\uCE58\uB9CC)
+// d) \uC5EC\uD589\uC9C0 \uBE14\uB85D\uC774 360\uBD84 \uC774\uC0C1\uC774\uAC70\uB098 10\uC2DC \uC774\uC804 \uC2DC\uC791\u00B716\uC2DC \uC774\uD6C4 \uB05D\uC774\uBA74 \u2192 \uC885\uC77C(\uC2DC\uAC01 \uC720\uC9C0)
+// e) \uAC19\uC740 \uC2DD\uC0AC \uCE78\uC774 2\uAC1C\uBA74 \uADF8\uB300\uB85C \uB454\uB2E4(\uD654\uBA74\uC5D0 \uBAA8\uB450 \uADF8\uB9B0\uB2E4)
+function recFoodNames() {
+  var names = [];
+  (latestRecFoodList || []).forEach(function(f) {
+    if (!f) return;
+    [f.name, f.nameKo, f.originalName, f.nameJa, f.nameEn].forEach(function(n) { if (n) names.push(String(n)); });
+  });
+  return names;
+}
+
+function classifyServerBlocks(data) {
+  if (!data || !Array.isArray(data.itinerary)) return;
+  var foodNames = recFoodNames();
+  var isKnownFood = function(name) { return foodNames.some(function(f) { return namesMatch(f, name); }); };
+  data.itinerary.forEach(function(day) {
+    if (!day || !Array.isArray(day.blocks)) return;
+    var mealTaken = {};
+    day.blocks.forEach(function(b) {
+      var p = parseItineraryBlock(b);
+      if (p.type === 'main' && isMealPeriod(p.period)) mealTaken[p.period] = true;
+    });
+    // b) \uC2DD\uB2F9\uC774 \uC544\uB2CC \uC800\uB141\u00B7\uC810\uC2EC \u2192 \uC624\uD6C4
+    day.blocks = day.blocks.map(function(b) {
+      var p = parseItineraryBlock(b);
+      if (p.type !== 'main' || (p.period !== '\uC800\uB141' && p.period !== '\uC810\uC2EC')) return b;
+      var info = parsePlaceInfo(p.place);
+      var isFood = !isFreeTimePlace(info.name) && (isKnownFood(info.name) || FOOD_WORD_RE.test(p.place));
+      return isFood ? b : formatPlanBlock('\uC624\uD6C4', p.startTime, p.endTime, info.name, info.info);
+    });
+    mealTaken = {};
+    day.blocks.forEach(function(b) {
+      var p = parseItineraryBlock(b);
+      if (p.type === 'main' && isMealPeriod(p.period)) mealTaken[p.period] = true;
+    });
+    day.blocks = day.blocks.map(function(b) {
+      var p = parseItineraryBlock(b);
+      if (p.type !== 'main' || isMealPeriod(p.period)) return b;
+      var info = parsePlaceInfo(p.place);
+      // c) \uCD94\uCC9C \uB9DB\uC9D1 \uC774\uB984\uACFC \uAC19\uC740 \uC624\uC804\u00B7\uC624\uD6C4 \uBE14\uB85D \u2192 \uC2DD\uC0AC \uCE78(\uBE44\uC5B4 \uC788\uC744 \uB54C\uB9CC)
+      if ((p.period === '\uC624\uC804' || p.period === '\uC624\uD6C4') && !isFreeTimePlace(info.name) && isKnownFood(info.name)) {
+        var start = timeToMin(p.startTime);
+        var meal = Number.isFinite(start) && start < 15 * 60 ? '\uC810\uC2EC' : '\uC800\uB141';
+        if (!mealTaken[meal]) {
+          mealTaken[meal] = true;
+          return formatPlanBlock(meal, p.startTime, p.endTime, info.name, info.info);
+        }
+        return b;
+      }
+      // d) \uD558\uB8E8\uC9DC\uB9AC \uC7A5\uC18C \u2192 \uC885\uC77C(\uC790\uC720 \uC77C\uC815\uC740 \uC81C\uC790\uB9AC)
+      if ((p.period === '\uC624\uC804' || p.period === '\uC624\uD6C4') && !isFreeTimePlace(info.name)) {
+        var s = timeToMin(p.startTime), e = timeToMin(p.endTime);
+        if (Number.isFinite(s) && Number.isFinite(e) && (e - s >= 360 || (s <= 10 * 60 && e >= 16 * 60))) {
+          return formatPlanBlock('\uC885\uC77C', p.startTime, p.endTime, info.name, info.info);
+        }
+      }
+      return b;
+    });
+  });
 }
 
 // \uC77C\uC815\uC5D0 \uC2E4\uC81C \uC7A5\uC18C(\uBE14\uB85D)\uAC00 \uD558\uB098\uB77C\uB3C4 \uC788\uB294\uC9C0
@@ -1043,11 +1581,261 @@ function renderItinerary(data) {
   }
   data.itineraryInfo = info;
   renderSourceNote('planSourceLabel', 'itinerary', info, { noteNodeId: 'planSourceNote' });
+  // 새 서버 데이터: 식사·관광 분류 안전망을 한 번만 돌리고 '직접 고침' 표시를 지운다.
+  // 불러오기·되돌리기·초안 복구(_skipMealStrip)는 저장된 모습 그대로 둔다.
+  if (!data._skipMealStrip) {
+    classifyServerBlocks(data);
+    data.userEdited = false;
+    hideNoticeBanner('planRegenHint');
+    // 새 일정이 생기면 이전 초안 안내는 거둔다(새 일정이 초안 자리에 보관된다).
+    pendingDraft = null;
+    hideNoticeBanner('draftRestoreBanner');
+  }
   currentItineraryData = data;
-  if (!data._skipMealStrip) stripServerMealBlocks();
   renderItineraryTimeline();
   renderPlanExtras();
   updateItinMap();
+  updateTripChangeBanner();
+}
+
+function itinDayLabel(n) {
+  return fillText(t('day-label'), { n: n });
+}
+
+function itinMapLink(name, info) {
+  // 자유 일정 칸은 장소가 아니라서 지도 링크를 달지 않는다.
+  if (isFreeTimePlace(name)) return '';
+  var q = encodeURIComponent(name + (info ? ' ' + info : ''));
+  return '<a href="https://www.google.com/maps/search/?api=1&query=' + q + '" target="_blank" rel="noreferrer" class="itin-map-link" title="Google Maps">' + escapeHtml(t('map-link')) + '</a>';
+}
+
+// 장소 이름 칸. data-place-name은 메모 키로 쓴다(지역·지도 글자가 섞이지 않게).
+function itinPlaceHtml(info, infoClass) {
+  return '<div class="itin-slot-place" data-place-name="' + escapeHtml(info.name) + '">' + escapeHtml(info.name) +
+    (info.info ? '<span class="itin-place-info' + (infoClass ? ' ' + infoClass : '') + '">' + escapeHtml(info.info) + '</span>' : '') +
+    itinMapLink(info.name, info.info) + '</div>';
+}
+
+function itinSubsHtml(g) {
+  var h = '';
+  if (g.subs && g.subs.length > 0) {
+    h += '<div class="itin-sub-list">';
+    for (var si = 0; si < g.subs.length; si++) h += '<div class="itin-sub-item">' + escapeHtml(g.subs[si].text) + '</div>';
+    h += '</div>';
+  }
+  for (var ti = 0; g.tips && ti < g.tips.length; ti++) h += '<div class="itin-tip">💡 ' + escapeHtml(g.tips[ti].text) + '</div>';
+  return h;
+}
+
+function itinMoveButton(dayNum, blockIndex) {
+  var label = escapeHtml(t('btn-move'));
+  return '<button type="button" class="itin-move-btn" data-day="' + dayNum + '" data-block-index="' + blockIndex + '" aria-label="' + label + '" title="' + label + '">↔</button>';
+}
+
+function itinRemoveButton(dayNum, blockIndex, text) {
+  var label = escapeHtml(t('aria-remove-item'));
+  return '<button type="button" class="itin-remove-btn" data-day="' + dayNum + '" data-block-index="' + blockIndex + '" aria-label="' + label + '" title="' + label + '">' + escapeHtml(text || '✕') + '</button>';
+}
+
+function itinTimeRange(g) {
+  return '<span class="itin-slot-time">' + escapeHtml(padTime(g.startTime) + '–' + padTime(g.endTime)) + '</span>';
+}
+
+function sortGroupsByStart(list) {
+  return list.slice().sort(function(a, b) {
+    var sa = timeToMin(a.startTime), sb = timeToMin(b.startTime);
+    sa = Number.isFinite(sa) ? sa : 9999; sb = Number.isFinite(sb) ? sb : 9999;
+    return sa - sb || a._blockIndex - b._blockIndex;
+  });
+}
+
+// 여행지 칸 안의 항목 하나(블록 자체 시각 표시)
+function itinDestItemHtml(dayNum, g, pos, count) {
+  var info = parsePlaceInfo(g.place);
+  var h = '<div class="itin-slot-inline" draggable="true" data-itin-day="' + dayNum + '" data-itin-period="' + escapeHtml(g.period) + '" data-itin-block-index="' + g._blockIndex + '">';
+  h += '<span class="drag-handle" aria-hidden="true">☰</span>';
+  h += itinTimeRange(g);
+  h += itinPlaceHtml(info);
+  h += itinSubsHtml(g);
+  if (count > 1) {
+    h += '<div class="itin-reorder-btns">';
+    if (pos > 0) h += '<button type="button" class="itin-reorder-btn" data-day="' + dayNum + '" data-block-index="' + g._blockIndex + '" data-direction="up" title="' + escapeHtml(t('move-up')) + '" aria-label="' + escapeHtml(t('move-up')) + '">▲</button>';
+    if (pos < count - 1) h += '<button type="button" class="itin-reorder-btn" data-day="' + dayNum + '" data-block-index="' + g._blockIndex + '" data-direction="down" title="' + escapeHtml(t('move-down')) + '" aria-label="' + escapeHtml(t('move-down')) + '">▼</button>';
+    h += '</div>';
+  }
+  h += itinMoveButton(dayNum, g._blockIndex);
+  h += itinRemoveButton(dayNum, g._blockIndex);
+  h += '</div>';
+  return h;
+}
+
+// 식사 칸 하나. 첫 블록이 정식 칸(놓기 대상), 같은 시간대의 두 번째부터는 '추가 식사' 표시를 단다.
+function itinMealSlotHtml(dayNum, slotKey, g, extra) {
+  var color = periodColor(g.period);
+  var info = parsePlaceInfo(g.place);
+  var dropAttrs = extra ? '' : ' data-drop-day="' + dayNum + '" data-drop-type="food" data-drop-meal="' + slotKey + '"';
+  var h = '<div class="itin-slot' + (extra ? ' itin-slot-extra' : '') + '" draggable="true" data-itin-day="' + dayNum + '" data-itin-period="' + escapeHtml(g.period) + '" data-itin-block-index="' + g._blockIndex + '"' + dropAttrs + ' style="border-left-color:' + color + '">';
+  h += '<span class="drag-handle" aria-hidden="true">☰</span>';
+  h += '<div class="itin-slot-header"><span class="itin-slot-period" style="color:' + color + '">' + periodIcon(g.period) + ' ' + escapeHtml(tPeriod(g.period)) + '</span>';
+  if (extra) h += '<span class="itin-slot-extra-badge">' + escapeHtml(t('meal-extra')) + '</span>';
+  h += itinTimeRange(g) + '</div>';
+  h += itinPlaceHtml(info, 'itin-place-loc');
+  h += itinSubsHtml(g);
+  h += itinMoveButton(dayNum, g._blockIndex);
+  h += itinRemoveButton(dayNum, g._blockIndex, t('btn-delete'));
+  h += '</div>';
+  return h;
+}
+
+// '도시 이동: 오사카 → 교토' 같은 안내 줄. 지울 수 있다.
+function itinPlainHtml(dayNum, g, top) {
+  return '<div class="itin-slot itin-slot-plain' + (top ? ' itin-plain-top' : '') + '">' +
+    '<div class="itin-slot-place itin-slot-plain-text">' + escapeHtml(g.text) + '</div>' +
+    itinRemoveButton(dayNum, g._blockIndex) + '</div>';
+}
+
+// ── 일정 요약 한 줄(UX-07): '{city} {d}일 · 장소 {p}곳 · 맛집 {f}곳'. 자유 일정·안내 줄은 세지 않는다 ──
+function planCityLabel(data) {
+  var route = data && Array.isArray(data.routeCities) ? data.routeCities.filter(Boolean) : [];
+  if (route.length > 1) return route.map(localPlaceName).join('·');
+  var key = (data && data.cityKey) || (el('city') ? el('city').value : '');
+  return (key && cityNameByKey(key)) || t('japan');
+}
+
+function planSummaryCounts(data) {
+  var places = 0;
+  var foods = 0;
+  var days = data && Array.isArray(data.itinerary) ? data.itinerary : [];
+  days.forEach(function(d) {
+    (d && Array.isArray(d.blocks) ? d.blocks : []).forEach(function(b) {
+      var p = parseItineraryBlock(b);
+      if (p.type !== 'main' || isFreeTimePlace(parsePlaceInfo(p.place).name)) return;
+      if (isMealPeriod(p.period)) foods++; else places++;
+    });
+  });
+  return { d: days.length, p: places, f: foods };
+}
+
+function planSummaryText(data) {
+  if (!data || !itineraryHasContent(data.itinerary)) return '';
+  var c = planSummaryCounts(data);
+  return fillText(t('plan-summary'), { city: planCityLabel(data), d: c.d, p: c.p, f: c.f });
+}
+
+// 일정을 만든 언어와 지금 화면 언어가 다르면 작은 안내를 보인다(장소 설명·팁은 만든 언어로 남아 있다).
+var LANG_NAME_KEYS = { ko: 'lang-name-ko', en: 'lang-name-en', ja: 'lang-name-ja' };
+
+function planLangNoteText(data) {
+  var lang = data ? data.lang : '';
+  if (!lang || !LANG_NAME_KEYS[lang] || lang === currentLang || !itineraryHasContent(data.itinerary)) return '';
+  return fillText(t('plan-lang-note'), { lang: t(LANG_NAME_KEYS[lang]) });
+}
+
+// 숙소 이름: 일본어(가나·한자)가 들어 있으면 lang="ja"를 달고, 전각 영문·숫자는 반각으로 바꿔 보여 준다.
+var JA_SCRIPT_RE = /[぀-ヿ㐀-䶿一-鿿ｦ-ﾟ]/;
+
+function displayStayName(name) {
+  var s = String(name == null ? '' : name);
+  try { return s.normalize('NFKC'); } catch (e) { return s; }
+}
+
+function stayNameAttrs(name) {
+  return JA_SCRIPT_RE.test(String(name || '')) ? ' lang="ja"' : '';
+}
+
+// ── 하루 보드 배치(시간 순서) ──
+// 오후 블록 중 저녁 식사 시작(없으면 18:00) 이후에 시작하는 관광은 '🌙 저녁 이후' 칸에 따로 모아 저녁 식사 아래에 그린다.
+function itinDayLayout(groups) {
+  var mains = groups.filter(function(g) { return g.type === 'main'; });
+  var byPeriod = function(period) { return sortGroupsByStart(mains.filter(function(g) { return g.period === period; })); };
+  var zones = {};
+  var meals = {};
+  DEST_SLOT_KEYS.forEach(function(key) { zones[key] = byPeriod(SLOT_DEFS[key].period); });
+  MEAL_SLOT_KEYS.forEach(function(key) { meals[key] = byPeriod(SLOT_DEFS[key].period); });
+  var dinnerStart = meals.dinner.length ? timeToMin(meals.dinner[0].startTime) : NaN;
+  var nightCut = Number.isFinite(dinnerStart) ? dinnerStart : timeToMin(SLOT_DEFS.dinner.start);
+  var isNight = function(g) { return timeToMin(g.startTime) >= nightCut; };
+  var night = zones.afternoon.filter(isNight);
+  zones.afternoon = zones.afternoon.filter(function(g) { return !isNight(g); });
+  var hasHalfDay = zones.morning.length + zones.afternoon.length + night.length > 0;
+  var hasAllDay = zones.allday.length > 0;
+  // 차 있는 종일 칸은 하루 첫머리(아침 뒤)에, 빈 종일 칸은 지금처럼 오후 칸 뒤에 둔다.
+  var order = ['breakfast'];
+  if (hasAllDay) order.push('allday');
+  order.push('morning', 'lunch', 'afternoon');
+  if (!hasAllDay) order.push('allday');
+  order.push('dinner');
+  if (night.length) order.push('night');
+  var segOf = {};
+  DEST_SLOT_KEYS.forEach(function(key) { zones[key].forEach(function(g) { segOf[g._blockIndex] = key; }); });
+  MEAL_SLOT_KEYS.forEach(function(key) { meals[key].forEach(function(g) { segOf[g._blockIndex] = key; }); });
+  night.forEach(function(g) { segOf[g._blockIndex] = 'night'; });
+  return { zones: zones, meals: meals, night: night, hasHalfDay: hasHalfDay, hasAllDay: hasAllDay, order: order, segOf: segOf };
+}
+
+// 첫 시간대 블록 뒤의 안내 줄 → 바로 앞 시간대 블록이 그려지는 칸 이름별 목록
+function itinPlainBySegment(groups, segOf) {
+  var out = {};
+  var last = null;
+  groups.forEach(function(g) {
+    if (g.type === 'main') { last = segOf[g._blockIndex] || last; return; }
+    if (g.type !== 'plain' || !g.text || last === null) return;
+    (out[last] = out[last] || []).push(g);
+  });
+  return out;
+}
+
+// 칸 머리에 보일 시각: 항목이 있으면 '첫 시작–마지막 끝', 없으면 기본 시각
+function itinZoneTimeText(items, def) {
+  var s = Infinity, e = -Infinity;
+  (items || []).forEach(function(g) {
+    var a = timeToMin(g.startTime), b = timeToMin(g.endTime);
+    if (Number.isFinite(a) && a < s) s = a;
+    if (Number.isFinite(b) && b > e) e = b;
+  });
+  if (Number.isFinite(s) && Number.isFinite(e) && e > s) return minToTime(s) + '–' + minToTime(e);
+  return def ? def.start + '–' + def.end : '';
+}
+
+function itinDestZoneHtml(dayNum, key, items, lay) {
+  var def = SLOT_DEFS[key];
+  // 종일 칸이 비고 반나절 칸에 항목이 있으면 종일 칸을, 종일만 차 있으면 반나절 칸을 접는다(접힌 칸도 놓기 대상).
+  var collapsed = key === 'allday' ? (!lay.hasAllDay && lay.hasHalfDay) : (lay.hasAllDay && !lay.hasHalfDay);
+  var color = periodColor(def.period);
+  var h = '<div class="itin-period-zone itin-drop-zone' + (items.length ? ' is-filled' : '') + (collapsed ? ' is-collapsed' : '') + '" data-drop-day="' + dayNum + '" data-drop-type="dest" data-drop-dest-period="' + key + '" style="border-left-color:' + color + '">';
+  h += '<div class="itin-period-header"><span class="itin-period-name" style="color:' + color + '">' + periodIcon(def.period) + ' ' + escapeHtml(tPeriod(def.period)) + '</span>' +
+    // 접힌 칸(그날 쓰지 않는 쪽)은 시각을 빼서 하루의 시간 흐름을 끊지 않는다.
+    (collapsed ? '' : '<span class="itin-period-time">' + escapeHtml(itinZoneTimeText(items, def)) + '</span>') +
+    '<span class="drop-hint">' + escapeHtml(t('drop-here')) + '</span>' +
+    '<button type="button" class="itin-zone-add-btn" data-day="' + dayNum + '" data-slot="' + key + '">' + escapeHtml(t('btn-add-place')) + '</button></div>';
+  for (var ii = 0; ii < items.length; ii++) h += itinDestItemHtml(dayNum, items[ii], ii, items.length);
+  return h + '</div>';
+}
+
+// '🌙 저녁 이후' 칸(오후 블록 중 저녁 식사 뒤에 시작하는 것). 여기에 놓으면 저녁 식사·밤 일정 뒤 시간에 들어간다.
+function itinNightZoneHtml(dayNum, items) {
+  var color = periodColor(SLOT_DEFS.afternoon.period);
+  var h = '<div class="itin-period-zone itin-drop-zone itin-night-zone is-filled" data-drop-day="' + dayNum + '" data-drop-type="dest" data-drop-dest-period="night" style="border-left-color:' + color + '">';
+  h += '<div class="itin-period-header"><span class="itin-period-name" style="color:' + color + '">🌙 ' + escapeHtml(t('itin-night')) + '</span>' +
+    '<span class="itin-period-time">' + escapeHtml(itinZoneTimeText(items, null)) + '</span>' +
+    '<span class="drop-hint">' + escapeHtml(t('drop-here')) + '</span></div>';
+  for (var ii = 0; ii < items.length; ii++) h += itinDestItemHtml(dayNum, items[ii], ii, items.length);
+  return h + '</div>';
+}
+
+// 식사 칸 하나(아침·점심·저녁): 같은 시간대 블록을 모두 그린다(숨는 블록 없음). 비어 있으면 [맛집 추가] 칸.
+function itinMealSegmentHtml(dayNum, mealKey, meals) {
+  var mealDef = SLOT_DEFS[mealKey];
+  if (meals && meals.length > 0) {
+    var h = '';
+    for (var mi = 0; mi < meals.length; mi++) h += itinMealSlotHtml(dayNum, mealKey, meals[mi], mi > 0);
+    return h;
+  }
+  var mealColor = periodColor(mealDef.period);
+  return '<div class="itin-meal-empty itin-drop-zone" data-drop-day="' + dayNum + '" data-drop-type="food" data-drop-meal="' + mealKey + '" style="border-left-color:' + mealColor + '">' +
+    '<span class="itin-meal-label">' + periodIcon(mealDef.period) + ' ' + escapeHtml(tPeriod(mealDef.period)) + '</span>' +
+    '<button type="button" class="itin-meal-add-btn" data-day="' + dayNum + '" data-meal-slot="' + mealKey + '">' + escapeHtml(t('btn-add-food')) + '</button>' +
+    '</div>';
 }
 
 function renderItineraryTimeline() {
@@ -1057,30 +1845,34 @@ function renderItineraryTimeline() {
   var h = '';
   if (!itineraryHasContent(data.itinerary)) {
     h += '<div class="itin-summary itin-empty-note" data-i18n="empty-itinerary">' + escapeHtml(t('empty-itinerary')) + '</div>';
-  } else if (data.summary) {
-    h += '<div class="itin-summary">' + escapeHtml(data.summary) + '</div>';
+  } else {
+    // 요약 한 줄은 서버 문장 대신 지금 일정에서 직접 센다(직접 고친 뒤에도 숫자가 맞게).
+    var summaryText = planSummaryText(data);
+    if (summaryText) h += '<div class="itin-summary">' + escapeHtml(summaryText) + '</div>';
   }
-  var mealPeriods = [
-    { key: 'breakfast', period: '\uC544\uCE68', icon: '\uD83C\uDF73', color: 'var(--warn)', time: '08:00 - 09:30' },
-    { key: 'lunch', period: '\uC810\uC2EC', icon: '\uD83C\uDF5C', color: 'var(--fg-3)', time: '12:00 - 13:30' },
-    { key: 'dinner', period: '\uC800\uB141', icon: '\uD83C\uDF07', color: 'var(--fg-2)', time: '18:00 - 20:00' }
-  ];
-  var destPeriods = [
-    { key: 'morning', period: '\uC624\uC804', icon: '\uD83C\uDF05', color: 'var(--ok)', time: '09:00 - 12:00' },
-    { key: 'afternoon', period: '\uC624\uD6C4', icon: '\uD83C\uDF1E', color: 'var(--warn)', time: '13:00 - 17:00' },
-    { key: 'allday', period: '\uC885\uC77C', icon: '\uD83C\uDF1F', color: 'var(--accent)', time: '09:00 - 18:00' }
-  ];
-  for (var di = 0; di < (data.itinerary || []).length; di++) {
-    var day = data.itinerary[di];
+  var langNote = planLangNoteText(data);
+  if (langNote) h += '<div class="source-note plan-lang-note" role="status">' + escapeHtml(langNote) + '</div>';
+  var dayList = data.itinerary || [];
+  for (var di = 0; di < dayList.length; di++) {
+    var day = dayList[di];
+    var dayNum = Number(day.day);
     var groups = groupItineraryBlocks(day.blocks || []);
-    h += '<div class="itin-day">';
-    h += '<div class="itin-day-header"><span class="itin-day-label">Day ' + day.day + '</span><span class="itin-day-date">' + escapeHtml(day.date || '') + '</span></div>';
+    var firstMain = -1;
+    for (var fm = 0; fm < groups.length; fm++) { if (groups[fm].type === 'main') { firstMain = fm; break; } }
+    // 첫 시간대 블록보다 앞의 안내 줄은 맨 위에, 나머지는 바로 앞 항목이 있는 칸 아래에 그린다(itinPlainBySegment).
+    var topPlain = [];
+    groups.forEach(function(g, gi) {
+      if (g.type !== 'plain' || !g.text) return;
+      if (firstMain < 0 || gi < firstMain) topPlain.push(g);
+    });
+
+    h += '<div class="itin-day" data-day="' + dayNum + '">';
+    h += '<div class="itin-day-header"><span class="itin-day-label">' + escapeHtml(itinDayLabel(dayNum)) + '</span><span class="itin-day-date">' + escapeHtml(day.date || '') + '</span></div>';
     h += '<div class="itin-day-body">';
 
-
-    // --- Flight/Stay fixed info ---
+    // --- 항공·숙소 고정 정보 ---
     var isFirstDay = (di === 0);
-    var isLastDay = (di === (data.itinerary || []).length - 1);
+    var isLastDay = (di === dayList.length - 1);
     if (isFirstDay && selectedFlight) {
       var fl = selectedFlight.legs ? selectedFlight.legs[0] : null;
       if (fl) {
@@ -1107,102 +1899,44 @@ function renderItineraryTimeline() {
       var stayLabel = isFirstDay ? t('checkin') : isLastDay ? t('checkout') : t('stay');
       h += '<div class="itin-fixed-block itin-stay-block">';
       h += '<span class="itin-fixed-icon">🏨</span> ';
-      h += '<strong>' + stayLabel + '</strong> ' + escapeHtml(selectedStay.name || '');
+      h += '<strong>' + escapeHtml(stayLabel) + '</strong> <span' + stayNameAttrs(selectedStay.name) + '>' + escapeHtml(displayStayName(selectedStay.name)) + '</span>';
       if (selectedStay.area) h += ' <span class="itin-place-info">' + escapeHtml(selectedStay.area) + '</span>';
       h += '</div>';
     }
 
-    // --- Travel spots section (period zones) ---
-    h += '<div class="itin-section-label">' + escapeHtml(t('itin-dest-label')) + '</div>';
-    for (var dpi = 0; dpi < destPeriods.length; dpi++) {
-      var dp = destPeriods[dpi];
-      var filledSlots = [];
-      for (var gi = 0; gi < groups.length; gi++) {
-        var g = groups[gi];
-        if (g.type === 'main' && !isMealPeriod(g.period) && g.period === dp.period) {
-          g._blockIndex = -1;
-          for (var bii = 0; bii < (day.blocks||[]).length; bii++) { var bpp = parseItineraryBlock(day.blocks[bii]); if (bpp.type==='main' && bpp.period===g.period && bpp.place===g.place) { g._blockIndex=bii; break; } }
-          filledSlots.push(g);
-        }
-      }
-      h += '<div class="itin-period-zone itin-drop-zone" data-drop-day="' + day.day + '" data-drop-type="dest" data-drop-dest-period="' + dp.key + '" style="border-left-color:' + dp.color + '">';
-      h += '<div class="itin-period-header"><span style="color:' + dp.color + '">' + dp.icon + ' ' + tPeriod(dp.period) + '</span><span class="itin-period-time">' + dp.time + '</span><span class="drop-hint">' + escapeHtml(t('drop-here')) + '</span></div>';
-      if (filledSlots.length > 0) {
-        for (var fsi = 0; fsi < filledSlots.length; fsi++) {
-          var fs = filledSlots[fsi];
-          h += '<div class="itin-slot-inline" draggable="true" data-itin-day="' + day.day + '" data-itin-period="' + escapeHtml(fs.period) + '" data-itin-block-index="' + fs._blockIndex + '">';
-          var placeInfo = parsePlaceInfo(fs.place);
-          var destMapQ = encodeURIComponent(placeInfo.name + (placeInfo.info ? ' ' + placeInfo.info : ''));
-          var destMapUrl = 'https://www.google.com/maps/search/?api=1&query=' + destMapQ;
-          // 자유 일정 칸은 장소가 아니라서 지도 링크를 달지 않는다.
-          var destMapLink = isFreeTimePlace(placeInfo.name) ? '' : '<a href="' + destMapUrl + '" target="_blank" rel="noreferrer" class="itin-map-link" title="Google Maps">MAP</a>';
-          h += '<div class="itin-slot-place">' + escapeHtml(placeInfo.name) + (placeInfo.info ? '<span class="itin-place-info">' + escapeHtml(placeInfo.info) + '</span>' : '') + destMapLink + '</div>';
-          if (fs.subs.length > 0) {
-            h += '<div class="itin-sub-list">';
-            for (var si = 0; si < fs.subs.length; si++) h += '<div class="itin-sub-item">' + escapeHtml(fs.subs[si].text) + '</div>';
-            h += '</div>';
-          }
-          for (var ti = 0; ti < fs.tips.length; ti++) h += '<div class="itin-tip">\uD83D\uDCA1 ' + escapeHtml(fs.tips[ti].text) + '</div>';
-          if (filledSlots.length > 1) {
-            h += '<div class="itin-reorder-btns">';
-            if (fsi > 0) h += '<button type="button" class="itin-reorder-btn" data-day="' + day.day + '" data-block-index="' + fs._blockIndex + '" data-direction="up" title="' + escapeHtml(t('move-up')) + '">▲</button>';
-            if (fsi < filledSlots.length - 1) h += '<button type="button" class="itin-reorder-btn" data-day="' + day.day + '" data-block-index="' + fs._blockIndex + '" data-direction="down" title="' + escapeHtml(t('move-down')) + '">▼</button>';
-            h += '</div>';
-          }
-          h += '<button type="button" class="itin-remove-btn" data-day="' + day.day + '" data-block-index="' + fs._blockIndex + '">✕</button>';
-          h += '</div>';
-        }
-      }
-      h += '</div>';
-    }
-    // Plain blocks (city transfer etc)
-    for (var gi3 = 0; gi3 < groups.length; gi3++) {
-      var g3 = groups[gi3];
-      if (g3.type === 'plain' && g3.text) {
-        h += '<div class="itin-slot itin-slot-plain"><div class="itin-slot-place">' + escapeHtml(g3.text) + '</div></div>';
-      }
-    }
+    // 첫 시간대 블록보다 앞에 있는 안내 줄(도시 이동 등)은 맨 위에
+    for (var tp = 0; tp < topPlain.length; tp++) h += itinPlainHtml(dayNum, topPlain[tp], true);
 
-    // --- Meal section ---
-    h += '<div class="itin-section-label itin-drop-zone" data-drop-day="' + day.day + '" data-drop-type="food">' + escapeHtml(t('itin-food-label')) + ' <span class="drop-hint">' + escapeHtml(t('drop-here')) + '</span></div>';
-    for (var mi = 0; mi < mealPeriods.length; mi++) {
-      var meal = mealPeriods[mi];
-      var filled = null;
-      for (var gi2 = 0; gi2 < groups.length; gi2++) {
-        var g2 = groups[gi2];
-        if (g2.type === 'main' && g2.period === meal.period) { filled = g2; break; }
-      }
-      if (filled) {
-        var mc = meal.color;
-        h += '<div class="itin-slot" draggable="true" data-itin-day="' + day.day + '" data-itin-period="' + escapeHtml(filled.period) + '" style="border-left-color:' + mc + '">';
-        h += '<div class="itin-slot-header"><span class="itin-slot-period" style="color:' + mc + '">' + meal.icon + ' ' + escapeHtml(tPeriod(filled.period)) + '</span>';
-        h += '<span class="itin-slot-time">' + escapeHtml(filled.startTime + ' - ' + filled.endTime) + '</span></div>';
-        var mealInfo = parsePlaceInfo(filled.place);
-        var mealMapQ = encodeURIComponent(mealInfo.name + (mealInfo.info ? ' ' + mealInfo.info : ''));
-        var mealMapUrl = 'https://www.google.com/maps/search/?api=1&query=' + mealMapQ;
-        h += '<div class="itin-slot-place">' + escapeHtml(mealInfo.name) + (mealInfo.info ? '<span class="itin-place-info itin-place-loc">' + escapeHtml(mealInfo.info) + '</span>' : '') + '<a href="' + mealMapUrl + '" target="_blank" rel="noreferrer" class="itin-map-link" title="Google Maps">MAP</a></div>';
-        h += '<button type="button" class="itin-remove-btn" data-day="' + day.day + '" data-period="' + escapeHtml(filled.period) + '">' + escapeHtml(t('btn-delete')) + '</button>';
-        h += '</div>';
-      } else {
-        h += '<div class="itin-meal-empty itin-drop-zone" data-drop-day="' + day.day + '" data-drop-type="food" data-drop-meal="' + meal.key + '" style="border-left-color:' + meal.color + '">';
-        h += '<span class="itin-meal-label">' + meal.icon + ' ' + tPeriod(meal.period) + '</span>';
-        h += '<button type="button" class="itin-meal-add-btn" data-day="' + day.day + '" data-meal-slot="' + meal.key + '">' + escapeHtml(t('btn-add-food')) + '</button>';
-        h += '</div>';
-      }
+    // --- 하루를 시간 순서로: 아침 → (종일) → 오전 → 점심 → 오후 → (빈 종일) → 저녁 → 🌙 저녁 이후 ---
+    // 칸 머리의 시각은 칸이 차 있으면 실제 항목 시각(첫 시작–마지막 끝), 비어 있으면 놓았을 때 들어갈 기본 시각이다.
+    var lay = itinDayLayout(groups);
+    var plainAfter = itinPlainBySegment(groups, lay.segOf);
+    for (var oi = 0; oi < lay.order.length; oi++) {
+      var seg = lay.order[oi];
+      if (seg === 'night') h += itinNightZoneHtml(dayNum, lay.night);
+      else if (SLOT_DEFS[seg].kind === 'food') h += itinMealSegmentHtml(dayNum, seg, lay.meals[seg]);
+      else h += itinDestZoneHtml(dayNum, seg, lay.zones[seg], lay);
+      // 그 칸의 항목 뒤에 있던 안내 줄(도시 이동 등)은 그 칸 바로 아래에
+      var plains = plainAfter[seg] || [];
+      for (var pi = 0; pi < plains.length; pi++) h += itinPlainHtml(dayNum, plains[pi], false);
     }
 
     h += '<div class="itin-route-cost-section">';
-    h += '<button type="button" class="itin-route-cost-btn" data-route-day="' + day.day + '">' + escapeHtml(t('route-calc')) + '</button>';
-    h += '<div class="itin-route-cost-result" id="routeCostDay' + day.day + '"></div>';
+    h += '<button type="button" class="itin-route-cost-btn" data-route-day="' + dayNum + '">' + escapeHtml(t('route-calc')) + '</button>';
+    h += '<div class="itin-route-cost-result" id="routeCostDay' + dayNum + '"></div>';
     h += '</div>';
     h += '</div></div>';
   }
   if (data.tips && data.tips.length > 0) {
-    h += '<div class="itin-tips-section"><div class="itin-tips-title">Tips</div>';
+    h += '<div class="itin-tips-section"><div class="itin-tips-title">' + escapeHtml(t('tips-title')) + '</div>';
     for (var tt = 0; tt < data.tips.length; tt++) h += '<div class="itin-tip-item">' + escapeHtml(data.tips[tt]) + '</div>';
     h += '</div>';
   }
   container.innerHTML = h;
+  // 새 일정을 만드는 중에 보드를 고쳐 다시 그렸다면 '만드는 중' 안내를 다시 얹는다.
+  if (planLoadingTimer && itineraryHasContent(data.itinerary) && typeof container.insertAdjacentHTML === 'function') {
+    container.insertAdjacentHTML('afterbegin', planBusyNoteHtml());
+  }
 }
 
 function describeFlightSummary(flight) {
@@ -1273,7 +2007,7 @@ function selectionStayCard(stay) {
         </span>
       </div>
       <div class="selection-card-body">
-        <strong>${escapeHtml(stay.name)}</strong>
+        <strong${stayNameAttrs(stay.name)}>${escapeHtml(displayStayName(stay.name))}</strong>
         <span>${escapeHtml(stay.area)} · ${escapeHtml(provider)}</span>
         <span>${escapeHtml(dates)}</span>
         <span>${perNight ? escapeHtml(perNight) + ' · ' : ''}${escapeHtml(t('total-prefix'))}${escapeHtml(total)}</span>
@@ -1283,36 +2017,67 @@ function selectionStayCard(stay) {
 }
 
 
+// 서버가 1일 비용(budgetBreakdown)을 주지 않았을 때의 기본값(1인·표준). 화면과 내보내기가 같은 값을 쓴다.
+var DEFAULT_DAILY_COSTS_KRW = { meal: 55000, transport: 22000, activity: 25000 };
+
+function perDayCost(bb, part) {
+  var v = bb && bb[part] ? Number(bb[part].perDay) : NaN;
+  return Number.isFinite(v) && v >= 0 ? v : DEFAULT_DAILY_COSTS_KRW[part];
+}
+
+// 예상 비용 계산은 이 함수 하나로 한다(예상 비용 칸·내보내기 공용). 일정이 있으면 일정의 날 수, 없으면 조건 칸 일수.
+function computeBudget() {
+  var planDays = currentItineraryData && Array.isArray(currentItineraryData.itinerary) ? currentItineraryData.itinerary.length : 0;
+  var days = planDays || Number(el('days') ? el('days').value : 0) || 4;
+  var bb = (currentItineraryData && currentItineraryData.budgetBreakdown) || null;
+  var flightCost = selectedFlight ? (Number(selectedFlight.totalPriceKRW) || 0) : 0;
+  var stayCost = selectedStay ? (Number(selectedStay.totalPriceKRW || selectedStay.totalKRW) || 0) : 0;
+  var meal = perDayCost(bb, 'meal') * days;
+  var transport = perDayCost(bb, 'transport') * days;
+  var activity = perDayCost(bb, 'activity') * days;
+  return {
+    days: days,
+    tier: bb && bb.budgetTier ? bb.budgetTier : 'mid',
+    flight: flightCost,
+    stay: stayCost,
+    stayNights: selectedStay ? (selectedStay.nights || tripNights(days)) : 0,
+    meal: meal,
+    transport: transport,
+    activity: activity,
+    total: flightCost + stayCost + meal + transport + activity
+  };
+}
+
+function budgetTierLabel(tier) {
+  var labels = { low: t('budget-low'), mid: t('budget-mid'), high: t('budget-high') };
+  return labels[tier] || t('budget-mid');
+}
+
+// ExchangeRate-API 무료 값으로 환율을 보여 줄 때는 출처를 함께 표기한다(약관). 헤더 칩의 링크는 좁은 화면에서 감춰지므로 여기에도 둔다.
+function fxCreditHtml() {
+  if (!(fxRateState === 'ok' && fxRateData && fxRateData.provider === 'open.er-api')) return '';
+  return '<div class="data-credit"><a href="https://www.exchangerate-api.com" target="_blank" rel="noopener noreferrer">' + escapeHtml(t('fx-credit')) + '</a></div>';
+}
+
 function renderBudgetSummary() {
   var wrap = el('budgetSummary');
   if (!wrap) return;
-  var flightCost = selectedFlight ? selectedFlight.totalPriceKRW : 0;
-  var stayCost = selectedStay ? (selectedStay.totalPriceKRW || selectedStay.totalKRW || 0) : 0;
-  var days = Number(el('days').value) || 4;
-  var bb = (currentItineraryData && currentItineraryData.budgetBreakdown) || null;
-  var mealPerDay = bb ? bb.meal.perDay : 55000;
-  var transportPerDay = bb ? bb.transport.perDay : 22000;
-  var activityPerDay = bb ? bb.activity.perDay : 25000;
-  var mealTotal = mealPerDay * days;
-  var transportTotal = transportPerDay * days;
-  var activityTotal = activityPerDay * days;
-  var total = flightCost + stayCost + mealTotal + transportTotal + activityTotal;
+  var b = computeBudget();
   var fmt = function(n) { return escapeHtml(formatKRW(n)); };
-  var tierLabels = { low: t('budget-low'), mid: t('budget-mid'), high: t('budget-high') };
-  var budgetLabel = bb ? (tierLabels[bb.budgetTier] || t('budget-mid')) : t('budget-mid');
-  var stayNights = selectedStay ? (selectedStay.nights || tripNights(days)) + t('nights-unit') : '-';
+  var stayNights = b.stayNights ? b.stayNights + t('nights-unit') : '-';
   var notSelected = escapeHtml(t('not-selected'));
   wrap.innerHTML =
     '<h4>' + escapeHtml(t('budget-title')) + '</h4>' +
     '<div class="budget-rows">' +
-      '<div class="budget-row"><span>' + escapeHtml(t('cost-flight')) + '</span><span>' + (flightCost ? fmt(flightCost) : notSelected) + '</span></div>' +
-      '<div class="budget-row"><span>' + escapeHtml(t('cost-stay-label') + ' (' + stayNights + ')') + '</span><span>' + (stayCost ? fmt(stayCost) : notSelected) + '</span></div>' +
-      '<div class="budget-row"><span>' + escapeHtml(t('cost-food')) + '</span><span>~' + fmt(mealTotal) + '</span></div>' +
-      '<div class="budget-row"><span>' + escapeHtml(t('cost-transport')) + '</span><span>~' + fmt(transportTotal) + '</span></div>' +
-      '<div class="budget-row"><span>' + escapeHtml(t('cost-activity')) + '</span><span>~' + fmt(activityTotal) + '</span></div>' +
-      '<div class="budget-row budget-total"><span>' + escapeHtml(t('cost-summary')) + '</span><span>~' + fmt(total) + '</span></div>' +
+      '<div class="budget-row"><span>' + escapeHtml(t('cost-flight')) + '</span><span>' + (b.flight ? fmt(b.flight) : notSelected) + '</span></div>' +
+      '<div class="budget-row"><span>' + escapeHtml(t('cost-stay-label') + ' (' + stayNights + ')') + '</span><span>' + (b.stay ? fmt(b.stay) : notSelected) + '</span></div>' +
+      '<div class="budget-row"><span>' + escapeHtml(t('cost-food')) + '</span><span>~' + fmt(b.meal) + '</span></div>' +
+      '<div class="budget-row"><span>' + escapeHtml(t('cost-transport')) + '</span><span>~' + fmt(b.transport) + '</span></div>' +
+      '<div class="budget-row"><span>' + escapeHtml(t('cost-activity')) + '</span><span>~' + fmt(b.activity) + '</span></div>' +
+      '<div class="budget-row budget-total"><span>' + escapeHtml(t('cost-summary')) + '</span><span>~' + fmt(b.total) + '</span></div>' +
     '</div>' +
-    '<div class="budget-note">' + escapeHtml(budgetLabel + ' ' + t('budget-note') + days + t('budget-note2')) + '</div>';
+    '<div class="budget-note">' + escapeHtml(budgetTierLabel(b.tier) + ' ' + t('budget-note') + b.days + t('budget-note2')) + '</div>' +
+    fxCreditHtml();
 }
 
 function renderPlanExtras() {
@@ -1327,7 +2092,9 @@ function renderPlanSelectionCards() {
   if (selectedFlight) cards.push(selectionFlightCard(selectedFlight));
   if (selectedStay) cards.push(selectionStayCard(selectedStay));
 
-  container.innerHTML = cards.join('') || '<div class="selection-card">' + escapeHtml(t('no-selection')) + '</div>';
+  // 고른 항공권·숙소가 있을 때만 카드를 보인다(빈 안내 카드는 그리지 않는다).
+  container.innerHTML = cards.join('');
+  container.classList.toggle('hidden', cards.length === 0);
 
   // Bind edit/delete handlers
   container.querySelectorAll('.selection-delete-btn').forEach(function(btn) {
@@ -1401,7 +2168,7 @@ function buildPlanPayload(extra = {}) {
     startDate: el('startDate').value || defaultStartDate(),
     days: Number(el('days').value),
     pace: 'normal',
-    budget: 'mid',
+    budget: currentBudgetTier(),
     useAi: true,
     lang: currentLang,
     ...extra
@@ -1419,6 +2186,12 @@ function buildPlanPayload(extra = {}) {
   if (aiSpecialPrefs && Object.keys(aiSpecialPrefs).length > 0 && !payload._specialPrefs) {
     payload._specialPrefs = aiSpecialPrefs;
   }
+  // 말로 한 요청의 의도(서버 SV-03과 같은 필드 이름). 값이 있을 때만 보낸다.
+  if (aiRequestText && !payload.request) payload.request = aiRequestText.slice(0, 500);
+  if (aiWantedNames.length > 0 && !payload.mustVisit) payload.mustVisit = aiWantedNames.slice(0, 8);
+  if (aiExcludedPlaces.length > 0 && !payload.excludedPlaces) payload.excludedPlaces = aiExcludedPlaces.slice(0, 8);
+  if (aiFoodWishes.length > 0 && !payload.foodWishes) payload.foodWishes = aiFoodWishes.slice(0, 3);
+  if (aiMustVisit.length > 0 && !payload._picks) payload._picks = aiMustVisit.slice(0, 8);
   return payload;
 }
 
@@ -1426,7 +2199,7 @@ function buildPlanPayload(extra = {}) {
 // 서버는 { kind, provider, reasonCode } 형태의 정보 객체를 보낸다.
 // 화면에는 내부 ID·원문 오류 대신 짧은 안내 문구만 보여준다.
 var INFO_KINDS = ['live', 'ai', 'curated', 'fallback', 'mock', 'rule'];
-var INFO_FIELD_BY_SECTION = { dest: 'recommendationInfo', itinerary: 'itineraryInfo', foods: 'foodsInfo' };
+var INFO_FIELD_BY_SECTION = { dest: 'recommendationInfo', itinerary: 'itineraryInfo', foods: 'foodsInfo', chat: 'sourceInfo' };
 var PROVIDER_NAMES = {
   travelpayouts: 'Travelpayouts', rakuten: 'Rakuten Travel', google: 'Google Places', google_places: 'Google Places',
   gemini: 'Gemini', openai: 'OpenAI', wikimedia: 'Wikimedia Commons'
@@ -1444,7 +2217,7 @@ var SOURCE_TEXT = {
       'flights.live': '최근 검색 기준 가격', 'stays.live': '실시간 요금', 'stays.fallback': '숙소 목록 · 최저가 기준'
     },
     consequence: {
-      curated: '엄선한 기본 목록을 보여드려요.', fallback: '기본 목록을 보여드려요.', mock: '예시 데이터를 보여드려요.',
+      curated: '엄선한 기본 목록을 보여 드려요.', fallback: '기본 목록을 보여 드려요.', mock: '예시 데이터를 보여 드려요.',
       rule: '기본 일정으로 만들었어요.', 'chat.rule': '기본 규칙으로 조건을 해석했어요.',
       'stays.fallback': '최저가 기준으로 보여 드려요.'
     },
@@ -1454,14 +2227,15 @@ var SOURCE_TEXT = {
       GOOGLE_PERMISSION_DENIED: '지도 서비스 접근이 거부되어', GOOGLE_QUOTA_EXCEEDED: '오늘 지도 서비스 사용 한도에 도달해',
       GOOGLE_ERROR: '지도 서비스 응답에 문제가 있어', GOOGLE_CIRCUIT_OPEN: '지도 서비스 연결을 잠시 쉬는 중이라',
       NO_RESULTS: '검색 결과가 없어', AI_KEY_MISSING: 'AI가 설정되지 않아', AI_TRUNCATED: 'AI 응답이 중간에 끊겨',
-      AI_INVALID_OUTPUT: 'AI 응답 형식이 맞지 않아', AI_ERROR: 'AI 응답에 문제가 있어',
+      AI_INVALID_OUTPUT: 'AI 응답 형식이 맞지 않아', AI_ERROR: 'AI 응답에 문제가 있어', AI_BUSY: 'AI 사용량이 잠시 몰려',
+      AI_DAILY_LIMIT: '오늘 AI 무료 사용량을 다 써서',
       PROVIDER_UNAVAILABLE: '실시간 조회 서비스에 연결할 수 없어', NO_LIVE_DATA: '이 조건의 실시간 데이터가 없어',
       _default: '일시적인 문제로'
     },
     join: function(cause, cons) { return cause + ' ' + cons; },
     note: { 'flights.live': '다른 이용자의 최근 검색에서 모은 가격이라 실제 요금과 다를 수 있어요.' },
-    nearbyNote: '요청한 날짜의 가격이 없어 가까운 날짜(±7일)의 항공편을 보여드려요. 카드의 날짜를 꼭 확인하세요.',
-    mockNote: '실제 가격이 아니니 예약 전에 꼭 확인하세요.'
+    nearbyNote: '요청한 날짜의 가격이 없어 가까운 날짜(±7일)의 항공편을 보여 드려요. 카드의 날짜를 꼭 확인해 주세요.',
+    mockNote: '실제 가격이 아니니 예약 전에 꼭 확인해 주세요.'
   },
   en: {
     section: { dest: 'Destinations', itinerary: 'Plan type', foods: 'Restaurants', foodSearch: 'Food', destSearch: 'Places', flights: 'Flights', stays: 'Stays', chat: 'Chat' },
@@ -1484,7 +2258,8 @@ var SOURCE_TEXT = {
       GOOGLE_PERMISSION_DENIED: 'map service access denied', GOOGLE_QUOTA_EXCEEDED: "today's map service limit reached",
       GOOGLE_ERROR: 'map service error', GOOGLE_CIRCUIT_OPEN: 'map service paused for a while',
       NO_RESULTS: 'no search results', AI_KEY_MISSING: 'AI not configured', AI_TRUNCATED: 'AI response was cut off',
-      AI_INVALID_OUTPUT: 'AI response was malformed', AI_ERROR: 'AI service error',
+      AI_INVALID_OUTPUT: 'AI response was malformed', AI_ERROR: 'AI service error', AI_BUSY: 'AI is busy right now',
+      AI_DAILY_LIMIT: "today's free AI quota is used up",
       PROVIDER_UNAVAILABLE: 'live service unavailable', NO_LIVE_DATA: 'no live data for these conditions',
       _default: 'temporary issue'
     },
@@ -1514,7 +2289,8 @@ var SOURCE_TEXT = {
       GOOGLE_PERMISSION_DENIED: '地図サービスへのアクセスが拒否されました', GOOGLE_QUOTA_EXCEEDED: '本日の地図サービス利用上限に到達',
       GOOGLE_ERROR: '地図サービスのエラー', GOOGLE_CIRCUIT_OPEN: '地図サービスを一時停止中',
       NO_RESULTS: '検索結果なし', AI_KEY_MISSING: 'AI未設定', AI_TRUNCATED: 'AIの応答が途中で途切れました',
-      AI_INVALID_OUTPUT: 'AIの応答形式が正しくありません', AI_ERROR: 'AIサービスのエラー',
+      AI_INVALID_OUTPUT: 'AIの応答形式が正しくありません', AI_ERROR: 'AIサービスのエラー', AI_BUSY: 'AIが混雑しているため',
+      AI_DAILY_LIMIT: '本日のAI無料利用枠を使い切ったため',
       PROVIDER_UNAVAILABLE: 'リアルタイム照会に接続できません', NO_LIVE_DATA: 'この条件のリアルタイムデータなし',
       _default: '一時的な問題'
     },
@@ -1596,6 +2372,10 @@ function describeSource(section, info, opts) {
     var cause = T.reason[section + '.' + info.reasonCode] || T.reason[info.reasonCode] || T.reason._default;
     var cons = T.consequence[section + '.' + kind] || T.consequence[kind] || '';
     if (cons) { note = T.join(cause, cons); warn = true; }
+    // AI가 잠시 바빠서 기본 일정이 된 경우: 잠시 뒤 다시 만들어 보라고 알려 준다.
+    if (note && info.reasonCode === 'AI_BUSY' && section === 'itinerary') note += ' ' + t('ai-busy-retry');
+    // 하루 무료 한도를 다 쓴 경우: 1분 뒤가 아니라 한도가 다시 생기는 시각을 알려 준다.
+    if (note && info.reasonCode === 'AI_DAILY_LIMIT' && section === 'itinerary') note += ' ' + t('ai-daily-retry');
   }
   if (kind === 'mock') {
     note = note ? note + (T.sep != null ? T.sep : ' ') + T.mockNote : T.mockNote;
@@ -1627,6 +2407,12 @@ function renderSourceNote(nodeId, section, info, opts) {
   }
   var d = describeSource(section, info, opts);
   var line = srcText().section[section] + ': ' + d.label;
+  // 한 줄 모드(채팅 해석): 문제가 있으면 안내 문장만, 없으면 '채팅 해석: AI가 해석했어요'만 보인다(같은 말 두 줄 반복 방지).
+  if (opts.oneLine) {
+    node.textContent = d.warn && d.note ? d.note : line;
+    node.classList.toggle('warn', Boolean(d.warn && d.note));
+    return;
+  }
   if (noteNode) {
     node.textContent = line;
     node.classList.remove('warn');
@@ -1661,7 +2447,8 @@ function buildFlightPayload(flight) {
 
 function toRecFood(food) {
   return {
-    name: food.name, city: food.city, genre: food.genre, area: food.area, score: food.score,
+    name: food.name, nameKo: food.nameKo || undefined, originalName: food.originalName || undefined,
+    city: food.city, genre: food.genre, area: food.area, score: food.score,
     reviewCount: food.reviewCount || 0, priceLevel: food.priceLevel, mapUrl: food.mapUrl,
     photoUrl: food.photoUrl || null, photoCredit: food.photoCredit || null,
     aiScore: food.aiFit || 70, aiFit: food.aiFit || 70,
@@ -1699,13 +2486,20 @@ var recFoodsNeedFill = false;
 async function runPlan(extra = {}, syncAux = false, opts = {}) {
   validateDates();
   var seq = ++planRequestSeq;
+  // 직접 고친 일정을 새 일정으로 바꾸면 ↩ 되돌리기로 돌아갈 수 있다고 알려 준다(되돌리기 기록은 지우지 않는다).
+  var replacingEdits = Boolean(currentItineraryData && currentItineraryData.userEdited);
+  // 기다리는 동안(Gemini는 10~50초) 보드를 고칠 수 있다. 응답이 오면 그 사이 고친 게 있는지 이 값과 비교한다.
+  // (말로 한 요청은 채팅 해석부터 기다리므로 runChatPlan이 그 시작 시점 값을 넘긴다.)
+  var editSeqAtStart = Number.isFinite(opts.editSeqAtStart) ? opts.editSeqAtStart : itinEditSeq;
   beginPlanBusy(opts.trigger || 'btnPlan');
+  showPlanLoading();
   showCardLoading('destCards');
   try {
     const payload = buildPlanPayload(extra);
     const data = await postJson('/api/travel-plan', payload);
     // 그 사이 새 요청이 시작됐다면 오래된 응답은 버린다.
     if (seq !== planRequestSeq) return;
+    if (syncAux) recordSearchHistory('plan', { city: payload.city, days: payload.days, theme: payload.theme });
 
     renderCards('destCards', data.recommendations || [], 'dest');
     renderSourceNote('destSourceNote', 'dest', sectionInfo('dest', data));
@@ -1716,6 +2510,24 @@ async function runPlan(extra = {}, syncAux = false, opts = {}) {
     renderSourceNote('recFoodSourceNote', 'foods', latestRecFoodList.length ? sectionInfo('foods', data) : null);
     recFoodsNeedFill = latestRecFoodList.length === 0;
 
+    // 만드는 동안 직접 고쳤다면 새 일정으로 바꿀지 다시 묻는다. 취소하면 고친 일정을 그대로 두고 추천 목록만 바뀐다.
+    var editedDuringBuild = itinEditSeq !== editSeqAtStart && itineraryIsEdited();
+    if (editedDuringBuild && !confirm(t('confirm-overwrite-during-build'))) {
+      hidePlanLoading();
+      renderItineraryTimeline();
+      // 말로 한 요청으로 날짜·일수가 바뀌었다면 [날짜만 옮기기·일수 맞추기·새로 만들기] 안내 띠를 띄운다.
+      updateTripChangeBanner();
+      showMemoToast(t('regen-kept-edits'), 4000);
+      // 항공·숙소가 바뀌어 다시 만들던 중이었다면 [일정만 다시 만들기] 안내를 남긴다.
+      if (opts.tripChange) showNoticeBanner('planRegenHint', 'regen-hint');
+      if (syncAux) syncAuxSearches(data);
+      return;
+    }
+    if (editedDuringBuild) replacingEdits = true;
+
+    // 서버가 넣지 못한 '꼭 갈 곳'(SV-02). normalizeInfo가 정보 객체의 다른 필드를 버리므로 여기서 따로 꺼낸다.
+    var rawInfo = data.itineraryInfo && typeof data.itineraryInfo === 'object' ? data.itineraryInfo : {};
+    var missingMust = cleanNameList(rawInfo.missingMustVisit, 8);
     renderItinerary({
       summary: data.summary,
       itinerary: Array.isArray(data.itinerary) ? data.itinerary : [],
@@ -1724,50 +2536,64 @@ async function runPlan(extra = {}, syncAux = false, opts = {}) {
       itineraryInfo: data.itineraryInfo || null,
       aiErrors: data.aiErrors || [],
       placeCoords: buildPlaceCoords(data),
-      budgetBreakdown: data.budgetBreakdown || null
+      budgetBreakdown: data.budgetBreakdown || null,
+      // 요약 한 줄·생성 언어 안내에 쓴다(일정과 함께 저장된다).
+      lang: payload.lang || currentLang,
+      cityKey: payload.city || '',
+      routeCities: Array.isArray(payload._routeCities) ? payload._routeCities.slice(0, 10) : [],
+      missingMustVisit: missingMust
     });
+    hidePlanLoading();
+    announcePlanReady(opts, replacingEdits);
+    if (missingMust.length > 0) appendAiChat('assistant', fillText(t('must-missing'), { names: missingMust.join(', ') }));
 
-    if (!syncAux) return;
-
-    // 통합 생성 시 항공·숙소·맛집·여행지 탭을 같은 조건으로 한 번씩만 갱신한다.
-    const cityKey = el('city').value;
-    const selectedCity = cityCatalog.find((c) => c.key === cityKey);
-    const startDate = el('startDate').value || defaultStartDate();
-    const days = Math.max(1, Number(el('days').value) || 1);
-    const returnDate = addDays(startDate, Math.max(0, days - 1));
-
-    if (selectedCity?.airport && (!toAirportDirty || !el('to').value)) {
-      el('to').value = formatAirportDisplay(selectedCity.airport);
-      toAirportDirty = false;
-    }
-    if (!el('from').value) {
-      el('from').value = formatAirportDisplay('ICN');
-    }
-    el('departDate').value = startDate;
-    el('returnDate').value = returnDate;
-    setTripTab(days > 1 ? 'roundtrip' : 'oneway');
-
-    el('foodCity').value = cityKey;
-    el('stayCity').value = cityKey;
-    if (el('destSearchCity')) el('destSearchCity').value = cityKey;
-    el('checkIn').value = startDate;
-    el('checkOut').value = addDays(startDate, tripNights(days));
-
-    // 탐색 > 여행지 탭은 방금 받은 추천을 재사용한다(/api/dest-search 중복 호출 없음).
-    renderDestSearchCards(data.recommendations || []);
-    renderSourceNote('destSearchSourceNote', 'destSearch', sectionInfo('dest', data));
-
-    searchFlights();
-    searchFoods();
-    searchStays();
-    refreshInlineWeather(cityKey);
+    if (syncAux) syncAuxSearches(data);
   } catch (err) {
     if (seq !== planRequestSeq) return;
-    el('destCards').innerHTML = '<div class="card">' + escapeHtml(friendlyError(err)) + '</div>';
+    var errText = friendlyError(err);
+    el('destCards').innerHTML = '<div class="card">' + escapeHtml(errText) + '</div>';
+    // 일정 칸의 로딩 안내도 거둔다(일정이 없던 자리에는 오류 안내, 있던 일정은 그대로).
+    hidePlanLoading(errText);
+    if (currentItineraryData) showMemoToast(errText, 4000);
     console.error('[runPlan]', err);
   } finally {
     endPlanBusy();
   }
+}
+
+// 통합 생성 시 항공·숙소·맛집·여행지 탭을 같은 조건으로 한 번씩만 갱신한다.
+function syncAuxSearches(data) {
+  const cityKey = el('city').value;
+  const selectedCity = cityCatalog.find((c) => c.key === cityKey);
+  const startDate = el('startDate').value || defaultStartDate();
+  const days = Math.max(1, Number(el('days').value) || 1);
+  const returnDate = addDays(startDate, Math.max(0, days - 1));
+
+  if (selectedCity?.airport && (!toAirportDirty || !el('to').value)) {
+    el('to').value = formatAirportDisplay(selectedCity.airport);
+    toAirportDirty = false;
+  }
+  if (!el('from').value) {
+    el('from').value = formatAirportDisplay('ICN');
+  }
+  el('departDate').value = startDate;
+  el('returnDate').value = returnDate;
+  setTripTab(days > 1 ? 'roundtrip' : 'oneway');
+
+  el('foodCity').value = cityKey;
+  el('stayCity').value = cityKey;
+  if (el('destSearchCity')) el('destSearchCity').value = cityKey;
+  el('checkIn').value = startDate;
+  el('checkOut').value = addDays(startDate, tripNights(days));
+
+  // 탐색 > 여행지 탭은 방금 받은 추천을 재사용한다(/api/dest-search 중복 호출 없음).
+  renderDestSearchCards(data.recommendations || []);
+  renderSourceNote('destSearchSourceNote', 'destSearch', sectionInfo('dest', data));
+
+  searchFlights();
+  searchFoods();
+  searchStays();
+  refreshInlineWeather(cityKey);
 }
 
 function segmentRowTemplate(index, from = '', to = '', date = '') {
@@ -1839,15 +2665,35 @@ function readSegments() {
     .filter((s) => s.from && s.to && s.date);
 }
 
+// 선택지가 없는 체크 묶음(제목만 있는 빈 칸)은 숨긴다. 두 묶음이 다 비면 .checks 전체를 숨긴다.
+function toggleCheckGroup(listId, count) {
+  var list = el(listId);
+  var group = list ? list.parentNode : null;
+  if (group && group.classList) group.classList.toggle('hidden', !count);
+  var wrap = group && group.parentNode;
+  if (wrap && wrap.classList && wrap.classList.contains('checks')) {
+    var any = Array.prototype.some.call(wrap.querySelectorAll('.check-list'), function(l) { return l.children && l.children.length > 0; });
+    wrap.classList.toggle('hidden', !any);
+  }
+}
+
 function renderFlightFilterChecks(options) {
-  el('airportChecks').innerHTML = (options?.airports || []).map((code) => `<label class="check-item"><input type="checkbox" class="airport-check" value="${code}" />${code}</label>`).join('');
-  el('airlineChecks').innerHTML = (options?.airlines || []).map((name) => `<label class="check-item"><input type="checkbox" class="airline-check" value="${name}" />${name}</label>`).join('');
+  var airports = options?.airports || [];
+  var airlines = options?.airlines || [];
+  el('airportChecks').innerHTML = airports.map((code) => `<label class="check-item"><input type="checkbox" class="airport-check" value="${escapeHtml(code)}" />${escapeHtml(code)}</label>`).join('');
+  el('airlineChecks').innerHTML = airlines.map((name) => `<label class="check-item"><input type="checkbox" class="airline-check" value="${escapeHtml(name)}" />${escapeHtml(name)}</label>`).join('');
+  toggleCheckGroup('airportChecks', airports.length);
+  toggleCheckGroup('airlineChecks', airlines.length);
 }
 
 function renderStayFilterChecks(options) {
-  el('stayProviderChecks').innerHTML = (options?.providers || []).map((name) => `<label class="check-item"><input type="checkbox" class="stay-provider-check" value="${name}" />${name}</label>`).join('');
+  var providers = options?.providers || [];
+  var amenities = options?.amenities || [];
+  el('stayProviderChecks').innerHTML = providers.map((name) => `<label class="check-item"><input type="checkbox" class="stay-provider-check" value="${escapeHtml(name)}" />${escapeHtml(name)}</label>`).join('');
   // 체크박스 값은 서버가 준 원래 표기를 그대로 보내고, 글자만 화면 언어로 보여준다.
-  el('stayAmenityChecks').innerHTML = (options?.amenities || []).map((name) => `<label class="check-item"><input type="checkbox" class="stay-amenity-check" value="${escapeHtml(name)}" />${escapeHtml(localAmenity(name))}</label>`).join('');
+  el('stayAmenityChecks').innerHTML = amenities.map((name) => `<label class="check-item"><input type="checkbox" class="stay-amenity-check" value="${escapeHtml(name)}" />${escapeHtml(localAmenity(name))}</label>`).join('');
+  toggleCheckGroup('stayProviderChecks', providers.length);
+  toggleCheckGroup('stayAmenityChecks', amenities.length);
 }
 
 // 예시(mock) 숙소의 한국어 부대시설 이름 → 화면 언어. [영어, 일본어]
@@ -1864,18 +2710,23 @@ function localAmenity(name) {
   return row ? (lang === 'ja' ? row[1] : row[0]) : s;
 }
 
+// 직접 입력한 숙소(manualStays)는 검색 결과 앞에 늘 보인다.
+function allStays() {
+  return manualStays.concat(stayResults);
+}
+
+// 선택은 id로 기억한다. 다시 검색한 결과에 같은 id가 없어도 이미 고른 객체는 그대로 둔다(선택이 몰래 풀리지 않게).
+// 선택이 풀리는 경우에는 반환값 true → 호출한 쪽이 화면(선택 카드·일정 고정 블록)을 다시 그린다.
 function refreshStaySelection() {
+  var before = selectedStay;
   if (!selectedStayId) {
     selectedStay = null;
-    return;
-  }
-  const match = stayResults.find((x) => x.id === selectedStayId);
-  if (!match) {
-    selectedStayId = '';
-    selectedStay = null;
   } else {
-    selectedStay = match;
+    const match = allStays().find((x) => x.id === selectedStayId);
+    if (match) selectedStay = match;
+    else if (!selectedStay) selectedStayId = '';
   }
+  return Boolean(before) && !selectedStay;
 }
 
 function selectStayById(id) {
@@ -1883,7 +2734,7 @@ function selectStayById(id) {
     selectedStayId = '';
     selectedStay = null;
   } else {
-    const target = stayResults.find((x) => x.id === id);
+    const target = allStays().find((x) => x.id === id);
     if (target) {
       selectedStayId = id;
       selectedStay = target;
@@ -1898,12 +2749,15 @@ function selectStayById(id) {
 }
 
 function refreshFlightSelection() {
+  var before = selectedFlight;
   if (!selectedFlightId) {
     selectedFlight = null;
-    return;
+  } else {
+    const match = allFlights().find((x) => x._id === selectedFlightId);
+    if (match) selectedFlight = match;
+    else if (!selectedFlight) selectedFlightId = '';
   }
-  const match = flightResults.find((x) => x._id === selectedFlightId);
-  selectedFlight = match || null;
+  return Boolean(before) && !selectedFlight;
 }
 
 function resetFlightSelectionDisplay() {
@@ -1912,13 +2766,44 @@ function resetFlightSelectionDisplay() {
   renderFlightCards(false);
 }
 
+// ── 직접 고친 일정 보호(FN-07) ──
+function itineraryIsEdited() {
+  return Boolean(currentItineraryData && currentItineraryData.userEdited);
+}
+
+// 직접 고칠 때마다 1씩 늘린다. 일정 생성(10~50초)을 기다리는 동안 고쳤는지 응답이 왔을 때 비교한다.
+var itinEditSeq = 0;
+
+function markItineraryEdited() {
+  if (currentItineraryData) currentItineraryData.userEdited = true;
+  itinEditSeq++;
+}
+
+// 직접 고친 일정을 새 일정으로 덮어쓰기 전에 묻는다. 계속해도 되면 true.
+function confirmOverwriteIfEdited() {
+  if (!itineraryIsEdited()) return true;
+  return confirm(t('confirm-overwrite-edits'));
+}
+
+// 항공·숙소가 바뀌었을 때: 직접 고친 일정이면 다시 만들지 않고 고정 블록(✈·🏨)만 다시 그린 뒤 안내를 띄운다.
+// 고친 적이 없으면 지금처럼 일정을 다시 만든다(항공 시각 반영). 다시 만들었으면 true.
+function regenerateAfterTripChange(extra) {
+  renderPlanExtras();
+  renderItineraryTimeline();
+  if (itineraryIsEdited()) {
+    showNoticeBanner('planRegenHint', 'regen-hint');
+    updateTripChangeBanner();
+    return false;
+  }
+  runPlan(extra || {}, false, { trigger: 'btnPlanRefresh', tripChange: true }).catch(function(err) {
+    if (el('planResult')) el('planResult').textContent = friendlyError(err);
+  });
+  return true;
+}
+
 async function clearFlightSelection() {
   resetFlightSelectionDisplay();
-  try {
-    await runPlan({}, false, { trigger: 'btnPlanRefresh' });
-  } catch (err) {
-    if (el('planResult')) el('planResult').textContent = friendlyError(err);
-  }
+  regenerateAfterTripChange({});
 }
 
 // 항공편의 출발일·여행 일수(왕복·다구간은 마지막 편 날짜까지). 일수를 알 수 없거나 범위(1~10일) 밖이면 days는 null.
@@ -1951,12 +2836,13 @@ function alignTripDatesToFlight(flight) {
   el('startDate').value = fd.start;
   el('days').value = nextDays;
   syncDatesToDependentForms();
-  // 이전 날짜로 고른 숙소는 요금·날짜가 맞지 않으므로 선택을 풀고, 이미 조회한 숙소 목록은 새 날짜로 다시 조회한다.
+  // 이전 날짜로 고른 숙소(검색 결과)는 요금·날짜가 맞지 않으므로 선택을 풀고, 이미 조회한 숙소 목록은 새 날짜로 다시 조회한다.
+  // 직접 입력한 숙소는 그대로 둔다(manualStays는 다시 조회해도 사라지지 않는다).
   if (selectedStay && !selectedStay.manual && selectedStay.checkIn !== fd.start) {
     selectedStayId = '';
     selectedStay = null;
   }
-  if (stayResults.some(function(s) { return !s.manual; })) searchStays();
+  if (stayResults.length > 0) searchStays();
   if (lastWeather) renderWeatherWidget(lastWeather.daily, cityNameByKey(lastWeather.cityKey));
   return true;
 }
@@ -1966,19 +2852,13 @@ async function selectFlightById(id) {
     await clearFlightSelection();
     return;
   }
-  const target = flightResults.find((x) => x._id === id);
+  const target = allFlights().find((x) => x._id === id);
   if (!target) return;
   if (!alignTripDatesToFlight(target)) return;
   selectedFlightId = id;
   selectedFlight = target;
   renderFlightCards(false);
-  renderPlanExtras();
-  renderItineraryTimeline();
-  try {
-    await runPlan({ flight: buildFlightPayload(target) }, false, { trigger: 'btnPlanRefresh' });
-  } catch (err) {
-    if (el('planResult')) el('planResult').textContent = friendlyError(err);
-  }
+  regenerateAfterTripChange({ flight: buildFlightPayload(target) });
 }
 
 function stayCardTemplate(x) {
@@ -2016,7 +2896,7 @@ function stayCardTemplate(x) {
     ${photoBlock}
     <div class="stay-top">
       <div>
-        <div class="stay-name">${escapeHtml(x.name)}</div>
+        <div class="stay-name"${stayNameAttrs(x.name)}>${escapeHtml(displayStayName(x.name))}</div>
         <div class="stay-meta">${escapeHtml(meta)}</div>
       </div>
       <div class="stay-price">
@@ -2037,27 +2917,83 @@ function stayCardTemplate(x) {
   </article>`;
 }
 
-function renderStayCards() {
-  refreshStaySelection();
-  const sorted = [...stayResults].sort((a, b) => {
+// 숙소 결과도 항공처럼 나눠 보인다(처음 2줄, [더보기]마다 2줄씩). 숙소 26개가 한 번에 이어져 휴대폰 페이지가 2만 px을 넘던 문제.
+var visibleStayCount = 0;
+
+function getStayCardsPerRow() {
+  var box = el('stayCards');
+  try {
+    var cols = box && typeof getComputedStyle === 'function' ? String(getComputedStyle(box).gridTemplateColumns || '') : '';
+    var n = cols && cols !== 'none' ? cols.trim().split(/\s+/).length : 0;
+    if (n > 0 && n < 10) return n;
+  } catch (e) {}
+  return getFlightCardsPerRow();
+}
+
+function stayPageSize() {
+  return Math.max(3, getStayCardsPerRow() * 2);
+}
+
+// [더보기] 버튼: index.html에 없으면 숙소 목록 바로 아래에 만든다(항공 [더보기]와 같은 모양).
+function ensureStayMoreButton() {
+  var btn = el('btnStayMore');
+  if (btn) return btn;
+  var cards = el('stayCards');
+  if (!cards || typeof cards.insertAdjacentHTML !== 'function') return null;
+  cards.insertAdjacentHTML('afterend', '<div class="more-wrap"><button id="btnStayMore" type="button" class="more-btn hidden" data-i18n="btn-more">' + escapeHtml(t('btn-more')) + '</button></div>');
+  return el('btnStayMore');
+}
+
+function setStayMoreVisible(show) {
+  var btn = show ? ensureStayMoreButton() : el('btnStayMore');
+  if (btn) btn.classList.toggle('hidden', !show);
+}
+
+// reset: 새 검색 결과·정렬을 바꿨을 때 처음 2줄로 되돌린다(선택·언어 변경은 지금 펼친 만큼 유지).
+function renderStayCards(reset) {
+  var lost = refreshStaySelection();
+  const results = [...stayResults].sort((a, b) => {
     if (staySortMode === 'price') return a.totalPriceKRW - b.totalPriceKRW;
     if (staySortMode === 'rating') return b.rating - a.rating;
     return b.aiScore - a.aiScore;
   });
-  el('stayCards').innerHTML = sorted.length > 0 ? sorted.map(stayCardTemplate).join('') : '<div class="card">' + t('no-results') + '</div>';
+  if (reset || !visibleStayCount) visibleStayCount = stayPageSize();
+  // 직접 입력한 숙소는 늘 앞에, 고른 숙소는 접힌 쪽에 있어도 보이게 한다.
+  var shown = manualStays.concat(results.slice(0, visibleStayCount));
+  if (selectedStayId && !shown.some(function(x) { return x.id === selectedStayId; })) {
+    var picked = results.find(function(x) { return x.id === selectedStayId; });
+    if (picked) shown.push(picked);
+  }
+  el('stayCards').innerHTML = shown.length > 0 ? shown.map(stayCardTemplate).join('') : '<div class="card">' + t('no-results') + '</div>';
+  setStayMoreVisible(visibleStayCount < results.length);
+  if (lost) { renderPlanExtras(); renderItineraryTimeline(); }
 }
+
+document.addEventListener('click', function(e) {
+  if (!e.target || !e.target.closest || !e.target.closest('#btnStayMore')) return;
+  visibleStayCount += stayPageSize();
+  renderStayCards();
+});
 
 let currentTripType = 'oneway';
 
 function setTripTab(type) {
   currentTripType = type;
-  document.querySelectorAll('#tripTabs .tab').forEach((btn) => btn.classList.toggle('active', btn.dataset.trip === type));
+  document.querySelectorAll('#tripTabs .tab').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.trip === type);
+    btn.setAttribute('aria-selected', btn.dataset.trip === type ? 'true' : 'false');
+  });
   const isMulti = type === 'multicity';
   const isRound = type === 'roundtrip';
   document.querySelectorAll('.basic-route').forEach((node) => {
     node.classList.toggle('hidden', isMulti);
   });
-  el('returnDate').style.display = isRound ? 'block' : 'none';
+  // 편도·다구간에서는 '복귀일' 칸을 라벨째 숨긴다.
+  var returnInput = el('returnDate');
+  var returnItem = returnInput && returnInput.closest ? returnInput.closest('.form-item') : null;
+  returnInput.style.display = '';
+  if (returnItem) returnItem.classList.toggle('hidden', !isRound);
+  else returnInput.style.display = isRound ? '' : 'none';
   el('multiWrap').classList.toggle('hidden', !isMulti);
 }
 
@@ -2099,9 +3035,102 @@ document.addEventListener('click', (event) => {
   if (!event.target.closest('.airport-wrap')) closeAllAirportSuggest();
 });
 
+// 채팅 대화 기록(서버 후속 대화 병합용): 각 500자, 최근 12개
+function pushChatHistory(role, content) {
+  var text = String(content || '').slice(0, 500);
+  if (!text) return;
+  chatHistory.push({ role: role === 'assistant' ? 'assistant' : 'user', content: text });
+  if (chatHistory.length > 12) chatHistory = chatHistory.slice(-12);
+}
+
+// '라멘, 모츠나베' / '라멘이랑 스시' → ['라멘', '모츠나베'] (최대 3개)
+function splitFoodWishes(keyword) {
+  return String(keyword || '')
+    .split(/\s*(?:[,，、·/]|이랑(?=\s|$)|랑(?=\s|$)|하고(?=\s|$)|\band\b)\s*/i)
+    .map(function(s) { return s.trim(); })
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function cleanNameList(list, max) {
+  return (Array.isArray(list) ? list : [])
+    .map(function(x) { return typeof x === 'string' ? x.trim() : (x && x.name ? String(x.name).trim() : ''); })
+    .filter(Boolean)
+    .slice(0, max || 8);
+}
+
+// 말로 한 요청 → /api/ai-travel-chat로 조건·의도를 알아낸 뒤 그 조건으로 일정을 만든다.
+async function runChatPlan(message, trigger) {
+  var text = String(message || '').trim();
+  if (!text) {
+    appendAiChat('assistant', t('chat-enter-msg'));
+    return;
+  }
+  if (planBusyCount > 0) return;
+  var triggerId = trigger || 'btnAiAssist';
+  appendAiChat('user', text);
+  var editSeqAtStart = itinEditSeq;
+  beginPlanBusy(triggerId);
+  // 채팅 해석(AI)부터 기다리므로 일정 칸의 생성 중 안내도 지금 띄운다(8초 뒤 '서버 깨우는 중' 안내 포함).
+  showPlanLoading();
+  try {
+    const context = {
+      city: el('city').value,
+      theme: el('theme').value,
+      budget: currentBudgetTier(),
+      days: Number(el('days').value || 4),
+      startDate: el('startDate').value || defaultStartDate()
+    };
+    const data = await postJson('/api/ai-travel-chat', {
+      message: text,
+      context,
+      lang: currentLang,
+      history: chatHistory.slice(-12),
+      prevParsed: lastParsedConditions
+    });
+    renderSourceNote('aiSourceNote', 'chat', sectionInfo('chat', data), { oneLine: true });
+    if (data.cityMeta) upsertCityOption(data.cityMeta);
+    var parsed = data.parsed || {};
+    applyAiConditions(parsed);
+
+    // 의도 상태(다음 /api/travel-plan 본문에 실린다)
+    aiRequestText = text.slice(0, 500);
+    aiRequestHandledText = text;
+    aiMustVisit = (Array.isArray(data.selectedDestinations) ? data.selectedDestinations : []).map(normalizeDestinationForPlan).filter(Boolean).slice(0, 8);
+    aiWantedNames = cleanNameList(parsed.wantedPlaces, 8);
+    aiExcludedPlaces = cleanNameList(parsed.excludedPlaces, 8);
+    aiFoodWishes = splitFoodWishes(parsed.foodKeyword);
+    var reply = data.reply || t('chat-processing');
+    pushChatHistory('user', text);
+    pushChatHistory('assistant', reply);
+    lastParsedConditions = parsed;
+
+    appendAiChat('assistant', reply);
+    // 무엇을 알아들었는지(도시·일수·테마·꼭 갈 곳·제외·반영 못 한 곳) 칩으로 확인시켜 준다.
+    appendIntentChips(parsed);
+    resetFlightSelectionDisplay();
+    selectStayById('');
+    // runPlan이 항공·숙소·맛집 탭까지 한 번씩 갱신한다.
+    await runPlan({}, true, { trigger: triggerId, fromChat: true, editSeqAtStart: editSeqAtStart });
+  } catch (err) {
+    appendAiChat('assistant', t('chat-error') + friendlyError(err));
+    hidePlanLoading(friendlyError(err));
+  } finally {
+    endPlanBusy();
+  }
+}
+
+// 주 버튼 하나: 요청칸에 새 글이 있으면 말로 한 요청으로, 없으면 조건 칸 값으로 일정을 만든다.
 el('btnPlan').addEventListener('click', async () => {
   if (planBusyCount > 0) return; // 생성 중 중복 클릭 방지(유료 호출)
-  chatHistory = []; lastParsedConditions = null; aiPreferredAreas = []; aiRouteCities = []; aiRegionDayPlan = []; aiSpecialPrefs = {};
+  var text = String((el('aiRequest') && el('aiRequest').value) || '').trim();
+  if (!confirmOverwriteIfEdited()) return;
+  if (text && text !== aiRequestHandledText) {
+    await runChatPlan(text, 'btnPlan');
+    return;
+  }
+  // 요청칸이 비었으면 앞서 말로 한 요청의 의도(꼭 갈 곳·제외·경로 등)를 모두 지운다. 같은 글이면 유지한다.
+  if (!text) resetAiIntentState(false);
   try {
     resetFlightSelectionDisplay();
     selectStayById('');
@@ -2113,45 +3142,23 @@ el('btnPlan').addEventListener('click', async () => {
 });
 
 el('btnAiAssist')?.addEventListener('click', async () => {
+  if (planBusyCount > 0) return;
   const message = String(el('aiRequest')?.value || '').trim();
   if (!message) {
     appendAiChat('assistant', t('chat-enter-msg'));
     return;
   }
-
-  if (planBusyCount > 0) return;
-  appendAiChat('user', message);
-  beginPlanBusy('btnAiAssist');
-  try {
-    const context = {
-      city: el('city').value,
-      theme: el('theme').value,
-      budget: 'mid',
-      days: Number(el('days').value || 4),
-      startDate: el('startDate').value || defaultStartDate()
-    };
-    const data = await postJson('/api/ai-travel-chat', { message, context, lang: currentLang });
-    renderSourceNote('aiSourceNote', 'chat', sectionInfo('chat', data));
-    if (data.cityMeta) upsertCityOption(data.cityMeta);
-    applyAiConditions(data.parsed || {});
-
-    appendAiChat('assistant', data.reply || t('chat-processing'));
-    resetFlightSelectionDisplay();
-    selectStayById('');
-    // runPlan이 항공·숙소·맛집 탭까지 한 번씩 갱신한다.
-    await runPlan({}, true, { trigger: 'btnAiAssist' });
-  } catch (err) {
-    appendAiChat('assistant', t('chat-error') + friendlyError(err));
-  } finally {
-    endPlanBusy();
-  }
+  if (!confirmOverwriteIfEdited()) return;
+  await runChatPlan(message, 'btnAiAssist');
 });
 
 var flightSearchSeq = 0;
 
-async function searchFlights() {
+async function searchFlights(opts) {
   var seq = ++flightSearchSeq;
+  var fromButton = Boolean(opts && opts.fromButton);
   try {
+    validateDates();
     const multiSegments = readSegments();
     if (currentTripType === 'multicity' && multiSegments.length < 2) {
       el('flightCards').innerHTML = '<div class="card">' + escapeHtml(t('err-multicity')) + '</div>';
@@ -2187,10 +3194,11 @@ async function searchFlights() {
     const isMock = info && info.kind === 'mock';
     const stamp = Date.now();
     flightResults = (data.flights || []).map((f, i) => ({ ...f, _id: `f${stamp}-${i}`, _mock: isMock }));
-    selectedFlightId = null;
+    // 이미 고른 항공편은 새 결과에 없어도 그대로 둔다(선택 카드·일정의 ✈ 블록과 다음 요청 본문이 어긋나지 않게).
     renderFlightCards(true);
     renderFlightFilterChecks(data.filterOptions);
     renderSourceNote('flightSourceNote', 'flights', info, { dateMatch: data.dateMatch || null });
+    if (fromButton) recordSearchHistory('flight', { from: payload.from, to: payload.to, city: payload.city });
   } catch (err) {
     if (seq !== flightSearchSeq) return;
     el('flightCards').innerHTML = '<div class="card">' + escapeHtml(friendlyError(err)) + '</div>';
@@ -2200,7 +3208,7 @@ async function searchFlights() {
   }
 }
 
-el('btnFlights').addEventListener('click', () => { searchFlights(); });
+el('btnFlights').addEventListener('click', () => { searchFlights({ fromButton: true }); });
 
 el('btnFlightMore').addEventListener('click', () => {
   visibleFlightCount += getFlightCardsPerRow();
@@ -2212,6 +3220,7 @@ document.querySelectorAll('#flightSortTabs .sort-tab').forEach((btn) => {
     flightSortMode = btn.dataset.sort;
     document.querySelectorAll('#flightSortTabs .sort-tab').forEach((x) => {
       x.classList.toggle('active', x === btn);
+      x.setAttribute('aria-pressed', x === btn ? 'true' : 'false');
     });
     renderFlightCards(true);
   });
@@ -2227,77 +3236,402 @@ el('flightCards').addEventListener('click', async (event) => {
 });
 
 
-function showAddToPlanModal(name, opts) {
-  opts = opts || {};
-  pendingAddPlace = { name: name || '', area: opts.area || '' };
-  pendingAddType = opts.addType || 'dest';
-  pendingAddSlot = pendingAddType === 'food' ? 'dinner' : 'afternoon';
-  var modal = el('addToPlanModal');
-  if (!modal) return;
-  el('modalPlaceName').textContent = name || '';
-  var customWrap = el('modalCustomWrap');
-  if (customWrap) customWrap.style.display = name ? 'none' : '';
-  var daySelect = el('modalDaySelect');
-  if (daySelect && currentItineraryData) {
-    daySelect.innerHTML = currentItineraryData.itinerary.map(function(d) { return '<option value="' + d.day + '">Day ' + d.day + '</option>'; }).join('');
-    if (opts.day) daySelect.value = String(opts.day);
+// ═══ 일정 배치: 끌어 놓기·추가 창·옮기기·터치 끌기가 모두 이 함수 하나를 부른다 ═══
+// opts = { day, slotKey, name, area, kind:'dest'|'food', mode:'add'|'move', from:{day, blockIndex}, window:{start, end}, silent }
+// 여행지는 어느 경로든 그날 다른 여행지와의 시간 겹침을 본다(빈 시간으로 옮기거나 묻는다).
+// 반환 { ok, reason, day, blockIndex }. 실패 사유: no-plan·bad-slot·no-day·no-source·not-main·no-name·kind-mismatch·noop·cancelled
+var lastPlacedRef = null;
+
+function placeNamesEqual(a, b) {
+  var x = normalizePlaceKey(a);
+  return Boolean(x) && x === normalizePlaceKey(b);
+}
+
+// 분 → 'HH:MM'(0~23:59로 자른다)
+function minToTime(min) {
+  var m = Math.max(0, Math.min(23 * 60 + 59, Math.round(Number(min) || 0)));
+  return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+}
+
+// 그날 여행지 블록(오전·오후·종일, 자유 일정 제외)의 시간 범위. 식사는 칸이 따로라 겹침 검사에서 뺀다.
+function sightRangesOfDay(dayData, skipIdx) {
+  var out = [];
+  groupItineraryBlocks((dayData && dayData.blocks) || []).forEach(function(g) {
+    if (g.type !== 'main' || isMealPeriod(g.period) || g._blockIndex === skipIdx) return;
+    var name = parsePlaceInfo(g.place).name;
+    if (isFreeTimePlace(name)) return;
+    var s = timeToMin(g.startTime), e = timeToMin(g.endTime);
+    if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return;
+    out.push({ s: s, e: e, name: name, period: g.period, startTime: padTime(g.startTime), endTime: padTime(g.endTime), index: g._blockIndex });
+  });
+  return out.sort(function(a, b) { return a.s - b.s || a.e - b.e; });
+}
+
+// 새 여행지 블록이 [start, end)에 들어갈 때 겹치는 블록이 있으면: 반나절 칸은 그 안의 빈 시간(60분 이상)으로 옮기고,
+// 빈 시간이 없거나 종일 칸이면 conflict(겹치는 첫 블록)를 돌려준다. 반환 { start, end, shifted, conflict }
+var SIGHT_MIN_GAP_MIN = 60;
+
+function fitSightTime(dayData, start, end, skipIdx, allowShift) {
+  var res = { start: start, end: end, shifted: false, conflict: null };
+  var s0 = timeToMin(start), e0 = timeToMin(end);
+  if (!dayData || !Number.isFinite(s0) || !Number.isFinite(e0) || e0 <= s0) return res;
+  var busy = sightRangesOfDay(dayData, skipIdx).filter(function(r) { return r.s < e0 && s0 < r.e; });
+  if (busy.length === 0) return res;
+  if (allowShift) {
+    var cursor = s0;
+    var i = 0;
+    for (; i < busy.length; i++) {
+      if (busy[i].s - cursor >= SIGHT_MIN_GAP_MIN) break;
+      cursor = Math.max(cursor, busy[i].e);
+    }
+    var gapEnd = i < busy.length ? busy[i].s : e0;
+    if (gapEnd - cursor >= SIGHT_MIN_GAP_MIN) {
+      res.start = minToTime(cursor);
+      res.end = minToTime(gapEnd);
+      res.shifted = true;
+      return res;
+    }
   }
-  // Show/hide type buttons + slot buttons
+  res.conflict = busy[0];
+  return res;
+}
+
+// '🌙 저녁 이후' 칸에 놓을 때의 시간 창: 저녁 식사가 끝난 뒤(없으면 19:00)부터, 이미 있는 밤 일정 뒤로 넉넉히.
+function nightDropWindow(dayData) {
+  var dinner = periodBlocks(dayData, SLOT_DEFS.dinner.period)[0];
+  var start = dinner ? timeToMin(dinner.parsed.endTime) : NaN;
+  if (!Number.isFinite(start)) start = 19 * 60;
+  var lastEnd = start;
+  sightRangesOfDay(dayData, -1).forEach(function(r) { if (r.e > lastEnd && r.s >= start - 60) lastEnd = r.e; });
+  var end = Math.min(23 * 60 + 59, Math.max(start + 120, lastEnd + 90));
+  return { start: minToTime(start), end: minToTime(end) };
+}
+
+function placeBlock(opts) {
+  opts = opts || {};
+  if (!currentItineraryData || !Array.isArray(currentItineraryData.itinerary)) return { ok: false, reason: 'no-plan' };
+  var def = SLOT_DEFS[opts.slotKey];
+  if (!def) return { ok: false, reason: 'bad-slot' };
+  var tgtDay = findItineraryDay(opts.day);
+  if (!tgtDay) return { ok: false, reason: 'no-day' };
+  if (!Array.isArray(tgtDay.blocks)) tgtDay.blocks = [];
+  var mode = opts.mode === 'move' ? 'move' : 'add';
+  var name, area, kind;
+  // opts.window = { start, end }: 칸의 기본 시각 대신 쓸 시간 창(여행지 칸만, 예: '저녁 이후' 칸)
+  var win = def.kind === 'dest' && opts.window && Number.isFinite(timeToMin(opts.window.start)) && timeToMin(opts.window.end) > timeToMin(opts.window.start) ? opts.window : null;
+  var start = win ? win.start : def.start;
+  var end = win ? win.end : def.end;
+  var srcDay = null;
+  var srcIdx = -1;
+  var sourceBlock = null;
+
+  if (mode === 'move') {
+    var from = opts.from || {};
+    srcDay = findItineraryDay(from.day);
+    srcIdx = Number(from.blockIndex);
+    if (!srcDay || !Array.isArray(srcDay.blocks) || !(srcIdx >= 0) || srcIdx >= srcDay.blocks.length) return { ok: false, reason: 'no-source' };
+    sourceBlock = parseItineraryBlock(srcDay.blocks[srcIdx]);
+    if (sourceBlock.type !== 'main') return { ok: false, reason: 'not-main' };
+    kind = isMealPeriod(sourceBlock.period) ? 'food' : 'dest';
+    var srcInfo = parsePlaceInfo(sourceBlock.place);
+    name = srcInfo.name;
+    area = srcInfo.info;
+    if (def.kind !== kind) return { ok: false, reason: 'kind-mismatch' };
+    if (win) {
+      // '저녁 이후' 칸으로: 이미 그 시간 창 안에 있는 같은 날 블록이면 할 일이 없다.
+      var srcStart = timeToMin(sourceBlock.startTime);
+      if (srcDay === tgtDay && sourceBlock.period === def.period && srcStart >= timeToMin(win.start) && srcStart < timeToMin(win.end)) return { ok: false, reason: 'noop' };
+    } else {
+      if (srcDay === tgtDay && sourceBlock.period === def.period) return { ok: false, reason: 'noop' };
+      // 시간대가 같고 날만 바뀌면 원래 시각을 유지한다.
+      if (sourceBlock.period === def.period) { start = sourceBlock.startTime; end = sourceBlock.endTime; }
+    }
+  } else {
+    name = String(opts.name || '').trim();
+    area = String(opts.area || '').trim();
+    kind = opts.kind === 'food' ? 'food' : 'dest';
+    if (!name) return { ok: false, reason: 'no-name' };
+    if (def.kind !== kind) return { ok: false, reason: 'kind-mismatch' };
+  }
+  var isSource = function(dayData, idx) { return mode === 'move' && dayData === srcDay && idx === srcIdx; };
+
+  var replaceIdx = -1;   // 바꿀(지울) 기존 식사 블록
+  var swapFrom = null;   // 맞바꿀 기존 식사 블록 { index, parsed }
+  if (def.kind === 'food') {
+    // 식사 칸은 시간대당 1개: 차 있으면 식사→식사 이동은 맞바꾸고, 그 밖에는 물어보고 바꾼다.
+    var existing = periodBlocks(tgtDay, def.period).filter(function(x) { return !isSource(tgtDay, x.index); });
+    if (existing.length > 0) {
+      if (mode === 'move' && isMealPeriod(sourceBlock.period)) {
+        swapFrom = existing[0];
+      } else {
+        var exName = parsePlaceInfo(existing[0].parsed.place).name;
+        if (!confirm(fillText(t('confirm-replace-meal'), { n: exName }))) return { ok: false, reason: 'cancelled' };
+        replaceIdx = existing[0].index;
+      }
+    }
+  } else {
+    var dup = tgtDay.blocks.some(function(b, i) {
+      if (isSource(tgtDay, i)) return false;
+      var p = parseItineraryBlock(b);
+      return p.type === 'main' && !isFreeTimePlace(name) && placeNamesEqual(parsePlaceInfo(p.place).name, name);
+    });
+    if (dup) {
+      if (!confirm(fillText(t('confirm-duplicate-place'), { n: name }))) return { ok: false, reason: 'cancelled' };
+    }
+    // 시간 겹침(끌어 놓기·추가 창·옮기기·터치 공통): 그날의 모든 여행지 블록(오전·오후·종일)과 비교한다.
+    // 반나절 칸은 그 칸 안의 빈 시간으로 옮겨 넣고, 빈 시간이 없거나 종일 칸이면 무엇과 겹치는지 보여 주고 묻는다.
+    var fit = fitSightTime(tgtDay, start, end, mode === 'move' && srcDay === tgtDay ? srcIdx : -1, def.period !== SLOT_DEFS.allday.period);
+    if (fit.conflict) {
+      var c = fit.conflict;
+      var ask = fillText(t('confirm-time-overlap'), { day: itinDayLabel(tgtDay.day), n: c.name, t: c.startTime + '–' + c.endTime });
+      if (!confirm(ask)) return { ok: false, reason: 'cancelled' };
+    } else if (fit.shifted) {
+      start = fit.start;
+      end = fit.end;
+    }
+  }
+
+  // 새 블록(옮기기면 설명·팁 줄도 함께)
+  var newLines = [formatPlanBlock(def.period, start, end, name, area)];
+  if (mode === 'move') newLines = newLines.concat(srcDay.blocks.slice(srcIdx + 1, srcIdx + blockGroupLength(srcDay.blocks, srcIdx)));
+  var swapLines = null;
+  if (swapFrom) {
+    var back = SLOT_DEFS[PERIOD_TO_SLOT[sourceBlock.period]];
+    var swInfo = parsePlaceInfo(swapFrom.parsed.place);
+    swapLines = [formatPlanBlock(back.period, back.start, back.end, swInfo.name, swInfo.info)]
+      .concat(tgtDay.blocks.slice(swapFrom.index + 1, swapFrom.index + blockGroupLength(tgtDay.blocks, swapFrom.index)));
+  }
+
+  // 지울 블록은 같은 배열 안에서 뒤쪽부터 지운다(앞 블록의 위치가 밀리지 않게).
+  var removals = [];
+  if (mode === 'move') removals.push({ day: srcDay, idx: srcIdx });
+  if (replaceIdx >= 0) removals.push({ day: tgtDay, idx: replaceIdx });
+  if (swapFrom) removals.push({ day: tgtDay, idx: swapFrom.index });
+  removals.sort(function(a, b) { return b.idx - a.idx; });
+  removals.forEach(function(r) { removeBlockGroup(r.day, r.idx); });
+
+  var newIdx = insertBlockSorted(tgtDay, newLines);
+  if (swapLines) {
+    var swapIdx = insertBlockSorted(srcDay, swapLines);
+    if (srcDay === tgtDay && swapIdx <= newIdx) newIdx += swapLines.length;
+  }
+
+  markItineraryEdited();
+  invalidateRouteCost(tgtDay.day);
+  if (srcDay && srcDay !== tgtDay) invalidateRouteCost(srcDay.day);
+  renderItineraryTimeline();
+  updateItinMap();
+  lastPlacedRef = { day: Number(tgtDay.day), blockIndex: newIdx };
+  highlightPlacedBlock(lastPlacedRef.day, newIdx);
+  if (!opts.silent) {
+    var placedMsg = fillText(t(mode === 'move' ? 'moved-in-plan' : 'added-to-plan-toast'), { d: tgtDay.day, p: tPeriod(def.period), n: name });
+    // 칸의 기본 시각과 다르게 넣었으면(빈 시간·저녁 이후) 실제 시각을 덧붙인다.
+    if (def.kind === 'dest' && (fit.shifted || win)) placedMsg += ' · ' + padTime(start) + '–' + padTime(end);
+    showMemoToast(placedMsg, 3000);
+  }
+  return { ok: true, day: Number(tgtDay.day), blockIndex: newIdx };
+}
+
+function placedBlockElement(dayNum, blockIndex) {
+  return document.querySelector('#planResult [data-itin-day="' + dayNum + '"][data-itin-block-index="' + blockIndex + '"]');
+}
+
+// 방금 넣은 항목을 잠깐 강조하고 화면 안으로 데려온다.
+function highlightPlacedBlock(dayNum, blockIndex) {
+  var node = placedBlockElement(dayNum, blockIndex);
+  if (!node) return;
+  node.classList.add('just-added');
+  setTimeout(function() { node.classList.remove('just-added'); }, 900);
+  try { node.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
+}
+
+// ── 일정에 추가/옮기기 창 ──
+var addModalCustomMode = false; // 이름 없이 연 창(칩·직접 입력으로 고르는 모드)
+
+function addModalHeading() {
+  var modal = el('addToPlanModal');
+  return el('modalHeading') || (modal ? modal.querySelector('h4') : null);
+}
+
+function setI18nText(node, key) {
+  if (!node) return;
+  node.setAttribute('data-i18n', key);
+  node.textContent = t(key);
+}
+
+function shortDateLabel(dateText) {
+  var m = /^\d{4}-(\d{2})-(\d{2})$/.exec(String(dateText || ''));
+  return m ? Number(m[1]) + '/' + Number(m[2]) : '';
+}
+
+function ensureModalPickList() {
+  var list = el('modalPickList');
+  if (list) return list;
+  var anchor = el('modalPlaceName');
+  if (anchor && typeof anchor.insertAdjacentHTML === 'function') {
+    anchor.insertAdjacentHTML('afterend', '<div id="modalPickList" class="modal-pick-list"></div>');
+    list = el('modalPickList');
+  }
+  return list;
+}
+
+// 지금 일정에 들어 있는 장소 이름(정규화)
+function plannedPlaceKeys() {
+  var keys = {};
+  (currentItineraryData && currentItineraryData.itinerary || []).forEach(function(d) {
+    (d.blocks || []).forEach(function(b) {
+      var p = parseItineraryBlock(b);
+      if (p.type === 'main') keys[normalizePlaceKey(parsePlaceInfo(p.place).name)] = true;
+    });
+  });
+  return keys;
+}
+
+// 직접 넣기(이름 없이 연 창)에서 추천 목록을 칩으로 보여 준다. 이미 일정에 있으면 ✓
+function renderModalPickChips(kind) {
+  var list = ensureModalPickList();
+  if (!list) return 0;
+  var items = (kind === 'food' ? latestRecFoodList : latestDestList) || [];
+  var used = plannedPlaceKeys();
+  list.innerHTML = items.map(function(x, i) {
+    if (!x || !x.name) return '';
+    var isUsed = Boolean(used[normalizePlaceKey(x.name)]);
+    return '<button type="button" class="modal-pick-chip' + (isUsed ? ' is-used' : '') + '" data-pick-index="' + i + '" data-pick-kind="' + kind + '" aria-pressed="false">' +
+      escapeHtml(x.name) + (isUsed ? ' ✓' : '') + '</button>';
+  }).join('');
+  list.hidden = items.length === 0;
+  list.classList.toggle('hidden', items.length === 0);
+  return items.length;
+}
+
+function hideModalPickList() {
+  var list = el('modalPickList');
+  if (!list) return;
+  list.innerHTML = '';
+  list.hidden = true;
+  list.classList.add('hidden');
+}
+
+function setModalPickActive(index) {
+  document.querySelectorAll('.modal-pick-chip').forEach(function(c) {
+    var on = String(c.dataset.pickIndex) === String(index);
+    c.classList.toggle('active', on);
+    c.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+// 유형(여행지/맛집)에 맞는 시간대 줄만 보이고, 실제로 들어갈 시간대(pendingAddSlot)에 강조를 맞춘다.
+function paintAddModalSlots() {
   var destSlots = el('destSlots');
   var foodSlots = el('foodSlots');
   if (destSlots) destSlots.style.display = pendingAddType === 'food' ? 'none' : '';
   if (foodSlots) foodSlots.style.display = pendingAddType === 'food' ? '' : 'none';
-  document.querySelectorAll('.type-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.type === pendingAddType); });
+  document.querySelectorAll('.slot-btn').forEach(function(b) {
+    var on = b.dataset.slot === pendingAddSlot;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+  document.querySelectorAll('.type-btn').forEach(function(b) {
+    var on = b.dataset.type === pendingAddType;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+function addModalField(node) {
+  return node && node.closest ? node.closest('.plan-modal-field') : null;
+}
+
+// name이 있으면 그 장소를, 없으면 칩·직접 입력으로 고른다. opts: { addType, area, day, slot, mode:'move', from }
+function showAddToPlanModal(name, opts) {
+  opts = opts || {};
+  var modal = el('addToPlanModal');
+  if (!modal || !currentItineraryData) return;
+  pendingAddMode = opts.mode === 'move' ? 'move' : 'add';
+  pendingMoveFrom = pendingAddMode === 'move' && opts.from ? { day: Number(opts.from.day), blockIndex: Number(opts.from.blockIndex) } : null;
+  pendingAddType = opts.addType === 'food' ? 'food' : 'dest';
+  pendingAddPlace = { name: name || '', area: opts.area || '', custom: !name };
+  var defaultSlot = pendingAddType === 'food' ? 'dinner' : 'afternoon';
+  pendingAddSlot = opts.slot && SLOT_DEFS[opts.slot] && SLOT_DEFS[opts.slot].kind === pendingAddType ? opts.slot : defaultSlot;
+
+  var isMove = pendingAddMode === 'move';
+  var customMode = !isMove && !name;
+  addModalCustomMode = customMode;
+  setI18nText(addModalHeading(), isMove ? 'modal-move-plan' : 'modal-add-plan');
+  setI18nText(el('modalConfirmAdd'), isMove ? 'btn-move-confirm' : 'btn-add');
+  if (el('modalPlaceName')) el('modalPlaceName').textContent = name || '';
+
+  // 이전에 열었던 창의 입력·선택이 남지 않게 매번 비운다.
+  var customInput = el('modalCustomName');
+  if (customInput) customInput.value = '';
+  var customWrap = el('modalCustomWrap');
+  var chipCount = customMode ? renderModalPickChips(pendingAddType) : 0;
+  if (!customMode) hideModalPickList();
+  if (customWrap) {
+    customWrap.style.display = customMode ? '' : 'none';
+    var label = customWrap.querySelector('[data-i18n="modal-place-name"], [data-i18n="modal-custom-hint"]') || customWrap.querySelector('span');
+    if (label) setI18nText(label, chipCount > 0 ? 'modal-custom-hint' : 'modal-place-name');
+  }
+  // 유형 선택은 직접 넣기에서만 보인다(카드·옮기기는 유형이 정해져 있다).
+  var typeField = addModalField(document.querySelector('.type-btn'));
+  if (typeField) typeField.style.display = customMode ? '' : 'none';
+
+  var daySelect = el('modalDaySelect');
+  if (daySelect) {
+    daySelect.innerHTML = currentItineraryData.itinerary.map(function(d) {
+      var md = shortDateLabel(d.date);
+      return '<option value="' + escapeHtml(String(d.day)) + '">' + escapeHtml(itinDayLabel(d.day) + (md ? ' · ' + md : '')) + '</option>';
+    }).join('');
+    var firstDay = currentItineraryData.itinerary[0] ? currentItineraryData.itinerary[0].day : '';
+    daySelect.value = String(opts.day || firstDay);
+  }
+  paintAddModalSlots();
+  openDialog('addToPlanModal');
   modal.classList.remove('hidden');
+  focusFirstIn(modal, ['.modal-pick-chip', '#modalCustomName', '#modalConfirmAdd']);
 }
 
 function hideAddToPlanModal() {
   var modal = el('addToPlanModal');
+  var wasOpen = modal && !modal.classList.contains('hidden');
   if (modal) modal.classList.add('hidden');
   pendingAddPlace = null;
+  pendingAddMode = 'add';
+  pendingMoveFrom = null;
+  var customInput = el('modalCustomName');
+  if (customInput) customInput.value = '';
+  setModalPickActive(-1);
+  setI18nText(addModalHeading(), 'modal-add-plan');
+  setI18nText(el('modalConfirmAdd'), 'btn-add');
+  if (wasOpen) closeDialog('addToPlanModal');
 }
 
 function confirmAddToPlan() {
-  if (!pendingAddPlace || !currentItineraryData) return;
-  var dayNum = Number(el('modalDaySelect').value);
-  var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === dayNum; });
-  if (!dayData) return;
-  var destSlotMap = {
-    morning: { period: '\uC624\uC804', start: '09:00', end: '11:00' },
-    afternoon: { period: '\uC624\uD6C4', start: '13:00', end: '15:00' },
-    allday: { period: '\uC885\uC77C', start: '09:00', end: '18:00' }
-  };
-  var foodSlotMap = {
-    breakfast: { period: '\uC544\uCE68', start: '08:00', end: '09:30' },
-    lunch: { period: '\uC810\uC2EC', start: '12:00', end: '13:30' },
-    dinner: { period: '\uC800\uB141', start: '18:00', end: '20:00' }
-  };
-  var activeMap = pendingAddType === 'food' ? foodSlotMap : destSlotMap;
-  var slot = activeMap[pendingAddSlot] || (pendingAddType === 'food' ? foodSlotMap.dinner : destSlotMap.afternoon);
-  var customName = (el('modalCustomName') || {}).value || '';
-  if (customName) pendingAddPlace.name = customName;
-  if (!pendingAddPlace.name) { hideAddToPlanModal(); return; }
-  var newBlock;
-  if (pendingAddType === 'food') {
-    var foodArea = pendingAddPlace.area || pendingAddPlace.city || '';
-    newBlock = slot.period + '(' + slot.start + '-' + slot.end + '): ' + pendingAddPlace.name + (foodArea ? ' (' + foodArea + ')' : '');
+  if (!currentItineraryData) { hideAddToPlanModal(); return; }
+  var dayNum = Number((el('modalDaySelect') || {}).value);
+  var result;
+  if (pendingAddMode === 'move') {
+    result = placeBlock({ mode: 'move', day: dayNum, slotKey: pendingAddSlot, from: pendingMoveFrom });
   } else {
-    var destArea = pendingAddPlace.area || pendingAddPlace.city || '';
-    newBlock = slot.period + '(' + slot.start + '-' + slot.end + '): ' + pendingAddPlace.name + (destArea ? ' (' + destArea + ')' : '');
-  }
-  var periodOrder = { '\uC544\uCE68': -1, '\uC624\uC804': 0, '\uC810\uC2EC': 0.5, '\uC624\uD6C4': 1, '\uC885\uC77C': 1, '\uC800\uB141': 2 };
-  var targetOrder = periodOrder[slot.period];
-  var insertIdx = dayData.blocks.length;
-  for (var i = 0; i < dayData.blocks.length; i++) {
-    var p = parseItineraryBlock(dayData.blocks[i]);
-    if (p.type === 'main' && (periodOrder[p.period] || 0) > targetOrder) {
-      insertIdx = i;
-      break;
+    var place = pendingAddPlace || { name: '', area: '', custom: true };
+    var name = place.name;
+    var area = place.area;
+    // 직접 입력 모드(칩 미선택 + 이름 없음)일 때만 입력칸 글을 쓴다. 지역은 모르므로 비운다.
+    if (!name && place.custom !== false) {
+      name = String((el('modalCustomName') || {}).value || '').trim();
+      area = '';
     }
+    if (!name) {
+      showMemoToast(t('modal-need-place'));
+      var input = el('modalCustomName');
+      if (input && typeof input.focus === 'function') input.focus();
+      return;
+    }
+    result = placeBlock({ mode: 'add', day: dayNum, slotKey: pendingAddSlot, name: name, area: area, kind: pendingAddType });
   }
-  dayData.blocks.splice(insertIdx, 0, newBlock);
-  renderItineraryTimeline();
-  updateItinMap();
+  if (result.ok || result.reason === 'noop') { hideAddToPlanModal(); return; }
+  if (result.reason === 'kind-mismatch') { showMemoToast(t('drop-kind-mismatch')); return; }
+  if (result.reason === 'cancelled') return; // 다른 칸을 고를 수 있게 창은 열어 둔다
   hideAddToPlanModal();
 }
 
@@ -2320,11 +3654,14 @@ function renderRecFoodCards(items) {
           '<div class="card-scores">' + aiScoreBadge(x.aiFit) + starRating(x.score) + priceYen(x.priceLevel) + '</div>' +
         openStatusBadge(x) +
         photoCreditHtml(x.photoCredit, x.photoUrl) +
+        '<span class="drag-hint" aria-hidden="true">' + escapeHtml(t('drag-handle')) + '</span>' +
         '</div>' +
       '</div>' +
-      '<span class="drag-hint">' + escapeHtml(t('drag-handle')) + '</span>' +
-      '<div class="link-row"><a href="' + escapeHtml(safeLinkUrl(x.mapUrl) || '#') + '" target="_blank" rel="noreferrer">' + escapeHtml(t('map-link')) + '</a>' +
-      '<button type="button" class="rec-delete-btn" data-delete-type="food" data-delete-index="' + index + '">\u2715</button></div>' +
+      '<span class="drag-handle" aria-hidden="true" title="' + escapeHtml(t('drag-handle')) + '">\u2630</span>' +
+      '<div class="link-row">' +
+      '<button type="button" class="add-to-plan-btn" data-add-type="food" data-add-index="' + index + '" data-add-source="recFood">' + escapeHtml(t('add-to-plan')) + '</button>' +
+      '<a href="' + escapeHtml(safeLinkUrl(x.mapUrl) || '#') + '" target="_blank" rel="noreferrer">' + escapeHtml(t('map-link')) + '</a>' +
+      '<button type="button" class="rec-delete-btn" data-delete-type="food" data-delete-index="' + index + '" aria-label="' + escapeHtml(t('aria-hide-pick')) + '" title="' + escapeHtml(t('aria-hide-pick')) + '">\u2715</button></div>' +
     '</article>';
   }).join('');
 }
@@ -2363,19 +3700,11 @@ el('destCards')?.addEventListener('click', (event) => {
   if (delBtn) {
     const idx = Number(delBtn.dataset.deleteIndex);
     if (!Number.isNaN(idx) && idx >= 0 && idx < latestDestList.length) {
-      const removed = latestDestList[idx];
-
       latestDestList.splice(idx, 1);
       renderCards('destCards', latestDestList, 'dest');
       renderPlanSelectionCards();
     }
-    return;
   }
-  const btn = event.target.closest('.dest-select-btn');
-  if (!btn) return;
-  const index = Number(btn.dataset.destIndex);
-  if (Number.isNaN(index)) return;
-  toggleDestinationSelection(index);
 });
 
 el('recFoodCards')?.addEventListener('click', (event) => {
@@ -2394,6 +3723,7 @@ const planRefreshButton = el('btnPlanRefresh');
 if (planRefreshButton) {
   planRefreshButton.addEventListener('click', async () => {
     if (planBusyCount > 0) return;
+    if (!confirmOverwriteIfEdited()) return;
     try {
       await runPlan({}, false, { trigger: 'btnPlanRefresh' });
     } catch (err) {
@@ -2404,23 +3734,32 @@ if (planRefreshButton) {
 
 var foodSearchSeq = 0;
 
-async function searchFoods() {
+async function searchFoods(opts) {
   var seq = ++foodSearchSeq;
   var cityKey = el('foodCity').value;
+  var genreText = el('foodGenre').value;
   setLoading('btnFood', true);
   try {
     const city = encodeURIComponent(cityKey);
-    const genre = encodeURIComponent(el('foodGenre').value);
-    const res = await fetch(`/api/foods?lang=${currentLang}&city=${city}&genre=${genre}&budget=mid`);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
+    const genre = encodeURIComponent(genreText);
+    const data = await fetchWithTimeout(`/api/foods?lang=${currentLang}&city=${city}&genre=${genre}&budget=${currentBudgetTier()}`, {}, 30000, function(res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    });
     if (seq !== foodSearchSeq) return;
+    if (opts && opts.fromButton) recordSearchHistory('food', { city: cityKey, genre: genreText });
     const list = data.list || [];
     const info = sectionInfo('foodSearch', data);
     latestFoodSearchList = list;
     latestFoodList = list;
-    renderCards('foodCards', list, 'food');
-    renderSourceNote('foodSourceNote', 'foodSearch', info);
+    if (list.length === 0 && info && info.reasonCode === 'NO_GENRE_MATCH') {
+      // 장르에 맞는 가게가 없으면(서버가 지어낸 이름 대신 빈 목록을 준다) 다른 장르를 권한다.
+      el('foodCards').innerHTML = '<div class="card empty-state" data-i18n="food-no-genre-match">' + escapeHtml(t('food-no-genre-match')) + '</div>';
+      renderSourceNote('foodSourceNote', 'foodSearch', null);
+    } else {
+      renderCards('foodCards', list, 'food');
+      renderSourceNote('foodSourceNote', 'foodSearch', info);
+    }
     // 일정 생성 후 추천 맛집이 비어 있으면 같은 도시의 맛집 목록으로 채워 준다.
     if (recFoodsNeedFill && list.length > 0 && cityKey === el('city').value) {
       recFoodsNeedFill = false;
@@ -2435,14 +3774,17 @@ async function searchFoods() {
   }
 }
 
-el('btnFood').addEventListener('click', () => { searchFoods(); });
+el('btnFood').addEventListener('click', () => { searchFoods({ fromButton: true }); });
 
 var staySearchSeq = 0;
 var lastStayFilterOptions = null; // 언어를 바꾸면 부대시설 체크 목록 글자를 다시 그린다
 
-async function searchStays() {
+async function searchStays(opts) {
   var seq = ++staySearchSeq;
+  var fromButton = Boolean(opts && opts.fromButton);
   try {
+    // 지난 날짜는 요청을 만들기 전에 오늘로 고친다(본문에 옛 날짜가 실리지 않게).
+    validateDates();
     if (!el('checkIn').value) el('checkIn').value = el('startDate').value || defaultStartDate();
     ensureCheckOutDate();
     staySortMode = el('stayPreference').value || 'balanced';
@@ -2475,24 +3817,28 @@ async function searchStays() {
     validateDates();
     setLoading('btnStays', true);
     showCardLoading('stayCards');
+    setStayMoreVisible(false);
     var data = await postJson('/api/stays', payload);
     if (seq !== staySearchSeq) return;
     var info = sectionInfo('stays', data);
     var isMock = info && info.kind === 'mock';
+    // 직접 입력한 숙소(manualStays)와 이미 고른 숙소는 새 결과에 없어도 남는다.
     stayResults = (data.stays || []).map(function(s) { return Object.assign({}, s, { _mock: isMock }); });
     renderStayFilterChecks(data.filterOptions);
-    renderStayCards();
+    renderStayCards(true);
     renderSourceNote('staySourceNote', 'stays', info);
     lastStayFilterOptions = data.filterOptions || null;
+    if (fromButton) recordSearchHistory('stay', { city: payload.city });
   } catch (err) {
     if (seq !== staySearchSeq) return;
     el('stayCards').innerHTML = '<div class="card">' + escapeHtml(friendlyError(err)) + '</div>';
+    setStayMoreVisible(false);
   } finally {
     if (seq === staySearchSeq) setLoading('btnStays', false);
   }
 }
 
-el('btnStays').addEventListener('click', () => { searchStays(); });
+el('btnStays').addEventListener('click', () => { searchStays({ fromButton: true }); });
 
 el('stayCards').addEventListener('click', (event) => {
   const btn = event.target.closest('.stay-select-btn');
@@ -2503,7 +3849,7 @@ el('stayCards').addEventListener('click', (event) => {
 el('checkIn').addEventListener('change', ensureCheckOutDate);
 el('stayPreference').addEventListener('change', () => {
   staySortMode = el('stayPreference').value || 'balanced';
-  renderStayCards();
+  renderStayCards(true);
 });
 
 // 여행 도시가 바뀌면(직접 선택이든 AI 채팅이든) 딸린 입력값과 위젯을 함께 맞춘다.
@@ -2526,6 +3872,9 @@ function syncCityDependents(cityKey) {
 }
 
 el('city').addEventListener('change', () => {
+  // 도시를 직접 바꾸면 앞서 말로 한 요청의 의도(꼭 갈 곳·경로·제외 등)는 더 이상 맞지 않는다.
+  // 요청칸의 같은 글로 주 버튼을 다시 눌러도 채팅을 또 부르지 않게 '처리한 글'로 남긴다.
+  resetAiIntentState(true);
   syncCityDependents(el('city').value);
 });
 
@@ -2533,8 +3882,9 @@ el('city').addEventListener('change', () => {
 // ── Recommendation tab switching ──
 document.querySelectorAll('.rec-tab').forEach(function(tab) {
   tab.addEventListener('click', function() {
-    document.querySelectorAll('.rec-tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelectorAll('.rec-tab').forEach(function(t) { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
     tab.classList.add('active');
+    tab.setAttribute('aria-selected', 'true');
     var which = tab.dataset.recTab;
     var destPanel = el('recDestPanel');
     var foodPanel = el('recFoodPanel');
@@ -2543,387 +3893,419 @@ document.querySelectorAll('.rec-tab').forEach(function(tab) {
   });
 });
 
-// ── Modal event handling ──
+// ── Modal / 일정 칸 버튼 처리(이벤트 위임: 창은 이 스크립트보다 뒤에 있다) ──
 document.addEventListener('click', function(e) {
-  if (e.target.id === 'modalConfirmAdd') { confirmAddToPlan(); return; }
-  if (e.target.id === 'modalCancelAdd') { hideAddToPlanModal(); return; }
+  var target = e.target && e.target.closest ? e.target : null;
+  if (!target) return;
+  if (target.closest('#modalConfirmAdd')) { confirmAddToPlan(); return; }
+  if (target.closest('#modalCancelAdd')) { hideAddToPlanModal(); return; }
+  // 창 바깥(어두운 배경)을 누르면 닫는다.
+  if (target.id === 'addToPlanModal') { hideAddToPlanModal(); return; }
 
-  var typeBtn = e.target.closest('.type-btn');
+  var typeBtn = target.closest('.type-btn');
   if (typeBtn) {
-    pendingAddType = typeBtn.dataset.type;
-    document.querySelectorAll('.type-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.type === pendingAddType); });
-    var destSlots = el('destSlots');
-    var foodSlots = el('foodSlots');
-    if (destSlots) destSlots.style.display = pendingAddType === 'food' ? 'none' : '';
-    if (foodSlots) foodSlots.style.display = pendingAddType === 'food' ? '' : 'none';
+    pendingAddType = typeBtn.dataset.type === 'food' ? 'food' : 'dest';
+    if (!SLOT_DEFS[pendingAddSlot] || SLOT_DEFS[pendingAddSlot].kind !== pendingAddType) pendingAddSlot = pendingAddType === 'food' ? 'dinner' : 'afternoon';
+    // 유형이 바뀌면 칩 목록도 그 유형으로 다시 그리고 칩 선택은 푼다.
+    if (addModalCustomMode) {
+      pendingAddPlace = { name: '', area: '', custom: true };
+      var count = renderModalPickChips(pendingAddType);
+      var wrapLabel = el('modalCustomWrap') ? el('modalCustomWrap').querySelector('[data-i18n="modal-place-name"], [data-i18n="modal-custom-hint"]') : null;
+      if (wrapLabel) setI18nText(wrapLabel, count > 0 ? 'modal-custom-hint' : 'modal-place-name');
+    }
+    paintAddModalSlots();
     return;
   }
 
-  var slotBtn = e.target.closest('.slot-btn');
+  var slotBtn = target.closest('.slot-btn');
   if (slotBtn) {
-    pendingAddSlot = slotBtn.dataset.slot;
-    slotBtn.closest('.plan-modal-slots').querySelectorAll('.slot-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.slot === pendingAddSlot); });
+    if (SLOT_DEFS[slotBtn.dataset.slot]) pendingAddSlot = slotBtn.dataset.slot;
+    paintAddModalSlots();
     return;
   }
 
-  var removeBtn = e.target.closest('.itin-remove-btn');
+  var chip = target.closest('.modal-pick-chip');
+  if (chip) {
+    var kind = chip.dataset.pickKind === 'food' ? 'food' : 'dest';
+    var item = (kind === 'food' ? latestRecFoodList : latestDestList)[Number(chip.dataset.pickIndex)];
+    if (!item) return;
+    if (chip.classList.contains('active')) {
+      pendingAddPlace = { name: '', area: '', custom: true };
+      setModalPickActive(-1);
+      return;
+    }
+    pendingAddPlace = { name: item.name, area: item.area || item.city || '', custom: false };
+    var customInput = el('modalCustomName');
+    if (customInput) customInput.value = '';
+    setModalPickActive(chip.dataset.pickIndex);
+    return;
+  }
+
+  var removeBtn = target.closest('.itin-remove-btn');
   if (removeBtn && currentItineraryData) {
     var rDay = Number(removeBtn.dataset.day);
-    var rPeriod = removeBtn.dataset.period;
-    var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === rDay; });
-    if (dayData) {
-      var rBlockIdx = removeBtn.dataset.blockIndex;
-      if (rBlockIdx !== undefined && rBlockIdx !== '' && rBlockIdx !== '-1') {
-        dayData.blocks.splice(Number(rBlockIdx), 1);
+    var dayData = findItineraryDay(rDay);
+    if (dayData && Array.isArray(dayData.blocks)) {
+      var rIdx = Number(removeBtn.dataset.blockIndex);
+      if (removeBtn.dataset.blockIndex !== undefined && removeBtn.dataset.blockIndex !== '' && rIdx >= 0 && rIdx < dayData.blocks.length) {
+        removeBlockGroup(dayData, rIdx);
+      } else if (removeBtn.dataset.period) {
+        // 예전 화면 호환: 시간대 이름만 있는 버튼은 그 시간대의 첫 블록을 지운다.
+        var first = periodBlocks(dayData, removeBtn.dataset.period)[0];
+        if (first) removeBlockGroup(dayData, first.index);
       } else {
-        dayData.blocks = dayData.blocks.filter(function(b) {
-          var p = parseItineraryBlock(b);
-          return !(p.type === 'main' && p.period === rPeriod);
-        });
+        return;
       }
+      markItineraryEdited();
+      invalidateRouteCost(rDay);
       renderItineraryTimeline();
       updateItinMap();
     }
     return;
   }
 
-  var mealAddBtn = e.target.closest('.itin-meal-add-btn');
+  var moveBtn = target.closest('.itin-move-btn');
+  if (moveBtn && currentItineraryData) {
+    var mvDay = Number(moveBtn.dataset.day);
+    var mvIdx = Number(moveBtn.dataset.blockIndex);
+    var mvDayData = findItineraryDay(mvDay);
+    var mvParsed = mvDayData ? parseItineraryBlock(mvDayData.blocks[mvIdx]) : null;
+    if (!mvParsed || mvParsed.type !== 'main') return;
+    var mvInfo = parsePlaceInfo(mvParsed.place);
+    showAddToPlanModal(mvInfo.name, {
+      mode: 'move', from: { day: mvDay, blockIndex: mvIdx }, day: mvDay,
+      slot: PERIOD_TO_SLOT[mvParsed.period], addType: isMealPeriod(mvParsed.period) ? 'food' : 'dest', area: mvInfo.info
+    });
+    return;
+  }
+
+  var zoneAddBtn = target.closest('.itin-zone-add-btn');
+  if (zoneAddBtn) {
+    showAddToPlanModal('', { day: Number(zoneAddBtn.dataset.day), addType: 'dest', slot: zoneAddBtn.dataset.slot });
+    return;
+  }
+
+  var mealAddBtn = target.closest('.itin-meal-add-btn');
   if (mealAddBtn) {
-    var mdn = Number(mealAddBtn.dataset.day);
-    var mslot = mealAddBtn.dataset.mealSlot || 'dinner';
-    showAddToPlanModal('', { day: mdn, addType: 'food' });
-    el('modalDaySelect').value = String(mdn);
-    pendingAddSlot = mslot;
-    var foodSlotsEl = el('foodSlots');
-    if (foodSlotsEl) foodSlotsEl.querySelectorAll('.slot-btn').forEach(function(b) { b.classList.toggle('active', b.dataset.slot === mslot); });
-    return;
-  }
-
-  // destsearch-to-rec-btn: add to rec list
-  var dsearchBtn = e.target.closest('.destsearch-to-rec-btn');
-  if (dsearchBtn) {
-    var dsIdx = Number(dsearchBtn.dataset.dsearchIndex);
-    var dest = (latestDestSearchList || [])[dsIdx];
-    if (dest) {
-      var isDup = latestDestList.some(function(d) { return d.name === dest.name; });
-      if (!isDup) {
-        latestDestList.push(dest);
-        renderCards('destCards', latestDestList, 'dest');
-      }
-    }
-    return;
-  }
-
-  // food-to-rec-btn: add to rec food list
-  var foodRecBtn = e.target.closest('.food-to-rec-btn');
-  if (foodRecBtn) {
-    var fIdx = Number(foodRecBtn.dataset.foodIndex);
-    var food = (latestFoodList || [])[fIdx];
-    if (food) {
-      var isFDup = latestRecFoodList.some(function(f) { return f.name === food.name; });
-      if (!isFDup) {
-        latestRecFoodList.push(food);
-        renderRecFoodCards(latestRecFoodList);
-      }
-    }
+    showAddToPlanModal('', { day: Number(mealAddBtn.dataset.day), addType: 'food', slot: mealAddBtn.dataset.mealSlot || 'dinner' });
     return;
   }
 });
 
-// ── Drag & Drop ──
-document.addEventListener('dragstart', function(e) {
-  var card = e.target.closest('[data-drag-type]');
-  if (card) {
-    var type = card.dataset.dragType;
-    var index = Number(card.dataset.dragIndex);
-    var item = type === 'dest' ? (latestDestList || [])[index] : (latestRecFoodList || [])[index];
-    if (!item) return;
-    dragData = { source: 'rec', type: type, item: item, index: index };
-    e.dataTransfer.effectAllowed = 'copy';
-    e.dataTransfer.setData('text/plain', item.name);
-    card.classList.add('dragging');
-    setTimeout(function() {
-      document.querySelectorAll('.itin-drop-zone, .itin-day-body').forEach(function(z) { z.classList.add('drop-active'); });
-    }, 0);
-    return;
-  }
-  var slot = e.target.closest('[data-itin-day][data-itin-period]');
-  if (slot) {
-    var srcBlockIndex = slot.dataset.itinBlockIndex !== undefined ? Number(slot.dataset.itinBlockIndex) : -1;
-    dragData = { source: 'itin', day: Number(slot.dataset.itinDay), period: slot.dataset.itinPeriod, blockIndex: srcBlockIndex };
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', 'itin');
-    slot.classList.add('dragging');
+// 직접 입력칸에 쓰기 시작하면 칩 선택을 푼다(마지막 동작이 이긴다).
+document.addEventListener('input', function(e) {
+  if (!e.target || e.target.id !== 'modalCustomName') return;
+  if (String(e.target.value || '').trim() && pendingAddPlace && pendingAddPlace.custom === false) {
+    pendingAddPlace = { name: '', area: '', custom: true };
+    setModalPickActive(-1);
   }
 });
 
-document.addEventListener('dragend', function(e) {
+// ── 끌어 놓기(마우스 HTML5 drag + 터치 ☰ 손잡이) ──
+var DRAG_MIME = 'application/x-tabimaru';
+var DROP_ZONE_SELECTOR = '.itin-period-zone, .itin-meal-empty, .itin-slot[data-drop-meal], .itin-section-label[data-drop-type]';
+var DRAG_SOURCE_SELECTOR = '[data-drag-type], [data-itin-day][data-itin-period]';
+var dragOverState = null; // 마지막 dragover 위치의 칸과 호환 여부(놓기 실패 안내용)
+
+// 끌기 시작한 요소(추천 카드 또는 일정 항목) → dragData
+function beginDrag(sourceEl) {
+  if (!sourceEl || !sourceEl.dataset) return null;
+  if (sourceEl.dataset.dragType) {
+    var type = sourceEl.dataset.dragType === 'food' ? 'food' : 'dest';
+    var index = Number(sourceEl.dataset.dragIndex);
+    var item = (type === 'dest' ? latestDestList : latestRecFoodList)[index];
+    if (!item || !item.name) return null;
+    return { source: 'rec', kind: type, type: type, item: item, index: index, name: item.name, area: item.area || item.city || '' };
+  }
+  if (sourceEl.dataset.itinDay && currentItineraryData) {
+    var day = Number(sourceEl.dataset.itinDay);
+    var blockIndex = Number(sourceEl.dataset.itinBlockIndex);
+    var dayData = findItineraryDay(day);
+    var parsed = dayData && blockIndex >= 0 ? parseItineraryBlock(dayData.blocks[blockIndex]) : null;
+    if (!parsed || parsed.type !== 'main') return null;
+    return { source: 'itin', kind: isMealPeriod(parsed.period) ? 'food' : 'dest', day: day, period: parsed.period, blockIndex: blockIndex, name: parsePlaceInfo(parsed.place).name };
+  }
+  return null;
+}
+
+function zoneFromNode(node) {
+  var n = node && node.nodeType !== 1 ? node.parentElement : node;
+  return n && n.closest ? n.closest(DROP_ZONE_SELECTOR) : null;
+}
+
+function isZoneCompatible(dd, zone) {
+  return Boolean(dd && zone && zone.dataset && zone.dataset.dropType === dd.kind);
+}
+
+// 끄는 것과 종류가 맞는 칸에만 .drop-active를 붙인다(여행지 ↔ 📍 칸, 맛집 ↔ 🍴 칸).
+function markCompatibleZones(kind) {
+  document.querySelectorAll(DROP_ZONE_SELECTOR).forEach(function(z) {
+    z.classList.toggle('drop-active', z.dataset.dropType === kind);
+  });
+}
+
+function setDropHover(zone) {
+  document.querySelectorAll('.drop-hover').forEach(function(n) { if (n !== zone) n.classList.remove('drop-hover'); });
+  if (zone) zone.classList.add('drop-hover');
+}
+
+// 놓기·취소·실패 어느 경우든 끌기 상태를 남기지 않는다(렌더 후 원본이 사라져 dragend가 안 와도).
+function clearDragState() {
   dragData = null;
-  document.querySelectorAll('.dragging').forEach(function(el) { el.classList.remove('dragging'); });
-  document.querySelectorAll('.drop-active').forEach(function(el) { el.classList.remove('drop-active'); });
-  document.querySelectorAll('.drop-hover').forEach(function(el) { el.classList.remove('drop-hover'); });
+  dragOverState = null;
+  document.querySelectorAll('.dragging, .drop-active, .drop-hover').forEach(function(n) {
+    n.classList.remove('dragging');
+    n.classList.remove('drop-active');
+    n.classList.remove('drop-hover');
+  });
+}
+
+function hasTabimaruDrag(e) {
+  var types = e && e.dataTransfer ? e.dataTransfer.types : null;
+  if (!types) return false;
+  if (typeof types.indexOf === 'function') return types.indexOf(DRAG_MIME) >= 0;
+  if (typeof types.contains === 'function') return types.contains(DRAG_MIME);
+  return Array.prototype.indexOf.call(types, DRAG_MIME) >= 0;
+}
+
+// 칸에 놓기(마우스·터치 공용) → placeBlock
+function applyDropToZone(dd, zone) {
+  if (!dd || !zone || !currentItineraryData) return null;
+  if (!isZoneCompatible(dd, zone)) {
+    showMemoToast(t('drop-kind-mismatch'));
+    return { ok: false, reason: 'kind-mismatch' };
+  }
+  var day = Number(zone.dataset.dropDay);
+  var slotKey = '';
+  var win = null;
+  if (zone.dataset.dropType === 'dest' && zone.dataset.dropDestPeriod === 'night') {
+    // '🌙 저녁 이후' 칸: 오후 블록으로, 저녁 식사·밤 일정 뒤의 시간에 넣는다.
+    slotKey = 'afternoon';
+    win = nightDropWindow(findItineraryDay(day));
+  } else if (zone.dataset.dropType === 'dest') {
+    slotKey = SLOT_DEFS[zone.dataset.dropDestPeriod] ? zone.dataset.dropDestPeriod : 'afternoon';
+  } else if (zone.dataset.dropMeal && SLOT_DEFS[zone.dataset.dropMeal]) {
+    slotKey = zone.dataset.dropMeal;
+  } else {
+    // '🍴 맛집' 줄에 놓으면 아침→점심→저녁 순으로 첫 빈 칸에 넣는다.
+    slotKey = firstEmptyMealSlot(findItineraryDay(day));
+    if (!slotKey) { showMemoToast(t('meal-slots-full')); return { ok: false, reason: 'meal-full' }; }
+  }
+  var result = dd.source === 'itin'
+    ? placeBlock({ mode: 'move', day: day, slotKey: slotKey, from: { day: dd.day, blockIndex: dd.blockIndex }, window: win })
+    : placeBlock({ mode: 'add', day: day, slotKey: slotKey, name: dd.name, area: dd.area, kind: dd.kind, window: win });
+  if (!result.ok && result.reason === 'kind-mismatch') showMemoToast(t('drop-kind-mismatch'));
+  return result;
+}
+
+document.addEventListener('dragstart', function(e) {
+  if (touchDrag) { e.preventDefault(); return; }
+  var node = e.target && e.target.nodeType !== 1 ? e.target.parentElement : e.target;
+  var src = node && node.closest ? node.closest(DRAG_SOURCE_SELECTOR) : null;
+  if (!src) return;
+  var dd = beginDrag(src);
+  if (!dd) return;
+  clearDragState();
+  dragData = dd;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = dd.source === 'itin' ? 'move' : 'copy';
+    try {
+      e.dataTransfer.setData('text/plain', dd.name);
+      e.dataTransfer.setData(DRAG_MIME, '1');
+    } catch (err) {}
+  }
+  src.classList.add('dragging');
+  // 끌기 그림을 만든 뒤에 칸 강조를 켠다(바로 바꾸면 일부 브라우저가 끌기를 취소한다).
+  setTimeout(function() { if (dragData === dd) markCompatibleZones(dd.kind); }, 0);
+});
+
+document.addEventListener('dragend', function() {
+  // 놓기에 실패했는데 마지막 칸이 종류가 맞지 않는 칸이었다면 이유를 알려 준다.
+  if (dragData && dragOverState && dragOverState.zone && !dragOverState.compatible) showMemoToast(t('drop-kind-mismatch'));
+  clearDragState();
 });
 
 document.addEventListener('dragover', function(e) {
   if (!dragData) return;
-  var zone = e.target.closest('.itin-drop-zone, .itin-period-zone, .itin-meal-empty');
-  if (zone) {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = dragData.source === 'itin' ? 'move' : 'copy';
-    zone.classList.add('drop-hover');
-  }
+  if (!hasTabimaruDrag(e)) { dragOverState = null; return; }
+  var zone = zoneFromNode(e.target);
+  var ok = isZoneCompatible(dragData, zone);
+  dragOverState = { zone: zone, compatible: ok };
+  // 우리 끌기는 칸이 아닌 곳(요청 입력칸 등)에 떨어져도 아무 일도 없게 기본 동작을 막는다.
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = ok ? (dragData.source === 'itin' ? 'move' : 'copy') : 'none';
+  setDropHover(ok ? zone : null);
 });
 
 document.addEventListener('dragleave', function(e) {
-  var zone = e.target.closest('.itin-drop-zone, .itin-period-zone, .itin-meal-empty');
-  if (zone && !zone.contains(e.relatedTarget)) {
-    zone.classList.remove('drop-hover');
-  }
+  var zone = zoneFromNode(e.target);
+  if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove('drop-hover');
 });
 
 document.addEventListener('drop', function(e) {
   if (!dragData) return;
+  var dd = dragData;
+  var ours = hasTabimaruDrag(e);
+  var zone = ours ? zoneFromNode(e.target) : null;
+  clearDragState();
+  if (!ours) return;
   e.preventDefault();
-  document.querySelectorAll('.drop-hover').forEach(function(el) { el.classList.remove('drop-hover'); });
-
-  // Drop from itin: move to new zone or remove if dropped outside
-  if (dragData.source === 'itin' && currentItineraryData) {
-    var zone = e.target.closest('.itin-drop-zone, .itin-period-zone, .itin-meal-empty');
-    var srcDayData = currentItineraryData.itinerary.find(function(d) { return d.day === dragData.day; });
-    if (!srcDayData) return;
-
-    // Find source block text
-    var srcBlockText = null;
-    var srcParsed = null;
-    if (dragData.blockIndex >= 0 && srcDayData.blocks[dragData.blockIndex]) {
-      srcBlockText = srcDayData.blocks[dragData.blockIndex];
-      srcParsed = parseItineraryBlock(srcBlockText);
-    } else {
-      for (var sbi = 0; sbi < srcDayData.blocks.length; sbi++) {
-        var sbp = parseItineraryBlock(srcDayData.blocks[sbi]);
-        if (sbp.type === 'main' && sbp.period === dragData.period) { srcBlockText = srcDayData.blocks[sbi]; srcParsed = sbp; break; }
-      }
-    }
-
-    if (!zone || !srcParsed || srcParsed.type !== 'main') {
-      // Dropped outside = remove
-      if (dragData.blockIndex >= 0) {
-        srcDayData.blocks.splice(dragData.blockIndex, 1);
-      } else {
-        srcDayData.blocks = srcDayData.blocks.filter(function(b) {
-          var p = parseItineraryBlock(b);
-          return !(p.type === 'main' && p.period === dragData.period);
-        });
-      }
-      renderItineraryTimeline();
-      updateItinMap();
-      return;
-    }
-
-    var dropDay = Number(zone.dataset.dropDay);
-    var dropType = zone.dataset.dropType;
-    var mealSlot = zone.dataset.dropMeal;
-    var destPeriodKey = zone.dataset.dropDestPeriod;
-
-    var targetSlot;
-    if (dropType === 'food' || isMealPeriod(dragData.period)) {
-      if (mealSlot === 'breakfast') targetSlot = { period: '아침', start: '08:00', end: '09:30' };
-      else if (mealSlot === 'lunch') targetSlot = { period: '점심', start: '12:00', end: '13:30' };
-      else targetSlot = { period: '저녁', start: '18:00', end: '20:00' };
-    } else if (destPeriodKey === 'morning') {
-      targetSlot = { period: '오전', start: '09:00', end: '12:00' };
-    } else if (destPeriodKey === 'allday') {
-      targetSlot = { period: '종일', start: '09:00', end: '18:00' };
-    } else {
-      targetSlot = { period: '오후', start: '13:00', end: '17:00' };
-    }
-
-    // Same day + same period = no-op
-    if (dropDay === dragData.day && targetSlot.period === srcParsed.period) return;
-
-    var newBlockText = targetSlot.period + '(' + targetSlot.start + '-' + targetSlot.end + '): ' + srcParsed.place;
-
-    var tgtDayData = currentItineraryData.itinerary.find(function(d) { return d.day === dropDay; });
-    if (!tgtDayData) return;
-
-    // Check if target slot already has a meal (for swap)
-    var existingTargetBlock = null;
-    var existingTargetIdx = -1;
-    var existingTargetParsed = null;
-    if (isMealPeriod(srcParsed.period) || isMealPeriod(targetSlot.period)) {
-      for (var eti = 0; eti < tgtDayData.blocks.length; eti++) {
-        var etp = parseItineraryBlock(tgtDayData.blocks[eti]);
-        if (etp.type === 'main' && etp.period === targetSlot.period) {
-          existingTargetBlock = tgtDayData.blocks[eti];
-          existingTargetIdx = eti;
-          existingTargetParsed = etp;
-          break;
-        }
-      }
-    }
-
-    // If both are meal periods and target has existing food -> SWAP
-    if (existingTargetParsed && isMealPeriod(srcParsed.period) && isMealPeriod(targetSlot.period)) {
-      // Build swap block: move target food to source's old period
-      var swapBlock = srcParsed.period + '(' + srcParsed.start + '-' + srcParsed.end + '): ' + existingTargetParsed.place;
-
-      // Replace source block with swapped food
-      if (dragData.blockIndex >= 0 && srcDayData.blocks[dragData.blockIndex]) {
-        srcDayData.blocks[dragData.blockIndex] = swapBlock;
-      } else {
-        for (var si = 0; si < srcDayData.blocks.length; si++) {
-          var sp = parseItineraryBlock(srcDayData.blocks[si]);
-          if (sp.type === 'main' && sp.period === srcParsed.period && sp.place === srcParsed.place) {
-            srcDayData.blocks[si] = swapBlock;
-            break;
-          }
-        }
-      }
-      // Replace target block with moved food
-      tgtDayData.blocks[existingTargetIdx] = newBlockText;
-      renderItineraryTimeline();
-      updateItinMap();
-      return;
-    }
-
-    // Remove from source (non-swap case)
-    if (dragData.blockIndex >= 0) {
-      srcDayData.blocks.splice(dragData.blockIndex, 1);
-    } else {
-      srcDayData.blocks = srcDayData.blocks.filter(function(b) {
-        var p = parseItineraryBlock(b);
-        return !(p.type === 'main' && p.period === dragData.period && p.place === srcParsed.place);
-      });
-    }
-
-    // Insert into target day
-    var periodOrder = { '아침': -1, '오전': 0, '점심': 0.5, '오후': 1, '종일': 1, '저녁': 2 };
-    var targetOrder = periodOrder[targetSlot.period] || 1;
-    var insertIdx = tgtDayData.blocks.length;
-    for (var ii = 0; ii < tgtDayData.blocks.length; ii++) {
-      var pp = parseItineraryBlock(tgtDayData.blocks[ii]);
-      if (pp.type === 'main' && (periodOrder[pp.period] || 0) > targetOrder) { insertIdx = ii; break; }
-    }
-    tgtDayData.blocks.splice(insertIdx, 0, newBlockText);
-    renderItineraryTimeline();
-    updateItinMap();
-    return;
-  }
-
-  // Drop from rec card
-  if (dragData.source !== 'rec') return;
-  var zone = e.target.closest('.itin-drop-zone, .itin-period-zone, .itin-meal-empty');
-  if (!zone) return;
-
-  var dropDay = Number(zone.dataset.dropDay);
-  var dropType = zone.dataset.dropType;
-  var mealSlot = zone.dataset.dropMeal;
-  var type = dragData.type;
-  var item = dragData.item;
-  if (!item || !currentItineraryData) return;
-
-  // Type guard: dest cards only into dest zones, food cards only into food zones
-  if (type !== dropType) return;
-
-  var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === dropDay; });
-  if (!dayData) return;
-
-  var slot;
-  var destPeriodKey = zone.dataset.dropDestPeriod;
-  if (dropType === 'food' || type === 'food') {
-    if (mealSlot === 'breakfast') slot = { period: '\uC544\uCE68', start: '08:00', end: '09:30' };
-    else if (mealSlot === 'lunch') slot = { period: '\uC810\uC2EC', start: '12:00', end: '13:30' };
-    else slot = { period: '\uC800\uB141', start: '18:00', end: '20:00' };
-  } else if (destPeriodKey === 'morning') {
-    slot = { period: '\uC624\uC804', start: '09:00', end: '12:00' };
-  } else if (destPeriodKey === 'allday') {
-    slot = { period: '\uC885\uC77C', start: '09:00', end: '18:00' };
-  } else {
-    slot = { period: '\uC624\uD6C4', start: '13:00', end: '17:00' };
-  }
-
-  var newBlock;
-  if (type === 'food') {
-    var foodArea = item.area || item.city || '';
-    newBlock = slot.period + '(' + slot.start + '-' + slot.end + '): ' + item.name + (foodArea ? ' (' + foodArea + ')' : '');
-  } else {
-    var destArea = item.area || item.city || '';
-    newBlock = slot.period + '(' + slot.start + '-' + slot.end + '): ' + item.name + (destArea ? ' (' + destArea + ')' : '');
-  }
-
-
-  // Time conflict detection
-  var hasConflict = dayData.blocks.some(function(b) {
-    var bp = parseItineraryBlock(b);
-    if (bp.type !== 'main') return false;
-    if (bp.startTime && bp.endTime && slot.start && slot.end) {
-      return bp.startTime < slot.end && slot.start < bp.endTime && bp.period === slot.period;
-    }
-    return false;
-  });
-  if (hasConflict && type === 'dest') {
-    if (!confirm(t('confirm-time-conflict') || 'This time slot already has an item. Add anyway?')) return;
-  }
-
-  // If dropping food into a meal slot, remove existing food in that slot
-  if (type === 'food' && isMealPeriod(slot.period)) {
-    dayData.blocks = dayData.blocks.filter(function(b) {
-      var bp = parseItineraryBlock(b);
-      return !(bp.type === 'main' && bp.period === slot.period);
-    });
-  }
-
-  var periodOrder = { '\uC544\uCE68': -1, '\uC624\uC804': 0, '\uC810\uC2EC': 0.5, '\uC624\uD6C4': 1, '\uC885\uC77C': 1, '\uC800\uB141': 2 };
-  var targetOrder = periodOrder[slot.period] || 1;
-  var insertIdx = dayData.blocks.length;
-  for (var i = 0; i < dayData.blocks.length; i++) {
-    var p = parseItineraryBlock(dayData.blocks[i]);
-    if (p.type === 'main' && (periodOrder[p.period] || 0) > targetOrder) {
-      insertIdx = i;
-      break;
-    }
-  }
-  dayData.blocks.splice(insertIdx, 0, newBlock);
-  renderItineraryTimeline();
-  updateItinMap();
+  if (!zone) return; // 칸 바깥에 놓으면 아무것도 하지 않는다(지우지 않는다)
+  applyDropToZone(dd, zone);
 });
+
+// ── 터치 끌기(Pointer Events, ☰ 손잡이를 잡았을 때만) ──
+var touchDrag = null; // { pointerId, data, ghost, handle, x, y, raf, zone }
+var TOUCH_EDGE_PX = 72;
+var TOUCH_SCROLL_STEP = 14;
+
+function touchZoneAt(x, y) {
+  if (typeof document.elementFromPoint !== 'function') return null;
+  return zoneFromNode(document.elementFromPoint(x, y));
+}
+
+function updateTouchHover() {
+  if (!touchDrag) return;
+  var zone = touchZoneAt(touchDrag.x, touchDrag.y);
+  touchDrag.zone = zone;
+  setDropHover(isZoneCompatible(touchDrag.data, zone) ? zone : null);
+}
+
+function touchEdgeStep(y) {
+  var h = window.innerHeight || document.documentElement.clientHeight || 0;
+  if (y < TOUCH_EDGE_PX) return -TOUCH_SCROLL_STEP;
+  if (h && y > h - TOUCH_EDGE_PX) return TOUCH_SCROLL_STEP;
+  return 0;
+}
+
+function touchAutoScroll() {
+  if (!touchDrag) return;
+  var step = touchEdgeStep(touchDrag.y);
+  if (!step) { touchDrag.raf = 0; return; }
+  window.scrollBy(0, step);
+  updateTouchHover();
+  touchDrag.raf = requestAnimationFrame(touchAutoScroll);
+}
+
+function endTouchDrag(drop) {
+  var td = touchDrag;
+  if (!td) return;
+  touchDrag = null;
+  document.removeEventListener('touchmove', blockTouchScroll, { passive: false });
+  if (td.raf) cancelAnimationFrame(td.raf);
+  if (td.ghost && td.ghost.parentNode) td.ghost.parentNode.removeChild(td.ghost);
+  document.body.classList.remove('touch-dragging');
+  try { if (td.handle.releasePointerCapture) td.handle.releasePointerCapture(td.pointerId); } catch (e) {}
+  var zone = drop ? touchZoneAt(td.x, td.y) : null;
+  clearDragState();
+  if (zone) applyDropToZone(td.data, zone);
+}
+
+document.addEventListener('pointerdown', function(e) {
+  if (e.pointerType === 'mouse' || touchDrag) return; // 마우스는 HTML5 drag를 쓴다
+  var handle = e.target && e.target.closest ? e.target.closest('.drag-handle') : null;
+  if (!handle || typeof document.elementFromPoint !== 'function') return;
+  var src = handle.closest(DRAG_SOURCE_SELECTOR);
+  var dd = beginDrag(src);
+  if (!dd) return;
+  e.preventDefault();
+  try { if (handle.setPointerCapture) handle.setPointerCapture(e.pointerId); } catch (err) {}
+  clearDragState();
+  dragData = dd;
+  var ghost = document.createElement('div');
+  ghost.className = 'touch-drag-ghost';
+  ghost.textContent = dd.name;
+  ghost.setAttribute('aria-hidden', 'true');
+  ghost.style.position = 'fixed';
+  ghost.style.left = '0';
+  ghost.style.top = '0';
+  ghost.style.pointerEvents = 'none';
+  ghost.style.zIndex = '10000';
+  ghost.style.transform = 'translate(' + (e.clientX + 12) + 'px,' + (e.clientY + 12) + 'px)';
+  document.body.appendChild(ghost);
+  document.body.classList.add('touch-dragging');
+  if (src) src.classList.add('dragging');
+  markCompatibleZones(dd.kind);
+  touchDrag = { pointerId: e.pointerId, data: dd, ghost: ghost, handle: handle, x: e.clientX, y: e.clientY, raf: 0, zone: null };
+  document.addEventListener('touchmove', blockTouchScroll, { passive: false });
+});
+
+document.addEventListener('pointermove', function(e) {
+  if (!touchDrag || e.pointerId !== touchDrag.pointerId) return;
+  e.preventDefault();
+  touchDrag.x = e.clientX;
+  touchDrag.y = e.clientY;
+  touchDrag.ghost.style.transform = 'translate(' + (e.clientX + 12) + 'px,' + (e.clientY + 12) + 'px)';
+  updateTouchHover();
+  if (!touchDrag.raf && touchEdgeStep(e.clientY)) touchDrag.raf = requestAnimationFrame(touchAutoScroll);
+}, { passive: false });
+
+document.addEventListener('pointerup', function(e) {
+  if (!touchDrag || e.pointerId !== touchDrag.pointerId) return;
+  touchDrag.x = e.clientX;
+  touchDrag.y = e.clientY;
+  endTouchDrag(true);
+});
+
+document.addEventListener('pointercancel', function(e) {
+  if (!touchDrag || e.pointerId !== touchDrag.pointerId) return;
+  endTouchDrag(false);
+});
+
+// 손잡이를 잡고 끄는 동안에만 페이지 스크롤을 막는다(평소에는 막는 리스너가 없어 스크롤이 가볍다).
+function blockTouchScroll(e) {
+  if (touchDrag && e.cancelable) e.preventDefault();
+}
 
 // ── Itinerary Map ──
 
 // Route Cost
+// 결과는 '날|장소들|도시|언어' 키로 기억한다. 같은 조건이면 다시 요청하지 않고, 일정이 바뀌면 그날 결과를 지운다.
 var routeCostCache = {};
+var routeCostPending = {};
+
+function routeCostKey(dayNum, places, city) {
+  return dayNum + '|' + places.join('|') + '|' + city + '|' + currentLang;
+}
+
+function invalidateRouteCost(dayNum) {
+  var prefix = String(dayNum) + '|';
+  Object.keys(routeCostCache).forEach(function(k) { if (k.indexOf(prefix) === 0) delete routeCostCache[k]; });
+}
+
 function buildDayRouteOrder(dayNum) {
   if (!currentItineraryData) return [];
-  var dayData = currentItineraryData.itinerary.find(function(d) { return d.day === dayNum; });
+  var dayData = findItineraryDay(dayNum);
   if (!dayData || !dayData.blocks) return [];
   var places = [];
-  var isFirstDay = (dayNum === 1);
-  var totalDays = currentItineraryData.itinerary.length;
-  var isLastDay = (dayNum === totalDays);
+  var isFirstDay = (Number(dayNum) === Number(currentItineraryData.itinerary[0] && currentItineraryData.itinerary[0].day));
+  var lastDay = currentItineraryData.itinerary[currentItineraryData.itinerary.length - 1];
+  var isLastDay = Boolean(lastDay) && Number(dayNum) === Number(lastDay.day);
   // Day 1: start from airport, Last day: end at airport
   var airportName = '';
   if (selectedFlight && selectedFlight.legs && selectedFlight.legs[0]) {
     var arrAirport = selectedFlight.legs[0].to || '';
     var depAirport = selectedFlight.legs.length > 1 ? selectedFlight.legs[selectedFlight.legs.length - 1].from : arrAirport;
-    if (isFirstDay) airportName = arrAirport + ' 공항';
-    else if (isLastDay && selectedFlight.tripType === 'roundtrip') airportName = depAirport + ' 공항';
+    if (isFirstDay) airportName = arrAirport + t('airport-suffix');
+    else if (isLastDay && selectedFlight.tripType === 'roundtrip') airportName = depAirport + t('airport-suffix');
   }
   if (airportName && isFirstDay) {
     places.push(airportName);
   } else if (selectedStay) {
     places.push(selectedStay.name + (selectedStay.area ? ' ' + selectedStay.area : ''));
   }
-  var po = ['아침','오전','점심','오후','종일','저녁'];
-  for (var pi = 0; pi < po.length; pi++) {
-    for (var bi = 0; bi < dayData.blocks.length; bi++) {
-      var p = parseItineraryBlock(dayData.blocks[bi]);
-      if (p.type === 'main' && p.period === po[pi]) {
-        var info = parsePlaceInfo(p.place);
-        if (isFreeTimePlace(info.name)) continue;
-        places.push(info.name + (info.info ? ' ' + info.info : ''));
-      }
-    }
-  }
+  // 방문 순서 = 시작 시각 순(같으면 아침<오전<종일<점심<오후<저녁)
+  var mains = [];
+  dayData.blocks.forEach(function(b, i) {
+    var p = parseItineraryBlock(b);
+    if (p.type === 'main') mains.push({ i: i, p: p, v: blockSortValue(p) });
+  });
+  mains.sort(function(a, b) { return a.v.start - b.v.start || a.v.order - b.v.order || a.i - b.i; });
+  mains.forEach(function(m) {
+    var info = parsePlaceInfo(m.p.place);
+    if (isFreeTimePlace(info.name)) return;
+    places.push(info.name + (info.info ? ' ' + info.info : ''));
+  });
   if (airportName && isLastDay) {
     places.push(airportName);
   } else if (selectedStay && places.length > 1) {
@@ -2935,58 +4317,168 @@ function modeLabel(mode) {
   var keys = { subway: 'transport-subway', rail: 'transport-train', bus: 'transport-bus', tram: 'transport-tram', transit: 'transport-transit', walking: 'transport-walk', estimated: 'transport-est', error: 'transport-err' };
   return keys[mode] ? t(keys[mode]) : String(mode || '');
 }
+
+function routeCostHtml(data) {
+  var h = '<div class="route-cost-segments">';
+  for (var i = 0; i < data.segments.length; i++) {
+    var seg = data.segments[i];
+    var fareText = seg.fareJPY > 0 ? '¥' + Number(seg.fareJPY).toLocaleString() + ' (~' + formatKRW(seg.fareKRW) + ')' : t('free-label');
+    h += '<div class="route-cost-seg' + (seg.estimated ? ' route-cost-estimated' : '') + '">';
+    h += '<span class="route-seg-mode">' + escapeHtml(modeLabel(seg.mode)) + '</span>';
+    // 이름을 첫 단어로 자르지 않는다(en 'Tokyo Tower'가 'Tokyo'로 보이던 문제). 넘치면 CSS 말줄임, 전체는 title로.
+    var routeText = String(seg.from || '') + ' → ' + String(seg.to || '');
+    h += '<span class="route-seg-route" title="' + escapeHtml(routeText) + '">' + escapeHtml(routeText) + '</span>';
+    h += '<span class="route-seg-detail">' + escapeHtml(seg.durationMin + t('min-suffix') + ' · ' + fareText) + '</span>';
+    if (seg.tip) h += '<span class="route-seg-tip">' + escapeHtml(seg.tip) + '</span>';
+    h += '</div>';
+  }
+  h += '</div><div class="route-cost-total">' + escapeHtml(t('total-fare') + Number(data.totalFareJPY || 0).toLocaleString() + ' (~' + formatKRW(data.totalFareKRW) + ')' + t('route-move') + data.totalDurationMin + t('min-suffix')) + '</div>';
+  if (data.routeTip) h += '<div class="route-cost-tip">' + escapeHtml(data.routeTip) + '</div>';
+  var routeSourceLabel = data.source === 'ai' ? t('source-ai-calc') : data.source === 'distance_estimate' ? t('source-dist-est') : data.source === 'directions_api' ? t('source-google-route') : t('source-estimate');
+  h += '<div class="route-cost-source">' + escapeHtml(routeSourceLabel) + '</div>';
+  return h;
+}
+
+function setRouteCostButtonBusy(dayNum, busy) {
+  document.querySelectorAll('.itin-route-cost-btn').forEach(function(b) {
+    if (Number(b.dataset.routeDay) !== Number(dayNum)) return;
+    b.disabled = Boolean(busy);
+    if (busy) b.setAttribute('aria-busy', 'true'); else b.removeAttribute('aria-busy');
+  });
+}
+
 async function calculateDayRouteCost(dayNum) {
   var resultEl = document.getElementById('routeCostDay' + dayNum);
   if (!resultEl) return;
   var places = buildDayRouteOrder(dayNum);
   if (places.length < 2) { resultEl.innerHTML = '<div class="route-cost-empty">' + escapeHtml(t('route-need-2')) + '</div>'; return; }
+  var city = (el('city') && el('city').value) || 'tokyo';
+  var key = routeCostKey(dayNum, places, city);
+  if (routeCostCache[key]) { resultEl.innerHTML = routeCostHtml(routeCostCache[key]); return; }
+  if (routeCostPending[key]) return; // 같은 계산이 이미 진행 중
+  routeCostPending[key] = true;
+  setRouteCostButtonBusy(dayNum, true);
   resultEl.innerHTML = '<div class="route-cost-loading">' + escapeHtml(t('calculating')) + '</div>';
   try {
-    var city = (el('city') && el('city').value) || 'tokyo';
-    var resp = await fetch('/api/route-cost', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ places: places, city: city, lang: currentLang }) });
-    var data = await resp.json();
-    if (!resp.ok || data.error || !Array.isArray(data.segments)) { resultEl.innerHTML = '<div class="route-cost-empty">' + escapeHtml(t('route-cost-fail')) + '</div>'; return; }
-    var h = '<div class="route-cost-segments">';
-    for (var i = 0; i < data.segments.length; i++) {
-      var seg = data.segments[i];
-      var fareText = seg.fareJPY > 0 ? '¥' + Number(seg.fareJPY).toLocaleString() + ' (~' + formatKRW(seg.fareKRW) + ')' : t('free-label');
-      h += '<div class="route-cost-seg' + (seg.estimated ? ' route-cost-estimated' : '') + '">';
-      h += '<span class="route-seg-mode">' + escapeHtml(modeLabel(seg.mode)) + '</span>';
-      // 이름을 첫 단어로 자르지 않는다(en 'Tokyo Tower'가 'Tokyo'로 보이던 문제). 넘치면 CSS 말줄임, 전체는 title로.
-      var routeText = String(seg.from || '') + ' → ' + String(seg.to || '');
-      h += '<span class="route-seg-route" title="' + escapeHtml(routeText) + '">' + escapeHtml(routeText) + '</span>';
-      h += '<span class="route-seg-detail">' + escapeHtml(seg.durationMin + t('min-suffix') + ' · ' + fareText) + '</span>';
-      if (seg.tip) h += '<span class="route-seg-tip">' + escapeHtml(seg.tip) + '</span>';
-      h += '</div>';
-    }
-    h += '</div><div class="route-cost-total">' + escapeHtml(t('total-fare') + Number(data.totalFareJPY || 0).toLocaleString() + ' (~' + formatKRW(data.totalFareKRW) + ')' + t('route-move') + data.totalDurationMin + t('min-suffix')) + '</div>';
-    if (data.routeTip) h += '<div class="route-cost-tip">' + escapeHtml(data.routeTip) + '</div>';
-    var routeSourceLabel = data.source === 'ai' ? t('source-ai-calc') : data.source === 'distance_estimate' ? t('source-dist-est') : data.source === 'directions_api' ? t('source-google-route') : t('source-estimate');
-    h += '<div class="route-cost-source">' + escapeHtml(routeSourceLabel) + '</div>';
-    resultEl.innerHTML = h;
-    routeCostCache[dayNum] = data;
-  } catch (err) { resultEl.innerHTML = '<div class="route-cost-empty">' + escapeHtml(t('route-cost-fail')) + '</div>'; }
+    var data = await fetchWithTimeout('/api/route-cost', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ places: places, city: city, lang: currentLang }) }, 30000, async function(resp) {
+      var body = await resp.json();
+      if (!resp.ok || !body || body.error || !Array.isArray(body.segments)) throw new Error('route-cost');
+      return body;
+    });
+    routeCostCache[key] = data;
+    var target = document.getElementById('routeCostDay' + dayNum);
+    if (target) target.innerHTML = routeCostHtml(data);
+  } catch (err) {
+    var failEl = document.getElementById('routeCostDay' + dayNum);
+    if (failEl) failEl.innerHTML = '<div class="route-cost-empty">' + escapeHtml(t('route-cost-fail')) + '</div>';
+  } finally {
+    delete routeCostPending[key];
+    setRouteCostButtonBusy(dayNum, false);
+  }
 }
+
+// 일정을 다시 그린 뒤, 계산해 둔 이동비가 지금 일정과 같으면 그대로 다시 보여 준다(재요청 없음).
+function restoreCachedRouteCosts() {
+  if (!currentItineraryData) return;
+  var city = (el('city') && el('city').value) || 'tokyo';
+  (currentItineraryData.itinerary || []).forEach(function(d) {
+    var target = document.getElementById('routeCostDay' + d.day);
+    if (!target) return;
+    var data = routeCostCache[routeCostKey(d.day, buildDayRouteOrder(d.day), city)];
+    if (data) target.innerHTML = routeCostHtml(data);
+  });
+}
+
+// ▲▼: 같은 칸 안에서 화면상 앞/뒤 항목과 자리를 바꾼다(각 자리의 시간은 그대로, 장소만 바뀐다).
+function swapZoneItems(dayData, idx, direction) {
+  var p = parseItineraryBlock(dayData.blocks[idx]);
+  if (p.type !== 'main') return false;
+  var list = periodBlocks(dayData, p.period);
+  var pos = list.findIndex(function(x) { return x.index === idx; });
+  var other = list[direction === 'up' ? pos - 1 : pos + 1];
+  if (pos < 0 || !other) return false;
+  var takeGroup = function(i) { return dayData.blocks.slice(i, i + blockGroupLength(dayData.blocks, i)); };
+  var a = takeGroup(idx);
+  var b = takeGroup(other.index);
+  var pa = parseItineraryBlock(a[0]);
+  var pb = parseItineraryBlock(b[0]);
+  var ia = parsePlaceInfo(pa.place);
+  var ib = parsePlaceInfo(pb.place);
+  var newA = [formatPlanBlock(pa.period, pa.startTime, pa.endTime, ib.name, ib.info)].concat(b.slice(1));
+  var newB = [formatPlanBlock(pb.period, pb.startTime, pb.endTime, ia.name, ia.info)].concat(a.slice(1));
+  // 뒤쪽 블록부터 바꿔 넣어 앞 블록 위치가 밀리지 않게 한다.
+  var first = idx < other.index ? { i: idx, len: a.length, lines: newA } : { i: other.index, len: b.length, lines: newB };
+  var second = idx < other.index ? { i: other.index, len: b.length, lines: newB } : { i: idx, len: a.length, lines: newA };
+  Array.prototype.splice.apply(dayData.blocks, [second.i, second.len].concat(second.lines));
+  Array.prototype.splice.apply(dayData.blocks, [first.i, first.len].concat(first.lines));
+  return true;
+}
+
 document.addEventListener('click', function(e) {
   var routeBtn = e.target.closest('.itin-route-cost-btn');
-  if (routeBtn) { calculateDayRouteCost(Number(routeBtn.dataset.routeDay)); }
+  if (routeBtn) { calculateDayRouteCost(Number(routeBtn.dataset.routeDay)); return; }
   var reorderBtn = e.target.closest('.itin-reorder-btn');
   if (reorderBtn && currentItineraryData) {
     var roDay = Number(reorderBtn.dataset.day);
-    var roIdx = Number(reorderBtn.dataset.blockIndex);
-    var roDir = reorderBtn.dataset.direction;
-    var roDayData = currentItineraryData.itinerary.find(function(d) { return d.day === roDay; });
-    if (roDayData && roDayData.blocks) {
-      var roParsed = parseItineraryBlock(roDayData.blocks[roIdx]);
-      var swapIdx = -1;
-      if (roDir === 'up') { for (var ri = roIdx - 1; ri >= 0; ri--) { var rp = parseItineraryBlock(roDayData.blocks[ri]); if (rp.type === 'main' && rp.period === roParsed.period) { swapIdx = ri; break; } } }
-      else { for (var ri2 = roIdx + 1; ri2 < roDayData.blocks.length; ri2++) { var rp2 = parseItineraryBlock(roDayData.blocks[ri2]); if (rp2.type === 'main' && rp2.period === roParsed.period) { swapIdx = ri2; break; } } }
-      if (swapIdx >= 0) { var tmp = roDayData.blocks[roIdx]; roDayData.blocks[roIdx] = roDayData.blocks[swapIdx]; roDayData.blocks[swapIdx] = tmp; renderItineraryTimeline(); updateItinMap(); }
+    var roDayData = findItineraryDay(roDay);
+    if (roDayData && roDayData.blocks && swapZoneItems(roDayData, Number(reorderBtn.dataset.blockIndex), reorderBtn.dataset.direction)) {
+      markItineraryEdited();
+      invalidateRouteCost(roDay);
+      renderItineraryTimeline();
+      updateItinMap();
     }
   }
 });
 
-var DAY_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316', '#6366f1', '#10b981'];
+// 지도 Day 색(흰 테두리·흰 숫자와 대비 4.5:1 이상). 식사 마커는 MEAL_MARKER_COLOR 하나로 그린다.
+var DAY_COLORS = ['#bb3d29', '#2d5a86', '#3a7350', '#94560f', '#7a3b6e', '#1f6f73', '#9a2f1f', '#263b5e', '#5b7d2a', '#8a4b14'];
+var MEAL_MARKER_COLOR = '#94560f';
+
+function dayColor(day) {
+  var n = Math.max(1, Number(day) || 1);
+  return DAY_COLORS[(n - 1) % DAY_COLORS.length];
+}
+
+function markerColor(p) {
+  return p.isMeal ? MEAL_MARKER_COLOR : dayColor(p.day);
+}
+
+// 지도 위 범례: 지도에 그린 Day마다 색 점 + (식사가 있으면) 식사 점. 마커와 같은 색 함수를 쓴다.
+function renderItinMapLegend(drawnPoints) {
+  var wrap = el('itinMapWrap');
+  var mapEl = el('itinMap');
+  if (!wrap || !mapEl) return;
+  var legend = el('itinMapLegend');
+  if (!legend && typeof document.createElement === 'function') {
+    legend = document.createElement('div');
+    legend.id = 'itinMapLegend';
+    legend.className = 'itin-map-legend';
+    if (mapEl.parentNode && typeof mapEl.parentNode.insertBefore === 'function') mapEl.parentNode.insertBefore(legend, mapEl);
+    else wrap.appendChild(legend);
+  }
+  if (!legend) return;
+  var points = drawnPoints || [];
+  var days = [];
+  var hasMeal = false;
+  points.forEach(function(p) {
+    if (p.isMeal) { hasMeal = true; return; }
+    if (days.indexOf(Number(p.day)) < 0) days.push(Number(p.day));
+  });
+  days.sort(function(a, b) { return a - b; });
+  var item = function(color, label) {
+    return '<span class="legend-item"><span class="legend-dot" style="background:' + color + '" aria-hidden="true"></span>' + escapeHtml(label) + '</span>';
+  };
+  var html = days.map(function(d) { return item(dayColor(d), itinDayLabel(d)); }).join('');
+  if (hasMeal) html += item(MEAL_MARKER_COLOR, t('map-legend-meal'));
+  legend.innerHTML = html;
+  // .itin-map-legend가 display:flex라서 .hidden 클래스로는 숨겨지지 않는다 → style로 숨긴다.
+  legend.style.display = html ? '' : 'none';
+}
+
+function hideItinMapLegend() {
+  var legend = el('itinMapLegend');
+  if (legend) { legend.innerHTML = ''; legend.style.display = 'none'; }
+}
 
 // ── 일정 지도 ──
 // 기본은 OpenStreetMap + Leaflet(무료, 키·요금 없음). 서버가 MAP_PROVIDER=google 이면 Google 지도 JS를 쓴다.
@@ -3128,7 +4620,22 @@ function setItinMapNote(text) {
 }
 
 function markerTitle(p) {
-  return t('day-prefix') + p.day + ' ' + tPeriod(p.period) + ': ' + p.name;
+  return itinDayLabel(p.day) + ' ' + tPeriod(p.period) + ': ' + p.name;
+}
+
+// 위치를 모르는 장소 안내: 여행지와 맛집을 따로 센다(맛집만 빠졌으면 맛집 전용 안내).
+function mapMissingNote(points, drawnPoints) {
+  var drawn = drawnPoints || [];
+  var missingFood = 0;
+  var missingPlace = 0;
+  points.forEach(function(p) {
+    if (drawn.indexOf(p) >= 0) return;
+    if (p.isMeal) missingFood++; else missingPlace++;
+  });
+  var parts = [];
+  if (missingPlace > 0) parts.push(fillText(t('map-partial'), { n: missingPlace }));
+  if (missingFood > 0) parts.push(fillText(t('map-food-no-coords'), { n: missingFood }));
+  return parts.join(' · ');
 }
 
 async function updateItinMap() {
@@ -3138,6 +4645,7 @@ async function updateItinMap() {
   var seq = ++mapRenderSeq;
   if (!currentItineraryData || !itineraryHasContent(currentItineraryData.itinerary)) {
     wrap.classList.add('hidden');
+    hideItinMapLegend();
     return;
   }
   wrap.classList.remove('hidden');
@@ -3149,12 +4657,14 @@ async function updateItinMap() {
   var located = points.filter(function(p) { return p.pos; });
   if (!useGoogle && located.length === 0) {
     mapEl.classList.add('hidden');
+    hideItinMapLegend();
     setItinMapNote(t('map-no-coords'));
     return;
   }
   ensureMapLibrary();
   if (mapLibState !== 'ready') {
     mapEl.classList.add('hidden');
+    hideItinMapLegend();
     setItinMapNote(t(mapLibState === 'failed' ? 'map-failed' : 'map-loading'));
     return;
   }
@@ -3165,17 +4675,21 @@ async function updateItinMap() {
   } catch (err) {
     console.warn('[map] render failed:', err && err.message);
     mapEl.classList.add('hidden');
+    hideItinMapLegend();
     setItinMapNote(t('map-failed'));
     return;
   }
   if (drawn < 0 || seq !== mapRenderSeq) return;
   if (drawn === 0) {
     mapEl.classList.add('hidden');
+    hideItinMapLegend();
     setItinMapNote(t('map-no-coords'));
     return;
   }
-  var missing = points.length - drawn;
-  setItinMapNote(missing > 0 ? t('map-partial').replace('{n}', String(missing)) : '');
+  // Google 모드는 그리면서 좌표를 채우므로, 그린 뒤의 좌표로 다시 고른다.
+  var drawnPoints = points.filter(function(p) { return p.pos; });
+  renderItinMapLegend(drawnPoints);
+  setItinMapNote(mapMissingNote(points, drawnPoints));
 }
 
 function renderLeafletItinMap(mapEl, points) {
@@ -3192,7 +4706,7 @@ function renderLeafletItinMap(mapEl, points) {
   var labelIdx = 0;
   points.forEach(function(p) {
     labelIdx++;
-    var color = p.isMeal ? '#f97316' : DAY_COLORS[(p.day - 1) % DAY_COLORS.length];
+    var color = markerColor(p);
     var size = p.isMeal ? 22 : 26;
     var html = '<span style="display:flex;align-items:center;justify-content:center;width:' + size + 'px;height:' + size + 'px;border-radius:50%;background:' + color +
       ';color:#fff;border:2px solid #fff;box-sizing:border-box;font:700 11px/1 sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.35)">' + (p.isMeal ? '' : labelIdx) + '</span>';
@@ -3204,7 +4718,7 @@ function renderLeafletItinMap(mapEl, points) {
   });
   Object.keys(byDay).forEach(function(d) {
     if (byDay[d].length < 2) return;
-    L.polyline(byDay[d], { color: DAY_COLORS[(Number(d) - 1) % DAY_COLORS.length], weight: 3, opacity: 0.7 }).addTo(itinLeafletLayer);
+    L.polyline(byDay[d], { color: dayColor(d), weight: 3, opacity: 0.7 }).addTo(itinLeafletLayer);
   });
   if (latlngs.length === 1) itinLeafletMap.setView(latlngs[0], 14);
   else if (latlngs.length > 1) itinLeafletMap.fitBounds(latlngs, { padding: [28, 28], maxZoom: 15 });
@@ -3256,7 +4770,7 @@ async function renderGoogleItinMap(mapEl, points, seq) {
     if (!p.pos) continue;
     bounds.extend(p.pos);
     labelIdx++;
-    var markerColor = p.isMeal ? '#f97316' : DAY_COLORS[(p.day - 1) % DAY_COLORS.length];
+    var pinColor = markerColor(p);
     itinMarkers.push(new google.maps.Marker({
       position: p.pos,
       map: itinMap,
@@ -3264,7 +4778,7 @@ async function renderGoogleItinMap(mapEl, points, seq) {
       label: { text: p.isMeal ? '' : String(labelIdx), color: '#fff', fontWeight: '700', fontSize: '11px' },
       icon: {
         path: google.maps.SymbolPath.CIRCLE,
-        fillColor: markerColor,
+        fillColor: pinColor,
         fillOpacity: 0.9,
         strokeColor: '#fff',
         strokeWeight: 2,
@@ -3278,7 +4792,7 @@ async function renderGoogleItinMap(mapEl, points, seq) {
     itinPolylines.push(new google.maps.Polyline({
       path: byDay[d],
       geodesic: true,
-      strokeColor: DAY_COLORS[(Number(d) - 1) % DAY_COLORS.length],
+      strokeColor: dayColor(d),
       strokeOpacity: 0.7,
       strokeWeight: 3,
       map: itinMap
@@ -3298,7 +4812,7 @@ async function searchDestinations() {
     var payload = {
       city: el('destSearchCity').value,
       theme: el('destSearchTheme').value,
-      budget: 'mid',
+      budget: currentBudgetTier(),
       limit: 10,
       lang: currentLang
     };
@@ -3306,6 +4820,7 @@ async function searchDestinations() {
     if (seq !== destSearchSeq) return;
     renderDestSearchCards(data.destinations || []);
     renderSourceNote('destSearchSourceNote', 'destSearch', sectionInfo('destSearch', data));
+    recordSearchHistory('dest', { city: payload.city, theme: payload.theme });
   } catch (err) {
     if (seq !== destSearchSeq) return;
     var cards = el('destSearchCards');
@@ -3319,29 +4834,23 @@ if (el('btnDestSearch')) {
   el('btnDestSearch').addEventListener('click', function() { searchDestinations(); });
 }
 
-// ── Food cards store ref ──
-var _origRenderCards = renderCards;
-// Patch renderCards to store food list
-var _patchedRenderCards = false;
+// ── [+ 일정에 넣기] 버튼(추천 카드·탐색 카드 공용) ──
+function addSourceList(source) {
+  if (source === 'rec') return latestDestList || [];
+  if (source === 'recFood') return latestRecFoodList || [];
+  if (source === 'destSearch') return latestDestSearchList || [];
+  if (source === 'foodSearch') return (latestFoodSearchList && latestFoodSearchList.length ? latestFoodSearchList : latestFoodList) || [];
+  return [];
+}
 
-
-
-// Add-to-plan button handler (search cards)
 document.addEventListener('click', function(e) {
   var addBtn = e.target.closest('.add-to-plan-btn');
-  if (addBtn) {
-    var addType = addBtn.dataset.addType || 'dest';
-    var addIdx = Number(addBtn.dataset.addIndex);
-    var addSource = addBtn.dataset.addSource;
-    var place = null;
-    if (addSource === 'foodSearch') place = (latestFoodSearchList || latestFoodList || [])[addIdx];
-    else if (addSource === 'destSearch') place = (latestDestSearchList || [])[addIdx];
-    if (place && currentItineraryData) {
-      showAddToPlanModal(place.name, { addType: addType, area: place.area || place.city || '' });
-    } else if (place) {
-      alert(t('err-need-plan-first'));
-    }
-  }
+  if (!addBtn) return;
+  var addType = addBtn.dataset.addType === 'food' ? 'food' : 'dest';
+  var place = addSourceList(addBtn.dataset.addSource)[Number(addBtn.dataset.addIndex)];
+  if (!place) return;
+  if (!currentItineraryData) { showMemoToast(t('err-need-plan-first')); return; }
+  showAddToPlanModal(place.name, { addType: addType, area: place.area || place.city || '' });
 });
 
 
@@ -3354,11 +4863,10 @@ document.addEventListener('click', function(e) {
   var pType = promBtn.dataset.promoteType;
   var pIdx = Number(promBtn.dataset.promoteIndex);
   var pSource = promBtn.dataset.promoteSource;
-  console.log('[promote] type:', pType, 'idx:', pIdx, 'source:', pSource, 'listLen:', (latestDestSearchList||[]).length);
   var item = null;
   if (pSource === 'destSearch') item = (latestDestSearchList || [])[pIdx];
-  else if (pSource === 'foodSearch') item = (latestFoodSearchList || latestFoodList || [])[pIdx];
-  if (!item) { console.warn('[promote] item not found at index', pIdx); return; }
+  else if (pSource === 'foodSearch') item = addSourceList('foodSearch')[pIdx];
+  if (!item) return;
 
   if (pType === 'dest') {
     if (!latestDestList) latestDestList = [];
@@ -3388,8 +4896,9 @@ document.addEventListener('click', function(e) {
 // Search tab switching
 document.querySelectorAll('.search-tab').forEach(function(tab) {
   tab.addEventListener('click', function() {
-    document.querySelectorAll('.search-tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelectorAll('.search-tab').forEach(function(t) { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
     tab.classList.add('active');
+    tab.setAttribute('aria-selected', 'true');
     var target = tab.dataset.searchTab;
     var destPanel = el('searchDestPanel');
     var foodPanel = el('searchFoodPanel');
@@ -3406,11 +4915,17 @@ if (el('btnManualFlight')) {
     var departTime = el('manualFlightDepartTime').value || '09:00';
     var returnDepartTime = el('manualFlightArriveTime').value || '14:00';
     var price = Number(el('manualFlightPrice').value) || 0;
-    if (!airline && !flightNum) { alert(t('err-airline-required')); return; }
+    if (!airline && !flightNum) {
+      showMemoToast(t('err-airline-required'), 3500);
+      if (typeof el('manualFlightAirline').focus === 'function') el('manualFlightAirline').focus();
+      return;
+    }
     var fromAirport = el('from') ? el('from').value.split(' ')[0] : 'ICN';
     var toAirport = el('to') ? el('to').value.split(' ')[0] : 'NRT';
     var departDate = el('departDate') ? el('departDate').value : '';
-    var returnDate = el('returnDate') ? el('returnDate').value : '';
+    // 편도로 검색 중이면 귀국 구간을 만들지 않는다(복귀일 칸은 숨어 있어도 값이 남아 있다).
+    var isRoundTrip = currentTripType === 'roundtrip';
+    var returnDate = isRoundTrip && el('returnDate') ? el('returnDate').value : '';
     // Estimate arrival = departure + 2.5h (typical short-haul)
     function estimateArrival(timeStr) {
       var p = timeStr.split(':'); var h = Number(p[0]) || 0; var m = Number(p[1]) || 0;
@@ -3424,19 +4939,16 @@ if (el('btnManualFlight')) {
       provider: airline || t('manual-input'),
       airlines: [airline || t('manual-input')],
       legs: [{ from: fromAirport, to: toAirport, date: departDate, departureTime: departTime, arrivalTime: outboundArrival, airline: airline, flightNumber: flightNum }],
-      tripType: returnDate ? 'roundtrip' : 'oneway',
+      tripType: isRoundTrip && returnDate ? 'roundtrip' : 'oneway',
       totalPriceKRW: price, totalDurationMin: 150, totalStops: 0, manual: true
     };
-    if (returnDate) manualFlight.legs.push({ from: toAirport, to: fromAirport, date: returnDate, departureTime: returnDepartTime, arrivalTime: returnArrival, airline: airline, flightNumber: '' });
-    flightResults.unshift(manualFlight);
+    if (isRoundTrip && returnDate) manualFlight.legs.push({ from: toAirport, to: fromAirport, date: returnDate, departureTime: returnDepartTime, arrivalTime: returnArrival, airline: airline, flightNumber: '' });
+    manualFlights.unshift(manualFlight);
     selectedFlightId = manualFlight._id;
     selectedFlight = manualFlight;
     renderFlightCards(true);
-    renderPlanExtras();
-    renderBudgetSummary();
-    renderItineraryTimeline();
-    // Regenerate itinerary with new flight info
-    try { runPlan({ flight: buildFlightPayload(manualFlight) }, false, { trigger: 'btnPlanRefresh' }); } catch(e) {}
+    // 고친 일정이 없으면 항공 시각에 맞춰 다시 만들고, 고친 일정이면 고정 블록만 다시 그린 뒤 안내한다.
+    regenerateAfterTripChange({ flight: buildFlightPayload(manualFlight) });
     el('manualFlightAirline').value = '';
     el('manualFlightNumber').value = '';
     el('manualFlightPrice').value = '';
@@ -3452,7 +4964,11 @@ if (el('btnManualStay')) {
     var rating = Number(el('manualStayRating').value) || 0;
     var stayType = el('manualStayType') ? el('manualStayType').value : 'hotel';
     var url = (el('manualStayUrl').value || '').trim();
-    if (!name) { alert(t('err-stay-required')); return; }
+    if (!name) {
+      showMemoToast(t('err-stay-required'), 3500);
+      if (typeof el('manualStayName').focus === 'function') el('manualStayName').focus();
+      return;
+    }
     var checkIn = el('checkIn') ? el('checkIn').value : '';
     var checkOut = el('checkOut') ? el('checkOut').value : '';
     var nights = 1;
@@ -3463,15 +4979,11 @@ if (el('btnManualStay')) {
       nights: nights, rating: rating, checkIn: checkIn, checkOut: checkOut, url: url || '',
       provider: t('manual-input'), manual: true
     };
-    stayResults.unshift(manualStay);
+    manualStays.unshift(manualStay);
     selectedStayId = manualStay.id;
     selectedStay = manualStay;
     renderStayCards();
-    renderPlanExtras();
-    renderBudgetSummary();
-    renderItineraryTimeline();
-    // Regenerate itinerary with new stay info
-    try { runPlan({}, false, { trigger: 'btnPlanRefresh' }); } catch(e) {}
+    regenerateAfterTripChange({});
     ['manualStayName','manualStayArea','manualStayPrice','manualStayRating','manualStayUrl'].forEach(function(id) { el(id).value = ''; });
   });
 }
@@ -3482,7 +4994,7 @@ if (el('returnDate')) {
     var dep = el('departDate') ? el('departDate').value : '';
     var ret = this.value;
     if (dep && ret && ret < dep) {
-      alert(t('err-return-date'));
+      showMemoToast(t('err-return-date'), 3500);
       this.value = dep;
     }
   });
@@ -3492,11 +5004,139 @@ if (el('checkOut')) {
     var ci = el('checkIn') ? el('checkIn').value : '';
     var co = this.value;
     if (ci && co && co <= ci) {
-      alert(t('err-checkout-date'));
+      showMemoToast(t('err-checkout-date'), 3500);
       this.value = addDays(ci, 1) || ci;
     }
   });
 }
+
+// ── 안내 띠(.notice-banner): 일정 다시 만들기 안내·여행 조건 변경·저장 안 한 초안 ──
+function ensureNoticeBanner(id) {
+  var node = el(id);
+  if (node) return node;
+  node = document.createElement('div');
+  node.id = id;
+  node.className = 'notice-banner hidden';
+  node.setAttribute('role', 'status');
+  if (id === 'planRegenHint') {
+    var ctrl = document.querySelector('.plan-controls');
+    if (ctrl && ctrl.parentNode) { ctrl.parentNode.insertBefore(node, ctrl.nextSibling); return node; }
+  } else {
+    var result = el('planResult');
+    if (result && result.parentNode) { result.parentNode.insertBefore(node, result); return node; }
+  }
+  if (document.body) document.body.appendChild(node);
+  return node;
+}
+
+// key 문구 + 버튼들([{ key, action }])을 띄운다. vars가 없으면 언어를 바꿀 때 data-i18n으로 저절로 바뀐다.
+function showNoticeBanner(id, key, buttons, vars) {
+  var node = ensureNoticeBanner(id);
+  if (!node) return null;
+  var text = vars ? fillText(t(key), vars) : t(key);
+  var html = '<span class="notice-text"' + (vars ? '' : ' data-i18n="' + key + '"') + '>' + escapeHtml(text) + '</span>';
+  if (buttons && buttons.length) {
+    html += '<span class="notice-actions">' + buttons.map(function(b) {
+      return '<button type="button" class="notice-btn' + (b.primary ? ' primary' : '') + '" data-notice-action="' + b.action + '" data-i18n="' + b.key + '">' + escapeHtml(t(b.key)) + '</button>';
+    }).join('') + '</span>';
+  }
+  node.innerHTML = html;
+  node.dataset.noticeKey = key;
+  node.classList.remove('hidden');
+  node.hidden = false;
+  return node;
+}
+
+function hideNoticeBanner(id) {
+  var node = el(id);
+  if (!node) return;
+  node.classList.add('hidden');
+  node.hidden = true;
+}
+
+// ── 출발일·일수 변경(FN-09) ──
+// 일정이 있는데 출발일·일수가 일정과 달라지면 어떻게 맞출지 묻는 띠를 띄운다.
+function tripConditionsMismatch() {
+  var it = currentItineraryData && Array.isArray(currentItineraryData.itinerary) ? currentItineraryData.itinerary : [];
+  if (it.length === 0) return false;
+  var start = el('startDate') ? el('startDate').value : '';
+  var days = Number(el('days') ? el('days').value : 0) || 0;
+  var first = it[0] && it[0].date;
+  return Boolean((start && first && start !== first) || (days && days !== it.length));
+}
+
+function updateTripChangeBanner() {
+  if (!tripConditionsMismatch()) { hideNoticeBanner('tripChangeBanner'); return; }
+  showNoticeBanner('tripChangeBanner', 'trip-changed', [
+    { key: 'btn-shift-dates', action: 'shift-dates' },
+    { key: 'btn-fit-days', action: 'fit-days' },
+    { key: 'btn-rebuild', action: 'rebuild', primary: true }
+  ]);
+}
+
+function onTripDatesChanged() {
+  syncDatesToDependentForms();
+  renderBudgetSummary();
+  if (lastWeather) renderWeatherWidget(lastWeather.daily, cityNameByKey(lastWeather.cityKey));
+  updateTripChangeBanner();
+}
+
+el('startDate').addEventListener('change', onTripDatesChanged);
+el('days').addEventListener('change', function() {
+  var input = el('days');
+  var raw = Number(input.value);
+  var clamped = Math.max(1, Math.min(10, Math.round(raw) || 1));
+  if (String(clamped) !== String(input.value).trim()) {
+    input.value = clamped;
+    showMemoToast(t('days-clamped'));
+  }
+  onTripDatesChanged();
+});
+
+// [날짜만 옮기기]: 일정 내용은 그대로 두고 날짜만 새 출발일부터 이어 붙인다.
+function shiftItineraryDates() {
+  if (!currentItineraryData || !Array.isArray(currentItineraryData.itinerary)) return;
+  var start = el('startDate').value || defaultStartDate();
+  currentItineraryData.itinerary.forEach(function(d, i) { d.date = addDays(start, i); });
+  markItineraryEdited();
+  renderItineraryTimeline();
+  updateItinMap();
+  updateTripChangeBanner();
+}
+
+// [일수 맞추기]: 빈 날을 붙이거나 끝의 날을 지운다(지울 날에 항목이 있으면 묻는다).
+function fitItineraryDays() {
+  if (!currentItineraryData || !Array.isArray(currentItineraryData.itinerary)) return;
+  var it = currentItineraryData.itinerary;
+  var target = Math.max(1, Math.min(10, Number(el('days').value) || it.length));
+  var base = (it[0] && it[0].date) || el('startDate').value || defaultStartDate();
+  if (target < it.length) {
+    var dropped = it.slice(target);
+    if (itineraryHasContent(dropped) && !confirm(fillText(t('confirm-trim-days'), { n: dropped.length }))) return;
+    it.splice(target);
+  } else {
+    var lastDayNum = it.length ? Number(it[it.length - 1].day) || it.length : 0;
+    for (var i = it.length; i < target; i++) {
+      lastDayNum++;
+      it.push({ day: lastDayNum, date: addDays(base, i), blocks: [] });
+    }
+  }
+  markItineraryEdited();
+  renderItineraryTimeline();
+  updateItinMap();
+  updateTripChangeBanner();
+}
+
+document.addEventListener('click', function(e) {
+  var btn = e.target && e.target.closest ? e.target.closest('[data-notice-action]') : null;
+  if (!btn) return;
+  var action = btn.dataset.noticeAction;
+  if (action === 'shift-dates') { shiftItineraryDates(); return; }
+  if (action === 'fit-days') { fitItineraryDays(); return; }
+  if (action === 'rebuild') { el('btnPlan').click(); return; }
+  if (action === 'draft-restore') { restoreDraft(); return; }
+  if (action === 'draft-discard') { discardDraft(); return; }
+});
 
 // -- Undo/Redo button bindings --
 if (el('btnItinUndo')) el('btnItinUndo').addEventListener('click', function() { undoItinerary(); });
@@ -3515,6 +5155,14 @@ document.addEventListener('keydown', function(e) {
     redoItinerary();
   }
 });
+
+// 글자 없는 아이콘 버튼(✕ 닫기 등)에는 aria-label과 같은 title을 단다(마우스를 올리면 뜻이 보이게).
+function ensureIconButtonTitles() {
+  Array.prototype.forEach.call(document.querySelectorAll('.side-panel-close'), function(b) {
+    if (!b.getAttribute('data-i18n-title')) b.setAttribute('data-i18n-title', 'btn-close');
+    b.title = t('btn-close');
+  });
+}
 
 // 처음 화면에는 빈 상태 안내만 보여준다. 유료 API(일정 생성·항공·숙소·맛집·여행지 검색)는
 // 사용자가 버튼을 누를 때만 호출한다.
@@ -3555,43 +5203,294 @@ function applyBrand() {
   if (desc && descText) desc.setAttribute('content', descText);
 }
 
+// 도시 목록이 생긴 뒤(처음 또는 [다시 시도] 뒤) 도시에 딸린 기본값을 채운다.
+function onCitiesLoaded() {
+  var initialCity = cityCatalog.find((c) => c.key === el('city').value);
+  if (initialCity && initialCity.airport && !el('to').value) el('to').value = formatAirportDisplay(initialCity.airport);
+  resetSegments();
+  loadKlookWidget(el('city').value || 'tokyo');
+  if (currentLang !== 'ko') relabelCityOptions();
+}
+
 (async () => {
   applyBrand();
   // await 이후에 실행되는 코드는 파일 끝의 언어 사전(I18N)이 준비된 뒤에 돈다.
-  await initCityOptions();
+  await Promise.resolve();
   applyBrand();
   renderInitialEmptyStates();
-  appendAiChatIntro();
+  updatePlanControls();
+  renderPlanSelectionCards();
+  renderStayFilterChecks({});
+  renderFlightFilterChecks({});
   el('from').value = formatAirportDisplay(resolveAirportCode(el('from').value));
-  var initialCity = cityCatalog.find((c) => c.key === el('city').value);
-  if (initialCity && initialCity.airport && !el('to').value) el('to').value = formatAirportDisplay(initialCity.airport);
   setTripTab('oneway');
-  resetSegments();
-  ensureCheckOutDate();
-  loadKlookWidget(el('city').value || 'tokyo');
   loadMapConfig();          // 무료 설정 조회(지도 라이브러리는 일정이 생길 때 불러옴)
   initExchangeRateChip();   // 무료 환율 조회
+  var citiesOk = await initCityOptions();
+  applyBrand();
+  onCitiesLoaded();
+  ensureCheckOutDate();
+  if (citiesOk) offerDraftRestore();
 })();
 
+// ═══ 편집 중 일정 자동 보관(기기 안의 '저장하지 않은 초안' 1개) ═══
+// '내 일정' 저장(서버)과는 별개다. 새로고침·탭 닫기로 잃지 않게 500ms 뒤 localStorage에 넣는다.
+var DRAFT_KEY = 'tabimaru.draft.v1';
+var DRAFT_MAX_AGE_MS = 14 * 86400000;
+var DRAFT_MAX_CHARS = 1.5 * 1024 * 1024;
+var draftSaveTimer = null;
+var pendingDraft = null;
 
-// ========== TRAVEL FEATURES v2 ==========
+function scheduleDraftSave() {
+  if (draftSaveTimer) clearTimeout(draftSaveTimer);
+  draftSaveTimer = setTimeout(function() { draftSaveTimer = null; saveDraftNow(); }, 500);
+}
+
+function saveDraftNow() {
+  if (!currentItineraryData || !itineraryHasContent(currentItineraryData.itinerary)) return;
+  try {
+    var it = Object.assign({}, currentItineraryData);
+    delete it._skipMealStrip;
+    var text = JSON.stringify({
+      v: 1,
+      savedAt: Date.now(),
+      itinerary: it,
+      latestDestList: latestDestList || [],
+      latestRecFoodList: latestRecFoodList || [],
+      selectedFlight: selectedFlight || null,
+      selectedStay: selectedStay || null,
+      form: {
+        city: el('city') ? el('city').value : '',
+        startDate: el('startDate') ? el('startDate').value : '',
+        days: el('days') ? el('days').value : '',
+        theme: el('theme') ? el('theme').value : '',
+        budget: currentBudgetTier()
+      }
+    });
+    if (text.length > DRAFT_MAX_CHARS) return;
+    localStorage.setItem(DRAFT_KEY, text);
+  } catch (e) {}
+}
+
+function readDraft() {
+  try {
+    var raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return null;
+    var d = JSON.parse(raw);
+    if (!d || d.v !== 1 || !d.itinerary || !itineraryHasContent(d.itinerary.itinerary)) return null;
+    var age = Date.now() - Number(d.savedAt);
+    if (!(age >= 0 && age < DRAFT_MAX_AGE_MS)) return null;
+    return d;
+  } catch (e) {
+    return null;
+  }
+}
+
+function formatDraftTime(ts) {
+  try {
+    return new Date(Number(ts)).toLocaleString(localeTag(), { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch (e) {
+    return '';
+  }
+}
+
+function showDraftBanner() {
+  if (!pendingDraft) return;
+  showNoticeBanner('draftRestoreBanner', 'draft-found', [
+    { key: 'btn-draft-restore', action: 'draft-restore', primary: true },
+    { key: 'btn-draft-discard', action: 'draft-discard' }
+  ], { t: formatDraftTime(pendingDraft.savedAt) });
+}
+
+// 첫 화면: 14일 안의 초안이 있으면 안내만 띄운다(자동으로 그리지 않는다 → 유료 호출 0회, 지도도 그때까지 안 불러옴).
+function offerDraftRestore() {
+  if (currentItineraryData) return;
+  pendingDraft = readDraft();
+  if (pendingDraft) showDraftBanner();
+}
+
+function hasSelectOption(id, value) {
+  var select = el(id);
+  return Boolean(select && Array.from(select.options || []).some(function(o) { return o.value === value; }));
+}
+
+// [이어서 편집]: 폼 → 도시 맞춤 → 카드·일정을 저장된 모습 그대로(_skipMealStrip) 그린다. AI·유료 호출 없음.
+function restoreDraft() {
+  var d = pendingDraft || readDraft();
+  pendingDraft = null;
+  hideNoticeBanner('draftRestoreBanner');
+  if (!d) return;
+  var f = d.form || {};
+  if (f.city && hasSelectOption('city', f.city)) el('city').value = f.city;
+  if (f.startDate) el('startDate').value = f.startDate;
+  if (f.days) el('days').value = f.days;
+  if (f.theme && hasSelectOption('theme', f.theme)) el('theme').value = f.theme;
+  resetAiIntentState(false);
+  // 예산 단계는 초안에 함께 보관한다(다시 만들 때도 저예산 등 조건이 이어지게).
+  if (f.budget) setBudgetTier(f.budget);
+  syncCityDependents(el('city').value);
+  syncDatesToDependentForms();
+
+  selectedFlight = d.selectedFlight || null;
+  selectedFlightId = selectedFlight && selectedFlight._id ? selectedFlight._id : '';
+  if (selectedFlight && selectedFlight.manual && !manualFlights.some(function(x) { return x._id === selectedFlight._id; })) manualFlights.unshift(selectedFlight);
+  selectedStay = d.selectedStay || null;
+  selectedStayId = selectedStay && selectedStay.id ? selectedStay.id : '';
+  if (selectedStay && selectedStay.manual && !manualStays.some(function(x) { return x.id === selectedStay.id; })) manualStays.unshift(selectedStay);
+
+  latestDestList = Array.isArray(d.latestDestList) ? d.latestDestList : [];
+  if (latestDestList.length) renderCards('destCards', latestDestList, 'dest');
+  latestRecFoodList = Array.isArray(d.latestRecFoodList) ? d.latestRecFoodList : [];
+  if (latestRecFoodList.length) renderRecFoodCards(latestRecFoodList);
+  if (manualFlights.length) renderFlightCards(true);
+  if (manualStays.length) renderStayCards();
+
+  var data = d.itinerary;
+  data._skipMealStrip = true;
+  _itinHistory.length = 0;
+  _itinHistoryIdx = -1;
+  renderItinerary(data);
+  showMemoToast(t('load-success'));
+}
+
+function discardDraft() {
+  pendingDraft = null;
+  try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+  hideNoticeBanner('draftRestoreBanner');
+}
+
+// 직접 고친 일정이 있으면 탭을 닫거나 새로고침할 때 브라우저가 한 번 묻는다(초안도 바로 보관).
+window.addEventListener('beforeunload', function(e) {
+  if (!itineraryIsEdited()) return;
+  if (draftSaveTimer) { clearTimeout(draftSaveTimer); draftSaveTimer = null; }
+  saveDraftNow();
+  e.preventDefault();
+  e.returnValue = '';
+});
+
+// ═══ 창·패널 공통(FN-12): Esc로 닫기, 연 버튼으로 포커스 돌려주기, dialog 역할 ═══
+var dialogOpeners = {};
+var DIALOG_PARTS = {
+  addToPlanModal: { box: '.plan-modal', heading: 'h4', headingId: 'modalHeading' },
+  loginModal: { box: '.login-modal', heading: 'h4', headingId: 'loginModalTitle' },
+  saveModal: { box: '.login-modal', heading: 'h4', headingId: 'saveModalTitle' }
+};
+
+function insideNode(container, node) {
+  return Boolean(container && node && (container === node || (typeof container.contains === 'function' && container.contains(node))));
+}
+
+function isShown(node) {
+  return Boolean(node && (node.offsetWidth || node.offsetHeight || (node.getClientRects && node.getClientRects().length)));
+}
+
+function ensureDialogA11y(id) {
+  var root = el(id);
+  if (!root) return;
+  var spec = DIALOG_PARTS[id];
+  var box = root;
+  if (spec) {
+    var inner = root.querySelector(spec.box);
+    if (inner && insideNode(root, inner)) box = inner;
+  }
+  var heading = root.querySelector(spec ? spec.heading : 'h3');
+  if (!insideNode(root, heading)) heading = null;
+  if (!box.getAttribute('role')) box.setAttribute('role', 'dialog');
+  if (!box.getAttribute('aria-modal')) box.setAttribute('aria-modal', 'true');
+  if (heading) {
+    if (!heading.id) heading.id = spec ? spec.headingId : id + 'Title';
+    if (!box.getAttribute('aria-labelledby')) box.setAttribute('aria-labelledby', heading.id);
+  }
+}
+
+function focusFirstIn(container, selectors) {
+  if (!container) return;
+  for (var i = 0; i < selectors.length; i++) {
+    var nodes = container.querySelectorAll(selectors[i]);
+    for (var j = 0; j < nodes.length; j++) {
+      var n = nodes[j];
+      if (insideNode(container, n) && isShown(n) && !n.disabled && typeof n.focus === 'function') {
+        try { n.focus(); } catch (e) {}
+        return;
+      }
+    }
+  }
+}
+
+function openDialog(id) {
+  var active = document.activeElement;
+  dialogOpeners[id] = active && active !== document.body ? active : null;
+  if (id === 'addToPlanModal') lastPlacedRef = null;
+  ensureDialogA11y(id);
+}
+
+function closeDialog(id) {
+  var target = dialogOpeners[id];
+  dialogOpeners[id] = null;
+  if (target && (target.isConnected === false || !document.documentElement.contains(target))) target = null;
+  // 일정 항목에서 연 창이면 다시 그려진 같은 항목(또는 방금 넣은 항목)의 [옮기기]로 돌아간다.
+  if (!target && id === 'addToPlanModal' && lastPlacedRef) {
+    var placed = placedBlockElement(lastPlacedRef.day, lastPlacedRef.blockIndex);
+    target = placed ? placed.querySelector('.itin-move-btn') : null;
+  }
+  if (target && typeof target.focus === 'function') { try { target.focus(); } catch (e) {} }
+}
+
+function openLoginModal() {
+  var modal = el('loginModal');
+  if (!modal) return;
+  openDialog('loginModal');
+  modal.classList.remove('hidden');
+  focusFirstIn(modal, ['a.login-btn', '#loginModalClose']);
+}
+
+function closeLoginModal() {
+  var modal = el('loginModal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  modal.classList.add('hidden');
+  closeDialog('loginModal');
+}
+
+// 닫힌 사이드 패널은 Tab 순서에서 뺀다(inert).
+function setPanelInert(panel, inert) {
+  panel.inert = Boolean(inert);
+  if (inert) panel.setAttribute('aria-hidden', 'true');
+  else panel.removeAttribute('aria-hidden');
+}
 
 // --- Side Panel Toggle ---
 function togglePanel(panelId) {
   var panel = document.getElementById(panelId);
   if (!panel) return;
   var isOpen = panel.classList.contains('show');
+  var opener = document.activeElement;
   // Close all open panels
-  document.querySelectorAll('.side-panel.show').forEach(function(p) { p.classList.remove('show'); });
+  document.querySelectorAll('.side-panel.show').forEach(function(p) {
+    p.classList.remove('show');
+    setPanelInert(p, true);
+    if (p !== panel) dialogOpeners[p.id] = null;
+  });
   var oldBackdrop = document.querySelector('.side-panel-backdrop');
   if (oldBackdrop) oldBackdrop.remove();
   if (!isOpen) {
+    ensureDialogA11y(panelId);
     panel.classList.remove('hidden');
     panel.classList.add('show');
+    setPanelInert(panel, false);
+    dialogOpeners[panelId] = opener && opener !== document.body && !insideNode(panel, opener) ? opener : (dialogOpeners[panelId] || null);
     var backdrop = document.createElement('div');
     backdrop.className = 'side-panel-backdrop';
     backdrop.addEventListener('click', function() { togglePanel(panelId); });
     document.body.appendChild(backdrop);
+    focusFirstIn(panel, ['.side-panel-close']);
+    // 여는 전환(visibility) 중이면 포커스가 안 들어가므로 전환 뒤에 한 번 더 시도한다.
+    [16, 60, 150, 300].forEach(function(ms) {
+      setTimeout(function() {
+        if (panel.classList.contains('show') && !insideNode(panel, document.activeElement)) focusFirstIn(panel, ['.side-panel-close']);
+      }, ms);
+    });
+  } else {
+    closeDialog(panelId);
   }
 }
 // Use event delegation for close buttons (panels are after <script> in DOM)
@@ -3600,6 +5499,20 @@ document.addEventListener('click', function(e) {
   if (closeBtn && closeBtn.dataset.closePanel) {
     togglePanel(closeBtn.dataset.closePanel);
   }
+});
+
+// Esc: 가장 위에 열린 것 하나를 닫는다(일정 추가 창 → 저장 창 → 로그인 창 → 사이드 패널).
+var activeSaveModalCleanup = null;
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Escape' && e.key !== 'Esc') return;
+  var add = el('addToPlanModal');
+  if (add && !add.classList.contains('hidden')) { e.preventDefault(); hideAddToPlanModal(); return; }
+  var save = el('saveModal');
+  if (save && !save.classList.contains('hidden')) { e.preventDefault(); if (activeSaveModalCleanup) activeSaveModalCleanup(); else save.classList.add('hidden'); return; }
+  var login = el('loginModal');
+  if (login && !login.classList.contains('hidden')) { e.preventDefault(); closeLoginModal(); return; }
+  var panel = document.querySelector('.side-panel.show');
+  if (panel && panel.id) { e.preventDefault(); togglePanel(panel.id); }
 });
 
 // --- 1. CHECKLIST ---
@@ -3961,18 +5874,36 @@ function renderPhrases(filter) {
       if (!catMatch && (p.ko + ' ' + meaning + ' ' + p.ja + ' ' + p.roma).toLowerCase().indexOf(q) < 0) continue;
       rows += '<div class="phrase-item"><button type="button" class="phrase-copy" data-copy="' + escapeHtml(p.ja) + '">' + escapeHtml(t('btn-copy')) + '</button>';
       rows += '<div class="phrase-ko">' + escapeHtml(meaning) + '</div>';
-      rows += '<div class="phrase-ja">' + escapeHtml(p.ja) + '</div>';
-      rows += '<div class="phrase-roma">' + escapeHtml(p.roma) + '</div></div>';
+      rows += '<div class="phrase-ja" lang="ja">' + escapeHtml(p.ja) + '</div>';
+      rows += '<div class="phrase-roma" lang="ja-Latn">' + escapeHtml(p.roma) + '</div></div>';
     }
     if (rows) html += '<div class="phrase-category"><div class="phrase-category-title">' + escapeHtml(catName) + '</div>' + rows + '</div>';
   }
   container.innerHTML = html || '<div>' + escapeHtml(t('phrases-none')) + '</div>';
 }
 
+// 클립보드 복사(공용): 성공·실패 모두 토스트로 알리고, 거부돼도 처리되지 않은 오류를 남기지 않는다.
+function copyTextToClipboard(text, doneKey) {
+  var clip = navigator.clipboard;
+  if (!clip || typeof clip.writeText !== 'function') {
+    showMemoToast(t('copy-fail'));
+    return Promise.resolve(false);
+  }
+  var p;
+  try { p = clip.writeText(String(text || '')); } catch (e) { p = Promise.reject(e); }
+  return Promise.resolve(p).then(function() {
+    showMemoToast(t(doneKey || 'copy-done'));
+    return true;
+  }).catch(function() {
+    showMemoToast(t('copy-fail'));
+    return false;
+  });
+}
+
 document.addEventListener('click', function(e) {
-  if (e.target.classList.contains('phrase-copy')) {
+  if (e.target.classList && e.target.classList.contains('phrase-copy')) {
     var text = e.target.dataset.copy;
-    if (text && navigator.clipboard) navigator.clipboard.writeText(text);
+    if (text) copyTextToClipboard(text, 'copy-done');
   }
 });
 
@@ -4079,6 +6010,12 @@ function renderWeatherWidget(daily, cityLabel) {
     if (hotDays.length > 0) advice.push(t('wx-hot'));
     if (advice.length > 0) html += '<div class="weather-advice">' + advice.map(escapeHtml).join('<br>') + '</div>';
   }
+  // 예보는 오늘부터 최대 16일 치다. 여행 날짜가 그 밖이면(전부 또는 일부) 그 사실을 먼저 알린다.
+  var rangeNote = '';
+  if (startDate && days > 0 && tripDays.length < days) {
+    rangeNote = tripDays.length === 0 ? t('weather-out-of-range') : fillText(t('weather-partial-range'), { n: tripDays.length, d: days });
+  }
+  if (rangeNote) html = '<div class="source-note weather-range-note" role="note">' + escapeHtml(rangeNote) + '</div>' + html;
   html += weatherCreditHtml();
 
   // Update widget and panel
@@ -4088,7 +6025,7 @@ function renderWeatherWidget(daily, cityLabel) {
   if (widgetWrap) widgetWrap.classList.remove('hidden');
 
   var panelContent = document.getElementById('weatherPanelContent');
-  if (panelContent) panelContent.innerHTML = '<h4>' + fillText(escapeHtml(t('weather-10day')), { city: cityLabel || '' }) + '</h4>' + html;
+  if (panelContent) panelContent.innerHTML = '<h4>' + fillText(escapeHtml(t('weather-days')), { city: cityLabel || '', n: daily.time.length }) + '</h4>' + html;
 }
 
 // btnWeather: handled by toolbar delegation below
@@ -4100,7 +6037,8 @@ function buildItineraryText(format) {
   var lines = [];
   var docTitle = shareTitle();
   lines.push(md ? '# ' + docTitle : '=== ' + docTitle + ' ===');
-  if (currentItineraryData.summary) lines.push(md ? '> ' + currentItineraryData.summary : currentItineraryData.summary);
+  var summaryLine = planSummaryText(currentItineraryData);
+  if (summaryLine) lines.push(md ? '> ' + summaryLine : summaryLine);
   lines.push('');
 
   if (selectedFlight) {
@@ -4116,41 +6054,55 @@ function buildItineraryText(format) {
 
   for (var di = 0; di < currentItineraryData.itinerary.length; di++) {
     var day = currentItineraryData.itinerary[di];
-    lines.push(md ? '## ' + t('day-prefix') + day.day + ' (' + (day.date || '') + ')' : '--- Day ' + day.day + ' (' + (day.date || '') + ') ---');
+    var dayHeading = itinDayLabel(day.day) + (day.date ? ' (' + day.date + ')' : '');
+    lines.push(md ? '## ' + dayHeading : '--- ' + dayHeading + ' ---');
     var groups = groupItineraryBlocks(day.blocks || []);
     for (var gi = 0; gi < groups.length; gi++) {
       var g = groups[gi];
       if (g.type === 'main') {
         var info = parsePlaceInfo(g.place);
-        var prefix = md ? '- **' + tPeriod(g.period) + '** ' : '  [' + tPeriod(g.period) + '] ';
+        var timeText = padTime(g.startTime) + '–' + padTime(g.endTime);
+        var prefix = md ? '- **' + tPeriod(g.period) + '** ' + timeText + ' ' : '  [' + tPeriod(g.period) + ' ' + timeText + '] ';
         var suffix = md ? info.name + (info.info ? ' _(' + info.info + ')_' : '') : info.name + (info.info ? ' (' + info.info + ')' : '');
         lines.push(prefix + suffix);
+      } else if (g.type === 'plain' && g.text) {
+        // '도시 이동: 오사카 → 교토' 같은 안내 줄도 함께 내보낸다.
+        lines.push(md ? '- ' + g.text : '  ' + g.text);
       }
     }
     lines.push('');
   }
 
-  // Budget
-  if (selectedFlight || selectedStay) {
-    lines.push(md ? '## 💰 ' + t('export-cost') : '[ ' + t('export-cost') + ' ]');
-    var days = Number(el('days') ? el('days').value : 4);
-    var fc = selectedFlight ? selectedFlight.totalPriceKRW : 0;
-    var sc = selectedStay ? (selectedStay.totalPriceKRW || 0) : 0;
-    if (fc) lines.push(t('cost-flight-line') + formatKRW(fc));
-    if (sc) lines.push(t('cost-stay-line') + formatKRW(sc));
-    lines.push(t('cost-food-line') + formatKRW(55000 * days));
-    lines.push(t('cost-transport-line') + formatKRW(22000 * days));
-  }
+  // 예상 비용: 화면의 '예상 비용 요약'과 같은 계산(computeBudget). 항공·숙소를 고르지 않아도 예상치를 넣는다.
+  var b = computeBudget();
+  var bullet = md ? '- ' : '';
+  lines.push(md ? '## 💰 ' + t('export-cost') : '[ ' + t('export-cost') + ' ]');
+  lines.push(bullet + t('cost-flight-line') + (b.flight ? formatKRW(b.flight) : t('not-selected')));
+  lines.push(bullet + t('cost-stay-line') + (b.stay ? formatKRW(b.stay) : t('not-selected')));
+  lines.push(bullet + t('cost-food-line') + formatKRW(b.meal));
+  lines.push(bullet + t('cost-transport-line') + formatKRW(b.transport));
+  lines.push(bullet + t('cost-activity-line') + formatKRW(b.activity));
+  lines.push(bullet + (md ? '**' + t('cost-total-line') + formatKRW(b.total) + '**' : t('cost-total-line') + formatKRW(b.total)));
+  lines.push(budgetTierLabel(b.tier) + ' ' + t('budget-note') + b.days + t('budget-note2'));
 
   return lines.join('\n');
 }
 
 // Export/Share - event delegation (these elements are after <script> in DOM)
 document.addEventListener('click', function(e) {
-  var tgt = e.target.closest('#btnExportPlan, #btnCopyText, #btnCopyMarkdown, #btnShareLink, #btnChecklist, #btnEmergency, #btnPhrases, #btnWeather');
+  var tgt = e.target.closest('#btnExportPlan, #btnPlanExport, #btnPlanSave, #btnCopyText, #btnCopyMarkdown, #btnShareLink, #btnChecklist, #btnEmergency, #btnPhrases, #btnWeather');
   if (!tgt) return;
+  if (tgt.disabled) return;
 
-  if (tgt.id === 'btnExportPlan') {
+  // 일정 옆 [💾 저장]: 로그인했으면 저장 창, 아니면 로그인 창 + 안내(UX-04)
+  if (tgt.id === 'btnPlanSave') {
+    if (currentUser) { savePlanToServer(); return; }
+    openLoginModal();
+    showMemoToast(t('login-to-save'), 4000);
+    return;
+  }
+
+  if (tgt.id === 'btnExportPlan' || tgt.id === 'btnPlanExport') {
     var preview = document.getElementById('exportPreview');
     if (preview) preview.textContent = buildItineraryText('text');
     togglePanel('exportPanel');
@@ -4158,16 +6110,14 @@ document.addEventListener('click', function(e) {
   }
   if (tgt.id === 'btnCopyText') {
     var text = buildItineraryText('text');
-    if (navigator.clipboard) navigator.clipboard.writeText(text);
-    showMemoToast(t('copy-text-done'));
+    copyTextToClipboard(text, 'copy-text-done');
     var p2 = document.getElementById('exportPreview');
     if (p2) p2.textContent = text;
     return;
   }
   if (tgt.id === 'btnCopyMarkdown') {
     var md = buildItineraryText('markdown');
-    if (navigator.clipboard) navigator.clipboard.writeText(md);
-    showMemoToast(t('copy-md-done'));
+    copyTextToClipboard(md, 'copy-md-done');
     var p3 = document.getElementById('exportPreview');
     if (p3) p3.textContent = md;
     return;
@@ -4175,10 +6125,13 @@ document.addEventListener('click', function(e) {
   if (tgt.id === 'btnShareLink') {
     var st = buildItineraryText('text');
     if (navigator.share) {
-      navigator.share({ title: shareTitle(), text: st });
-    } else if (navigator.clipboard) {
-      navigator.clipboard.writeText(st);
-      showMemoToast(t('copy-itin-done'));
+      // 사용자가 공유 창을 닫은 것(AbortError)은 무시하고, 그 밖의 실패는 복사로 대신한다.
+      Promise.resolve().then(function() { return navigator.share({ title: shareTitle(), text: st }); }).catch(function(err) {
+        if (err && err.name === 'AbortError') return;
+        copyTextToClipboard(st, 'copy-itin-done');
+      });
+    } else {
+      copyTextToClipboard(st, 'copy-itin-done');
     }
     return;
   }
@@ -4252,46 +6205,67 @@ function analyzeSchedule() {
   if (!alertsEl) return;
 
   var alerts = [];
-  var cityKey = el('city') ? el('city').value : 'tokyo';
-  var cityData = null;
-  // Try to get CITY_DATA from server-side data (we have it in recommend results)
-  // For now, use basic heuristics
+  var byNumber = function(a, b) { return Number(a) - Number(b); };
+  var tooMany = {};       // \uC5EC\uD589\uC9C0 \uC218 \u2192 [\uB0A0]
+  var noMeal = [];
+  var alldayMixed = [];
+  var overlaps = [];      // { d, a, b }: 같은 날 시간이 겹치는 반나절 여행지 한 쌍
+  var placeDays = {};     // \uC815\uADDC\uD654\uD55C \uC7A5\uC18C \uC774\uB984 \u2192 { name, days: [\uB0A0(\uAC19\uC740 \uB0A0 \uB450 \uBC88\uC774\uBA74 \uB450 \uBC88)] }
+  var placeOrder = [];
+  var planDays = currentItineraryData.itinerary;
 
-  for (var di = 0; di < currentItineraryData.itinerary.length; di++) {
-    var day = currentItineraryData.itinerary[di];
-    var groups = groupItineraryBlocks(day.blocks || []);
-    var mainBlocks = groups.filter(function(g) { return g.type === 'main' && !isMealPeriod(g.period); });
-    var mealBlocks = groups.filter(function(g) { return g.type === 'main' && isMealPeriod(g.period); });
-
-    // Too many spots
-    if (mainBlocks.length > 3) {
-      alerts.push({ type: 'warn', text: fillText(t('alert-too-many'), { d: t('day-prefix') + day.day, n: mainBlocks.length }) });
+  planDays.forEach(function(day) {
+    var dayNum = Number(day && day.day);
+    var mains = groupItineraryBlocks((day && day.blocks) || []).filter(function(g) { return g.type === 'main'; });
+    // \uC790\uC720 \uC77C\uC815\uC740 \uC7A5\uC18C\uAC00 \uC544\uB2C8\uB77C\uC11C \uC138\uC9C0 \uC54A\uB294\uB2E4.
+    var sights = mains.filter(function(g) { return !isMealPeriod(g.period) && !isFreeTimePlace(parsePlaceInfo(g.place).name); });
+    var meals = mains.filter(function(g) { return isMealPeriod(g.period); });
+    if (sights.length > 3) (tooMany[sights.length] = tooMany[sights.length] || []).push(dayNum);
+    if (sights.length > 0 && meals.length === 0) noMeal.push(dayNum);
+    if (sights.length > 1 && sights.some(function(g) { return g.period === '\uC885\uC77C'; })) alldayMixed.push(dayNum);
+    // \uBC18\uB098\uC808 \uC5EC\uD589\uC9C0\uB07C\uB9AC \uC2DC\uAC04\uC774 \uACB9\uCE58\uBA74 \uD55C \uC30D\uC744 \uC54C\uB9B0\uB2E4(\uC885\uC77C\uACFC \uACB9\uCE58\uB294 \uACBD\uC6B0\uB294 \uC704 '\uC885\uC77C' \uC548\uB0B4\uAC00 \uB9E1\uB294\uB2E4).
+    var halfRanges = sightRangesOfDay(day, -1).filter(function(r) { return r.period !== '\uC885\uC77C'; });
+    for (var hr = 1; hr < halfRanges.length; hr++) {
+      var prevR = halfRanges.slice(0, hr).filter(function(r) { return r.e > halfRanges[hr].s; })[0];
+      if (prevR) { overlaps.push({ d: dayNum, a: prevR.name, b: halfRanges[hr].name }); break; }
     }
+    sights.forEach(function(g) {
+      var name = parsePlaceInfo(g.place).name;
+      var key = normalizePlaceKey(name);
+      if (!key) return;
+      if (!placeDays[key]) { placeDays[key] = { name: name, days: [] }; placeOrder.push(key); }
+      placeDays[key].days.push(dayNum);
+    });
+  });
 
-    // Missing meals
-    if (mainBlocks.length > 0 && mealBlocks.length === 0) {
-      alerts.push({ type: 'info', text: fillText(t('alert-no-meal'), { d: t('day-prefix') + day.day }) });
-    }
+  // \uAC19\uC740 \uC885\uB958\uB294 \uB0A0\uC9DC\uB97C \uBAA8\uC544 \uD55C \uC904\uB85C(\uC5EC\uD589\uC9C0 \uC218\uB294 \uAC19\uC740 \uC218\uB07C\uB9AC)
+  Object.keys(tooMany).sort(byNumber).forEach(function(n) {
+    alerts.push({ type: 'warn', text: fillText(t('alert-too-many'), { d: dayListLabel(tooMany[n]), n: n }) });
+  });
+  if (alldayMixed.length) alerts.push({ type: 'warn', text: fillText(t('alert-allday'), { d: dayListLabel(alldayMixed) }) });
+  overlaps.forEach(function(o) {
+    alerts.push({ type: 'warn', text: fillText(t('alert-time-overlap'), { d: itinDayLabel(o.d), a: o.a, b: o.b }) });
+  });
+  if (noMeal.length) alerts.push({ type: 'info', text: fillText(t('alert-no-meal'), { d: dayListLabel(noMeal) }) });
 
-    // Allday + other spots
-    var hasAllday = mainBlocks.some(function(b) { return b.period === '\uC885\uC77C'; });
-    if (hasAllday && mainBlocks.length > 1) {
-      alerts.push({ type: 'warn', text: fillText(t('alert-allday'), { d: t('day-prefix') + day.day }) });
+  // \uC911\uBCF5 \uC7A5\uC18C: (\uC7A5\uC18C, \uB0A0\uC9DC \uBB36\uC74C)\uB9C8\uB2E4 \uD55C \uBC88\uB9CC. \uB2E4\uB978 \uB0A0\uC5D0 \uACB9\uCE5C \uAC83\uACFC \uAC19\uC740 \uB0A0 \uB450 \uBC88 \uB4E0 \uAC83\uC744 \uB530\uB85C \uC54C\uB9B0\uB2E4.
+  var reported = new Set();
+  placeOrder.forEach(function(key) {
+    var rec = placeDays[key];
+    if (rec.days.length < 2) return;
+    var uniq = rec.days.filter(function(d, i) { return rec.days.indexOf(d) === i; }).sort(byNumber);
+    var sameDay = uniq.filter(function(d) { return rec.days.filter(function(x) { return x === d; }).length > 1; });
+    var sameKey = 'same|' + key + '|' + sameDay.join(',');
+    if (sameDay.length && !reported.has(sameKey)) {
+      reported.add(sameKey);
+      alerts.push({ type: 'info', text: fillText(t('alert-dup-same-day'), { p: rec.name, d: dayListLabel(sameDay) }) });
     }
-
-    // Duplicate places across days
-    for (var di2 = di + 1; di2 < currentItineraryData.itinerary.length; di2++) {
-      var day2 = currentItineraryData.itinerary[di2];
-      var groups2 = groupItineraryBlocks(day2.blocks || []);
-      var names2 = groups2.filter(function(g) { return g.type === 'main'; }).map(function(g) { return parsePlaceInfo(g.place).name; });
-      for (var mi = 0; mi < mainBlocks.length; mi++) {
-        var pname = parsePlaceInfo(mainBlocks[mi].place).name;
-        if (!isFreeTimePlace(pname) && names2.indexOf(pname) >= 0) {
-          alerts.push({ type: 'info', text: fillText(t('alert-dup'), { p: pname, a: day.day, b: day2.day }) });
-        }
-      }
+    var crossKey = 'cross|' + key + '|' + uniq.join(',');
+    if (uniq.length > 1 && !reported.has(crossKey)) {
+      reported.add(crossKey);
+      alerts.push({ type: 'info', text: fillText(t('alert-dup'), { p: rec.name, d: dayListLabel(uniq) }) });
     }
-  }
+  });
 
   // Flight timing check
   if (selectedFlight && selectedFlight.legs) {
@@ -4299,7 +6273,7 @@ function analyzeSchedule() {
     if (firstLeg && firstLeg.arrivalTime) {
       var arrH = parseInt(firstLeg.arrivalTime.split(':')[0]);
       if (arrH >= 18) {
-        alerts.push({ type: 'tip', text: t('alert-late-arrival') });
+        alerts.push({ type: 'tip', text: fillText(t('alert-late-arrival'), { d: itinDayLabel(planDays[0] ? planDays[0].day : 1) }) });
       }
     }
     if (selectedFlight.tripType === 'roundtrip' && selectedFlight.legs.length > 1) {
@@ -4321,15 +6295,26 @@ function analyzeSchedule() {
 
   var typeIcons = { warn: '\u26A0\uFE0F', info: '\u2139\uFE0F', tip: '\uD83D\uDCA1' };
   var typeClasses = { warn: 'schedule-alert-warn', info: 'schedule-alert-info', tip: 'schedule-alert-tip' };
-  var html = '<h4>' + escapeHtml(t('alert-title')) + '</h4>';
+  // \uC811\uC5B4 \uB454 '\uD655\uC778\uD560 \uC810 N\uAC1C'. \uD3BC\uCCD0 \uB454 \uC0C1\uD0DC\uB294 \uB2E4\uC2DC \uADF8\uB824\uB3C4 \uC720\uC9C0\uD55C\uB2E4.
+  var prev = alertsEl.querySelector('details.schedule-alerts-box');
+  var wasOpen = Boolean(prev && prev.open);
+  var html = '<details class="schedule-alerts-box"' + (wasOpen ? ' open' : '') + '>' +
+    '<summary style="cursor:pointer;font-weight:600;font-size:14px;padding:4px 0">' + escapeHtml(fillText(t('alert-summary'), { n: alerts.length })) + '</summary>';
   for (var ai = 0; ai < alerts.length; ai++) {
     var a = alerts[ai];
     html += '<div class="schedule-alert ' + (typeClasses[a.type] || '') + '">';
-    html += '<span class="schedule-alert-icon">' + (typeIcons[a.type] || '') + '</span>';
+    html += '<span class="schedule-alert-icon" aria-hidden="true">' + (typeIcons[a.type] || '') + '</span>';
     html += '<span>' + escapeHtml(a.text) + '</span></div>';
   }
+  html += '</details>';
   alertsEl.innerHTML = html;
   alertsEl.classList.remove('hidden');
+}
+
+// \uB0A0\uC9DC \uBB36\uC74C \uD45C\uAE30: day-label\uC5D0 \uBC88\uD638 \uBAA9\uB85D\uC744 \uB123\uB294\uB2E4(ko '1\u00B72\u00B73\uC77C\uCC28', en 'Day 1, 2, 3', ja '1\u30FB2\u30FB3\u65E5\u76EE').
+function dayListLabel(dayNums) {
+  var nums = (dayNums || []).map(Number).filter(function(n) { return Number.isFinite(n); });
+  return fillText(t('day-label'), { n: nums.join(t('day-list-sep')) });
 }
 
 // Hook into renderItineraryTimeline
@@ -4338,8 +6323,14 @@ renderItineraryTimeline = function() {
   _origRenderItineraryTimeline();
   // Auto-push undo history on every itinerary re-render (covers all edits)
   try { pushItinHistory(); } catch(e) {}
+  try { updatePlanControls(); } catch(e) {}
   try { analyzeSchedule(); } catch(e) {}
   try { addMemoButtons(); } catch(e) {}
+  try { restoreCachedRouteCosts(); } catch(e) {}
+  // 일수 맞추기·되돌리기·다시 실행 등으로 날 수가 바뀌어도 예상 비용 칸이 내보내기(computeBudget)와 같게.
+  try { if (currentItineraryData) renderBudgetSummary(); } catch(e) {}
+  // 편집 중 일정은 기기 안에 초안으로 보관한다(새로고침·탭 닫기 대비).
+  try { scheduleDraftSave(); } catch(e) {}
 };
 
 // --- 7. PLACE MEMO ---
@@ -4347,11 +6338,12 @@ function getPlaceMemos() {
   try { return JSON.parse(localStorage.getItem('placeMemos') || '{}'); } catch(e) { return {}; }
 }
 
+// 저장소가 막힌 브라우저에서는 false(호출한 쪽이 실패 안내를 띄운다)
 function savePlaceMemo(placeName, memo) {
   var memos = getPlaceMemos();
   if (memo) memos[placeName] = memo;
   else delete memos[placeName];
-  localStorage.setItem('placeMemos', JSON.stringify(memos));
+  try { localStorage.setItem('placeMemos', JSON.stringify(memos)); return true; } catch (e) { return false; }
 }
 
 function addMemoButtons() {
@@ -4360,8 +6352,9 @@ function addMemoButtons() {
   for (var i = 0; i < slots.length; i++) {
     var slot = slots[i];
     if (slot.querySelector('.itin-memo-btn')) continue;
-    var placeName = slot.textContent.replace(/MAP$/, '').trim().split('(')[0].trim();
-    if (!placeName) continue;
+    // 메모 키는 렌더러가 넣은 장소 이름(data-place-name)이다. 지역·지도 글자가 섞이지 않는다.
+    var placeName = String(slot.dataset.placeName || '').trim();
+    if (!placeName || isFreeTimePlace(placeName)) continue;
 
     var btn = document.createElement('button');
     btn.type = 'button';
@@ -4369,6 +6362,7 @@ function addMemoButtons() {
     btn.dataset.memoPlace = placeName;
     btn.textContent = memos[placeName] ? '\u270F\uFE0F' : '\uD83D\uDCDD';
     btn.title = t('memo-title');
+    btn.setAttribute('aria-label', fillText(t('memo-input-label'), { p: placeName }));
     slot.appendChild(btn);
 
     if (memos[placeName]) {
@@ -4380,18 +6374,88 @@ function addMemoButtons() {
   }
 }
 
-document.addEventListener('click', function(e) {
-  if (e.target.classList.contains('itin-memo-btn')) {
-    var place = e.target.dataset.memoPlace;
-    var current = getPlaceMemos()[place] || '';
-    var newMemo = prompt(fillText(t('memo-prompt'), { p: place }), current);
-    if (newMemo !== null) {
-      savePlaceMemo(place, newMemo);
-      renderItineraryTimeline();
-      showMemoToast(newMemo ? t('memo-saved') : t('memo-deleted'));
-    }
+// ── 장소 메모 인라인 편집(UX-05): 항목 아래에 한 줄 입력 + [저장]/[취소]가 펼쳐진다(브라우저 prompt 창 대신) ──
+var MEMO_MAX_CHARS = 200;
+
+function memoButtonFor(place) {
+  var found = null;
+  Array.prototype.forEach.call(document.querySelectorAll('.itin-memo-btn'), function(b) {
+    if (!found && b.dataset.memoPlace === place) found = b;
+  });
+  return found;
+}
+
+function closeMemoEditors() {
+  Array.prototype.forEach.call(document.querySelectorAll('.itin-memo-editor'), function(ed) {
+    var item = ed.parentNode;
+    // 편집하는 동안 끌기를 꺼 두었던 항목은 되돌린다(입력칸 글자 선택이 끌기로 바뀌지 않게).
+    if (item && item.dataset && item.dataset.memoDraggable) { item.setAttribute('draggable', 'true'); delete item.dataset.memoDraggable; }
+    if (ed.remove) ed.remove();
+  });
+}
+
+function openMemoEditor(btn) {
+  var place = btn.dataset.memoPlace;
+  var slot = btn.closest ? btn.closest('.itin-slot-place') : null;
+  var item = slot ? slot.parentNode : null;
+  if (!place || !item) return;
+  var open = item.querySelector('.itin-memo-editor');
+  if (open) { var oi = open.querySelector('input'); if (oi) oi.focus(); return; }
+  closeMemoEditors();
+  var editor = document.createElement('div');
+  editor.className = 'itin-memo-editor';
+  editor.dataset.memoPlace = place;
+  var label = escapeHtml(fillText(t('memo-input-label'), { p: place }));
+  editor.innerHTML = '<input type="text" class="itin-memo-input" maxlength="' + MEMO_MAX_CHARS + '" aria-label="' + label + '" placeholder="' + escapeHtml(t('memo-placeholder')) + '">' +
+    '<button type="button" class="itin-memo-save">' + escapeHtml(t('btn-save')) + '</button>' +
+    '<button type="button" class="itin-memo-cancel ghost-btn">' + escapeHtml(t('btn-cancel')) + '</button>';
+  item.appendChild(editor);
+  if (item.getAttribute('draggable') === 'true') { item.setAttribute('draggable', 'false'); item.dataset.memoDraggable = '1'; }
+  var input = editor.querySelector('input');
+  if (input) {
+    input.value = getPlaceMemos()[place] || '';
+    try { input.focus(); input.select(); } catch (e) {}
   }
+}
+
+function commitMemoEditor(editor) {
+  var place = editor.dataset.memoPlace;
+  var input = editor.querySelector('input');
+  var value = String(input ? input.value : '').trim().slice(0, MEMO_MAX_CHARS);
+  var ok = savePlaceMemo(place, value);
+  renderItineraryTimeline();
+  showMemoToast(!ok ? t('memo-save-fail') : value ? t('memo-saved') : t('memo-deleted'));
+  var back = memoButtonFor(place);
+  if (back && typeof back.focus === 'function') { try { back.focus(); } catch (e) {} }
+}
+
+function cancelMemoEditor(editor) {
+  var place = editor.dataset.memoPlace;
+  closeMemoEditors();
+  var back = memoButtonFor(place);
+  if (back && typeof back.focus === 'function') { try { back.focus(); } catch (e) {} }
+}
+
+document.addEventListener('click', function(e) {
+  var target = e.target && e.target.closest ? e.target : null;
+  if (!target) return;
+  var memoBtn = target.closest('.itin-memo-btn');
+  if (memoBtn) { openMemoEditor(memoBtn); return; }
+  var saveBtn = target.closest('.itin-memo-save');
+  if (saveBtn) { commitMemoEditor(saveBtn.closest('.itin-memo-editor')); return; }
+  var cancelBtn = target.closest('.itin-memo-cancel');
+  if (cancelBtn) { cancelMemoEditor(cancelBtn.closest('.itin-memo-editor')); }
 });
+
+// Enter = 저장, Esc = 취소(다른 창 닫기 처리보다 먼저 받는다)
+document.addEventListener('keydown', function(e) {
+  var input = e.target && e.target.classList && e.target.classList.contains('itin-memo-input') ? e.target : null;
+  if (!input) return;
+  var editor = input.closest('.itin-memo-editor');
+  if (!editor) return;
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); commitMemoEditor(editor); }
+  else if (e.key === 'Escape' || e.key === 'Esc') { e.preventDefault(); e.stopImmediatePropagation(); cancelMemoEditor(editor); }
+}, true);
 
 // --- 8. EXCHANGE RATE (realtime from server) ---
 // 초기화 순서상 언어 사전(I18N)이 준비된 뒤에 호출된다(파일 아래쪽 init에서 실행).
@@ -4417,7 +6481,8 @@ function renderFxChip() {
       ? '<a class="fx-credit" href="https://www.exchangerate-api.com" target="_blank" rel="noopener noreferrer">' + escapeHtml(t('fx-credit')) + '</a>'
       : '';
     chip.innerHTML = '<span class="fx-rate-text">' + escapeHtml(rateText) + '</span>' + credit;
-    chip.title = fillText(t('fx-title'), { r: fxRateData.jpyToKrw, d: fxUpdatedDate(fxRateData.lastUpdate) });
+    // 출처 링크는 좁은 헤더에서 시각적으로 감춰지므로 title에도 출처를 적는다(예상 비용 칸에도 출처 표기).
+    chip.title = fillText(t('fx-title'), { r: fxRateData.jpyToKrw, d: fxUpdatedDate(fxRateData.lastUpdate) }) + (credit ? ' · ' + t('fx-credit') : '');
   } else {
     chip.textContent = t(fxRateState === 'loading' ? 'fx-loading' : 'fx-fallback');
     chip.removeAttribute('title');
@@ -4446,6 +6511,8 @@ async function initExchangeRateChip() {
     fxRateState = 'fallback';
   }
   renderFxChip();
+  // 예상 비용 칸이 이미 있으면 환율 출처 표기를 다시 맞춘다.
+  if (el('budgetSummary') && el('budgetSummary').innerHTML) renderBudgetSummary();
 }
 
 // ═══════════════════════════════════════════════
@@ -4466,22 +6533,49 @@ var currentUser = null;
     renderAuthUI();
   }
 
-  // 미설정 프로바이더 로그인 버튼 숨기기
+  // 설정된 로그인만 보인다. 응답 전에는 세 버튼을 모두 숨겨 두어 깜빡이지 않게 한다.
   try {
     var pResp = await fetch('/api/auth/providers');
+    if (!pResp.ok) throw new Error('HTTP ' + pResp.status);
     var providers = await pResp.json();
-    var navBtn = document.getElementById('loginNaver');
-    var kakBtn = document.getElementById('loginKakao');
-    var gooBtn = document.getElementById('loginGoogle');
-    if (navBtn) navBtn.style.display = providers.naver ? '' : 'none';
-    if (kakBtn) kakBtn.style.display = providers.kakao ? '' : 'none';
-    if (gooBtn) gooBtn.style.display = providers.google ? '' : 'none';
-    if (!providers.naver && !providers.kakao && !providers.google) {
-      var btns = document.querySelector('#loginModal .login-buttons');
-      if (btns) btns.innerHTML = '<p class="login-none-msg">' + escapeHtml(t('no-auth-config')) + '</p>';
-    }
-  } catch(e) {}
+    authProviders = {
+      naver: Boolean(providers && providers.naver),
+      kakao: Boolean(providers && providers.kakao),
+      google: Boolean(providers && providers.google)
+    };
+  } catch(e) {
+    // 확인하지 못하면 예전처럼 모두 보여 준다(설정 안 된 쪽은 서버가 안내 페이지로 돌려보낸다).
+    authProviders = { naver: true, kakao: true, google: true };
+  }
+  applyLoginProviderButtons();
 })();
+
+// null = 아직 모름(모두 숨김)
+var authProviders = null;
+var LOGIN_BUTTON_IDS = { naver: 'loginNaver', kakao: 'loginKakao', google: 'loginGoogle' };
+
+function applyLoginProviderButtons() {
+  Object.keys(LOGIN_BUTTON_IDS).forEach(function(p) {
+    var btn = document.getElementById(LOGIN_BUTTON_IDS[p]);
+    // style.display 대신 hidden 속성(CSS의 display:flex !important를 [hidden] 규칙이 이긴다)
+    if (btn) btn.hidden = !(authProviders && authProviders[p]);
+  });
+  if (authProviders && !authProviders.naver && !authProviders.kakao && !authProviders.google) {
+    var btns = document.querySelector('#loginModal .login-buttons');
+    if (btns && !btns.querySelector('.login-none-msg')) btns.innerHTML = '<p class="login-none-msg" data-i18n="no-auth-config">' + escapeHtml(t('no-auth-config')) + '</p>';
+  }
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', applyLoginProviderButtons);
+else applyLoginProviderButtons();
+
+// 저장한 일정 API가 401이면(세션 만료) 로그아웃 상태로 바꾸고 로그인 창을 연다.
+function handleAuthExpired() {
+  currentUser = null;
+  renderAuthUI();
+  showMemoToast(t('login-required'));
+  openLoginModal();
+}
 
 function renderAuthUI() {
   var authArea = document.getElementById('authArea');
@@ -4512,15 +6606,13 @@ function renderAuthUI() {
 document.addEventListener('click', function(e) {
   // 로그인 버튼
   if (e.target.closest('#btnLogin')) {
-    var modal = document.getElementById('loginModal');
-    if (modal) modal.classList.remove('hidden');
+    openLoginModal();
     return;
   }
 
-  // 모달 닫기
-  if (e.target.closest('#loginModalClose') || (e.target.classList && e.target.classList.contains('login-modal-overlay'))) {
-    var modal = document.getElementById('loginModal');
-    if (modal) modal.classList.add('hidden');
+  // 모달 닫기(저장 창도 같은 배경 클래스를 쓰므로 로그인 창일 때만)
+  if (e.target.closest('#loginModalClose') || (e.target.id === 'loginModal')) {
+    closeLoginModal();
     return;
   }
 
@@ -4579,8 +6671,10 @@ async function savePlanToServer() {
   var cityMeta = cityEl ? cityCatalog.find(function(c) { return c.key === cityEl.value; }) : null;
   var cityLabel = cityMeta ? cityMeta.label + ' (' + (cityMeta.airport || 'N/A') + ')' : '';
   var cityDisplay = cityMeta ? localPlaceName(cityMeta.label) : '';
-  var startDate = el('startDate') ? el('startDate').value : '';
-  var days = el('days') ? Number(el('days').value) : 0;
+  // 날짜·일수는 폼이 아니라 실제 일정에서 계산한다(폼만 바꾸고 일정은 그대로일 수 있다).
+  var planDays = Array.isArray(currentItineraryData.itinerary) ? currentItineraryData.itinerary : [];
+  var startDate = (planDays[0] && planDays[0].date) || (el('startDate') ? el('startDate').value : '');
+  var days = planDays.length || (el('days') ? Number(el('days').value) : 0);
   var theme = el('theme') ? el('theme').value : '';
 
   var defaultTitle = (cityDisplay || t('japan')) + ' ' + days + t('plan-title-suffix');
@@ -4598,56 +6692,69 @@ async function savePlanToServer() {
   dupNotice.innerHTML = '';
   confirmBtn.textContent = t('btn-save');
   confirmBtn.classList.remove('overwrite');
+  openDialog('saveModal');
   modal.classList.remove('hidden');
   nameInput.focus();
   nameInput.select();
 
-  // 기존 일정 목록 가져오기
+  var closed = false;
+  function onBackdrop(ev) { if (ev.target === modal) cleanup(); }
+  function cleanup() {
+    if (closed) return;
+    closed = true;
+    activeSaveModalCleanup = null;
+    modal.classList.add('hidden');
+    nameInput.removeEventListener('input', checkDup);
+    modal.removeEventListener('click', onBackdrop);
+    var cb = document.getElementById('saveConfirmBtn');
+    if (cb) cb.replaceWith(cb.cloneNode(true));
+    var cancel = document.getElementById('saveCancelBtn');
+    if (cancel) cancel.replaceWith(cancel.cloneNode(true));
+    closeDialog('saveModal');
+  }
+  activeSaveModalCleanup = cleanup;
+
+  // 기존 일정 목록 가져오기(같은 이름 덮어쓰기 안내용)
   var existingPlans = [];
   try {
     var listResp = await fetch('/api/my-plans/list');
+    if (listResp.status === 401) { cleanup(); handleAuthExpired(); return; }
     var listData = await listResp.json();
     existingPlans = listData.plans || [];
   } catch(e) {}
+  if (closed) return;
 
   // 중복 확인 함수
   function checkDup() {
     var name = nameInput.value.trim();
     var dup = existingPlans.find(function(p) { return p.title === name; });
+    var btn = document.getElementById('saveConfirmBtn') || confirmBtn;
     if (dup) {
       var savedDate = dup.savedAt ? new Date(dup.savedAt).toLocaleDateString(localeTag()) : '';
       dupNotice.innerHTML = '⚠️ <strong>"' + escapeHtml(name) + '"</strong>' + escapeHtml(t('overwrite-confirm')) + ' (' + escapeHtml(savedDate) + t('overwrite-note');
       dupNotice.className = 'save-dup-notice warn';
-      confirmBtn.textContent = t('btn-overwrite');
-      confirmBtn.classList.add('overwrite');
+      btn.textContent = t('btn-overwrite');
+      btn.classList.add('overwrite');
       return dup.id;
     } else {
       dupNotice.classList.add('hidden');
-      confirmBtn.textContent = t('btn-save');
-      confirmBtn.classList.remove('overwrite');
+      btn.textContent = t('btn-save');
+      btn.classList.remove('overwrite');
       return null;
     }
   }
 
   nameInput.addEventListener('input', checkDup);
-  var dupId = checkDup();
+  checkDup();
 
   // 저장 실행을 Promise로 처리
   return new Promise(function(resolve) {
-    function cleanup() {
-      modal.classList.add('hidden');
-      nameInput.removeEventListener('input', checkDup);
-      confirmBtn.replaceWith(confirmBtn.cloneNode(true));
-      document.getElementById('saveCancelBtn').replaceWith(
-        document.getElementById('saveCancelBtn').cloneNode(true)
-      );
-      resolve();
-    }
-
-    document.getElementById('saveCancelBtn').addEventListener('click', cleanup, { once: true });
-    modal.addEventListener('click', function(ev) {
-      if (ev.target === modal) cleanup();
-    }, { once: true });
+    var finish = function() { cleanup(); resolve(); };
+    document.getElementById('saveCancelBtn').addEventListener('click', finish, { once: true });
+    // 배경 클릭 리스너는 once 없이 달고 닫을 때 직접 푼다(안쪽 클릭이 리스너를 써 버리지 않게).
+    modal.addEventListener('click', onBackdrop);
+    var origCleanup = cleanup;
+    activeSaveModalCleanup = function() { origCleanup(); resolve(); };
 
     document.getElementById('saveConfirmBtn').addEventListener('click', async function() {
       var title = nameInput.value.trim() || defaultTitle;
@@ -4667,8 +6774,8 @@ async function savePlanToServer() {
           flightId: selectedFlightId || '',
           stay: selectedStay || null,
           stayId: selectedStayId || '',
-          flightResults: flightResults || [],
-          stayResults: stayResults || [],
+          flightResults: allFlights(),
+          stayResults: allStays(),
           latestDestList: latestDestList || [],
           latestRecFoodList: latestRecFoodList || [],
           latestFoodList: latestFoodList || [],
@@ -4679,34 +6786,36 @@ async function savePlanToServer() {
             days: days,
             theme: theme,
             budget: el('budget') ? el('budget').value : 'mid',
-            pace: el('pace') ? el('pace').value : 'normal',
             from: el('from') ? el('from').value : '',
             to: el('to') ? el('to').value : '',
             departDate: el('departDate') ? el('departDate').value : '',
             returnDate: el('returnDate') ? el('returnDate').value : '',
             checkIn: el('checkIn') ? el('checkIn').value : '',
-            stayArea: el('stayArea') ? el('stayArea').value : '',
+            checkOut: el('checkOut') ? el('checkOut').value : '',
             foodCity: el('foodCity') ? el('foodCity').value : ''
           }
         }
       };
 
+      var expired = false;
       try {
         var resp = await fetch('/api/my-plans/save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(saveData)
         });
-        var result = await resp.json();
         if (resp.ok) {
           showMemoToast(overwriteId ? t('save-overwrite-done') : t('save-success'));
+        } else if (resp.status === 401) {
+          expired = true;
         } else {
-          showMemoToast(resp.status === 401 ? t('login-required') : t('save-fail'));
+          showMemoToast(t('save-fail'));
         }
       } catch(e) {
         showMemoToast(t('save-error'));
       }
-      cleanup();
+      finish();
+      if (expired) handleAuthExpired();
     }, { once: true });
   });
 }
@@ -4719,9 +6828,16 @@ async function loadMyPlansList() {
 
   try {
     var resp = await fetch('/api/my-plans/list');
+    if (resp.status === 401) {
+      container.innerHTML = '<p class="my-plans-empty">' + escapeHtml(t('login-required')) + '</p>';
+      var panel = el('myPlansPanel');
+      if (panel && panel.classList.contains('show')) togglePanel('myPlansPanel');
+      handleAuthExpired();
+      return;
+    }
     var data = await resp.json();
     if (!resp.ok) {
-      container.innerHTML = '<p class="my-plans-empty">' + escapeHtml(resp.status === 401 ? t('login-required') : t('load-list-error')) + '</p>';
+      container.innerHTML = '<p class="my-plans-empty">' + escapeHtml(t('load-list-error')) + '</p>';
       return;
     }
     if (!data.plans || data.plans.length === 0) {
@@ -4749,89 +6865,104 @@ async function loadMyPlansList() {
   }
 }
 
+// 빈 카드 목록은 첫 화면 안내로 되돌린다.
+function resetCardContainer(id, emptyKey) {
+  var node = el(id);
+  if (node) node.innerHTML = '<div class="card empty-state" data-i18n="' + emptyKey + '">' + escapeHtml(t(emptyKey)) + '</div>';
+  if (id === 'stayCards') setStayMoreVisible(false);
+}
+
 // 일정 불러오기
 async function loadPlanFromServer(planId) {
   try {
     var resp = await fetch('/api/my-plans/load?id=' + encodeURIComponent(planId));
+    if (resp.status === 401) { handleAuthExpired(); return; }
     var data = await resp.json();
     if (!resp.ok || !data.plan) {
-      showMemoToast(resp.status === 401 ? t('login-required') : t('load-fail'));
+      showMemoToast(t('load-fail'));
       return;
     }
 
     var plan = data.plan;
     var d = plan.data || {};
 
-    // 1. 폼 값 복원
-    if (d.formValues) {
-      var fv = d.formValues;
-      if (fv.city && el('city')) el('city').value = fv.city;
-      if (fv.startDate && el('startDate')) el('startDate').value = fv.startDate;
-      if (fv.days && el('days')) el('days').value = fv.days;
-      if (fv.theme && el('theme')) el('theme').value = fv.theme;
-      if (fv.budget && el('budget')) el('budget').value = fv.budget;
-      if (fv.pace && el('pace')) el('pace').value = fv.pace;
-      if (fv.from && el('from')) el('from').value = fv.from;
-      if (fv.to && el('to')) el('to').value = fv.to;
-      if (fv.departDate && el('departDate')) el('departDate').value = fv.departDate;
-      if (fv.returnDate && el('returnDate')) el('returnDate').value = fv.returnDate;
-      if (fv.checkIn && el('checkIn')) el('checkIn').value = fv.checkIn;
-      if (fv.stayArea && el('stayArea')) el('stayArea').value = fv.stayArea;
-      if (fv.foodCity && el('foodCity')) el('foodCity').value = fv.foodCity;
-    }
+    // 0. 지금 화면의 선택·목록·말로 한 요청 의도를 먼저 비운다(저장한 일정에 없는 값이 남지 않게).
+    selectedFlight = null; selectedFlightId = '';
+    selectedStay = null; selectedStayId = '';
+    flightResults = []; stayResults = []; manualFlights = []; manualStays = [];
+    latestDestList = []; latestRecFoodList = []; latestFoodList = []; latestDestSearchList = []; latestFoodSearchList = [];
+    resetAiIntentState(false);
 
-    // 2. 항공권 복원
+    // 1. 폼 값 복원 → 도시·날짜에 딸린 칸 맞추기 → 저장해 둔 항공·숙소 날짜로 덮기
+    var fv = d.formValues || {};
+    if (fv.city && hasSelectOption('city', fv.city)) el('city').value = fv.city;
+    if (fv.startDate && el('startDate')) el('startDate').value = fv.startDate;
+    if (fv.days && el('days')) el('days').value = fv.days;
+    if (fv.theme && el('theme')) el('theme').value = fv.theme;
+    if (fv.budget && el('budget')) el('budget').value = fv.budget;
+    syncCityDependents(el('city').value);
+    syncDatesToDependentForms();
+    if (fv.from && el('from')) el('from').value = fv.from;
+    if (fv.to && el('to')) el('to').value = fv.to;
+    if (fv.departDate && el('departDate')) el('departDate').value = fv.departDate;
+    if (fv.returnDate && el('returnDate')) el('returnDate').value = fv.returnDate;
+    if (fv.checkIn && el('checkIn')) el('checkIn').value = fv.checkIn;
+    if (fv.checkOut && el('checkOut')) el('checkOut').value = fv.checkOut;
+    if (fv.foodCity && hasSelectOption('foodCity', fv.foodCity)) el('foodCity').value = fv.foodCity;
+
+    // 2. 항공권 복원(직접 입력한 항공편은 manualFlights로)
+    (Array.isArray(d.flightResults) ? d.flightResults : []).forEach(function(f) {
+      if (f && f.manual) manualFlights.push(f); else if (f) flightResults.push(f);
+    });
     if (d.flight) {
       selectedFlight = d.flight;
-      selectedFlightId = d.flightId || '';
+      selectedFlightId = d.flightId || d.flight._id || '';
+      if (d.flight.manual && !manualFlights.some(function(x) { return x._id === d.flight._id; })) manualFlights.unshift(d.flight);
     }
-    if (d.flightResults && d.flightResults.length > 0) {
-      flightResults = d.flightResults;
-      try { renderFlightCards(true); } catch(e) {}
-    }
+    try {
+      if (allFlights().length > 0) renderFlightCards(true); else resetCardContainer('flightCards', 'empty-flights');
+    } catch(e) {}
 
     // 3. 숙소 복원
+    (Array.isArray(d.stayResults) ? d.stayResults : []).forEach(function(s) {
+      if (s && s.manual) manualStays.push(s); else if (s) stayResults.push(s);
+    });
     if (d.stay) {
       selectedStay = d.stay;
-      selectedStayId = d.stayId || '';
+      selectedStayId = d.stayId || d.stay.id || '';
+      if (d.stay.manual && !manualStays.some(function(x) { return x.id === d.stay.id; })) manualStays.unshift(d.stay);
     }
-    if (d.stayResults && d.stayResults.length > 0) {
-      stayResults = d.stayResults;
-      try { renderStayCards(); } catch(e) {}
-    }
+    try {
+      if (allStays().length > 0) renderStayCards(); else resetCardContainer('stayCards', 'empty-stays');
+    } catch(e) {}
 
     // 4. 추천 목록 복원
-    if (d.latestDestList && d.latestDestList.length > 0) {
-      latestDestList = d.latestDestList;
-      try { renderCards('destCards', latestDestList, 'dest'); } catch(e) {}
-    }
-    if (d.latestRecFoodList && d.latestRecFoodList.length > 0) {
-      latestRecFoodList = d.latestRecFoodList;
-      try { renderRecFoodCards(latestRecFoodList); } catch(e) {}
-    }
-    if (d.latestFoodList && d.latestFoodList.length > 0) {
-      latestFoodList = d.latestFoodList;
-      try { renderCards('foodCards', latestFoodList, 'food'); } catch(e) {}
-    }
-    if (d.latestDestSearchList && d.latestDestSearchList.length > 0) {
-      latestDestSearchList = d.latestDestSearchList;
-      try { renderDestSearchCards(latestDestSearchList); } catch(e) {}
-    }
+    try {
+      latestDestList = Array.isArray(d.latestDestList) ? d.latestDestList : [];
+      if (latestDestList.length) renderCards('destCards', latestDestList, 'dest'); else resetCardContainer('destCards', 'empty-dest');
+      latestRecFoodList = Array.isArray(d.latestRecFoodList) ? d.latestRecFoodList : [];
+      if (latestRecFoodList.length) renderRecFoodCards(latestRecFoodList); else resetCardContainer('recFoodCards', 'empty-rec-food');
+      latestFoodList = Array.isArray(d.latestFoodList) ? d.latestFoodList : [];
+      latestFoodSearchList = latestFoodList;
+      if (latestFoodList.length) renderCards('foodCards', latestFoodList, 'food'); else resetCardContainer('foodCards', 'empty-search');
+      latestDestSearchList = Array.isArray(d.latestDestSearchList) ? d.latestDestSearchList : [];
+      if (latestDestSearchList.length) renderDestSearchCards(latestDestSearchList); else resetCardContainer('destSearchCards', 'empty-search');
+    } catch(e) {}
 
-    // 5. 일정 데이터 복원 및 렌더링 (저장된 데이터는 이미 사용자 편집 반영됨 → 저녁 블록 삭제 방지)
+    // 5. 일정 데이터 복원 및 렌더링 (저장된 데이터는 이미 사용자 편집 반영됨 → 분류 안전망 건너뜀)
     if (d.itinerary) {
       d.itinerary._skipMealStrip = true;
-      currentItineraryData = d.itinerary;
       // Reset undo history with loaded state as baseline
       _itinHistory.length = 0;
       _itinHistoryIdx = -1;
-      if (typeof renderItinerary === 'function') renderItinerary(d.itinerary);
+      renderItinerary(d.itinerary);
     }
 
     // 6. 선택 카드 + 예산 요약 렌더링
     try { renderPlanExtras(); } catch(e) {}
 
-    togglePanel('myPlansPanel');
+    var panel = el('myPlansPanel');
+    if (panel && panel.classList.contains('show')) togglePanel('myPlansPanel');
     showMemoToast(t('load-success'));
   } catch(e) {
     showMemoToast(t('load-error'));
@@ -4843,6 +6974,7 @@ async function deletePlanFromServer(planId) {
   if (!confirm(t('delete-confirm'))) return;
   try {
     var resp = await fetch('/api/my-plans/delete?id=' + encodeURIComponent(planId), { method: 'DELETE' });
+    if (resp.status === 401) { handleAuthExpired(); return; }
     var data = await resp.json();
     if (resp.ok && data.deleted) {
       showMemoToast(t('delete-success'));
@@ -4878,43 +7010,25 @@ function renderTourFallbackLinks(target, cityName, displayName, cityKey) {
   target.innerHTML = '<div style="text-align:center;padding:24px 16px;">' +
     '<p style="margin:0 0 14px;font-size:13px;color:var(--fg-3);letter-spacing:0.04em;">' + escapeHtml(fillText(t('tours-popular'), { city: shownName })) + '</p>' +
     '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;">' +
-    '<a href="https://www.klook.com/ko/search/result/?query=' + encodeURIComponent(cityName + ' tour') + '" target="_blank" rel="noopener" style="' + tourLinkStyle + '">' + escapeHtml(t('tour-klook')) + '</a>' +
+    '<a href="https://www.klook.com/' + KLOOK_LOCALE_PATH[currentLang === 'en' || currentLang === 'ja' ? currentLang : 'ko'] + '/search/result/?query=' + encodeURIComponent(cityName + ' tour') + '" target="_blank" rel="noopener" style="' + tourLinkStyle + '">' + escapeHtml(t('tour-klook')) + '</a>' +
     '<a href="https://www.viator.com/searchResults/all?text=' + encodeURIComponent(cityName) + '&destId=&tags=alltrips" target="_blank" rel="noopener" style="' + tourLinkStyle + '">' + escapeHtml(t('tour-viator')) + '</a>' +
     '<a href="https://www.getyourguide.com/s/?q=' + encodeURIComponent(cityName + ', Japan') + '&searchSource=1" target="_blank" rel="noopener" style="' + tourLinkStyle + '">GetYourGuide</a>' +
     '</div></div>';
 }
 
+// Klook 검색 페이지 언어 경로(화면 언어를 따른다)
+var KLOOK_LOCALE_PATH = { ko: 'ko', en: 'en-US', ja: 'ja' };
+
+// 투어: 외부 위젯 스크립트(tpwgt.com, 콘솔 'KlookAff' 오류·8초 대기)를 넣지 않고 검색 바로가기를 바로 그린다.
 function loadKlookWidget(cityKey) {
   var wrap = document.getElementById('klookWidgetWrap');
   if (!wrap) return;
-  var seq = ++klookLoadSeq;
-  var mappedName = KLOOK_CITY_MAP[cityKey];
-  // 위젯이 지원하지 않는 도시는 도쿄 투어를 보여주지 않고, 그 도시 이름으로 검색 링크만 보여준다.
-  var cityName = mappedName || cityLabelByKey(cityKey) || KLOOK_CITY_MAP.tokyo;
+  ++klookLoadSeq;
+  // 지원 목록에 없는 도시는 도쿄 투어를 보여주지 않고, 그 도시 이름으로 검색 링크만 보여준다.
+  var cityName = KLOOK_CITY_MAP[cityKey] || cityLabelByKey(cityKey) || KLOOK_CITY_MAP.tokyo;
   var displayName = tourCityDisplayName(cityKey, cityName);
-  wrap.innerHTML = '<div id="tp-klook-widget" style="min-height:120px;display:flex;align-items:center;justify-content:center;color:var(--fg-3);font-size:13px;">' + escapeHtml(fillText(t('tours-loading'), { city: displayName })) + '</div>';
-  if (!mappedName) {
-    renderTourFallbackLinks(document.getElementById('tp-klook-widget'), cityName, displayName, cityKey);
-    return;
-  }
-  var sc = document.createElement('script');
-  sc.async = true;
-  sc.charset = 'utf-8';
-  sc.src = 'https://tpwgt.com/content?currency=KRW&trs=507447&shmarker=710362&locale=ko&city=' + encodeURIComponent(cityName) + '&category=3&amount=6&powered_by=true&campaign_id=137&promo_id=4497';
-  wrap.appendChild(sc);
-
-  // 8초 안에 위젯이 실제로 그려지지 않으면 바로가기 링크로 바꾼다.
-  // 위젯은 #tp-klook-widget 안이 아니라 같은 wrap 안의 형제 요소로 삽입되므로 wrap 전체를 본다.
-  setTimeout(function() {
-    if (seq !== klookLoadSeq) return;
-    var widget = document.getElementById('tp-klook-widget');
-    if (!widget) return;
-    var rendered = Array.prototype.some.call(wrap.querySelectorAll('[id^="klook_widget_wrapper"], iframe'), function(node) {
-      return node.offsetHeight > 40;
-    });
-    if (rendered) { widget.remove(); return; }
-    renderTourFallbackLinks(widget, cityName, displayName, cityKey);
-  }, 8000);
+  wrap.innerHTML = '<div id="tp-klook-widget"></div>';
+  renderTourFallbackLinks(document.getElementById('tp-klook-widget') || wrap, cityName, displayName, cityKey);
 }
 
 // 투어 바로가기 링크가 떠 있으면 현재 언어로 다시 그린다.
@@ -4996,7 +7110,8 @@ function renderWishlistPanel() {
     html += '<div class="wishlist-item">';
     html += '<div><div class="wishlist-item-name">' + escapeHtml(w.name) + '</div>';
     html += '<div class="wishlist-item-meta">' + escapeHtml(w.type === 'food' ? t('tab-food') : t('tab-dest')) + ' · ' + escapeHtml(w.area || w.city || '') + '</div></div>';
-    html += '<button class="wishlist-remove" data-wish-name="' + escapeHtml(w.name) + '">\u2715</button>';
+    var removeLabel = escapeHtml(fillText(t('aria-wishlist-remove'), { p: w.name }));
+    html += '<button type="button" class="wishlist-remove" data-wish-name="' + escapeHtml(w.name) + '" aria-label="' + removeLabel + '" title="' + removeLabel + '">\u2715</button>';
     html += '</div>';
   }
   container.innerHTML = html;
@@ -5013,6 +7128,8 @@ function addWishlistButtons() {
     btn.textContent = isWishlisted(name) ? '\u2764\uFE0F' : '\uD83E\uDE76';
     btn.dataset.wishName = name;
     btn.title = t('wishlist-toggle');
+    btn.setAttribute('aria-label', fillText(t('aria-wishlist'), { p: name }));
+    btn.setAttribute('aria-pressed', isWishlisted(name) ? 'true' : 'false');
     h4.appendChild(btn);
   });
 }
@@ -5044,6 +7161,7 @@ document.addEventListener('click', function(e) {
     var added = toggleWishlist(name, type, area);
     wishBtn.textContent = added ? '\u2764\uFE0F' : '\uD83E\uDE76';
     wishBtn.classList.toggle('wishlisted', added);
+    wishBtn.setAttribute('aria-pressed', added ? 'true' : 'false');
     showMemoToast(added ? t('wishlist-add') : t('wishlist-remove'));
     return;
   }
@@ -5120,6 +7238,8 @@ document.addEventListener('click', function(e) {
     var item = list[idx];
     if (!item) return;
     if (item.type === 'plan' && item.params) {
+      // 기록에서 다시 만들 때는 조건 칸 값만 쓴다(앞서 말로 한 요청의 의도는 버린다).
+      resetAiIntentState(true);
       if (item.params.city) el('city').value = item.params.city;
       if (item.params.days) el('days').value = item.params.days;
       if (item.params.theme) el('theme').value = item.params.theme;
@@ -5136,26 +7256,10 @@ document.addEventListener('click', function(e) {
   }
 });
 
-// Record search history on button clicks (capture phase)
-(function() {
-  el('btnPlan').addEventListener('click', function() {
-    addSearchHistory('plan', { city: el('city').value, days: el('days').value, theme: el('theme').value });
-  }, true);
-  el('btnFood').addEventListener('click', function() {
-    addSearchHistory('food', { city: el('foodCity').value, genre: el('foodGenre').value });
-  }, true);
-  el('btnStays').addEventListener('click', function() {
-    addSearchHistory('stay', { city: el('stayCity').value });
-  }, true);
-  el('btnFlights').addEventListener('click', function() {
-    addSearchHistory('flight', { from: el('from').value, to: el('to').value, city: el('city').value });
-  }, true);
-  if (el('btnDestSearch')) {
-    el('btnDestSearch').addEventListener('click', function() {
-      addSearchHistory('dest', { city: el('destSearchCity').value, theme: el('destSearchTheme').value });
-    }, true);
-  }
-})();
+// 검색 기록은 요청이 성공한 뒤에만 남긴다(실패한 검색이 기록에 쌓이지 않게). 저장소가 막혀도 검색은 계속된다.
+function recordSearchHistory(type, params) {
+  try { addSearchHistory(type, params); } catch (e) {}
+}
 
 // ═══════════════════════════════════════════════
 // 14. USER PREFERENCE LEARNING (localStorage)
@@ -5208,10 +7312,12 @@ function showPreferenceHints() {
   var topCities = getTopPreferences('city', 3);
   var topThemes = getTopPreferences('theme', 2);
   if (topCities.length === 0 && topThemes.length === 0) return;
-  var condPanel = document.querySelector('#section-conditions');
+  // '자주 가는 도시' 안내는 조건 칸(여행 지역 선택) 바로 위에 둔다('말로 요청 → 조건' 순서를 끊지 않게).
+  var cityField = el('city') && el('city').closest ? el('city').closest('.fields') : null;
+  var condPanel = cityField || document.querySelector('#section-conditions');
   if (!condPanel) return;
   // 언어를 바꾸면 다시 그리므로 이전 안내는 지운다.
-  var oldHints = condPanel.parentNode ? condPanel.parentNode.querySelector('.pref-hints') : null;
+  var oldHints = document.querySelector('.pref-hints');
   if (oldHints) oldHints.remove();
   var hints = [];
   if (topCities.length > 0) {
@@ -5229,7 +7335,7 @@ function showPreferenceHints() {
   div.className = 'pref-hints';
   div.style.cssText = 'font-size:12px;color:var(--fg-3);padding:4px 0;';
   div.innerHTML = hints.map(function(h) { return '<span class="pref-badge">' + escapeHtml(h) + '</span>'; }).join(' ');
-  condPanel.after(div);
+  if (cityField) cityField.before(div); else condPanel.after(div);
 }
 setTimeout(showPreferenceHints, 2000);
 
@@ -5246,16 +7352,16 @@ var currentLang = (function() {
 
 var I18N = {
   ko: {
-    'section-conditions': '여행 조건', 'section-results': '추천 결과',
+    'section-conditions': '여행 조건', 'section-results': '추천과 내 일정',
     'section-explore': '탐색', 'section-flights': '항공권 탐색',
     'section-stays': '숙소 탐색', 'section-tours': '투어 / 액티비티',
-    'btn-plan': '추천+AI일정 통합 생성', 'btn-flights': '항공권 검색',
+    'btn-plan': '일정 만들기', 'btn-flights': '항공권 검색',
     'btn-stays': '숙소 검색', 'btn-food': '검색',
     'btn-add': '추가', 'btn-cancel': '취소', 'btn-close': '닫기',
-    'btn-save': '저장', 'btn-cancel2': '취소', 'btn-more': '더보기',
-    'btn-refresh-plan': 'AI 일정 새로고침',
-    'btn-undo': '\u21A9 되돌리기', 'btn-redo': '\u21AA 다시',
-    'tagline': 'AI 기반 여행지·항공권·맛집 추천',
+    'btn-cancel2': '취소', 'btn-more': '더보기',
+    'btn-refresh-plan': '일정만 다시 만들기',
+    'btn-undo': '↩ 되돌리기', 'btn-redo': '↪ 다시 실행',
+    'tagline': '가고 싶은 곳만 말하면 일본 여행 일정을 동글동글 짜 드려요',
     'brand-subtitle': 'AI 일본 여행 플래너',
     'meta-description': 'Tabimaru는 일본 여행지·항공권·숙소·맛집을 한곳에서 찾고 AI로 여행 일정을 만들어 주는 일본 여행 플래너예요.',
     'login': '로그인',
@@ -5268,7 +7374,7 @@ var I18N = {
     'label-city2': '도시', 'label-theme2': '테마',
     'label-city3': '도시', 'label-genre': '장르',
     'label-from-airport': '출발 공항', 'label-to-airport': '도착 공항',
-    'label-depart-date': '출발일', 'label-return-date': '복귀일(왕복)',
+    'label-depart-date': '가는 날', 'label-return-date': '오는 날',
     'label-flight-pref': '추천 기준',
     'label-checkin': '체크인', 'label-checkout': '체크아웃',
     'label-guests': '인원', 'label-rooms': '객실 수', 'label-sort': '정렬',
@@ -5284,38 +7390,35 @@ var I18N = {
     'type-apartment': '레지던스', 'type-guesthouse': '게스트하우스',
     'tab-rec-dest': '추천 여행지', 'tab-rec-food': '추천 맛집',
     'tab-dest': '여행지', 'tab-food': '맛집',
-    'ai-chat-title': 'AI 여행 조건 채팅',
-    'ai-itinerary': 'AI 일정',
+    'ai-chat-title': '말로 요청하기',
+    'ai-itinerary': '내 여행 일정',
     'itinerary-map': '일정 지도',
     'weather-title': '여행지 날씨',
     'manual-flight': '직접 항공편 입력',
     'manual-stay': '직접 숙소 입력',
-    'modal-add-plan': '일정에 추가',
-    'modal-day-select': 'Day 선택', 'modal-timeslot': '시간대',
+    'modal-add-plan': '일정에 넣기',
+    'modal-day-select': '날짜', 'modal-timeslot': '시간대',
     'slot-morning': '오전', 'slot-afternoon': '오후', 'slot-allday': '종일',
     'slot-breakfast': '아침', 'slot-lunch': '점심', 'slot-dinner': '저녁',
     'panel-checklist': '\u2705 여행 준비 체크리스트',
     'panel-emergency': '\uD83C\uDD98 일본 긴급 정보',
-    'panel-phrases': '\uD83D\uDDE3 일본어 여행 회화',
-    'panel-weather': '\uD83C\uDF24 여행지 날씨 예보',
+    'panel-phrases': '🗣️ 일본어 여행 회화',
+    'panel-weather': '🌤️ 여행지 날씨 예보',
     'panel-export': '\uD83D\uDCCB 일정 내보내기',
     'panel-wishlist': '\u2764\uFE0F 찜 / 위시리스트',
     'panel-search-history': '🕘 검색 기록',
     'panel-myplans': '📂 내 저장 일정',
-    'export-pdf': '\uD83D\uDCC4 PDF 다운로드',
+    'export-pdf': '📄 PDF 저장',
     'export-text': '\uD83D\uDCC4 텍스트 복사',
     'export-markdown': '\uD83D\uDCDD 마크다운 복사',
-    'export-link': '\uD83D\uDD17 링크 복사',
+    'export-link': '🔗 공유하기',
     'login-title': '로그인', 'save-title': '💾 일정 저장',
-    'tours-note': '여행 도시의 인기 투어와 액티비티를 확인하세요. (Klook 제공)',
-    'memo-saved': '메모가 저장되었습니다.',
+    'tours-note': '여행 도시의 인기 투어와 액티비티를 확인해 보세요. (Klook 제공)',
     'no-results': '결과 없음',
-    'add-to-plan': '일정에 추가',
+    'add-to-plan': '+ 일정에 넣기',
     'promote-to-rec': '\u2196\uFE0F 추천 여행지로',
-    'map-link': '지도',
-    'err-rate-limit': '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.',
-    'err-need-plan': '먼저 AI 일정을 생성해주세요.',
-    'loading': '로딩 중...',
+    'err-rate-limit': '요청이 너무 많아요. 잠시 뒤 다시 시도해 주세요.',
+    'err-need-plan': '먼저 [일정 만들기]로 일정을 만들어 주세요.',
     'per-night': '/ 박',
     'day-prefix': 'Day ',
     'arrival': '도착',
@@ -5327,8 +7430,8 @@ var I18N = {
     'stay': '숙소',
     'selected-flight': '선택 항공권',
     'selected-stay': '선택 숙소',
-    'selected-mark': '선택됨 (AI 일정 반영)',
-    'include-ai': 'AI 일정에 포함',
+    'selected-mark': '✓ 일정에 반영됨',
+    'include-ai': '일정에 반영',
     'won': '원',
     'nights': '박',
     'airline': '항공사',
@@ -5339,25 +7442,22 @@ var I18N = {
     'airline-na': '항공사 정보 없음',
     'price-no-info': '가격 정보 없음',
     'provider-na': '숙소 제공사 없음',
-    'edit': '✏️수정',
-    'delete': '✕삭제',
+    'edit': '✏️ 수정',
+    'delete': '✕ 삭제',
     'room': '객실 ',
     'rooms-label': '객실 ',
     'guests-label': ' · 인원 ',
     'per-night-unit': '원/박',
-    'no-selection': '선택된 항공권/숙소가 없습니다.',
     'meal-breakfast': '아침',
     'meal-lunch': '점심',
     'meal-dinner': '저녁',
     'time-morning': '오전',
     'time-afternoon': '오후',
     'time-allday': '종일',
-    'chat-user': '사용자',
-    'chat-ai': 'AI',
-    'chat-placeholder': '가고 싶은 장소를 채팅으로 입력하면 공항 기준 지역과 여행 조건을 자동으로 맞춰드릴게요.',
-    'chat-enter-msg': '요청 문장을 입력해 주세요.',
-    'chat-processing': '요청 내용을 반영해서 새 추천을 생성합니다.',
-    'chat-error': '요청 처리 중 오류가 발생했습니다: ',
+    'chat-user': '나',
+    'chat-enter-msg': '가고 싶은 곳이나 원하는 일정을 적어 주세요.',
+    'chat-processing': '요청 내용을 반영해 일정을 만들게요.',
+    'chat-error': '요청을 처리하지 못했어요: ',
     'source-rule': '규칙기반 (기본)',
     'source-gemini': '✨ AI 기반 (Gemini)',
     'source-openai': '✨ AI 기반 (OpenAI)',
@@ -5369,7 +7469,7 @@ var I18N = {
     'source-google': '✨ Google Places 기반',
     'source-tabelog': '✨ 타베로그 스타일',
     'source-food-fb': '📋 규칙기반 (폴백)',
-    'mock-notice': '현재 더미 데이터로 표시 중입니다. (API 실패 또는 미연동)',
+    'mock-notice': '지금은 예시 데이터를 보여 드려요.',
     'transport-subway': '🚇 지하철',
     'transport-train': '🚃 전철',
     'transport-bus': '🚌 버스',
@@ -5390,34 +7490,34 @@ var I18N = {
     'cost-activity': '🎫 활동비',
     'rec-dest': '추천 여행지',
     'error-prefix': '오류: ',
-    'copy-text-done': '텍스트가 클립보드에 복사되었습니다!',
-    'copy-md-done': '마크다운이 복사되었습니다!',
-    'copy-itin-done': '일정이 클립보드에 복사되었습니다!',
-    'weather-loading': '날씨 정보 로딩 중...',
-    'weather-error': '날씨 정보를 불러올 수 없습니다.',
-    'logout-confirm': '로그아웃 하시겠습니까?',
-    'login-required': '로그인이 필요합니다.',
-    'save-success': '일정이 저장되었습니다!',
-    'no-plan-yet': '일정을 먼저 생성해주세요.',
-    'add-to-plan-btn': '일정에 추가',
+    'copy-text-done': '텍스트를 복사했어요.',
+    'copy-md-done': '마크다운을 복사했어요.',
+    'copy-itin-done': '일정을 복사했어요.',
+    'weather-loading': '날씨를 불러오는 중…',
+    'weather-error': '날씨 정보를 불러오지 못했어요.',
+    'logout-confirm': '로그아웃할까요?',
+    'login-required': '로그인이 필요해요.',
+    'save-success': '일정을 저장했어요.',
+    'no-plan-yet': '먼저 [일정 만들기]로 일정을 만들어 주세요.',
+    'add-to-plan-btn': '+ 일정에 넣기',
     'promote-food': '⬆ 추천 맛집으로',
-    'wishlist-add': '찜 추가됨',
-    'wishlist-remove': '찜 제거됨',
-    'loading': '처리 중...',
-    'err-timeout': '서버 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.',
-    'err-network': '네트워크 오류가 발생했습니다. 인터넷 연결을 확인해주세요.',
-    'err-server': '서버 오류가 발생했습니다. 잠시 후 다시 시도해주세요.',
-    'confirm-time-conflict': '이 시간대에 이미 일정이 있습니다. 추가하시겠습니까?',
+    'wishlist-add': '찜했어요',
+    'wishlist-remove': '찜을 해제했어요',
+    'loading': '처리 중…',
+    'err-timeout': '서버 응답이 늦어요. 잠시 뒤 다시 시도해 주세요.',
+    'err-network': '네트워크에 연결할 수 없어요. 인터넷 연결을 확인해 주세요.',
+    'err-server': '서버에 문제가 생겼어요. 잠시 뒤 다시 시도해 주세요.',
+    'confirm-time-conflict': '이 시간대에 이미 일정이 있어요. 그래도 넣을까요?',
     'search-flights': '검색',
     'search-stays': '검색',
     'btn-run': 'AI 추천',
     'btn-run-sync': '통합 생성',
-    'partial-failure': '일부 데이터를 가져오지 못했습니다',
+    'partial-failure': '일부 데이터를 가져오지 못했어요',
     'open-now': '영업중',
     'korea': '한국',
     'japan': '일본',
-    'airport-suffix': '공항',
-    'drag-handle': '☰ 드래그',
+    'airport-suffix': ' 공항',
+    'drag-handle': '☰ 끌어서 일정에 넣기',
     'map-link': '지도',
     'total-min': '총 ',
     'min-suffix': '분',
@@ -5450,14 +7550,14 @@ var I18N = {
     'book-page': '예약 페이지',
     'rooms-guests': '객실 ',
     'guests-sep': ' · 인원 ',
-    'err-multicity': '다구간 검색은 최소 2개 구간이 필요합니다.',
+    'err-multicity': '다구간 검색은 구간이 2개 이상 있어야 해요.',
     'model-label': ' [모델: ',
     'chat-method': '채팅 해석 방식: ',
     'manual-input': '직접입력',
-    'err-airline-required': '항공사 또는 편명을 입력해주세요.',
-    'err-stay-required': '숙소명을 입력해주세요.',
-    'err-return-date': '귀국일이 출발일보다 빠를 수 없습니다.',
-    'err-checkout-date': '체크아웃이 체크인 이후여야 합니다.',
+    'err-airline-required': '항공사나 편명을 입력해 주세요.',
+    'err-stay-required': '숙소 이름을 입력해 주세요.',
+    'err-return-date': '오는 날은 가는 날보다 빠를 수 없어요. 가는 날로 맞췄어요.',
+    'err-checkout-date': '체크아웃은 체크인 다음 날부터 고를 수 있어요. 다음 날로 맞췄어요.',
     'share-title': '여행 일정',
     'fx-loading': '¥/₩ 로딩...',
     'fx-fallback': '¥/₩ 환율 정보 없음',
@@ -5467,36 +7567,36 @@ var I18N = {
     'btn-my-plans': '📂 내 일정',
     'btn-logout': '로그아웃',
     'btn-login': '👤 로그인',
-    'err-no-plan-save': '저장할 일정이 없습니다. 먼저 일정을 생성해주세요.',
+    'err-no-plan-save': '저장할 일정이 없어요. 먼저 일정을 만들어 주세요.',
     'plan-title-suffix': '일 여행',
     'btn-save': '저장',
     'btn-overwrite': '덮어쓰기',
-    'overwrite-confirm': ' 이름의 일정이 이미 있습니다.',
-    'overwrite-note': ' 저장)<br>저장하면 기존 일정을 덮어씁니다.',
-    'save-overwrite-done': '기존 일정을 덮어썼습니다!',
-    'save-fail': '저장 실패',
-    'save-error': '저장 중 오류가 발생했습니다.',
+    'overwrite-confirm': ' 이름의 일정이 이미 있어요.',
+    'overwrite-note': ' 저장)<br>저장하면 기존 일정을 덮어써요.',
+    'save-overwrite-done': '기존 일정을 덮어썼어요.',
+    'save-fail': '저장하지 못했어요.',
+    'save-error': '저장하는 중에 문제가 생겼어요.',
     'loading-plans': '불러오는 중...',
-    'no-saved-plans': '저장된 일정이 없습니다.',
+    'no-saved-plans': '저장한 일정이 아직 없어요.',
     'plan-default': '일정',
     'days-saved': '일 · ',
     'btn-load': '불러오기',
     'btn-delete': '삭제',
-    'load-list-error': '목록을 불러올 수 없습니다.',
-    'load-fail': '불러오기 실패',
-    'load-success': '일정을 불러왔습니다!',
-    'load-error': '불러오기 중 오류가 발생했습니다.',
-    'delete-confirm': '이 일정을 삭제하시겠습니까?',
-    'delete-success': '일정이 삭제되었습니다.',
-    'delete-fail': '삭제 실패',
-    'delete-error': '삭제 중 오류가 발생했습니다.',
-    'route-need-2': '일정에 장소가 2개 이상 필요합니다.',
+    'load-list-error': '목록을 불러오지 못했어요.',
+    'load-fail': '불러오지 못했어요.',
+    'load-success': '일정을 불러왔어요.',
+    'load-error': '불러오는 중에 문제가 생겼어요.',
+    'delete-confirm': '이 일정을 삭제할까요?',
+    'delete-success': '일정을 삭제했어요.',
+    'delete-fail': '삭제하지 못했어요.',
+    'delete-error': '삭제하는 중에 문제가 생겼어요.',
+    'route-need-2': '교통비를 계산하려면 이날 장소가 2곳 이상 있어야 해요.',
     'calculating': '계산 중...',
     'free-label': '무료',
     'source-ai-calc': '✨ AI 기반 계산',
     'source-dist-est': '📏 거리 기반 추정치',
     'source-google-route': '🗺 Google 경로 정보',
-    'err-input': '입력값이 올바르지 않습니다.',
+    'err-input': '입력값을 확인해 주세요.',
     'source-ai-google': '✨ AI + Google Places 기반',
     'source-rule-fb': '📋 규칙기반 추천 (폴백)',
     'source-ai-rec': '✨ AI 기반 추천',
@@ -5504,33 +7604,33 @@ var I18N = {
     'flight-prefix': '항공편: ',
     'food-prefix': '맛집: ',
     'stay-prefix': '숙소: ',
-    'err-need-plan-first': '먼저 AI 일정을 생성해주세요.',
-    'memo-saved': '메모 저장됨',
-    'memo-deleted': '메모 삭제됨',
-    'no-auth-config': '현재 로그인 서비스가 설정되지 않았습니다.',
-    'logged-out': '로그아웃 되었습니다.',
-    'plan-saved-overwrite': '기존 일정을 덮어썼습니다!',
-    'plan-saved': '일정이 저장되었습니다!',
-    'popup-blocked': '팝업이 차단되었습니다.',
-    'history-cleared': '검색 기록이 삭제되었습니다.',
+    'err-need-plan-first': '먼저 [일정 만들기]로 일정을 만들어 주세요.',
+    'memo-saved': '메모를 저장했어요',
+    'memo-deleted': '메모를 지웠어요',
+    'no-auth-config': '지금은 로그인 서비스가 설정되어 있지 않아요.',
+    'logged-out': '로그아웃했어요.',
+    'plan-saved-overwrite': '기존 일정을 덮어썼어요.',
+    'plan-saved': '일정을 저장했어요.',
+    'popup-blocked': '팝업이 막혀 있어요. 이 사이트의 팝업을 허용해 주세요.',
+    'history-cleared': '검색 기록을 지웠어요.',
     'remove-segment': '삭제',
-    'empty-dest': '여행 지역·날짜·테마를 고른 뒤 [추천+AI일정 통합 생성]을 누르면 추천 여행지와 일정, 항공권·숙소가 한 번에 채워져요.',
-    'empty-plan': '아직 만든 일정이 없어요. [추천+AI일정 통합 생성]을 눌러 시작해 보세요.',
-    'empty-rec-food': '일정을 만들면 여행지 주변 추천 맛집이 여기에 표시돼요.',
-    'empty-rec-food-none': '이번 일정에 맞는 추천 맛집을 아직 찾지 못했어요. 아래 [탐색 > 맛집]에서 도시별 맛집을 찾아보세요.',
-    'empty-flights': '일정을 만들면 여행 날짜에 맞춰 항공권을 찾아드려요. 조건을 직접 바꾸고 [항공권 검색]을 눌러도 돼요.',
-    'empty-stays': '일정을 만들면 여행 날짜에 맞춰 숙소를 찾아드려요. 조건을 직접 바꾸고 [숙소 검색]을 눌러도 돼요.',
-    'empty-search': '[검색]을 누르면 결과가 여기에 표시돼요.',
-    'empty-itinerary': '일정을 만들지 못했어요. 조건을 조금 바꾸거나 잠시 후 [추천+AI일정 통합 생성]을 다시 눌러 주세요. 추천 여행지를 아래 날짜 칸에 끌어다 놓아 직접 채울 수도 있어요.',
+    'empty-dest': '말로 요청하거나 조건을 고른 뒤 [일정 만들기]를 누르면 추천 여행지와 일정, 항공권·숙소가 한 번에 채워져요.',
+    'empty-plan': '아직 일정이 없어요. 위에서 [일정 만들기]를 누르면 날짜별 일정이 여기에 채워져요.',
+    'empty-rec-food': '일정을 만들면 여행지 주변 추천 맛집이 여기에 나와요.',
+    'empty-rec-food-none': '이번 일정에 맞는 추천 맛집을 아직 찾지 못했어요. 아래 [탐색 › 맛집]에서 도시별 맛집을 찾아보세요.',
+    'empty-flights': '일정을 만들면 여행 날짜에 맞춰 항공권을 찾아 드려요. 조건을 바꾸고 [항공권 검색]을 눌러도 돼요.',
+    'empty-stays': '일정을 만들면 여행 날짜에 맞춰 숙소를 찾아 드려요. 조건을 바꾸고 [숙소 검색]을 눌러도 돼요.',
+    'empty-search': '[검색]을 누르면 결과가 여기에 나와요.',
+    'empty-itinerary': '일정을 만들지 못했어요. 조건을 조금 바꾸거나 잠시 뒤 [일정만 다시 만들기]를 눌러 주세요. 날짜 칸의 [+ 장소 추가]로 직접 채울 수도 있어요.',
     'map-no-coords': '지도에 표시할 위치 정보가 있는 장소가 아직 없어요.',
     'map-loading': '지도를 불러오는 중이에요…',
-    'map-failed': '지도를 불러오지 못했어요. 장소 옆 MAP 링크로 위치를 확인할 수 있어요.',
+    'map-failed': '지도를 불러오지 못했어요. 장소 옆 [지도] 링크로 위치를 확인할 수 있어요.',
     'map-partial': '위치 정보가 없는 장소 {n}곳은 지도에서 빠졌어요.',
     'photo-credit': '사진:',
     'photo-scope-city': '도시 대표 사진',
     'photo-scope-genre': '음식 예시 사진',
     'stay-date-unconfirmed': '날짜 미확인 최저가',
-    'stay-date-unconfirmed-tip': '선택한 날짜의 빈방과 요금은 확인되지 않았어요. 예약 페이지에서 꼭 확인하세요.',
+    'stay-date-unconfirmed-tip': '선택한 날짜의 빈방과 요금은 확인되지 않았어요. 예약 페이지에서 꼭 확인해 주세요.',
     'sample-data': '예시',
     'sample-no-select': '예시 데이터라 일정에 넣을 수 없어요',
     'flight-other-date': '다른 날짜',
@@ -5548,16 +7648,16 @@ var I18N = {
     'title-weather': '날씨 예보',
     'title-wishlist': '찜/위시리스트',
     'title-history': '검색 기록',
-    'aria-plan': '추천과 AI 일정 통합 생성',
-    'ai-chat-note': '가고 싶은 장소를 자연어로 입력하면 공항 기준 지역/조건을 자동 설정하고 추천을 생성합니다.',
+    'aria-plan': '요청과 조건으로 여행 일정 만들기',
+    'ai-chat-note': '가고 싶은 곳·기간·취향을 적으면 아래 조건을 자동으로 채우고 일정을 만들어요. 비워 두면 아래 조건대로 만들어요.',
     'ph-ai-request': '예: 유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고, 3박 4일로 이동 편한 숙소 추천해줘',
     'aria-ai-request': 'AI 여행 조건 입력',
-    'btn-ai-assist': 'AI로 조건 적용',
+    'btn-ai-assist': '이 내용으로 만들기',
     'aria-rec-tabs': '추천 유형 선택',
-    'plan-control-copy': '선택된 항공·숙소를 유지하고 싶다면 버튼으로 AI 일정만 다시 요청하세요.',
+    'plan-control-copy': '고른 항공권·숙소는 그대로 두고 일정만 새로 짜요.',
     'aria-undo': '일정 되돌리기 (Ctrl+Z)',
     'aria-redo': '일정 다시 실행 (Ctrl+Y)',
-    'manual-flight-hint': '출발/도착 공항·날짜는 여행 조건에서 자동 설정됩니다. 가는편=출발지→도착지, 오는편=도착지→출발지',
+    'manual-flight-hint': '출발·도착 공항과 날짜는 여행 조건에서 자동으로 채워져요. 가는 편은 출발지→도착지, 오는 편은 도착지→출발지예요.',
     'label-flight-no': '편명',
     'label-outbound-dep': '가는편 출발',
     'label-return-dep': '오는편 출발',
@@ -5581,11 +7681,11 @@ var I18N = {
     'aria-trip-tabs': '항공권 유형 선택',
     'ph-from': '출발 공항',
     'ph-to': '도착 공항 (비우면 도시 기준)',
-    'multi-help': '다구간은 아래 구간을 직접 편집해서 검색합니다. 최소 2개 구간이 필요합니다.',
+    'multi-help': '다구간은 아래 구간을 직접 고쳐서 검색해요. 구간이 2개 이상 있어야 해요.',
     'label-date': '날짜',
     'btn-add-segment': '구간 추가',
     'btn-reset-segments': '초기화',
-    'filter-tab': '필터 탭',
+    'filter-tab': '상세 필터',
     'label-price-min': '최소 가격(원)',
     'label-price-max': '최대 가격(원)',
     'ph-price-min': '최소 가격',
@@ -5606,21 +7706,21 @@ var I18N = {
     'ph-modal-place': '추가할 장소 이름 입력',
     'modal-type': '유형',
     'ph-phrases-search': '상황 검색 (예: 주문, 길, 약국)',
-    'login-desc': '로그인하면 일정을 저장하고 불러올 수 있습니다.',
+    'login-desc': '로그인하면 일정을 저장하고 불러올 수 있어요.',
     'login-naver': '네이버 로그인',
     'login-kakao': '카카오 로그인',
     'login-google': 'Google 로그인',
     'save-name-label': '일정 이름',
-    'ph-save-name': '일정 이름을 입력하세요',
+    'ph-save-name': '일정 이름을 적어 주세요',
     'promote-dest': '⬆ 추천 여행지로',
     'promote-added': '✅ 추가됨',
-    'promote-exists': '이미 추천에 있음',
+    'promote-exists': '이미 추천에 있어요',
     'wishlist-toggle': '찜 추가/제거',
     'arrive-at': '{t} 도착',
     'depart-at': '{t} 출발',
     'itin-dest-label': '📍 여행지',
     'itin-food-label': '🍴 맛집',
-    'drop-here': '여기에 드롭',
+    'drop-here': '여기에 놓기',
     'btn-add-food': '맛집 추가',
     'outbound-label': '✈️ 가는편: ',
     'return-label': '✈️ 오는편: ',
@@ -5633,11 +7733,10 @@ var I18N = {
     'tours-loading': '{city} 투어 로딩 중...',
     'tour-klook': 'Klook 투어',
     'tour-viator': 'Viator 투어',
-    'weather-10day': '{city} 10일 예보',
-    'wx-rain': '☔ 여행 기간 중 {n}일 비 예상 - 우산 필수! 실내 관광지 대안을 준비하세요.',
-    'wx-cold': '❄️ 추운 날이 있습니다 - 따뜻한 옷 챙겨오세요.',
-    'wx-hot': '🔥 더운 날이 있습니다 - 수분 보충과 자외선 차단을 준비하세요.',
-    'export-no-plan': '일정이 없습니다. 먼저 AI 일정을 생성해주세요.',
+    'wx-rain': '☔ 여행 기간 중 {n}일은 비 소식이 있어요. 우산을 챙기고 실내 관광지도 준비해 두세요.',
+    'wx-cold': '❄️ 추운 날이 있어요. 따뜻한 옷을 챙겨 주세요.',
+    'wx-hot': '🔥 더운 날이 있어요. 물을 자주 마시고 햇볕을 가려 주세요.',
+    'export-no-plan': '아직 일정이 없어요. 먼저 [일정 만들기]로 일정을 만들어 주세요.',
     'export-flight': '항공권',
     'export-stay': '숙소',
     'export-cost': '예상 비용',
@@ -5645,16 +7744,14 @@ var I18N = {
     'cost-stay-line': '숙소: ',
     'cost-food-line': '식비(예상): ~',
     'cost-transport-line': '교통비(예상): ~',
-    'saved-default': '저장되었습니다.',
-    'alert-title': '📊 일정 분석',
-    'alert-too-many': '{d}: 여행지 {n}곳은 다소 빡빡할 수 있어요. 이동시간을 고려해 3곳 이하를 추천합니다.',
-    'alert-no-meal': '{d}: 맛집이 아직 추가되지 않았어요. 맛집 추가를 추천합니다!',
-    'alert-allday': '{d}: 종일 일정과 다른 여행지가 같은 날에 있습니다. 시간 충돌을 확인하세요.',
-    'alert-dup': '"{p}"이(가) Day {a}과 Day {b}에 중복되어 있습니다.',
-    'alert-late-arrival': 'Day 1 도착이 저녁입니다. 첫날은 숙소 체크인 + 근처 산책 정도가 적당합니다.',
-    'alert-early-dep': '마지막 날 출발이 오전입니다. 공항 2시간 전 도착을 고려해 전날 짐 정리를 추천합니다.',
-    'memo-title': '메모 추가/수정',
-    'memo-prompt': '📝 {p} 메모:',
+    'saved-default': '저장했어요.',
+    'alert-too-many': '{d}: 여행지 {n}곳은 빡빡할 수 있어요. 하루 3곳 이하가 편해요.',
+    'alert-no-meal': '{d}에 맛집이 비어 있어요. 🍴 칸의 [맛집 추가]로 넣어 보세요.',
+    'alert-allday': '{d}: 종일 일정과 다른 여행지가 같은 날에 있어요. 시간이 겹치지 않는지 확인해 주세요.',
+    'alert-dup': '"{p}"이(가) {d}에 겹쳐 있어요.',
+    'alert-late-arrival': '{d} 도착이 저녁이에요. 첫날은 숙소 체크인과 근처 산책 정도가 알맞아요.',
+    'alert-early-dep': '마지막 날 비행기가 오전에 떠나요. 2시간 전에 공항에 닿도록 전날 짐을 싸 두세요.',
+    'memo-title': '메모 쓰기·고치기',
     'fx-chip': '100¥≈{a}원 | 1만원≈¥{b}',
     'fx-title': '환율 (1엔={r}원) · {d}',
     'fx-credit': '환율 제공: Exchange Rate API',
@@ -5665,8 +7762,8 @@ var I18N = {
     'title-save-plan': '현재 일정 저장',
     'title-my-plans': '내 저장 일정',
     'saved-suffix': ' 저장',
-    'wishlist-empty1': '찜한 장소가 없습니다.',
-    'wishlist-empty2': '여행지/맛집 카드의 ❤ 버튼을 눌러보세요.',
+    'wishlist-empty1': '찜한 장소가 아직 없어요.',
+    'wishlist-empty2': '여행지·맛집 카드의 하트 버튼을 눌러 보세요.',
     'wishlist-count': '{n}개 저장됨',
     'hist-plan': '추천+일정: ',
     'hist-flight': '항공권: ',
@@ -5674,26 +7771,126 @@ var I18N = {
     'hist-food': '맛집: ',
     'hist-dest': '여행지: ',
     'days-unit': '일',
-    'hist-empty': '검색 기록이 없습니다.',
+    'hist-empty': '검색 기록이 없어요.',
     'min-ago': '{n}분 전',
     'hours-ago': '{n}시간 전',
     'hist-clear': '기록 전체 삭제',
     'pref-cities': '자주 가는 도시: ',
     'pref-themes': '선호 테마: ',
     'btn-copy': '📋 복사',
-    'phrases-none': '검색 결과가 없습니다.'
+    'drop-kind-mismatch': '맛집은 아침·점심·저녁 칸에, 장소는 오전·오후·종일 칸에 놓아 주세요',
+    'confirm-replace-meal': '이 식사 칸에는 이미 {n}이(가) 있어요. 바꿀까요?',
+    'confirm-duplicate-place': '{n}은(는) 이미 이날 일정에 있어요. 한 번 더 넣을까요?',
+    'added-to-plan-toast': '{d}일차 {p}에 {n}을(를) 넣었어요',
+    'moved-in-plan': '{n}을(를) {d}일차 {p}(으)로 옮겼어요',
+    'meal-slots-full': '이날 식사 칸이 모두 찼어요. 바꿀 칸에 직접 놓아 주세요',
+    'day-label': '{n}일차',
+    'tips-title': '💡 여행 팁',
+    'btn-move': '옮기기',
+    'aria-remove-item': '일정에서 빼기',
+    'btn-add-place': '+ 장소 추가',
+    'modal-custom-hint': '목록에 없으면 이름을 직접 입력',
+    'modal-move-plan': '다른 날·시간대로 옮기기',
+    'btn-move-confirm': '여기로 옮기기',
+    'modal-need-place': '넣을 장소를 고르거나 이름을 입력해 주세요',
+    'meal-extra': '추가 식사',
+    'confirm-overwrite-edits': '직접 고친 일정이 새 일정으로 바뀌어요. 계속할까요? (↩ 되돌리기로 돌아갈 수 있어요)',
+    'regen-hint': '항공·숙소가 바뀌었어요. 시간에 맞춰 다시 짜려면 [일정만 다시 만들기]를 눌러 주세요.',
+    'regen-undo-hint': '새 일정으로 바꿨어요. 이전 일정은 ↩ 되돌리기로 돌아갈 수 있어요.',
+    'confirm-overwrite-during-build': '새 일정을 만드는 동안 직접 고친 내용이 있어요. 새 일정으로 바꿀까요? (취소하면 고친 일정을 그대로 둬요)',
+    'regen-kept-edits': '고친 일정을 그대로 뒀어요. 추천 목록만 새로 바꿨어요.',
+    'confirm-time-overlap': "{day}에는 이미 '{n}'({t}) 일정이 있어 시간이 겹쳐요. 그래도 이 시간에 둘까요?",
+    'alert-time-overlap': "{d}: '{a}'·'{b}' 시간이 겹쳐요. 시간을 확인해 주세요.",
+    'itin-night': '저녁 이후',
+    'intent-budget-low': '예산 절약',
+    'intent-budget-high': '넉넉한 예산',
+    'days-clamped': '여행 일수는 1~10일로 맞췄어요',
+    'trip-changed': '여행 조건이 바뀌었어요. 일정을 어떻게 맞출까요?',
+    'btn-shift-dates': '날짜만 옮기기',
+    'btn-fit-days': '일수 맞추기',
+    'btn-rebuild': '새로 만들기',
+    'confirm-trim-days': '뒤쪽 {n}일에 들어 있는 일정이 지워져요. 계속할까요?',
+    'err-cities': '도시 목록을 불러오지 못했어요. 서버가 깨어나는 중일 수 있어요.',
+    'btn-retry': '다시 시도',
+    'copy-done': '복사했어요',
+    'copy-fail': '복사하지 못했어요. 브라우저의 클립보드 권한을 확인해 주세요.',
+    'draft-found': '저장하지 않은 일정이 있어요 ({t})',
+    'btn-draft-restore': '이어서 편집',
+    'btn-draft-discard': '버리기',
+    'phrases-none': '맞는 문장이 없어요.',
+    'cabin-economy': '이코노미',
+    'cabin-premium': '프리미엄 이코노미',
+    'cabin-business': '비즈니스',
+    'cabin-first': '퍼스트',
+    'baggage-label': '수하물 ',
+    'chat-ai-name': 'Tabimaru',
+    'btn-plan-busy': '일정 만드는 중…',
+    'btn-plan-save': '💾 저장',
+    'btn-plan-export': '📋 내보내기·공유',
+    'ai-score-title': 'AI 추천도 {n}/100',
+    'alert-summary': '📊 확인할 점 {n}개',
+    'alert-dup-same-day': '"{p}"이(가) {d}에 두 번 이상 들어 있어요.',
+    'day-list-sep': '·',
+    'plan-building': '일정을 만드는 중이에요… 보통 10~20초 걸려요.',
+    'server-waking': '무료 서버가 깨어나는 중이에요. 최대 1분쯤 걸릴 수 있어요.',
+    'plan-ready': '일정이 준비됐어요 ↓',
+    'chat-done': '일정이 준비됐어요. 아래 "내 여행 일정"에서 확인하고 끌어서 바꿔 보세요.',
+    'ai-busy-retry': '1분쯤 뒤 [일정만 다시 만들기]를 눌러 보세요.',
+    'ai-daily-retry': 'AI 한도는 한국 시간 오후 4~5시에 다시 생겨요. 그 뒤 [일정만 다시 만들기]를 눌러 보세요.',
+    'weather-out-of-range': '여행 날짜는 아직 예보 범위 밖이라 오늘부터의 예보를 보여 드려요.',
+    'weather-partial-range': '여행 {d}일 중 {n}일만 예보 범위 안에 있어요. 나머지 날은 아직 예보가 없어요.',
+    'weather-days': '{city} {n}일 예보',
+    'login-to-save': '저장하려면 로그인이 필요해요. 로그인 후 다시 [저장]을 눌러 주세요.',
+    'cost-activity-line': '활동비(예상): ~',
+    'cost-total-line': '합계(예상): ~',
+    'memo-input-label': '{p} 메모',
+    'memo-placeholder': '예: 10시 예약, 입장권 미리 사기',
+    'memo-save-fail': '메모를 저장하지 못했어요. 브라우저 저장 공간 설정을 확인해 주세요.',
+    'intent-days': '{n}일',
+    'intent-start': '{date} 출발',
+    'intent-theme': '테마: {t}',
+    'intent-must': '꼭 갈 곳: {p}',
+    'intent-excluded': '제외: {p}',
+    'intent-unsupported': '반영 못 함: {p}',
+    'must-missing': '{names}은(는) 일정에 넣지 못했어요. [+ 장소 추가]로 직접 넣을 수 있어요.',
+    'aria-hide-pick': '추천에서 숨기기',
+    'aria-wishlist': '{p} 찜하기',
+    'aria-wishlist-remove': '{p} 찜 해제',
+    'city-popular': '인기 도시',
+    'city-all': '전체 도시(가나다순)',
+    'plan-summary': '{city} {d}일 · 장소 {p}곳 · 맛집 {f}곳',
+    'plan-lang-note': '이 일정은 {lang}로 만들어졌어요. 바꾸려면 [일정만 다시 만들기]를 눌러 주세요.',
+    'lang-name-ko': '한국어',
+    'lang-name-en': '영어',
+    'lang-name-ja': '일본어',
+    'map-food-no-coords': '맛집 {n}곳은 위치 정보가 없어요',
+    'map-legend-meal': '식사',
+    'food-no-genre-match': '이 장르와 맞는 가게를 아직 찾지 못했어요. 다른 장르(예: 라멘, 스시)로 검색해 보세요.',
+    'intent-food': '맛집: {f}',
+    'intent-cond-indoor': '실내 위주',
+    'intent-cond-late-start': '{t} 이후 시작',
+    'intent-cond-max-places': '하루 {n}곳',
+    'intent-cond-rest-day': '중간에 휴식일',
+    'intent-cond-transit': '대중교통만',
+    'intent-cond-no-shopping': '쇼핑 제외',
+    'intent-cond-low-walking': '적게 걷기',
+    'intent-cond-kids': '아이 동반',
+    'intent-cond-relaxed': '여유로운 일정',
+    'intent-cond-night-view': '야경 넣기',
+    'intent-cond-arrival': '{t} 도착',
+    'intent-cond-departure': '{t} 출발 비행기'
   },
   en: {
-    'section-conditions': 'Travel Conditions', 'section-results': 'Recommendations',
+    'section-conditions': 'Travel Conditions', 'section-results': 'Picks & my plan',
     'section-explore': 'Explore', 'section-flights': 'Flights',
     'section-stays': 'Accommodations', 'section-tours': 'Tours / Activities',
-    'btn-plan': 'Generate Plan', 'btn-flights': 'Search Flights',
+    'btn-plan': 'Create plan', 'btn-flights': 'Search Flights',
     'btn-stays': 'Search Hotels', 'btn-food': 'Search',
     'btn-add': 'Add', 'btn-cancel': 'Cancel', 'btn-close': 'Close',
-    'btn-save': 'Save', 'btn-cancel2': 'Cancel', 'btn-more': 'Show More',
-    'btn-refresh-plan': 'Refresh AI Plan',
-    'btn-undo': '\u21A9 Undo', 'btn-redo': '\u21AA Redo',
-    'tagline': 'AI-powered travel, flights & food recommendations',
+    'btn-cancel2': 'Cancel', 'btn-more': 'Show More',
+    'btn-refresh-plan': 'Rebuild plan only',
+    'btn-undo': '↩ Undo', 'btn-redo': '↪ Redo',
+    'tagline': 'Tell us where you want to go — we\'ll round it into a Japan trip.',
     'brand-subtitle': 'AI Japan Trip Planner',
     'meta-description': 'Tabimaru is a Japan trip planner: find places, flights, stays and food in one place and build your itinerary with AI.',
     'login': 'Log in',
@@ -5722,38 +7919,35 @@ var I18N = {
     'type-apartment': 'Apartment', 'type-guesthouse': 'Guesthouse',
     'tab-rec-dest': 'Destinations', 'tab-rec-food': 'Restaurants',
     'tab-dest': 'Places', 'tab-food': 'Food',
-    'ai-chat-title': 'AI Travel Chat',
-    'ai-itinerary': 'AI Itinerary',
+    'ai-chat-title': 'Describe your trip',
+    'ai-itinerary': 'My itinerary',
     'itinerary-map': 'Itinerary Map',
     'weather-title': 'Weather',
     'manual-flight': 'Enter Flight Manually',
     'manual-stay': 'Enter Hotel Manually',
-    'modal-add-plan': 'Add to Plan',
-    'modal-day-select': 'Select Day', 'modal-timeslot': 'Time Slot',
+    'modal-add-plan': 'Add to plan',
+    'modal-day-select': 'Day', 'modal-timeslot': 'Time Slot',
     'slot-morning': 'Morning', 'slot-afternoon': 'Afternoon', 'slot-allday': 'All Day',
     'slot-breakfast': 'Breakfast', 'slot-lunch': 'Lunch', 'slot-dinner': 'Dinner',
     'panel-checklist': '\u2705 Travel Checklist',
     'panel-emergency': '\uD83C\uDD98 Emergency Info (Japan)',
-    'panel-phrases': '\uD83D\uDDE3 Japanese Phrases',
-    'panel-weather': '\uD83C\uDF24 Weather Forecast',
+    'panel-phrases': '🗣️ Japanese Phrases',
+    'panel-weather': '🌤️ Weather Forecast',
     'panel-export': '\uD83D\uDCCB Export Itinerary',
     'panel-wishlist': '\u2764\uFE0F Wishlist',
     'panel-search-history': '🕘 Search History',
     'panel-myplans': '📂 My Saved Plans',
-    'export-pdf': '\uD83D\uDCC4 Download PDF',
+    'export-pdf': '📄 Save PDF',
     'export-text': '\uD83D\uDCC4 Copy Text',
     'export-markdown': '\uD83D\uDCDD Copy Markdown',
-    'export-link': '\uD83D\uDD17 Copy Link',
+    'export-link': '🔗 Share',
     'login-title': 'Log in', 'save-title': '💾 Save Itinerary',
     'tours-note': 'Check popular tours and activities. (Powered by Klook)',
-    'memo-saved': 'Memo saved.',
     'no-results': 'No results',
-    'add-to-plan': 'Add to Plan',
+    'add-to-plan': '+ Add to plan',
     'promote-to-rec': '\u2196\uFE0F Add to Recs',
-    'map-link': 'Map',
-    'err-rate-limit': 'Too many requests. Please try again later.',
-    'err-need-plan': 'Please generate an AI itinerary first.',
-    'loading': 'Loading...',
+    'err-rate-limit': 'Too many requests. Please try again in a moment.',
+    'err-need-plan': 'Create a plan first with [Create plan].',
     'per-night': '/ night',
     'day-prefix': 'Day ',
     'arrival': 'Arrival',
@@ -5765,8 +7959,8 @@ var I18N = {
     'stay': 'Accommodation',
     'selected-flight': 'Selected Flight',
     'selected-stay': 'Selected Stay',
-    'selected-mark': 'Selected (in AI itinerary)',
-    'include-ai': 'Included in AI plan',
+    'selected-mark': '✓ In my plan',
+    'include-ai': 'Use in my plan',
     'won': 'KRW',
     'nights': 'nights',
     'airline': 'Airline',
@@ -5783,7 +7977,6 @@ var I18N = {
     'rooms-label': 'Rooms ',
     'guests-label': ' Guests ',
     'per-night-unit': 'KRW/night',
-    'no-selection': 'No flights/stays selected.',
     'meal-breakfast': 'Breakfast',
     'meal-lunch': 'Lunch',
     'meal-dinner': 'Dinner',
@@ -5791,11 +7984,9 @@ var I18N = {
     'time-afternoon': 'Afternoon',
     'time-allday': 'All Day',
     'chat-user': 'You',
-    'chat-ai': 'AI',
-    'chat-placeholder': 'Type a place you want to visit and we will automatically match the airport, region, and trip conditions.',
-    'chat-enter-msg': 'Please enter your request.',
-    'chat-processing': 'Generating new recommendations based on your request.',
-    'chat-error': 'An error occurred while processing: ',
+    'chat-enter-msg': 'Tell us where you want to go or what you have in mind.',
+    'chat-processing': 'Building a plan from your request.',
+    'chat-error': 'Could not process your request: ',
     'source-rule': 'Rule-based (default)',
     'source-gemini': 'AI-powered (Gemini)',
     'source-openai': 'AI-powered (OpenAI)',
@@ -5807,7 +7998,7 @@ var I18N = {
     'source-google': 'Google Places',
     'source-tabelog': 'Tabelog Style',
     'source-food-fb': 'Rule-based (fallback)',
-    'mock-notice': 'Currently showing demo data. (API failure or not connected)',
+    'mock-notice': 'Showing sample data for now.',
     'transport-subway': '🚇 Subway',
     'transport-train': '🚃 Train',
     'transport-bus': '🚌 Bus',
@@ -5828,23 +8019,23 @@ var I18N = {
     'cost-activity': '🎫 Activities',
     'rec-dest': 'Recommended',
     'error-prefix': 'Error: ',
-    'copy-text-done': 'Text copied to clipboard!',
-    'copy-md-done': 'Markdown copied!',
-    'copy-itin-done': 'Itinerary copied to clipboard!',
-    'weather-loading': 'Loading weather...',
-    'weather-error': 'Unable to load weather info.',
-    'logout-confirm': 'Are you sure you want to log out?',
+    'copy-text-done': 'Text copied.',
+    'copy-md-done': 'Markdown copied.',
+    'copy-itin-done': 'Plan copied.',
+    'weather-loading': 'Loading weather…',
+    'weather-error': 'Could not load the weather.',
+    'logout-confirm': 'Log out now?',
     'login-required': 'Please log in first.',
-    'save-success': 'Itinerary saved!',
-    'no-plan-yet': 'Please generate an itinerary first.',
-    'add-to-plan-btn': 'Add to Plan',
+    'save-success': 'Plan saved.',
+    'no-plan-yet': 'Create a plan first with [Create plan].',
+    'add-to-plan-btn': '+ Add to plan',
     'promote-food': '⬆ Add to food picks',
     'wishlist-add': 'Added to wishlist',
     'wishlist-remove': 'Removed from wishlist',
     'korea': 'Korea',
     'japan': 'Japan',
-    'airport-suffix': 'Airport',
-    'drag-handle': '☰ Drag',
+    'airport-suffix': ' Airport',
+    'drag-handle': '☰ Drag into your plan',
     'map-link': 'Map',
     'total-min': 'Total ',
     'min-suffix': ' min',
@@ -5877,14 +8068,14 @@ var I18N = {
     'book-page': 'Book Now',
     'rooms-guests': 'Rooms ',
     'guests-sep': ' · Guests ',
-    'err-multicity': 'Multi-city search requires at least 2 segments.',
+    'err-multicity': 'Multi-city search needs at least 2 segments.',
     'model-label': ' [Model: ',
     'chat-method': 'Chat method: ',
     'manual-input': 'Manual',
-    'err-airline-required': 'Please enter airline or flight number.',
-    'err-stay-required': 'Please enter hotel name.',
-    'err-return-date': 'Return date cannot be before departure.',
-    'err-checkout-date': 'Check-out must be after check-in.',
+    'err-airline-required': 'Enter an airline or a flight number.',
+    'err-stay-required': 'Enter the hotel name.',
+    'err-return-date': 'Return can’t be before departure, so it was set to the departure date.',
+    'err-checkout-date': 'Check-out must be after check-in, so it was moved to the next day.',
     'share-title': 'Itinerary',
     'fx-loading': '¥/₩ Loading...',
     'fx-fallback': '¥/₩ rate unavailable',
@@ -5894,36 +8085,36 @@ var I18N = {
     'btn-my-plans': '📂 My Plans',
     'btn-logout': 'Logout',
     'btn-login': '👤 Login',
-    'err-no-plan-save': 'No itinerary to save. Please generate one first.',
+    'err-no-plan-save': 'Nothing to save yet. Create a plan first.',
     'plan-title-suffix': '-day trip',
     'btn-save': 'Save',
     'btn-overwrite': 'Overwrite',
     'overwrite-confirm': ' already exists.',
     'overwrite-note': ')<br>Saving will overwrite the existing plan.',
-    'save-overwrite-done': 'Plan overwritten!',
-    'save-fail': 'Save failed',
-    'save-error': 'An error occurred while saving.',
+    'save-overwrite-done': 'Plan overwritten.',
+    'save-fail': 'Could not save.',
+    'save-error': 'Something went wrong while saving.',
     'loading-plans': 'Loading...',
-    'no-saved-plans': 'No saved plans.',
+    'no-saved-plans': 'No saved plans yet.',
     'plan-default': 'Plan',
     'days-saved': 'd · ',
     'btn-load': 'Load',
     'btn-delete': 'Delete',
-    'load-list-error': 'Failed to load plan list.',
-    'load-fail': 'Load failed',
-    'load-success': 'Itinerary loaded!',
-    'load-error': 'An error occurred while loading.',
+    'load-list-error': 'Could not load your plans.',
+    'load-fail': 'Could not load.',
+    'load-success': 'Plan loaded.',
+    'load-error': 'Something went wrong while loading.',
     'delete-confirm': 'Delete this plan?',
     'delete-success': 'Plan deleted.',
-    'delete-fail': 'Delete failed',
-    'delete-error': 'An error occurred while deleting.',
-    'route-need-2': 'Need at least 2 places in the itinerary.',
+    'delete-fail': 'Could not delete.',
+    'delete-error': 'Something went wrong while deleting.',
+    'route-need-2': 'Add at least 2 places to this day to calculate transit costs.',
     'calculating': 'Calculating...',
     'free-label': 'Free',
     'source-ai-calc': '✨ AI Calculation',
     'source-dist-est': '📏 Distance-based estimate',
     'source-google-route': '🗺 Google route data',
-    'err-input': 'Invalid input.',
+    'err-input': 'Please check what you entered.',
     'source-ai-google': '✨ AI + Google Places',
     'source-rule-fb': '📋 Rule-based (fallback)',
     'source-ai-rec': '✨ AI Recommendations',
@@ -5931,38 +8122,38 @@ var I18N = {
     'flight-prefix': 'Flights: ',
     'food-prefix': 'Food: ',
     'stay-prefix': 'Stays: ',
-    'err-need-plan-first': 'Please generate an AI itinerary first.',
-    'memo-saved': 'Memo saved',
-    'memo-deleted': 'Memo deleted',
-    'no-auth-config': 'Login service not configured.',
+    'err-need-plan-first': 'Create a plan first with [Create plan].',
+    'memo-saved': 'Note saved',
+    'memo-deleted': 'Note deleted',
+    'no-auth-config': 'Login is not set up right now.',
     'logged-out': 'Logged out.',
-    'plan-saved-overwrite': 'Plan overwritten!',
-    'plan-saved': 'Itinerary saved!',
-    'popup-blocked': 'Popup was blocked.',
+    'plan-saved-overwrite': 'Plan overwritten.',
+    'plan-saved': 'Plan saved.',
+    'popup-blocked': 'The pop-up was blocked. Please allow pop-ups for this site.',
     'history-cleared': 'Search history cleared.',
     'remove-segment': 'Remove',
-    'loading': 'Loading...',
-    'err-timeout': 'Server timed out. Please try again.',
+    'loading': 'Loading…',
+    'err-timeout': 'The server took too long. Please try again in a moment.',
     'err-network': 'Network error. Please check your connection.',
-    'err-server': 'Server error. Please try again later.',
-    'confirm-time-conflict': 'This time slot already has an item. Add anyway?',
+    'err-server': 'Server error. Please try again in a moment.',
+    'confirm-time-conflict': 'This time slot already has something. Add anyway?',
     'search-flights': 'Search',
     'search-stays': 'Search',
     'btn-run': 'AI Recommend',
     'btn-run-sync': 'Full Generate',
     'partial-failure': 'Some data could not be loaded',
     'open-now': 'Open',
-    'empty-dest': 'Pick a destination, dates and theme, then press [Generate Plan] to fill in recommendations, an itinerary, flights and stays at once.',
-    'empty-plan': 'No itinerary yet. Press [Generate Plan] to get started.',
-    'empty-rec-food': 'Restaurant picks near your destinations appear here after you generate a plan.',
-    'empty-rec-food-none': 'We couldn\'t find restaurant picks for this plan yet. Try Explore > Food below.',
-    'empty-flights': 'Flights for your dates appear after you generate a plan. You can also change the fields and press [Search Flights].',
-    'empty-stays': 'Stays for your dates appear after you generate a plan. You can also change the fields and press [Search Hotels].',
+    'empty-dest': 'Describe your trip or pick the conditions, then press [Create plan] to fill in places, a day-by-day plan, flights and stays at once.',
+    'empty-plan': 'No plan yet. Press [Create plan] above and your day-by-day plan will appear here.',
+    'empty-rec-food': 'Restaurant picks near your places appear here once you create a plan.',
+    'empty-rec-food-none': 'We couldn\'t find restaurant picks for this plan yet. Try Explore › Food below.',
+    'empty-flights': 'Flights for your dates appear once you create a plan. You can also change the fields and press [Search Flights].',
+    'empty-stays': 'Stays for your dates appear once you create a plan. You can also change the fields and press [Search Hotels].',
     'empty-search': 'Press [Search] to see results here.',
-    'empty-itinerary': 'We couldn\'t build this itinerary. Adjust the conditions or press [Generate Plan] again in a moment. You can also drag recommended places into the days below.',
+    'empty-itinerary': 'We couldn\'t build this plan. Change the conditions a little or press [Rebuild plan only] in a moment. You can also fill each day yourself with [+ Add place].',
     'map-no-coords': 'None of the places in this plan have map coordinates yet.',
     'map-loading': 'Loading map…',
-    'map-failed': 'The map couldn\'t load. Use the MAP link next to each place.',
+    'map-failed': 'The map couldn\'t load. Use the [Map] link next to each place.',
     'map-partial': '{n} place(s) without coordinates are not shown on the map.',
     'photo-credit': 'Photo:',
     'photo-scope-city': 'City photo',
@@ -5986,13 +8177,13 @@ var I18N = {
     'title-weather': 'Weather forecast',
     'title-wishlist': 'Wishlist',
     'title-history': 'Search history',
-    'aria-plan': 'Generate recommendations and an AI itinerary',
-    'ai-chat-note': 'Describe where you want to go in your own words. We\'ll set the region, airport and trip conditions, then build recommendations.',
+    'aria-plan': 'Create a trip plan from your request and conditions',
+    'ai-chat-note': 'Write where you want to go, for how long and what you like — we\'ll fill in the conditions below and build your plan. Leave it blank to use the conditions below.',
     'ph-ai-request': 'e.g. I really want to see Universal Studios and Dotonbori. 4 days, 3 nights, with a hotel that\'s easy to get around from.',
     'aria-ai-request': 'Describe your trip for the AI',
-    'btn-ai-assist': 'Apply with AI',
+    'btn-ai-assist': 'Plan from this',
     'aria-rec-tabs': 'Recommendation type',
-    'plan-control-copy': 'To keep your selected flight and stay, refresh only the AI itinerary.',
+    'plan-control-copy': 'Keeps your chosen flight and stay, and rebuilds only the plan.',
     'aria-undo': 'Undo (Ctrl+Z)',
     'aria-redo': 'Redo (Ctrl+Y)',
     'manual-flight-hint': 'Airports and dates come from your trip conditions. Outbound = origin → destination, return = destination → origin.',
@@ -6023,7 +8214,7 @@ var I18N = {
     'label-date': 'Date',
     'btn-add-segment': 'Add segment',
     'btn-reset-segments': 'Reset',
-    'filter-tab': 'Filters',
+    'filter-tab': 'More filters',
     'label-price-min': 'Min price (KRW)',
     'label-price-max': 'Max price (KRW)',
     'ph-price-min': 'Min price',
@@ -6044,7 +8235,7 @@ var I18N = {
     'ph-modal-place': 'Enter a place to add',
     'modal-type': 'Type',
     'ph-phrases-search': 'Search (e.g. menu, station, pharmacy)',
-    'login-desc': 'Log in to save and load your itineraries.',
+    'login-desc': 'Log in to save and load your plans.',
     'login-naver': 'Log in with Naver',
     'login-kakao': 'Log in with Kakao',
     'login-google': 'Log in with Google',
@@ -6071,11 +8262,10 @@ var I18N = {
     'tours-loading': 'Loading tours for {city}…',
     'tour-klook': 'Klook tours',
     'tour-viator': 'Viator tours',
-    'weather-10day': '{city} 10-day forecast',
     'wx-rain': '☔ Rain is expected on {n} day(s) of your trip. Bring an umbrella and plan some indoor spots.',
     'wx-cold': '❄️ Some days will be cold. Pack warm clothes.',
     'wx-hot': '🔥 Some days will be hot. Stay hydrated and protect yourself from the sun.',
-    'export-no-plan': 'No itinerary yet. Generate an AI itinerary first.',
+    'export-no-plan': 'No plan yet. Create one first with [Create plan].',
     'export-flight': 'Flight',
     'export-stay': 'Stay',
     'export-cost': 'Estimated costs',
@@ -6084,15 +8274,13 @@ var I18N = {
     'cost-food-line': 'Food (est.): ~',
     'cost-transport-line': 'Transport (est.): ~',
     'saved-default': 'Saved.',
-    'alert-title': '📊 Plan check',
-    'alert-too-many': '{d}: {n} places may make for a tight day. With travel time, 3 or fewer is recommended.',
-    'alert-no-meal': '{d}: No restaurants yet. Consider adding one!',
-    'alert-allday': '{d}: An all-day plan shares the day with other places. Check for time conflicts.',
-    'alert-dup': '"{p}" appears on both Day {a} and Day {b}.',
-    'alert-late-arrival': 'You arrive in the evening on Day 1. Checking in and a short walk nearby is plenty.',
+    'alert-too-many': '{d}: {n} places may make for a tight day — 3 or fewer is easier.',
+    'alert-no-meal': 'No restaurants yet on {d} — use [Add restaurant] in the 🍴 row.',
+    'alert-allday': '{d}: an all-day plan shares the day with other places. Check that the times don\'t overlap.',
+    'alert-dup': '"{p}" appears on {d}.',
+    'alert-late-arrival': 'You arrive in the evening on {d}. Checking in and a short walk nearby is plenty.',
     'alert-early-dep': 'Your last-day flight leaves in the morning. Aim to reach the airport 2 hours early and pack the night before.',
     'memo-title': 'Add or edit a note',
-    'memo-prompt': '📝 Note for {p}:',
     'fx-chip': '¥100≈₩{a} | ₩10,000≈¥{b}',
     'fx-title': 'Exchange rate (¥1 = ₩{r}) · {d}',
     'fx-credit': 'Rates By Exchange Rate API',
@@ -6119,19 +8307,119 @@ var I18N = {
     'pref-cities': 'Frequent cities: ',
     'pref-themes': 'Favorite themes: ',
     'btn-copy': '📋 Copy',
-    'phrases-none': 'No matching phrases.'
+    'drop-kind-mismatch': 'Drop restaurants on Breakfast, Lunch or Dinner, and places on Morning, Afternoon or All Day',
+    'confirm-replace-meal': '{n} is already in this meal slot. Replace it?',
+    'confirm-duplicate-place': '{n} is already on this day. Add it again?',
+    'added-to-plan-toast': 'Added {n} to Day {d} {p}',
+    'moved-in-plan': 'Moved {n} to Day {d} {p}',
+    'meal-slots-full': 'All meal slots on this day are full — drop onto the one to replace',
+    'day-label': 'Day {n}',
+    'tips-title': '💡 Travel tips',
+    'btn-move': 'Move',
+    'aria-remove-item': 'Remove from plan',
+    'btn-add-place': '+ Add place',
+    'modal-custom-hint': 'Not listed? Type a name',
+    'modal-move-plan': 'Move to another day or time',
+    'btn-move-confirm': 'Move here',
+    'modal-need-place': 'Pick a place or type a name',
+    'meal-extra': 'Extra meal',
+    'confirm-overwrite-edits': 'Your edits will be replaced by a new plan. Continue? (You can go back with ↩ Undo)',
+    'regen-hint': 'Flight or stay changed. Press [Rebuild plan only] to re-fit the days.',
+    'regen-undo-hint': 'Replaced with a new plan — use ↩ Undo to go back.',
+    'confirm-overwrite-during-build': 'You edited the plan while a new one was being made. Replace it with the new plan? (Cancel keeps your edits)',
+    'regen-kept-edits': 'Kept your edited plan. Only the recommendations were refreshed.',
+    'confirm-time-overlap': "{day} already has '{n}' ({t}) at this time. Place it here anyway?",
+    'alert-time-overlap': "{d}: '{a}' and '{b}' overlap in time. Please check the times.",
+    'itin-night': 'Evening',
+    'intent-budget-low': 'Low budget',
+    'intent-budget-high': 'Premium budget',
+    'days-clamped': 'Trip length is set to 1–10 days',
+    'trip-changed': 'Your trip dates changed. How should the plan follow?',
+    'btn-shift-dates': 'Shift dates only',
+    'btn-fit-days': 'Match day count',
+    'btn-rebuild': 'Make a new plan',
+    'confirm-trim-days': 'Plans on the last {n} day(s) will be removed. Continue?',
+    'err-cities': 'Could not load the city list. The server may still be waking up.',
+    'btn-retry': 'Try again',
+    'copy-done': 'Copied',
+    'copy-fail': 'Could not copy. Check your browser’s clipboard permission.',
+    'draft-found': 'You have an unsaved plan ({t})',
+    'btn-draft-restore': 'Continue editing',
+    'btn-draft-discard': 'Discard',
+    'phrases-none': 'No matching phrases.',
+    'cabin-economy': 'Economy',
+    'cabin-premium': 'Premium Economy',
+    'cabin-business': 'Business',
+    'cabin-first': 'First',
+    'baggage-label': 'Baggage ',
+    'chat-ai-name': 'Tabimaru',
+    'btn-plan-busy': 'Creating…',
+    'btn-plan-save': '💾 Save',
+    'btn-plan-export': '📋 Export / share',
+    'ai-score-title': 'AI match {n}/100',
+    'alert-summary': '📊 Things to check: {n}',
+    'alert-dup-same-day': '"{p}" is on {d} more than once.',
+    'day-list-sep': ', ',
+    'plan-building': 'Building your plan… usually 10–20 seconds.',
+    'server-waking': 'The free server is waking up — this can take up to a minute.',
+    'plan-ready': 'Your plan is ready ↓',
+    'chat-done': 'Your plan is ready. Check "My itinerary" below and drag items to rearrange them.',
+    'ai-busy-retry': 'Try [Rebuild plan only] again in about a minute.',
+    'ai-daily-retry': 'The AI quota resets around 4–5 pm Korea time. Try [Rebuild plan only] after that.',
+    'weather-out-of-range': 'Your trip dates are beyond the forecast range, so this shows the forecast from today.',
+    'weather-partial-range': 'Only {n} of your {d} trip days are within the forecast range so far.',
+    'weather-days': '{city} {n}-day forecast',
+    'login-to-save': 'Log in to save. After logging in, press [Save] again.',
+    'cost-activity-line': 'Activities (est.): ~',
+    'cost-total-line': 'Total (est.): ~',
+    'memo-input-label': 'Note for {p}',
+    'memo-placeholder': 'e.g. booked for 10:00, buy tickets ahead',
+    'memo-save-fail': 'Couldn\'t save the note. Check your browser storage settings.',
+    'intent-days': '{n} days',
+    'intent-start': 'from {date}',
+    'intent-theme': 'Theme: {t}',
+    'intent-must': 'Must-see: {p}',
+    'intent-excluded': 'Skip: {p}',
+    'intent-unsupported': 'Not included: {p}',
+    'must-missing': 'Couldn\'t fit {names} into the plan. You can add it yourself with [+ Add place].',
+    'aria-hide-pick': 'Hide from picks',
+    'aria-wishlist': 'Save {p} to wishlist',
+    'aria-wishlist-remove': 'Remove {p} from wishlist',
+    'city-popular': 'Popular',
+    'city-all': 'All cities',
+    'plan-summary': '{city} · {d} days · {p} places · {f} restaurants',
+    'plan-lang-note': 'This plan was created in {lang}. To switch, press [Rebuild plan only].',
+    'lang-name-ko': 'Korean',
+    'lang-name-en': 'English',
+    'lang-name-ja': 'Japanese',
+    'map-food-no-coords': '{n} restaurant(s) have no location yet',
+    'map-legend-meal': 'Meals',
+    'food-no-genre-match': 'We couldn\'t find restaurants for this genre yet. Try another genre (e.g. ramen, sushi).',
+    'intent-food': 'Food: {f}',
+    'intent-cond-indoor': 'Indoor-first',
+    'intent-cond-late-start': 'Start after {t}',
+    'intent-cond-max-places': 'Up to {n} places a day',
+    'intent-cond-rest-day': 'A rest day in the middle',
+    'intent-cond-transit': 'Public transit only',
+    'intent-cond-no-shopping': 'No shopping',
+    'intent-cond-low-walking': 'Less walking',
+    'intent-cond-kids': 'Kid-friendly',
+    'intent-cond-relaxed': 'Relaxed pace',
+    'intent-cond-night-view': 'Night views',
+    'intent-cond-arrival': 'Arrive {t}',
+    'intent-cond-departure': 'Fly out {t}'
   },
   ja: {
-    'section-conditions': '\u65C5\u884C\u6761\u4EF6', 'section-results': '\u304A\u3059\u3059\u3081',
+    'section-conditions': '\u65C5\u884C\u6761\u4EF6', 'section-results': 'おすすめと旅のプラン',
     'section-explore': '\u63A2\u7D22', 'section-flights': '\u822A\u7A7A\u5238',
     'section-stays': '\u5BBF\u6CCA', 'section-tours': '\u30C4\u30A2\u30FC / \u30A2\u30AF\u30C6\u30A3\u30D3\u30C6\u30A3',
-    'btn-plan': '\u30D7\u30E9\u30F3\u4F5C\u6210', 'btn-flights': '\u822A\u7A7A\u5238\u691C\u7D22',
+    'btn-plan': 'プランを作る', 'btn-flights': '\u822A\u7A7A\u5238\u691C\u7D22',
     'btn-stays': '\u5BBF\u6CCA\u691C\u7D22', 'btn-food': '\u691C\u7D22',
     'btn-add': '\u8FFD\u52A0', 'btn-cancel': '\u30AD\u30E3\u30F3\u30BB\u30EB', 'btn-close': '\u9589\u3058\u308B',
-    'btn-save': '\u4FDD\u5B58', 'btn-cancel2': '\u30AD\u30E3\u30F3\u30BB\u30EB', 'btn-more': '\u3082\u3063\u3068\u898B\u308B',
-    'btn-refresh-plan': 'AI\u30D7\u30E9\u30F3\u66F4\u65B0',
-    'btn-undo': '\u21A9 \u5143\u306B\u623B\u3059', 'btn-redo': '\u21AA \u3084\u308A\u76F4\u3057',
-    'tagline': 'AI\u3067\u65C5\u884C\u5148\u30FB\u822A\u7A7A\u5238\u30FB\u30B0\u30EB\u30E1\u3092\u63A8\u85A6',
+    'btn-cancel2': '\u30AD\u30E3\u30F3\u30BB\u30EB', 'btn-more': '\u3082\u3063\u3068\u898B\u308B',
+    'btn-refresh-plan': 'プランだけ作り直す',
+    'btn-undo': '↩ 元に戻す', 'btn-redo': '↪ やり直し',
+    'tagline': '行きたい場所を伝えるだけで、日本旅行のプランをまるっと作ります。',
     'brand-subtitle': 'AI\u65E5\u672C\u65C5\u884C\u30D7\u30E9\u30F3\u30CA\u30FC',
     'meta-description': 'Tabimaru\u306F\u3001\u89B3\u5149\u5730\u30FB\u822A\u7A7A\u5238\u30FB\u5BBF\u30FB\u30B0\u30EB\u30E1\u3092\u307E\u3068\u3081\u3066\u63A2\u3057\u3001AI\u3067\u65C5\u884C\u30D7\u30E9\u30F3\u3092\u4F5C\u308C\u308B\u65E5\u672C\u65C5\u884C\u30D7\u30E9\u30F3\u30CA\u30FC\u3067\u3059\u3002',
     'login': 'ログイン',
@@ -6144,7 +8432,7 @@ var I18N = {
     'label-city2': '\u90FD\u5E02', 'label-theme2': '\u30C6\u30FC\u30DE',
     'label-city3': '\u90FD\u5E02', 'label-genre': '\u30B8\u30E3\u30F3\u30EB',
     'label-from-airport': '\u51FA\u767A\u7A7A\u6E2F', 'label-to-airport': '\u5230\u7740\u7A7A\u6E2F',
-    'label-depart-date': '\u51FA\u767A\u65E5', 'label-return-date': '\u5E30\u56FD\u65E5',
+    'label-depart-date': '往路', 'label-return-date': '復路',
     'label-flight-pref': '\u4E26\u3073\u66FF\u3048',
     'label-checkin': '\u30C1\u30A7\u30C3\u30AF\u30A4\u30F3', 'label-checkout': '\u30C1\u30A7\u30C3\u30AF\u30A2\u30A6\u30C8',
     'label-guests': '\u4EBA\u6570', 'label-rooms': '\u90E8\u5C4B\u6570', 'label-sort': '\u4E26\u3073\u66FF\u3048',
@@ -6160,38 +8448,35 @@ var I18N = {
     'type-apartment': '\u30A2\u30D1\u30FC\u30C8\u30E1\u30F3\u30C8', 'type-guesthouse': '\u30B2\u30B9\u30C8\u30CF\u30A6\u30B9',
     'tab-rec-dest': '\u304A\u3059\u3059\u3081\u30B9\u30DD\u30C3\u30C8', 'tab-rec-food': '\u304A\u3059\u3059\u3081\u30B0\u30EB\u30E1',
     'tab-dest': '\u30B9\u30DD\u30C3\u30C8', 'tab-food': '\u30B0\u30EB\u30E1',
-    'ai-chat-title': 'AI\u65C5\u884C\u30C1\u30E3\u30C3\u30C8',
-    'ai-itinerary': 'AI\u30D7\u30E9\u30F3',
+    'ai-chat-title': '言葉でリクエスト',
+    'ai-itinerary': '旅のプラン',
     'itinerary-map': '\u30D7\u30E9\u30F3\u5730\u56F3',
     'weather-title': '\u5929\u6C17\u4E88\u5831',
     'manual-flight': '\u822A\u7A7A\u5238\u3092\u624B\u52D5\u5165\u529B',
     'manual-stay': '\u5BBF\u6CCA\u3092\u624B\u52D5\u5165\u529B',
-    'modal-add-plan': '\u30D7\u30E9\u30F3\u306B\u8FFD\u52A0',
-    'modal-day-select': 'Day\u9078\u629E', 'modal-timeslot': '\u6642\u9593\u5E2F',
+    'modal-add-plan': 'プランに入れる',
+    'modal-day-select': '日付', 'modal-timeslot': '\u6642\u9593\u5E2F',
     'slot-morning': '\u5348\u524D', 'slot-afternoon': '\u5348\u5F8C', 'slot-allday': '\u7D42\u65E5',
     'slot-breakfast': '朝食', 'slot-lunch': '昼食', 'slot-dinner': '夕食',
     'panel-checklist': '\u2705 \u65C5\u884C\u6E96\u5099\u30C1\u30A7\u30C3\u30AF\u30EA\u30B9\u30C8',
     'panel-emergency': '\uD83C\uDD98 \u7DCA\u6025\u60C5\u5831',
-    'panel-phrases': '\uD83D\uDDE3 \u65C5\u884C\u4F1A\u8A71',
-    'panel-weather': '\uD83C\uDF24 \u5929\u6C17\u4E88\u5831',
+    'panel-phrases': '🗣️ 旅行会話',
+    'panel-weather': '🌤️ 天気予報',
     'panel-export': '\uD83D\uDCCB \u30D7\u30E9\u30F3\u30A8\u30AF\u30B9\u30DD\u30FC\u30C8',
     'panel-wishlist': '\u2764\uFE0F \u304A\u6C17\u306B\u5165\u308A',
     'panel-search-history': '🕘 検索履歴',
     'panel-myplans': '📂 保存済みプラン',
-    'export-pdf': '\uD83D\uDCC4 PDF\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9',
+    'export-pdf': '📄 PDF保存',
     'export-text': '\uD83D\uDCC4 \u30C6\u30AD\u30B9\u30C8\u30B3\u30D4\u30FC',
     'export-markdown': '\uD83D\uDCDD \u30DE\u30FC\u30AF\u30C0\u30A6\u30F3\u30B3\u30D4\u30FC',
-    'export-link': '\uD83D\uDD17 \u30EA\u30F3\u30AF\u30B3\u30D4\u30FC',
+    'export-link': '🔗 共有',
     'login-title': 'ログイン', 'save-title': '💾 プランを保存',
     'tours-note': '\u4EBA\u6C17\u30C4\u30A2\u30FC\u3068\u30A2\u30AF\u30C6\u30A3\u30D3\u30C6\u30A3\u3092\u30C1\u30A7\u30C3\u30AF\u3002(Klook\u63D0\u4F9B)',
-    'memo-saved': '\u30E1\u30E2\u304C\u4FDD\u5B58\u3055\u308C\u307E\u3057\u305F\u3002',
     'no-results': '\u7D50\u679C\u306A\u3057',
-    'add-to-plan': '\u30D7\u30E9\u30F3\u306B\u8FFD\u52A0',
+    'add-to-plan': '+ プランに入れる',
     'promote-to-rec': '\u2196\uFE0F \u304A\u3059\u3059\u3081\u306B\u8FFD\u52A0',
-    'map-link': '\u5730\u56F3',
-    'err-rate-limit': '\u30EA\u30AF\u30A8\u30B9\u30C8\u304C\u591A\u3059\u304E\u307E\u3059\u3002\u3057\u3070\u3089\u304F\u304A\u5F85\u3061\u304F\u3060\u3055\u3044\u3002',
-    'err-need-plan': '\u307E\u305AAI\u30D7\u30E9\u30F3\u3092\u4F5C\u6210\u3057\u3066\u304F\u3060\u3055\u3044\u3002',
-    'loading': '\u8AAD\u307F\u8FBC\u307F\u4E2D...',
+    'err-rate-limit': 'リクエストが多すぎます。しばらくしてからもう一度お試しください。',
+    'err-need-plan': '先に［プランを作る］でプランを作ってください。',
     'per-night': '/ \u6CCA',
     'day-prefix': 'Day ',
     'arrival': '到着',
@@ -6203,8 +8488,8 @@ var I18N = {
     'stay': '宿泊',
     'selected-flight': '選択航空券',
     'selected-stay': '選択宿泊',
-    'selected-mark': '選択済み (AIプランに反映)',
-    'include-ai': 'AIプランに含まれる',
+    'selected-mark': '✓ プランに反映済み',
+    'include-ai': 'プランに反映',
     'won': 'ウォン',
     'nights': '泊',
     'airline': '航空会社',
@@ -6215,25 +8500,22 @@ var I18N = {
     'airline-na': '航空会社情報なし',
     'price-no-info': '価格情報なし',
     'provider-na': '提供元なし',
-    'edit': '✏️編集',
-    'delete': '✕削除',
+    'edit': '✏️ 編集',
+    'delete': '✕ 削除',
     'room': '客室 ',
     'rooms-label': '部屋 ',
     'guests-label': ' · 人数 ',
     'per-night-unit': 'ウォン/泊',
-    'no-selection': '航空券/宿泊が選択されていません。',
     'meal-breakfast': '朝食',
     'meal-lunch': '昼食',
     'meal-dinner': '夕食',
     'time-morning': '午前',
     'time-afternoon': '午後',
     'time-allday': '終日',
-    'chat-user': 'ユーザー',
-    'chat-ai': 'AI',
-    'chat-placeholder': '行きたい場所をチャットで入力すると、空港・地域・旅行条件を自動調整します。',
-    'chat-enter-msg': 'リクエストを入力してください。',
-    'chat-processing': 'リクエストを反映して新しいおすすめを生成します。',
-    'chat-error': 'リクエスト処理中にエラーが発生しました: ',
+    'chat-user': 'わたし',
+    'chat-enter-msg': '行きたい場所や希望を入力してください。',
+    'chat-processing': 'リクエストを反映してプランを作ります。',
+    'chat-error': 'リクエストを処理できませんでした: ',
     'source-rule': 'ルールベース (デフォルト)',
     'source-gemini': 'AIベース (Gemini)',
     'source-openai': 'AIベース (OpenAI)',
@@ -6245,7 +8527,7 @@ var I18N = {
     'source-google': 'Google Placesベース',
     'source-tabelog': '食べログスタイル',
     'source-food-fb': 'ルールベース (フォールバック)',
-    'mock-notice': '現在デモデータを表示中です。(API失敗または未接続)',
+    'mock-notice': '現在サンプルデータを表示しています。',
     'transport-subway': '🚇 地下鉄',
     'transport-train': '🚃 電車',
     'transport-bus': '🚌 バス',
@@ -6266,23 +8548,23 @@ var I18N = {
     'cost-activity': '🎫 アクティビティ',
     'rec-dest': 'おすすめ',
     'error-prefix': 'エラー: ',
-    'copy-text-done': 'テキストがコピーされました!',
-    'copy-md-done': 'マークダウンがコピーされました!',
-    'copy-itin-done': 'プランがコピーされました!',
-    'weather-loading': '天気情報読み込み中...',
-    'weather-error': '天気情報を取得できません。',
+    'copy-text-done': 'テキストをコピーしました。',
+    'copy-md-done': 'マークダウンをコピーしました。',
+    'copy-itin-done': 'プランをコピーしました。',
+    'weather-loading': '天気を読み込み中…',
+    'weather-error': '天気情報を取得できませんでした。',
     'logout-confirm': 'ログアウトしますか？',
     'login-required': 'ログインが必要です。',
-    'save-success': 'プランが保存されました!',
-    'no-plan-yet': 'まずプランを作成してください。',
-    'add-to-plan-btn': 'プランに追加',
+    'save-success': 'プランを保存しました。',
+    'no-plan-yet': '先に［プランを作る］でプランを作ってください。',
+    'add-to-plan-btn': '+ プランに入れる',
     'promote-food': '⬆ おすすめグルメに追加',
-    'wishlist-add': 'お気に入りに追加',
-    'wishlist-remove': 'お気に入りから削除',
+    'wishlist-add': 'お気に入りに追加しました',
+    'wishlist-remove': 'お気に入りから外しました',
     'korea': '韓国',
     'japan': '日本',
     'airport-suffix': '空港',
-    'drag-handle': '☰ ドラッグ',
+    'drag-handle': '☰ ドラッグでプランへ',
     'map-link': '地図',
     'total-min': '合計 ',
     'min-suffix': '分',
@@ -6315,14 +8597,14 @@ var I18N = {
     'book-page': '予約ページ',
     'rooms-guests': '部屋 ',
     'guests-sep': ' · 人数 ',
-    'err-multicity': '多都市検索には2区間以上必要です。',
+    'err-multicity': '多都市検索には2区間以上が必要です。',
     'model-label': ' [モデル: ',
     'chat-method': 'チャット解析: ',
     'manual-input': '手動入力',
-    'err-airline-required': '航空会社または便名を入力してください。',
-    'err-stay-required': '宿泊名を入力してください。',
-    'err-return-date': '帰国日が出発日より前です。',
-    'err-checkout-date': 'チェックアウトはチェックイン以降です。',
+    'err-airline-required': '航空会社か便名を入力してください。',
+    'err-stay-required': '宿泊施設名を入力してください。',
+    'err-return-date': '復路は往路より前にできないため、往路の日付に合わせました。',
+    'err-checkout-date': 'チェックアウトはチェックインの翌日以降です。翌日に合わせました。',
     'share-title': '旅行プラン',
     'fx-loading': '¥/₩ 読み込み中...',
     'fx-fallback': '¥/₩ 為替情報なし',
@@ -6332,36 +8614,36 @@ var I18N = {
     'btn-my-plans': '📂 プラン',
     'btn-logout': 'ログアウト',
     'btn-login': '👤 ログイン',
-    'err-no-plan-save': '保存するプランがありません。',
+    'err-no-plan-save': '保存するプランがありません。先にプランを作ってください。',
     'plan-title-suffix': '日間の旅',
     'btn-save': '保存',
     'btn-overwrite': '上書き',
-    'overwrite-confirm': ' が既に存在します。',
+    'overwrite-confirm': ' は既に存在します。',
     'overwrite-note': ')に保存済み<br>保存すると既存のプランを上書きします。',
-    'save-overwrite-done': 'プランを上書きしました!',
-    'save-fail': '保存失敗',
-    'save-error': '保存中にエラーが発生しました。',
+    'save-overwrite-done': 'プランを上書きしました。',
+    'save-fail': '保存できませんでした。',
+    'save-error': '保存中に問題が起きました。',
     'loading-plans': '読み込み中...',
-    'no-saved-plans': '保存済みプランがありません。',
+    'no-saved-plans': '保存したプランはまだありません。',
     'plan-default': 'プラン',
     'days-saved': '日 · ',
     'btn-load': '読み込み',
     'btn-delete': '削除',
-    'load-list-error': 'プラン一覧を読み込めません。',
-    'load-fail': '読み込み失敗',
-    'load-success': 'プランを読み込みました!',
-    'load-error': '読み込み中にエラーが発生しました。',
+    'load-list-error': 'プラン一覧を読み込めませんでした。',
+    'load-fail': '読み込めませんでした。',
+    'load-success': 'プランを読み込みました。',
+    'load-error': '読み込み中に問題が起きました。',
     'delete-confirm': 'このプランを削除しますか？',
-    'delete-success': 'プランが削除されました。',
-    'delete-fail': '削除失敗',
-    'delete-error': '削除中にエラーが発生しました。',
-    'route-need-2': 'プランに2箇所以上必要です。',
+    'delete-success': 'プランを削除しました。',
+    'delete-fail': '削除できませんでした。',
+    'delete-error': '削除中に問題が起きました。',
+    'route-need-2': '交通費を計算するには、この日に2か所以上が必要です。',
     'calculating': '計算中...',
     'free-label': '無料',
     'source-ai-calc': '✨ AI計算',
     'source-dist-est': '📏 距離に基づく推定',
     'source-google-route': '🗺 Google経路情報',
-    'err-input': '入力値が正しくありません。',
+    'err-input': '入力内容を確認してください。',
     'source-ai-google': '✨ AI + Google Places',
     'source-rule-fb': '📋 ルールベース (フォールバック)',
     'source-ai-rec': '✨ AIおすすめ',
@@ -6369,20 +8651,20 @@ var I18N = {
     'flight-prefix': '航空券: ',
     'food-prefix': 'グルメ: ',
     'stay-prefix': '宿泊: ',
-    'err-need-plan-first': 'まずAIプランを作成してください。',
-    'memo-saved': 'メモ保存',
-    'memo-deleted': 'メモ削除',
-    'no-auth-config': 'ログインサービスが設定されていません。',
+    'err-need-plan-first': '先に［プランを作る］でプランを作ってください。',
+    'memo-saved': 'メモを保存しました',
+    'memo-deleted': 'メモを削除しました',
+    'no-auth-config': '現在ログインサービスが設定されていません。',
     'logged-out': 'ログアウトしました。',
-    'plan-saved-overwrite': 'プランを上書きしました!',
-    'plan-saved': 'プランが保存されました!',
-    'popup-blocked': 'ポップアップがブロックされました。',
-    'history-cleared': '検索履歴が削除されました。',
+    'plan-saved-overwrite': 'プランを上書きしました。',
+    'plan-saved': 'プランを保存しました。',
+    'popup-blocked': 'ポップアップがブロックされました。このサイトのポップアップを許可してください。',
+    'history-cleared': '検索履歴を削除しました。',
     'remove-segment': '削除',
-    'loading': '処理中...',
-    'err-timeout': 'サーバーがタイムアウトしました。しばらくしてから再試行してください。',
-    'err-network': 'ネットワークエラーです。接続を確認してください。',
-    'err-server': 'サーバーエラーです。しばらくしてから再試行してください。',
+    'loading': '処理中…',
+    'err-timeout': 'サーバーの応答が遅れています。しばらくしてからもう一度お試しください。',
+    'err-network': 'ネットワークに接続できません。接続を確認してください。',
+    'err-server': 'サーバーで問題が起きました。しばらくしてからもう一度お試しください。',
     'confirm-time-conflict': 'この時間帯にはすでに予定があります。追加しますか？',
     'search-flights': '検索',
     'search-stays': '検索',
@@ -6390,17 +8672,17 @@ var I18N = {
     'btn-run-sync': '一括生成',
     'partial-failure': '一部のデータを取得できませんでした',
     'open-now': '営業中',
-    'empty-dest': '旅行先・日付・テーマを選んで［プラン作成］を押すと、おすすめスポット・プラン・航空券・宿泊がまとめて表示されます。',
-    'empty-plan': 'まだプランがありません。［プラン作成］を押して始めましょう。',
-    'empty-rec-food': 'プランを作成すると、周辺のおすすめグルメがここに表示されます。',
-    'empty-rec-food-none': 'このプランに合うおすすめグルメがまだ見つかりません。下の［探索 > グルメ］で探してみてください。',
-    'empty-flights': 'プランを作成すると日程に合わせて航空券を探します。条件を変えて［航空券検索］を押すこともできます。',
-    'empty-stays': 'プランを作成すると日程に合わせて宿泊先を探します。条件を変えて［宿泊検索］を押すこともできます。',
+    'empty-dest': '言葉でリクエストするか条件を選んで［プランを作る］を押すと、おすすめスポット・プラン・航空券・宿がまとめて表示されます。',
+    'empty-plan': 'まだプランがありません。上の［プランを作る］を押すと、日ごとのプランがここに表示されます。',
+    'empty-rec-food': 'プランを作ると、周辺のおすすめグルメがここに表示されます。',
+    'empty-rec-food-none': 'このプランに合うおすすめグルメがまだ見つかりません。下の［探索 › グルメ］で探してみてください。',
+    'empty-flights': 'プランを作ると日程に合わせて航空券を探します。条件を変えて［航空券検索］を押すこともできます。',
+    'empty-stays': 'プランを作ると日程に合わせて宿泊先を探します。条件を変えて［宿泊検索］を押すこともできます。',
     'empty-search': '［検索］を押すとここに結果が表示されます。',
-    'empty-itinerary': 'プランを作成できませんでした。条件を少し変えるか、しばらくしてから［プラン作成］をもう一度押してください。おすすめスポットを下の日付欄にドラッグして自分で埋めることもできます。',
+    'empty-itinerary': 'プランを作成できませんでした。条件を少し変えるか、しばらくしてから［プランだけ作り直す］を押してください。各日の［+ スポット追加］から自分で埋めることもできます。',
     'map-no-coords': '地図に表示できる位置情報のある場所がまだありません。',
     'map-loading': '地図を読み込み中…',
-    'map-failed': '地図を読み込めませんでした。各スポットのMAPリンクで位置を確認できます。',
+    'map-failed': '地図を読み込めませんでした。各スポットの［地図］リンクで位置を確認できます。',
     'map-partial': '位置情報のない{n}件は地図に表示されていません。',
     'photo-credit': '写真:',
     'photo-scope-city': '都市の写真',
@@ -6424,13 +8706,13 @@ var I18N = {
     'title-weather': '天気予報',
     'title-wishlist': 'お気に入り',
     'title-history': '検索履歴',
-    'aria-plan': 'おすすめとAIプランをまとめて作成',
-    'ai-chat-note': '行きたい場所を自由に入力すると、空港・地域・旅行条件を自動で設定して、おすすめを作成します。',
+    'aria-plan': 'リクエストと条件で旅行プランを作る',
+    'ai-chat-note': '行きたい場所・日数・好みを書くと、下の条件を自動で埋めてプランを作ります。空欄なら下の条件どおりに作ります。',
     'ph-ai-request': '例: USJと道頓堀は必ず行きたい。3泊4日で、移動しやすい宿を教えて',
     'aria-ai-request': 'AIへの旅行条件の入力',
-    'btn-ai-assist': 'AIで条件を適用',
+    'btn-ai-assist': 'この内容で作る',
     'aria-rec-tabs': 'おすすめの種類',
-    'plan-control-copy': '選んだ航空券・宿泊はそのままに、AIプランだけを作り直せます。',
+    'plan-control-copy': '選んだ航空券・宿はそのままに、プランだけ作り直します。',
     'aria-undo': '元に戻す (Ctrl+Z)',
     'aria-redo': 'やり直し (Ctrl+Y)',
     'manual-flight-hint': '空港・日付は旅行条件から自動で設定されます。往路=出発地→到着地、復路=到着地→出発地',
@@ -6461,7 +8743,7 @@ var I18N = {
     'label-date': '日付',
     'btn-add-segment': '区間を追加',
     'btn-reset-segments': 'リセット',
-    'filter-tab': 'フィルター',
+    'filter-tab': '詳細フィルター',
     'label-price-min': '最低価格（ウォン）',
     'label-price-max': '最高価格（ウォン）',
     'ph-price-min': '最低価格',
@@ -6496,7 +8778,7 @@ var I18N = {
     'depart-at': '{t} 出発',
     'itin-dest-label': '📍 スポット',
     'itin-food-label': '🍴 グルメ',
-    'drop-here': 'ここにドロップ',
+    'drop-here': 'ここに置く',
     'btn-add-food': 'グルメを追加',
     'outbound-label': '✈️ 往路: ',
     'return-label': '✈️ 復路: ',
@@ -6509,11 +8791,10 @@ var I18N = {
     'tours-loading': '{city}のツアーを読み込み中…',
     'tour-klook': 'Klookツアー',
     'tour-viator': 'Viatorツアー',
-    'weather-10day': '{city} 10日間の予報',
     'wx-rain': '☔ 旅行中{n}日は雨の予報です。傘を忘れずに、屋内スポットも用意しましょう。',
     'wx-cold': '❄️ 寒い日があります。暖かい服を用意しましょう。',
     'wx-hot': '🔥 暑い日があります。水分補給と日焼け対策をしましょう。',
-    'export-no-plan': 'プランがありません。先にAIプランを作成してください。',
+    'export-no-plan': 'まだプランがありません。先に［プランを作る］でプランを作ってください。',
     'export-flight': '航空券',
     'export-stay': '宿泊',
     'export-cost': '費用の目安',
@@ -6522,15 +8803,13 @@ var I18N = {
     'cost-food-line': '食費（目安）: ~',
     'cost-transport-line': '交通費（目安）: ~',
     'saved-default': '保存しました。',
-    'alert-title': '📊 プランチェック',
-    'alert-too-many': '{d}: スポット{n}か所は少し詰め込みすぎかもしれません。移動時間を考えると3か所以下がおすすめです。',
-    'alert-no-meal': '{d}: まだグルメが追加されていません。追加してみましょう！',
+    'alert-too-many': '{d}: スポット{n}か所は詰め込みすぎかもしれません。1日3か所以下が快適です。',
+    'alert-no-meal': '{d}にグルメがありません。🍴 欄の［グルメを追加］から入れてみましょう。',
     'alert-allday': '{d}: 終日の予定と他のスポットが同じ日にあります。時間が重ならないか確認してください。',
-    'alert-dup': '「{p}」がDay {a}とDay {b}で重複しています。',
-    'alert-late-arrival': 'Day 1は夕方の到着です。初日はチェックインと近所の散策くらいがちょうどいいでしょう。',
+    'alert-dup': '「{p}」が{d}で重複しています。',
+    'alert-late-arrival': '{d}は夕方の到着です。初日はチェックインと近所の散策くらいがちょうどいいでしょう。',
     'alert-early-dep': '最終日は午前の出発です。2時間前に空港に着けるよう、前日に荷造りしておきましょう。',
     'memo-title': 'メモを追加・編集',
-    'memo-prompt': '📝 {p}のメモ:',
     'fx-chip': '100円≈{a}ウォン | 1万ウォン≈{b}円',
     'fx-title': '為替レート（1円={r}ウォン）· {d}',
     'fx-credit': '為替レート提供: Exchange Rate API',
@@ -6557,7 +8836,107 @@ var I18N = {
     'pref-cities': 'よく行く都市: ',
     'pref-themes': '好みのテーマ: ',
     'btn-copy': '📋 コピー',
-    'phrases-none': '該当するフレーズがありません。'
+    'drop-kind-mismatch': 'グルメは朝食・昼食・夕食の枠に、スポットは午前・午後・終日の枠に置いてください',
+    'confirm-replace-meal': 'この食事枠には{n}があります。入れ替えますか？',
+    'confirm-duplicate-place': '{n}はこの日の予定にすでにあります。もう一度追加しますか？',
+    'added-to-plan-toast': '{n}を{d}日目の{p}に追加しました',
+    'moved-in-plan': '{n}を{d}日目の{p}に移動しました',
+    'meal-slots-full': 'この日の食事枠はすべて埋まっています。入れ替える枠に直接置いてください',
+    'day-label': '{n}日目',
+    'tips-title': '💡 旅のヒント',
+    'btn-move': '移動',
+    'aria-remove-item': 'プランから外す',
+    'btn-add-place': '+ スポット追加',
+    'modal-custom-hint': 'リストにない場合は名前を入力',
+    'modal-move-plan': '別の日・時間帯へ移動',
+    'btn-move-confirm': 'ここへ移動',
+    'modal-need-place': 'スポットを選ぶか名前を入力してください',
+    'meal-extra': '追加の食事',
+    'confirm-overwrite-edits': '手で直した予定が新しいプランに置き換わります。続けますか？（↩ 元に戻すで戻せます）',
+    'regen-hint': '航空券・宿が変わりました。時間に合わせて組み直すには［プランだけ作り直す］を押してください。',
+    'regen-undo-hint': '新しいプランに置き換えました。↩ 元に戻すで戻せます。',
+    'confirm-overwrite-during-build': '新しいプランの作成中に予定を手で直しました。新しいプランに置き換えますか？（キャンセルすると直した予定をそのまま残します）',
+    'regen-kept-edits': '直した予定はそのまま残しました。おすすめ一覧だけ更新しました。',
+    'confirm-time-overlap': '{day}のこの時間にはすでに「{n}」({t})があります。それでもここに入れますか？',
+    'alert-time-overlap': '{d}：「{a}」と「{b}」の時間が重なっています。時間を確認してください。',
+    'itin-night': '夜',
+    'intent-budget-low': '予算控えめ',
+    'intent-budget-high': '予算ゆったり',
+    'days-clamped': '旅行日数は1〜10日に合わせました',
+    'trip-changed': '旅行条件が変わりました。プランをどう合わせますか？',
+    'btn-shift-dates': '日付だけ移す',
+    'btn-fit-days': '日数を合わせる',
+    'btn-rebuild': '作り直す',
+    'confirm-trim-days': '後ろの{n}日分の予定が消えます。続けますか？',
+    'err-cities': '都市リストを読み込めませんでした。サーバーが起動中の可能性があります。',
+    'btn-retry': '再試行',
+    'copy-done': 'コピーしました',
+    'copy-fail': 'コピーできませんでした。ブラウザのクリップボード権限を確認してください。',
+    'draft-found': '保存していないプランがあります（{t}）',
+    'btn-draft-restore': '続きから編集',
+    'btn-draft-discard': '破棄',
+    'phrases-none': '該当するフレーズがありません。',
+    'cabin-economy': 'エコノミー',
+    'cabin-premium': 'プレミアムエコノミー',
+    'cabin-business': 'ビジネス',
+    'cabin-first': 'ファースト',
+    'baggage-label': '手荷物 ',
+    'chat-ai-name': 'Tabimaru',
+    'btn-plan-busy': '作成中…',
+    'btn-plan-save': '💾 保存',
+    'btn-plan-export': '📋 書き出し・共有',
+    'ai-score-title': 'AIおすすめ度 {n}/100',
+    'alert-summary': '📊 確認ポイント{n}件',
+    'alert-dup-same-day': '「{p}」が{d}に2回以上入っています。',
+    'day-list-sep': '・',
+    'plan-building': 'プランを作成中です…通常10〜20秒かかります。',
+    'server-waking': '無料サーバーを起動しています。最大1分ほどかかることがあります。',
+    'plan-ready': 'プランができました ↓',
+    'chat-done': 'プランができました。下の「旅のプラン」で確認して、ドラッグで入れ替えてみてください。',
+    'ai-busy-retry': '1分ほどしてから［プランだけ作り直す］を押してみてください。',
+    'ai-daily-retry': 'AIの利用枠は日本時間の午後4〜5時に戻ります。そのあと［プランだけ作り直す］を押してみてください。',
+    'weather-out-of-range': '旅行日はまだ予報の範囲外のため、今日からの予報を表示しています。',
+    'weather-partial-range': '旅行{d}日のうち{n}日だけが予報の範囲内です。残りの日はまだ予報がありません。',
+    'weather-days': '{city} {n}日間の予報',
+    'login-to-save': '保存するにはログインが必要です。ログイン後にもう一度［保存］を押してください。',
+    'cost-activity-line': 'アクティビティ（目安）: ~',
+    'cost-total-line': '合計（目安）: ~',
+    'memo-input-label': '{p}のメモ',
+    'memo-placeholder': '例: 10時に予約、チケットは事前購入',
+    'memo-save-fail': 'メモを保存できませんでした。ブラウザの保存設定を確認してください。',
+    'intent-days': '{n}日間',
+    'intent-start': '{date}出発',
+    'intent-theme': 'テーマ: {t}',
+    'intent-must': '必ず行く: {p}',
+    'intent-excluded': '除外: {p}',
+    'intent-unsupported': '反映できず: {p}',
+    'must-missing': '{names}はプランに入れられませんでした。［+ スポット追加］から自分で追加できます。',
+    'aria-hide-pick': 'おすすめから隠す',
+    'aria-wishlist': '{p}をお気に入りに追加',
+    'aria-wishlist-remove': '{p}をお気に入りから外す',
+    'city-popular': '人気の都市',
+    'city-all': 'すべての都市',
+    'plan-summary': '{city} {d}日間・スポット{p}件・グルメ{f}件',
+    'plan-lang-note': 'このプランは{lang}で作成されました。切り替えるには［プランだけ作り直す］を押してください。',
+    'lang-name-ko': '韓国語',
+    'lang-name-en': '英語',
+    'lang-name-ja': '日本語',
+    'map-food-no-coords': 'グルメ{n}件は位置情報がありません',
+    'map-legend-meal': '食事',
+    'food-no-genre-match': 'このジャンルに合うお店はまだ見つかりません。別のジャンル（例: ラーメン、寿司）で検索してみてください。',
+    'intent-food': 'グルメ: {f}',
+    'intent-cond-indoor': '屋内中心',
+    'intent-cond-late-start': '{t}以降に開始',
+    'intent-cond-max-places': '1日{n}か所',
+    'intent-cond-rest-day': '途中に休息日',
+    'intent-cond-transit': '公共交通機関のみ',
+    'intent-cond-no-shopping': 'ショッピングなし',
+    'intent-cond-low-walking': '歩く距離を少なく',
+    'intent-cond-kids': '子連れ向け',
+    'intent-cond-relaxed': 'ゆったり日程',
+    'intent-cond-night-view': '夜景を入れる',
+    'intent-cond-arrival': '{t}到着',
+    'intent-cond-departure': '{t}出発の便'
   }
 };
 
@@ -6584,10 +8963,9 @@ function tPeriod(p) {
   return m ? (m[currentLang] || m.ko) : p;
 }
 
-function applyLanguage(lang) {
-  currentLang = lang;
-  try { localStorage.setItem('travelLang', lang); } catch (e) {}
-  document.documentElement.lang = lang === 'ko' ? 'ko' : lang === 'ja' ? 'ja' : 'en';
+// [data-i18n] 글자, placeholder·title·aria-label, 섹션 제목, 주요 버튼 글자를 현재 언어 사전 값으로 맞춘다.
+// 부팅 때(ko 포함) 한 번, 언어를 바꿀 때마다 부른다 → 화면 문구의 기준은 언제나 사전이다.
+function applyStaticI18n() {
   document.querySelectorAll('[data-i18n]').forEach(function(elem) {
     // 처리 중인 버튼의 '처리 중...' 문구는 작업이 끝날 때 새 언어로 복원된다.
     if (elem.classList.contains('btn-loading')) return;
@@ -6619,8 +8997,16 @@ function applyLanguage(lang) {
     var b = el(btnId);
     if (b && !b.classList.contains('btn-loading')) b.textContent = t(btnMap[btnId]);
   }
+}
+
+function applyLanguage(lang) {
+  currentLang = lang;
+  try { localStorage.setItem('travelLang', lang); } catch (e) {}
+  document.documentElement.lang = lang === 'ko' ? 'ko' : lang === 'ja' ? 'ja' : 'en';
+  applyStaticI18n();
   document.querySelectorAll('.lang-btn').forEach(function(btn) {
     btn.classList.toggle('active', btn.dataset.lang === lang);
+    btn.setAttribute('aria-pressed', btn.dataset.lang === lang ? 'true' : 'false');
   });
   // 문서 제목("Tabimaru — AI 일본 여행 플래너")과 설명도 화면 언어로
   applyBrand();
@@ -6659,6 +9045,7 @@ function applyLanguage(lang) {
   try {
     relabelCityOptions();
     relabelAirportInputs();
+    rerenderIntentChips();
     document.querySelectorAll('.remove-segment').forEach(function(b) { b.textContent = t('remove-segment'); });
     renderAuthUI();
     renderFxChip();
@@ -6673,6 +9060,9 @@ function applyLanguage(lang) {
     var myPlansPanel = el('myPlansPanel');
     if (myPlansPanel && myPlansPanel.classList.contains('show') && currentUser) loadMyPlansList();
     if (document.querySelector('.pref-hints')) showPreferenceHints();
+    // 날짜가 들어간 초안 안내는 새 언어로 다시 만든다(나머지 안내 띠는 data-i18n으로 바뀐다).
+    var draftBanner = el('draftRestoreBanner');
+    if (pendingDraft && draftBanner && !draftBanner.classList.contains('hidden')) showDraftBanner();
     // localStorage를 읽는 패널은 마지막에(차단된 브라우저에서 예외가 나도 위 작업은 끝나도록)
     renderChecklist();
     renderWishlistPanel();
@@ -6688,6 +9078,16 @@ document.addEventListener('click', function(e) {
 if (currentLang !== 'ko') {
   setTimeout(function() { applyLanguage(currentLang); }, 500);
 }
+
+// 문서를 다 읽은 뒤(창·패널은 이 스크립트보다 뒤에 있다) 사전 문구와 아이콘 버튼 title을 한 번 맞춘다.
+function onDocumentReadyI18n() {
+  try { applyStaticI18n(); ensureIconButtonTitles(); } catch (e) {}
+  document.querySelectorAll('.lang-btn').forEach(function(btn) {
+    btn.setAttribute('aria-pressed', btn.dataset.lang === currentLang ? 'true' : 'false');
+  });
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', onDocumentReadyI18n);
+else onDocumentReadyI18n();
 
 // 로그인 실패 안내는 언어 사전(I18N)과 토스트 요소(#memoToast, 이 스크립트보다 뒤에 있음)가 준비된 뒤 띄운다.
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', showAuthErrorNotice);
