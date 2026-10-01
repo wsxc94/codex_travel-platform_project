@@ -505,9 +505,14 @@ function shortUrl(url) {
 }
 
 class Client {
-  constructor({ cacheDir, refresh }) {
+  // minIntervalMs / uploadIntervalMs: gap between requests (scripts/build-city-places.js asks for
+  // at most one request per second); logTag: prefix of the retry warnings.
+  constructor({ cacheDir, refresh, minIntervalMs = MIN_INTERVAL_MS, uploadIntervalMs = UPLOAD_INTERVAL_MS, logTag = 'place-images' }) {
     this.cacheDir = cacheDir;
     this.refresh = refresh;
+    this.minIntervalMs = minIntervalMs;
+    this.uploadIntervalMs = uploadIntervalMs;
+    this.logTag = logTag;
     this.lastAt = 0;
     this.chain = Promise.resolve();
     this.stats = { network: 0, cached: 0, retries: 0 };
@@ -540,7 +545,7 @@ class Client {
 
   throttle(url) {
     // upload.wikimedia.org rate-limits thumbnail traffic harder than the APIs (HTTP 429)
-    const interval = new URL(url).hostname === 'upload.wikimedia.org' ? UPLOAD_INTERVAL_MS : MIN_INTERVAL_MS;
+    const interval = new URL(url).hostname === 'upload.wikimedia.org' ? this.uploadIntervalMs : this.minIntervalMs;
     const turn = this.chain.then(async () => {
       const wait = this.lastAt + interval - Date.now();
       if (wait > 0) await sleep(wait);
@@ -576,7 +581,7 @@ class Client {
         ? Math.min(retryAfter * 1000, 60000)
         : Math.min(1000 * 2 ** attempt, 30000) + Math.floor(Math.random() * 300);
       this.stats.retries += 1;
-      console.warn(`[place-images] ${error ? error.message : `HTTP ${res.status}`} from ${shortUrl(url)}; retry in ${delay}ms`);
+      console.warn(`[${this.logTag}] ${error ? error.message : `HTTP ${res.status}`} from ${shortUrl(url)}; retry in ${delay}ms`);
       await sleep(delay);
     }
   }
@@ -723,7 +728,23 @@ function simplifyEntity(e) {
     iata: values('P238', false).filter((v) => typeof v === 'string'),
     coord: coord ? { lat: coord.latitude, lng: coord.longitude } : null,
     image: values('P18', true).find((v) => typeof v === 'string' && v) || '',
-    images: values('P18', false).filter((v) => typeof v === 'string' && v)
+    images: values('P18', false).filter((v) => typeof v === 'string' && v),
+    // located in (P131), part of (P361) and "dissolved, abolished or demolished" (P576): used by
+    // scripts/build-city-places.js
+    admin: values('P131', true).map((v) => v && v.id).filter(Boolean),
+    partOf: values('P361', false).map((v) => v && v.id).filter(Boolean),
+    // located on terrain feature (P706) and location (P276): a lighthouse on an island, a museum in a park
+    within: [...values('P706', false), ...values('P276', false)].map((v) => v && v.id).filter(Boolean),
+    dissolved: claimList(e.claims, 'P576', false).length > 0,
+    // official closing date (P3999): a museum that closed (Toyama Prefectural Museum of Modern Art, 2016)
+    closed: claimList(e.claims, 'P3999', false).length > 0,
+    // name in kana (P1814): the reading of the Japanese name
+    kana: values('P1814', false).filter((v) => typeof v === 'string' && v),
+    // elevation above sea level (P2044) in metres, or null
+    elevation: (() => {
+      const q = values('P2044', true).find((v) => v && v.amount !== undefined && /\/Q11573$/.test(String(v.unit || '')));
+      return q ? Number(q.amount) : null;
+    })()
   };
 }
 
@@ -1547,7 +1568,17 @@ async function main() {
   if (opts.reviewBaths) await reviewBaths(client, output, opts.spotDir);
 }
 
-main().catch((err) => {
-  console.error(`[place-images] failed: ${err && err.stack ? err.stack : err}`);
-  process.exit(1);
-});
+// scripts/build-city-places.js reuses the reader, the polite client and the Wikidata/Commons helpers.
+module.exports = {
+  USER_AGENT, THUMB_WIDTH, BATH_REVIEW, NON_PHOTO_FILE, CJK_SCRIPT, HANGUL_SCRIPT, QUALIFIER,
+  Client, apiUrl, chunked, loadServerData, extractDeclaration, runInSandbox,
+  getEntities, getClassLabels, searchWikidata, getImageInfos, checkedImages, parseImageInfo, creditName,
+  displayLabels, haversineKm, inJapan, normText, looseKo, round5, sortedObject, readExisting, needsBathReview, commonsFileName
+};
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`[place-images] failed: ${err && err.stack ? err.stack : err}`);
+    process.exit(1);
+  });
+}

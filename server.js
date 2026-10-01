@@ -110,17 +110,28 @@ let fxLiveAt = 0;
 const OPENAI_API_KEY = envValue('OPENAI_API_KEY', 'OPENAI_KEY');
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 const GEMINI_API_KEY = envValue('GEMINI_API_KEY', 'GOOGLE_API_KEY');
-const GEMINI_API_MODEL = envValue('GEMINI_API_MODEL') || 'gemini-2.5-flash';
-// Fallback priority: 쿼터+속도 우선 (빠른 응답 > 품질)
-// 1. GEMINI_API_MODEL (기본 gemini-2.5-flash)
-// 2. gemini-2.5-flash / gemini-2.5-flash-lite (주 모델과 겹치면 제외)
-// 3. gemini-flash-latest (최신 flash 별칭)
-// ※ gemini-2.0-flash·2.0-flash-lite는 종료되어 404, gemini-2.5-pro는 신규 사용자에게 404라 목록에서 뺐다(2026-10 확인).
-const GEMINI_FALLBACK_MODELS = [
-  'gemini-2.5-flash',
+const GEMINI_API_MODEL = envValue('GEMINI_API_MODEL').replace(/^models\//, '') || 'gemini-2.5-flash';
+// 대체 모델 순서(2026-10-01 실측). 주 모델(GEMINI_API_MODEL) 다음에 이 순서로 시도하고, 주 모델과 같은 이름은 뺀다.
+// 무료 한도는 모델마다 하루 20회(태평양 시간 자정에 다시 생김)라, 모델을 여럿 두면 하루에 쓸 수 있는 횟수가 늘어난다.
+//  - gemini-2.5-flash-lite·gemini-2.5-flash: 한도가 따로라 계속 둔다
+//  - gemini-3.1-flash-lite: 조건(하루 N곳·저녁 배치)을 가장 정확히 지킴
+//  - gemini-3-flash-preview: 빠르고 팁이 구체적. preview라 종료되면 404 → 그 모델은 하루 쉰다
+//  - gemini-3.5-flash-lite: 가장 빠름(약 3초). thinkingBudget을 400으로 거절해 thinkingLevel을 보낸다(geminiThinkingStyle)
+//  - gemini-3.6-flash: 503(high demand)이 잦아 뒤쪽 / gemini-flash-latest(실제 모델 gemini-3.8-flash): 느림(9–13초)
+// 뺀 모델: gemini-3.5-flash(10초 뒤 503), gemini-3.7-flash(계속 503, 24초까지), gemma-4(같은 말 반복 → MAX_TOKENS),
+//   gemini-flash-lite-latest(= gemini-3.5-flash-lite 별칭: 한도도 실제 모델 기준이라 넣어도 횟수가 늘지 않음),
+//   gemini-2.0-flash·2.0-flash-lite(종료, 404), gemini-2.5-pro(신규 사용자 404).
+// GEMINI_FALLBACK_MODELS(쉼표 구분)로 대체 목록을 통째로 바꿀 수 있다. 'none'이면 주 모델만 쓴다.
+const GEMINI_DEFAULT_FALLBACK_MODELS = Object.freeze([
   'gemini-2.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-3.5-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-3.6-flash',
   'gemini-flash-latest'
-].filter(m => m !== GEMINI_API_MODEL);
+]);
+const GEMINI_MAX_CHAIN_LENGTH = 10;
 const GEMINI_ENDPOINT = `${GEMINI_API_BASE}/v1beta/models`;
 const USE_GEMINI = Boolean(GEMINI_API_KEY);
 
@@ -137,6 +148,68 @@ function warnOnce(key, message) {
   warnThrottled(key, message, Number.POSITIVE_INFINITY);
 }
 
+// 모델 이름 하나: 'models/' 접두어는 떼고, 소문자·숫자·. _ - 만 받는다(키를 잘못 붙여 넣어도 이름으로 쓰지 않게 대문자는 거절).
+function normalizeGeminiModelName(raw) {
+  const name = String(raw || '').trim().replace(/^models\//, '');
+  if (!/^[a-z0-9][a-z0-9._-]{1,79}$/.test(name) || looksLikeGeminiKey(name)) return '';
+  return name;
+}
+
+// GEMINI_FALLBACK_MODELS: 비우면 null(기본 순서), 'none'이면 [](주 모델만), 그 밖에는 쉼표로 나눈 모델 이름(틀린 이름은 뺌)
+function parseGeminiFallbackModels(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  if (/^none$/i.test(text)) return { models: [], invalid: 0 };
+  const models = [];
+  let invalid = 0;
+  for (const part of text.split(',')) {
+    if (!part.trim()) continue;
+    const name = normalizeGeminiModelName(part);
+    if (name) models.push(name); else invalid += 1;
+  }
+  return { models, invalid };
+}
+
+const GEMINI_FALLBACK_FROM_ENV = parseGeminiFallbackModels(envValue('GEMINI_FALLBACK_MODELS'));
+// 'env'(GEMINI_FALLBACK_MODELS로 바꿈) | 'default'(위 기본 순서)
+const GEMINI_FALLBACK_SOURCE = GEMINI_FALLBACK_FROM_ENV ? 'env' : 'default';
+const GEMINI_FALLBACK_MODELS = [...new Set(GEMINI_FALLBACK_FROM_ENV ? GEMINI_FALLBACK_FROM_ENV.models : GEMINI_DEFAULT_FALLBACK_MODELS)]
+  .filter((m) => m !== GEMINI_API_MODEL)
+  .slice(0, GEMINI_MAX_CHAIN_LENGTH - 1);
+// 실제로 시도하는 순서(주 모델 포함). /api/health의 ai.geminiModelChain
+const GEMINI_MODEL_CHAIN = Object.freeze([GEMINI_API_MODEL, ...GEMINI_FALLBACK_MODELS]);
+if (GEMINI_FALLBACK_FROM_ENV && GEMINI_FALLBACK_FROM_ENV.invalid > 0) {
+  // 값은 찍지 않는다(키를 잘못 넣었을 수도 있음)
+  warnOnce('gemini-fallback-invalid', `[gemini] GEMINI_FALLBACK_MODELS에서 모델 이름 형식이 아닌 값 ${GEMINI_FALLBACK_FROM_ENV.invalid}개를 뺐습니다(소문자·숫자·. _ - 만, 예: gemini-2.5-flash).`);
+}
+if (GEMINI_FALLBACK_FROM_ENV && GEMINI_FALLBACK_FROM_ENV.models.length > GEMINI_MAX_CHAIN_LENGTH - 1) {
+  warnOnce('gemini-fallback-long', `[gemini] GEMINI_FALLBACK_MODELS는 앞의 ${GEMINI_MAX_CHAIN_LENGTH - 1}개만 씁니다.`);
+}
+
+// 모델별 생각(thinking) 설정. 생각 토큰도 maxOutputTokens를 나눠 써서, 켜 두면 JSON이 MAX_TOKENS로 잘린다(2026-10-01 실측).
+//  'level' : gemini-3.5-flash-lite(별칭 gemini-flash-lite-latest) — thinkingBudget 0을 400 INVALID_ARGUMENT로 거절하고
+//            thinkingLevel 'minimal'은 받는다(생각 토큰 0).
+//  'budget': 2.5 계열, 3.x flash(3.1-flash-lite·3-flash-preview·3.5-flash·3.6-flash), flash 별칭(gemini-flash-latest = 3.8-flash)
+//            — thinkingBudget 0을 받는다. pro는 최소 128이 필요하다.
+//  'none'  : 그 밖(gemma 등) — 보내지 않는다.
+// 목록에 없는 새 모델이 400을 내면 다른 형식으로 한 번 더 보내고, 성공한 형식을 실행 중에 기억한다(_geminiThinkingLearned).
+const GEMINI_THINKING_LEVEL_MODEL_RE = /^gemini-3\.5-flash-lite|^gemini-flash-lite-latest$/;
+const _geminiThinkingLearned = new Map(); // model → 'budget' | 'level'
+
+function geminiThinkingStyle(model) {
+  const learned = _geminiThinkingLearned.get(model);
+  if (learned) return learned;
+  if (GEMINI_THINKING_LEVEL_MODEL_RE.test(model)) return 'level';
+  if (/^gemini-2\.5-/.test(model) || (/flash/.test(model) && !/pro/.test(model))) return 'budget';
+  return 'none';
+}
+
+function geminiThinkingConfig(style, model, budget) {
+  if (style === 'level') return { thinkingLevel: budget > 0 ? 'low' : 'minimal' };
+  if (style === 'budget') return { thinkingBudget: /pro/.test(model) ? Math.max(128, budget) : budget };
+  return null;
+}
+
 if (GOOGLE_PLACES_ENABLED && GOOGLE_MAPS_SERVER_KEY_FROM_LEGACY) {
   warnOnce('google-legacy-key', '[google] PLACES_PROVIDER=google 인데 GOOGLE_MAPS_SERVER_KEY가 없어 GOOGLE_MAPS_API_KEY를 서버 키로 사용합니다. 서버 전용 키(GOOGLE_MAPS_SERVER_KEY)로 분리하세요.');
 }
@@ -147,14 +220,20 @@ if (GOOGLE_PLACES_ENABLED && !GOOGLE_MAPS_SERVER_KEY) {
 // -- AI Model Circuit Breaker --
 // 429/503 에러 발생 모델을 일정 시간 스킵하여 불필요한 API 호출 방지
 const MODEL_COOLDOWN_MS = 60_000; // 60초 쿨다운
+// 정해진 시각까지 쉬는 경우(하루 한도)는 최대 6시간만 막고 그 뒤 한 번 다시 확인한다.
+const MODEL_COOLDOWN_OVERRIDE_CAP_MS = 6 * 60 * 60_000;
+// 404(모델 종료 'no longer available'·이름 없음)는 곧 돌아오지 않으므로 하루 쉬고 다시 확인한다.
+const MODEL_GONE_COOLDOWN_MS = 24 * 60 * 60_000;
 const _modelFailures = new Map(); // key: modelName, value: { failedAt, status, cooldownMs }
 
-// cooldownOverrideMs: 하루 무료 한도 소진처럼 정해진 시각까지 쉬어야 할 때(최대 6시간까지만 막고 그 뒤 한 번 다시 확인)
+// status: HTTP 상태(429·503·404·5xx) 또는 'timeout'
+// cooldownOverrideMs: 하루 무료 한도 소진·모델 종료처럼 정해진 시간만큼 쉬어야 할 때
 function recordModelFailure(model, status = 429, cooldownOverrideMs = 0) {
   // 연속 실패 시 쿨다운 점진 증가 (60s -> 120s -> 240s, 최대 5분)
   const prev = _modelFailures.get(model);
+  const cap = status === 404 ? MODEL_GONE_COOLDOWN_MS : MODEL_COOLDOWN_OVERRIDE_CAP_MS;
   const baseCooldown = Number(cooldownOverrideMs) > 0
-    ? Math.min(Number(cooldownOverrideMs), 6 * 60 * 60_000)
+    ? Math.min(Number(cooldownOverrideMs), cap)
     : (prev && (Date.now() - prev.failedAt) < prev.cooldownMs * 2)
       ? Math.min(prev.cooldownMs * 2, 300_000)
       : MODEL_COOLDOWN_MS;
@@ -188,11 +267,13 @@ function isModelAvailable(model) {
 
 function getAvailableModels(models) {
   const available = models.filter(m => isModelAvailable(m));
-  // 모든 모델이 쿨다운이면 가장 오래전 실패한 모델 하나라도 시도
+  // 모든 모델이 쿨다운이면 가장 오래전 실패한 모델 하나라도 시도(종료된 404 모델은 다른 모델이 하나도 없을 때만)
   if (available.length === 0 && models.length > 0) {
-    let oldest = models[0];
+    const alive = models.filter((m) => _modelFailures.get(m)?.status !== 404);
+    const pool = alive.length ? alive : models;
+    let oldest = pool[0];
     let oldestTime = Infinity;
-    for (const m of models) {
+    for (const m of pool) {
       const entry = _modelFailures.get(m);
       if (entry && entry.failedAt < oldestTime) {
         oldestTime = entry.failedAt;
@@ -204,6 +285,17 @@ function getAvailableModels(models) {
     return [oldest];
   }
   return available;
+}
+
+// 지금 쉬고 있는 모델: 이름과 남은 초만(오류 내용은 내보내지 않음). 체인 순서, 체인 밖 모델은 뒤에.
+function geminiCoolingModels(now = Date.now()) {
+  const out = [];
+  for (const [model, entry] of _modelFailures) {
+    const left = entry.failedAt + entry.cooldownMs - now;
+    if (left > 0) out.push({ model, secondsLeft: Math.ceil(left / 1000) });
+  }
+  const rank = (m) => { const i = GEMINI_MODEL_CHAIN.indexOf(m); return i < 0 ? GEMINI_MODEL_CHAIN.length : i; };
+  return out.sort((a, b) => rank(a.model) - rank(b.model));
 }
 
 // -- Request Validation & Rate Limiting --
@@ -779,6 +871,11 @@ function fileStoreOwnerIds(uid) {
 }
 
 const AI_REQUEST_TIMEOUT_MS = Math.max(4000, Number(process.env.AI_REQUEST_TIMEOUT_MS || 15000));
+// Gemini 한 번 생성(채팅 해석·일정 하나)에 모델 체인 전체가 쓸 수 있는 시간(기본 40초, 최소 4초).
+// 호출 하나는 AI_REQUEST_TIMEOUT_MS(일정은 30초)와 남은 시간 중 짧은 쪽까지만 기다리고, 시간이 다 되면 다음 모델을 시도하지 않는다.
+const GEMINI_TOTAL_BUDGET_MS = Math.max(4000, Number(envValue('GEMINI_TOTAL_BUDGET_MS')) || 40_000);
+// 남은 시간이 이보다 짧으면 다음 모델을 시작하지 않는다(가장 빠른 모델도 약 3초 걸림).
+const GEMINI_MIN_ATTEMPT_MS = 2500;
 
 // -- fetchWithRetry: exponential backoff for external API calls --
 async function fetchWithRetry(url, options = {}, maxRetries = 2) {
@@ -813,6 +910,8 @@ const AI_SYSTEM_MESSAGE = [
   'You are a travel itinerary planner for Japan.',
   'Return only JSON that matches the provided schema.',
   'Use the provided picks and foods; avoid inventing places not in input (the only exception: every mustVisit place, even when it is not in picks).',
+  'Copy every place and food name exactly as written in picks, foods and mustVisit, character for character, even when it is in Japanese or another script than the output language; never translate, transliterate, shorten or extend a name.',
+  'Every 점심/저녁 block is a name from foods; a food may be used again on another day, but never write a placeholder such as "자유 식사" or "free meal".',
   'Respect flight timing if provided (arrival and departure).',
   'If stay details are supplied, mention the picked property and honor its check-in/out window when planning the first and last days.',
   'Schedule blocks in local time. Every block is ONE string in exactly this format: "<period>(HH:MM-HH:MM): <place name> (<area>)".',
@@ -885,15 +984,15 @@ const JAPAN_CITY_PROFILES = {
   hakodate: { label: '하코다테', airport: 'HKD', areas: ['모토마치', '고료카쿠', '베이 에어리어'], sightA: '하코다테 야경', sightB: '고료카쿠 공원', sightC: '아침시장', sightAMeta: { bestTime: '20:00-21:30' }, sightCMeta: { area: '하코다테역', bestTime: '07:00-09:30' }, foodA: '하코다테 카이센동', foodB: '시오라멘', genreA: '해산물', genreB: '라멘' },
   asahikawa: { label: '아사히카와', airport: 'AKJ', areas: ['역전', '아사히야마', '평화거리'], sightA: '아사히야마 동물원', sightB: '헤이와도리 쇼핑공원', sightC: '우에노팜', sightAMeta: { area: '아사히야마' }, sightBMeta: { area: '평화거리' }, sightCMeta: { area: '나가야마' }, foodA: '아사히카와 라멘', foodB: '징기스칸', genreA: '라멘', genreB: '양고기' },
   aomori: { label: '아오모리', airport: 'AOJ', areas: ['신마치', '아사무시', '아오모리역'], sightA: '네부타 박물관', sightB: '아오모리 베이브리지', sightC: '아오모리 현립미술관', sightAMeta: { area: '아오모리역' }, sightBMeta: { area: '아오모리역' }, sightCMeta: { area: '산나이마루야마' }, foodA: '아오모리 사과 디저트', foodB: '해산물 시장', genreA: '디저트', genreB: '해산물' },
-  akita: { label: '아키타', airport: 'AXT', areas: ['센슈공원', '오가', '아키타역'], sightA: '센슈공원', sightB: '오가 반도', sightC: '아키타 시립박물관', foodA: '기리탄포', foodB: '이나니와 우동', genreA: '향토요리', genreB: '우동' },
-  hanamaki: { label: '하나마키', airport: 'HNA', areas: ['온천지구', '역전', '이와테'], sightA: '하나마키 온천', sightB: '미야자와 겐지 기념관', sightC: '이와테 산책로', foodA: '완코소바', foodB: '모리오카 냉면', genreA: '소바', genreB: '면요리' },
+  akita: { label: '아키타', airport: 'AXT', areas: ['센슈공원', '오가', '아키타역'], sightA: '센슈공원', sightB: '오가 반도', sightC: '아키타 현립 미술관', foodA: '기리탄포', foodB: '이나니와 우동', genreA: '향토요리', genreB: '우동' },
+  hanamaki: { label: '하나마키', airport: 'HNA', areas: ['온천지구', '역전', '이와테'], sightA: '하나마키 온천', sightB: '미야자와 겐지 기념관', sightC: null, foodA: '완코소바', foodB: '모리오카 냉면', genreA: '소바', genreB: '면요리' },
   yamagata: { label: '야마가타', airport: 'GAJ', areas: ['자오', '야마가타역', '카조공원'], sightA: '자오 온천', sightB: '카조 공원', sightC: '리사쿠지', sightCMeta: { area: '야마데라' }, foodA: '이모니', foodB: '야마가타 소바', genreA: '향토요리', genreB: '소바' },
   sendai: { label: '센다이', nameJa: '仙台', airport: 'SDJ', areas: ['아오바구', '고쿠분초', '마쓰시마'], sightA: '즈이호덴', sightB: '센다이성 유적', sightC: '마쓰시마', sightBMeta: { area: '아오바구' }, foodA: '규탄 전문점', foodB: '즈다모치 카페', genreA: '규탄', genreB: '디저트' },
-  fukushima: { label: '후쿠시마', airport: 'FKS', areas: ['아이즈와카마츠', '코리야마', '후쿠시마역'], sightA: '쓰루가성', sightB: '고시키누마', sightC: '오우치주쿠', sightBMeta: { area: '우라반다이' }, sightCMeta: { area: '시모고' }, foodA: '키타카타 라멘', foodB: '소스카츠동', genreA: '라멘', genreB: '돈카츠' },
+  fukushima: { label: '후쿠시마', airport: 'FKS', areas: ['아이즈와카마츠', '코리야마', '후쿠시마역'], sightA: '쓰루가성', sightB: '고시키누마', sightC: '오우치주쿠', sightAMeta: { area: '아이즈와카마츠' }, sightBMeta: { area: '우라반다이' }, sightCMeta: { area: '시모고', dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, foodA: '키타카타 라멘', foodB: '소스카츠동', genreA: '라멘', genreB: '돈카츠' },
   niigata: { label: '니가타', airport: 'KIJ', areas: ['반다이', '후루마치', '사도'], sightA: '피아반다이 시장', sightB: '니가타 수족관', sightC: '사도섬', sightCMeta: { dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, foodA: '니가타 돈부리', foodB: '니혼슈 바', genreA: '해산물', genreB: '주점' },
   kanazawa: { label: '가나자와', nameJa: '金沢', airport: 'KMQ', areas: ['겐로쿠엔', '히가시차야', '오미초'], sightA: '겐로쿠엔', sightB: '오미초 시장', sightC: '히가시차야 거리', sightBMeta: { area: '오미초' }, sightCMeta: { area: '히가시차야' }, foodA: '카나자와 스시', foodB: '노도구로 구이', genreA: '스시', genreB: '일식' },
   toyama: { label: '도야마', airport: 'TOY', areas: ['도야마역', '우나즈키', '알펜루트'], sightA: '알펜루트', sightB: '도야마성 공원', sightC: '글래스 미술관', sightAMeta: { area: '다테야마', fullDay: true, bestTime: '09:00-18:00', stayMin: 480 }, sightBMeta: { area: '도야마역' }, sightCMeta: { area: '도야마역' }, foodA: '시로에비', foodB: '부리 샤브', genreA: '해산물', genreB: '일식' },
-  shizuoka: { label: '시즈오카', airport: 'FSZ', areas: ['시미즈', '시즈오카역', '니혼다이라'], sightA: '미호노마쓰바라', sightB: '쿠노잔 도쇼구', sightC: '시즈오카 차밭', foodA: '사쿠라에비', foodB: '우나기 덮밥', genreA: '해산물', genreB: '일식' },
+  shizuoka: { label: '시즈오카', airport: 'FSZ', areas: ['시미즈', '시즈오카역', '니혼다이라'], sightA: '미호노마쓰바라', sightB: '쿠노잔 도쇼구', sightC: null, foodA: '사쿠라에비', foodB: '우나기 덮밥', genreA: '해산물', genreB: '일식' },
   nagoya: { label: '나고야', nameJa: '名古屋', airport: 'NGO', areas: ['사카에', '나고야역', '오스'], sightA: '나고야성', sightB: '오아시스21', sightC: '도요타 산업기술 기념관', sightBMeta: { area: '사카에' }, sightCMeta: { area: '나고야역' }, foodA: '미소카츠', foodB: '히츠마부시', genreA: '돈카츠', genreB: '장어덮밥' },
   okayama: { label: '오카야마', airport: 'OKJ', areas: ['오카야마역', '고라쿠엔', '쿠라시키'], sightA: '고라쿠엔', sightB: '오카야마성', sightC: '쿠라시키 미관지구', sightAMeta: { area: '고라쿠엔' }, foodA: '바라즈시', foodB: '데미카츠동', genreA: '향토요리', genreB: '돈카츠' },
   hiroshima: { label: '히로시마', nameJa: '広島', airport: 'HIJ', areas: ['나카구', '미야지마', '히로시마역'], sightA: '평화기념공원', sightB: '이쓰쿠시마 신사', sightC: '히로시마성', sightCMeta: { area: '나카구' }, foodA: '히로시마 오코노미야키', foodB: '굴 요리', genreA: '오코노미야키', genreB: '해산물' },
@@ -906,7 +1005,7 @@ const JAPAN_CITY_PROFILES = {
   fukuoka: { label: '후쿠오카', nameJa: '福岡', airport: 'FUK', areas: ['하카타', '텐진', '모모치'], sightA: '오호리 공원', sightB: '캐널시티 하카타', sightC: '후쿠오카 타워', sightAMeta: { area: '텐진' }, sightBMeta: { area: '하카타', category: '쇼핑' }, foodA: '하카타 라멘', foodB: '모츠나베', genreA: '라멘', genreB: '전골' },
   nagasaki: { label: '나가사키', airport: 'NGS', areas: ['데지마', '차이나타운', '이나사야마'], sightA: '글로버가든', sightB: '평화공원', sightC: '이나사야마 전망대', sightBMeta: { area: '우라카미' }, sightCMeta: { bestTime: '20:00-21:30' }, foodA: '짬뽕', foodB: '카스테라', genreA: '면요리', genreB: '디저트' },
   kumamoto: { label: '구마모토', airport: 'KMJ', areas: ['구마모토성', '스이젠지', '아소'], sightA: '구마모토성', sightB: '스이젠지 공원', sightC: '아소 화산', sightCMeta: { dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, foodA: '바사시', foodB: '구마모토 라멘', genreA: '일식', genreB: '라멘' },
-  oita: { label: '오이타', airport: 'OIT', areas: ['벳푸', '유후인', '오이타역'], sightA: '벳푸 지옥온천', sightB: '유후인 거리', sightC: '타카사키야마', foodA: '도리텐', foodB: '벳푸 냉면', genreA: '향토요리', genreB: '면요리' },
+  oita: { label: '오이타', airport: 'OIT', areas: ['벳푸', '유후인', '오이타역'], sightA: '벳푸 지옥온천', sightB: null, sightC: '타카사키야마', foodA: '도리텐', foodB: '벳푸 냉면', foodAArea: '오이타역', foodBArea: '벳푸', genreA: '향토요리', genreB: '면요리' },
   miyazaki: { label: '미야자키', airport: 'KMI', areas: ['아오시마', '니치난', '시내'], sightA: '아오시마 신사', sightB: '우도신궁', sightC: '선멧세 니치난', sightCMeta: { area: '니치난' }, foodA: '치킨난반', foodB: '미야자키 소고기', genreA: '일식', genreB: '육류' },
   kagoshima: { label: '가고시마', airport: 'KOJ', areas: ['사쿠라지마', '덴몬칸', '이부스키'], sightA: '사쿠라지마', sightB: '센간엔', sightC: '이부스키 모래찜', sightBMeta: { area: '이소' }, foodA: '쿠로부타 돈카츠', foodB: '사츠마아게', genreA: '돈카츠', genreB: '향토요리' },
   okinawa: { label: '오키나와', nameJa: '沖縄', airport: 'OKA', areas: ['나하', '차탄', '온나'], sightA: '국제거리', sightB: '츄라우미 수족관', sightC: '아메리칸 빌리지', sightBMeta: { area: '모토부', dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, sightCMeta: { area: '차탄' }, foodA: '오키나와 소바', foodB: '고야참푸루', genreA: '면요리', genreB: '향토요리' },
@@ -915,34 +1014,34 @@ const JAPAN_CITY_PROFILES = {
 
 const JAPAN_CITY_PROFILES_EXTRA = {
   wakkanai: { label: '왓카나이', airport: 'WKJ', areas: ['노샷푸', '왓카나이역', '소야곶'], sightA: '소야곶', sightB: '노샷푸 곶', sightC: '왓카나이 공원', sightAMeta: { area: '소야곶' }, sightBMeta: { area: '노샷푸' }, sightCMeta: { area: '왓카나이역' }, foodA: '해산물 덮밥', foodB: '홋카이도 우유 디저트', genreA: '해산물', genreB: '디저트' },
-  rishiri: { label: '리시리', airport: 'RIS', areas: ['오시도마리', '리시리후지', '페시미사키'], sightA: '리시리산 전망', sightB: '페시미사키 전망대', sightC: '섬 해안 드라이브', sightAMeta: { area: '리시리후지' }, sightBMeta: { area: '오시도마리' }, sightCMeta: { area: '리시리' }, foodA: '리시리 다시 라멘', foodB: '성게 요리', genreA: '라멘', genreB: '해산물' },
-  memanbetsu: { label: '메만베쓰', airport: 'MMB', areas: ['아바시리', '비호로', '시레토코'], sightA: '아바시리 유빙관', sightB: '비호로 고개', sightC: '시레토코 자연길', foodA: '게 요리', foodB: '현지 버거', genreA: '해산물', genreB: '패스트푸드' },
+  rishiri: { label: '리시리', airport: 'RIS', areas: ['오시도마리', '리시리후지', '페시미사키'], sightA: '리시리산 전망', sightB: '페시미사키 전망대', sightC: null, sightAMeta: { area: '리시리후지' }, sightBMeta: { area: '오시도마리' }, foodA: '리시리 다시 라멘', foodB: '성게 요리', genreA: '라멘', genreB: '해산물' },
+  memanbetsu: { label: '메만베쓰', airport: 'MMB', areas: ['아바시리', '비호로', '시레토코'], sightA: '아바시리 유빙관', sightB: '비호로 고개', sightC: '시레토코 자연길', sightCMeta: { area: '시레토코', dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, foodA: '게 요리', foodB: '현지 버거', genreA: '해산물', genreB: '패스트푸드' },
   kushiro: { label: '구시로', airport: 'KUH', areas: ['누사마이', '와쇼시장', '습원'], sightA: '구시로 습원', sightB: '누사마이 다리', sightC: '와쇼 시장', sightAMeta: { area: '습원' }, sightBMeta: { area: '누사마이' }, sightCMeta: { area: '와쇼시장', bestTime: '08:00-10:00' }, foodA: '카이센동', foodB: '로바타야키', genreA: '해산물', genreB: '구이' },
-  nakashibetsu: { label: '나카시베츠', airport: 'SHB', areas: ['네무로', '구시로', '중심가'], sightA: '노츠케 반도', sightB: '네무로 해안', sightC: '현지 목장 체험', sightBMeta: { area: '네무로' }, foodA: '치즈 플래터', foodB: '우유 아이스크림', genreA: '유제품', genreB: '디저트' },
+  nakashibetsu: { label: '나카시베츠', airport: 'SHB', areas: ['네무로', '구시로', '중심가'], sightA: '노츠케 반도', sightB: null, sightC: null, foodA: '치즈 플래터', foodB: '우유 아이스크림', genreA: '유제품', genreB: '디저트' },
   okadama: { label: '삿포로 오카다마', airport: 'OKD', areas: ['히가시구', '중앙구', '오도리'], sightA: '모에레누마 공원', sightB: '삿포로 맥주박물관', sightC: '오도리 야경', sightBMeta: { area: '히가시구' }, sightCMeta: { bestTime: '20:00-21:30' }, foodA: '수프카레', foodB: '징기스칸', genreA: '카레', genreB: '육류' },
-  misawa: { label: '미사와', airport: 'MSJ', areas: ['미사와', '도와다', '아오모리'], sightA: '오이라세 계류', sightB: '도와다 호수', sightC: '미사와 항공박물관', sightAMeta: { area: '도와다' }, sightCMeta: { area: '미사와' }, foodA: '사과 디저트', foodB: '히메마스 요리', genreA: '디저트', genreB: '향토요리' },
+  misawa: { label: '미사와', airport: 'MSJ', areas: ['미사와', '도와다', '아오모리'], sightA: '오이라세 계류', sightB: '도와다 호수', sightC: '미사와 항공박물관', sightAMeta: { area: '도와다' }, sightBMeta: { area: '도와다', dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, sightCMeta: { area: '미사와' }, foodA: '사과 디저트', foodB: '히메마스 요리', genreA: '디저트', genreB: '향토요리' },
   odate: { label: '오다테', airport: 'ONJ', areas: ['오다테', '카즈노', '아키타'], sightA: '아키타견 박물관', sightB: '하치만타이', sightC: '오유 스톤서클', sightCMeta: { area: '카즈노' }, foodA: '기리탄포', foodB: '히나이 토리', genreA: '향토요리', genreB: '닭요리' },
   shonai: { label: '쇼나이', airport: 'SYO', areas: ['쓰루오카', '사카타', '데와산잔'], sightA: '데와산잔', sightB: '가모 수족관', sightC: '사카타 항구', sightAMeta: { area: '데와산잔' }, sightBMeta: { area: '쓰루오카' }, sightCMeta: { area: '사카타' }, foodA: '야마가타 소바', foodB: '쇼진요리', genreA: '소바', genreB: '향토요리' },
-  ibaraki: { label: '이바라키', airport: 'IBR', areas: ['미토', '오아라이', '히타치'], sightA: '가이라쿠엔', sightB: '오아라이 해변', sightC: '히타치 해변공원', sightCMeta: { area: '히타치나카' }, foodA: '아구 돼지 요리', foodB: '낫토 정식', genreA: '일식', genreB: '향토요리' },
+  ibaraki: { label: '이바라키', airport: 'IBR', areas: ['미토', '오아라이', '히타치'], sightA: '가이라쿠엔', sightB: '오아라이 해변', sightC: '히타치 해변공원', sightCMeta: { area: '히타치나카' }, foodA: '아귀 전골', foodB: '낫토 정식', genreA: '향토요리', genreB: '향토요리' },
   matsumoto: { label: '마쓰모토', airport: 'MMJ', areas: ['마쓰모토성', '나와테', '아즈미노'], sightA: '마쓰모토성', sightB: '나카마치 거리', sightC: '가미코치', sightCMeta: { area: '가미코치', dayTrip: true, bestTime: '09:00-18:00', stayMin: 480 }, foodA: '신슈 소바', foodB: '바사시', genreA: '소바', genreB: '육류' },
   nanki_shirahama: { label: '난키 시라하마', airport: 'SHM', areas: ['시라하마', '엔게츠섬', '어드벤처월드'], sightA: '시라라하마 해변', sightB: '엔게츠섬', sightC: '어드벤처월드', foodA: '해산물 정식', foodB: '온천 달걀 요리', genreA: '해산물', genreB: '일식' },
   kobe: { label: '고베', nameJa: '神戸', airport: 'UKB', areas: ['산노미야', '모자이크', '기타노'], sightA: '고베 하버랜드', sightB: '기타노 이진칸', sightC: '누노비키 허브원', sightAMeta: { area: '하버랜드' }, sightBMeta: { area: '기타노' }, sightCMeta: { area: '신고베' }, foodA: '고베규 스테이크', foodB: '아카시야키', genreA: '육류', genreB: '분식' },
   tajima: { label: '다지마', airport: 'TJH', areas: ['도요오카', '기노사키', '이즈시'], sightA: '기노사키 온천', sightB: '고노토리 공원', sightC: '겐부도', sightAMeta: { area: '기노사키' }, sightBMeta: { area: '도요오카' }, sightCMeta: { area: '도요오카' }, foodA: '카니 요리', foodB: '다지마규 구이', genreA: '해산물', genreB: '육류' },
   tottori: { label: '돗토리', airport: 'TTJ', areas: ['돗토리 사구', '쿠라요시', '돗토리역'], sightA: '돗토리 사구', sightB: '우라도메 해안', sightC: '모래 미술관', sightBMeta: { area: '이와미' }, sightCMeta: { area: '돗토리 사구' }, foodA: '게 요리', foodB: '배 디저트', genreA: '해산물', genreB: '디저트' },
   iwakuni: { label: '이와쿠니', airport: 'IWK', areas: ['긴타이쿄', '이와쿠니성', '역전'], sightA: '긴타이교', sightB: '이와쿠니성', sightC: '시라헤비 신사', foodA: '이와쿠니 스시', foodB: '연근 요리', genreA: '스시', genreB: '향토요리' },
-  yamaguchi_ube: { label: '야마구치 우베', airport: 'UBJ', areas: ['우베', '야마구치', '아키요시다이'], sightA: '아키요시 동굴', sightB: '루리코지', sightC: '우베 공원', sightAMeta: { area: '아키요시다이' }, sightCMeta: { area: '우베' }, foodA: '복어 요리', foodB: '가와라소바', genreA: '해산물', genreB: '면요리' },
+  yamaguchi_ube: { label: '야마구치 우베', airport: 'UBJ', areas: ['우베', '야마구치', '아키요시다이'], sightA: '아키요시 동굴', sightB: '루리코지', sightC: '도키와 공원', sightAMeta: { area: '아키요시다이' }, sightCMeta: { area: '우베' }, foodA: '복어 요리', foodB: '가와라소바', genreA: '해산물', genreB: '면요리' },
   kitakyushu: { label: '기타큐슈', airport: 'KKJ', areas: ['고쿠라', '모지코', '야하타'], sightA: '모지코 레트로', sightB: '고쿠라성', sightC: '사라쿠라산 야경', sightAMeta: { area: '모지코' }, sightBMeta: { area: '고쿠라' }, sightCMeta: { bestTime: '20:00-21:30' }, foodA: '야키카레', foodB: '우동', genreA: '카레', genreB: '우동' },
   saga: { label: '사가', airport: 'HSG', areas: ['사가역', '카라쓰', '우레시노'], sightA: '요시노가리 유적', sightB: '카라쓰성', sightC: '우레시노 온천', foodA: '사가규', foodB: '온천 두부', genreA: '육류', genreB: '두부요리' },
-  amami: { label: '아마미', airport: 'ASJ', areas: ['아마미시', '해변', '숲길'], sightA: '아마미 블루 해변', sightB: '망그로브 카약', sightC: '아야마루 곶', sightBMeta: { area: '숲길' }, sightCMeta: { area: '해변' }, foodA: '케이한', foodB: '흑설탕 디저트', genreA: '향토요리', genreB: '디저트' },
+  amami: { label: '아마미', airport: 'ASJ', areas: ['아마미시', '해변', '숲길'], sightA: null, sightB: null, sightC: '아야마루 곶', sightCMeta: { area: '해변' }, foodA: '케이한', foodB: '흑설탕 디저트', genreA: '향토요리', genreB: '디저트' },
   yakushima: { label: '야쿠시마', airport: 'KUM', areas: ['미야노우라', '시라타니', '아나보'], sightA: '시라타니 운수협곡', sightB: '조몬스기 트레일', sightC: '오코 폭포', sightAMeta: { area: '시라타니' }, sightBMeta: { area: '아나보', fullDay: true, bestTime: '09:00-18:00', stayMin: 480 }, sightCMeta: { area: '구리오' }, foodA: '토비우오 요리', foodB: '사쓰마아게', genreA: '해산물', genreB: '향토요리' },
-  tanegashima: { label: '다네가시마', airport: 'TNE', areas: ['니시노오모테', '우주센터', '해변'], sightA: '다네가시마 우주센터', sightB: '우라마 산책로', sightC: '해변 일몰', sightAMeta: { area: '우주센터' }, sightBMeta: { area: '니시노오모테' }, sightCMeta: { bestTime: '17:00-18:00' }, foodA: '현지 해산물 덮밥', foodB: '고구마 디저트', genreA: '해산물', genreB: '디저트' },
+  tanegashima: { label: '다네가시마', airport: 'TNE', areas: ['니시노오모테', '우주센터', '해변'], sightA: '다네가시마 우주센터', sightB: null, sightC: null, sightAMeta: { area: '우주센터' }, foodA: '현지 해산물 덮밥', foodB: '고구마 디저트', genreA: '해산물', genreB: '디저트' },
   miyako: { label: '미야코지마', airport: 'MMY', areas: ['히라라', '이케마', '쿠리마'], sightA: '이케마 대교', sightB: '요나하마에하마 해변', sightC: '히가시헨나자키', sightAMeta: { area: '이케마' }, sightBMeta: { area: '쿠리마' }, sightCMeta: { area: '구스쿠베' }, foodA: '미야코소바', foodB: '해산물 BBQ', genreA: '면요리', genreB: '해산물' },
-  ishigaki: { label: '이시가키', airport: 'ISG', areas: ['이시가키시', '카비라', '항구'], sightA: '카비라만', sightB: '이시가키 석회동굴', sightC: '환상적인 석양 포인트', sightAMeta: { area: '카비라' }, sightBMeta: { area: '이시가키시' }, sightCMeta: { bestTime: '17:00-18:00' }, foodA: '야에야마 소바', foodB: '이시가키규 스테이크', genreA: '면요리', genreB: '육류' },
-  shimojishima: { label: '시모지시마', airport: 'SHI', areas: ['이라부', '시모지', '비치'], sightA: '17END 비치', sightB: '이라부 대교', sightC: '스노클링 포인트', sightAMeta: { area: '시모지' }, sightBMeta: { area: '이라부' }, foodA: '섬 생선 요리', foodB: '트로피컬 디저트', genreA: '해산물', genreB: '디저트' },
-  kumejima: { label: '구메지마', airport: 'UEO', areas: ['구메지마시', '해변', '산호초'], sightA: '하테노하마', sightB: '우에구스쿠성터', sightC: '열대 해변 산책', sightAMeta: { area: '산호초' }, sightBMeta: { area: '구메지마시' }, sightCMeta: { area: '해변' }, foodA: '현지 소바', foodB: '바다포도 샐러드', genreA: '면요리', genreB: '샐러드' },
-  kita_daito: { label: '기타다이토', airport: 'KTD', areas: ['기타다이토', '해안', '마을'], sightA: '섬 해안 절벽', sightB: '로컬 등대', sightC: '바다 조망길', foodA: '섬 해산물 정식', foodB: '현지 디저트', genreA: '해산물', genreB: '디저트' },
-  yonaguni: { label: '요나구니', airport: 'OGN', areas: ['요나구니', '바다절벽', '마을'], sightA: '일본 최서단 기념비', sightB: '드라마티컬 절벽', sightC: '해저 지형 다이빙', foodA: '섬 소바', foodB: '가쓰오 요리', genreA: '면요리', genreB: '해산물' },
-  tokunoshima: { label: '도쿠노시마', airport: 'TKN', areas: ['아마기', '이스엔', '해변'], sightA: '무시로세 해안', sightB: '아마기 산책로', sightC: '야생 자연 보호지', sightAMeta: { area: '해변' }, sightBMeta: { area: '아마기' }, foodA: '향토 정식', foodB: '흑설탕 디저트', genreA: '향토요리', genreB: '디저트' }
+  ishigaki: { label: '이시가키', airport: 'ISG', areas: ['이시가키시', '카비라', '항구'], sightA: '카비라만', sightB: '이시가키 석회동굴', sightC: null, sightAMeta: { area: '카비라' }, sightBMeta: { area: '이시가키시' }, foodA: '야에야마 소바', foodB: '이시가키규 스테이크', genreA: '면요리', genreB: '육류' },
+  shimojishima: { label: '시모지시마', airport: 'SHI', areas: ['이라부', '시모지', '비치'], sightA: '17END 비치', sightB: '이라부 대교', sightC: null, sightAMeta: { area: '시모지' }, sightBMeta: { area: '이라부' }, foodA: '섬 생선 요리', foodB: '트로피컬 디저트', genreA: '해산물', genreB: '디저트' },
+  kumejima: { label: '구메지마', airport: 'UEO', areas: ['구메지마시', '해변', '산호초'], sightA: '하테노하마', sightB: '우에구스쿠성터', sightC: null, sightAMeta: { area: '산호초' }, sightBMeta: { area: '구메지마시' }, foodA: '현지 소바', foodB: '바다포도 샐러드', genreA: '면요리', genreB: '샐러드' },
+  kita_daito: { label: '기타다이토', airport: 'KTD', areas: ['기타다이토', '해안', '마을'], sightA: null, sightB: null, sightC: null, foodA: '섬 해산물 정식', foodB: '현지 디저트', genreA: '해산물', genreB: '디저트' },
+  yonaguni: { label: '요나구니', airport: 'OGN', areas: ['요나구니', '바다절벽', '마을'], sightA: '일본 최서단 기념비', sightB: null, sightC: '해저 지형 다이빙', foodA: '섬 소바', foodB: '가쓰오 요리', genreA: '면요리', genreB: '해산물' },
+  tokunoshima: { label: '도쿠노시마', airport: 'TKN', areas: ['아마기', '이스엔', '해변'], sightA: '무시로세 해안', sightB: null, sightC: null, sightAMeta: { area: '해변' }, foodA: '향토 정식', foodB: '흑설탕 디저트', genreA: '향토요리', genreB: '디저트' }
 };
 
 Object.assign(JAPAN_CITY_PROFILES, JAPAN_CITY_PROFILES_EXTRA);
@@ -951,6 +1050,8 @@ function buildGenericCity(profile) {
   const [a1, a2, a3] = profile.areas;
   // 명소는 자리 순서 기본값(지역 = areas[i], 추천 시간 = 오전/오후/늦은 오후)을 받고,
   // sightAMeta·sightBMeta·sightCMeta가 있으면 실제 지역·시간으로 덮어쓴다(야경 20:00-21:30, 하루가 다 드는 곳 fullDay/dayTrip 등).
+  // 이름이 null인 자리는 비워 둔다(실제 장소가 아닌 '섬 해안 절벽' 같은 설명형 이름을 지운 자리 — 도시 주변 실제 명소
+  // assets/city-places.json이 아래 CITY_PLACES 단계에서 채운다).
   const sight = (name, defaults, meta) => ({ name, ...defaults, ...(meta || {}) });
   return {
     label: profile.label,
@@ -961,10 +1062,11 @@ function buildGenericCity(profile) {
       sight(profile.sightA, { area: a1, category: '문화/명소', stayMin: 90, bestTime: '09:00-11:00', crowdScore: 3 }, profile.sightAMeta),
       sight(profile.sightB, { area: a2, category: '자연/전망', stayMin: 100, bestTime: '13:00-15:00', crowdScore: 3 }, profile.sightBMeta),
       sight(profile.sightC, { area: a3, category: '로컬/산책', stayMin: 110, bestTime: '16:00-18:00', crowdScore: 2 }, profile.sightCMeta)
-    ],
+    ].filter((h) => h.name),
     foods: [
-      { name: profile.foodA, area: a1, genre: profile.genreA, priceLevel: 2, score: 3.8 },
-      { name: profile.foodB, area: a2, genre: profile.genreB, priceLevel: 3, score: 4.0 }
+      // foodAArea·foodBArea: 그 음식의 실제 지역(기본은 areas 순서 — 오이타의 벳푸 냉면은 유후인이 아니라 벳푸)
+      { name: profile.foodA, area: profile.foodAArea || a1, genre: profile.genreA, priceLevel: 2, score: 3.8 },
+      { name: profile.foodB, area: profile.foodBArea || a2, genre: profile.genreB, priceLevel: 3, score: 4.0 }
     ]
   };
 }
@@ -1079,50 +1181,74 @@ const MUST_ATTRACTIONS = [
   { name: '삿포로 TV 타워', cityKey: 'sapporo', area: '삿포로', aliases: ['삿포로 tv 타워', 'sapporo tv tower'] },
   { name: '후쿠오카 타워', cityKey: 'fukuoka', area: '후쿠오카', aliases: ['후쿠오카 타워', 'fukuoka tower'] },
   { name: '캐널시티 하카타', cityKey: 'fukuoka', area: '후쿠오카', aliases: ['캐널시티', 'canal city hakata'] },
-  { name: '이쓰쿠시마 신사', cityKey: 'hiroshima', area: '미야지마', aliases: ['이쓰쿠시마 신사', 'itsukushima shrine', '미야지마 신사'] },
+  // 미야지마(섬)를 말하면 이 신사 하나로 넣는다(따로 '미야지마' 카드를 만들어 같은 곳을 두 번 넣지 않게)
+  { name: '이쓰쿠시마 신사', cityKey: 'hiroshima', area: '미야지마', aliases: ['이쓰쿠시마 신사', '이츠쿠시마 신사', 'itsukushima shrine', 'itsukushima', '미야지마 신사', '미야지마', 'miyajima', '厳島神社', '嚴島神社', '宮島'] },
   { name: '히로시마 평화기념공원', cityKey: 'hiroshima', area: '히로시마', aliases: ['평화기념공원', 'hiroshima peace memorial park'] },
   { name: '겐로쿠엔', cityKey: 'kanazawa', area: '가나자와', aliases: ['겐로쿠엔', 'kenrokuen'] },
   { name: '나고야성', cityKey: 'nagoya', area: '나고야', aliases: ['나고야성', 'nagoya castle'] },
   { name: '츄라우미 수족관', cityKey: 'okinawa', area: '모토부', dayTrip: true, aliases: ['츄라우미 수족관', 'churaumi aquarium'] },
   { name: '국제거리', cityKey: 'okinawa', area: '오키나와', aliases: ['국제거리', 'kokusai dori'] },
-  { name: '벳푸 지옥온천', cityKey: 'oita', area: '벳푸', aliases: ['벳푸 지옥온천', 'beppu hells'] },
-  { name: '유후인', cityKey: 'oita', area: '유후인', aliases: ['유후인', 'yufuin'] },
+  { name: '벳푸 지옥온천', cityKey: 'oita', area: '벳푸', aliases: ['벳푸 지옥온천', '벳푸', '벳부', 'beppu hells', 'beppu', '別府', '別府地獄めぐり'] },
+  { name: '유후인', cityKey: 'oita', area: '유후인', aliases: ['유후인', 'yufuin', '湯布院', '由布院'] },
   { name: '우에노 공원', cityKey: 'tokyo', area: '도쿄', aliases: ['우에노공원', '우에노 공원', 'ueno park'] },
   { name: '메구로강', cityKey: 'tokyo', area: '도쿄', aliases: ['메구로강', '메구로 강', 'meguro river'] },
   { name: '오타루 운하', cityKey: 'sapporo', area: '오타루', aliases: ['오타루', '오타루 운하', 'otaru', 'otaru canal', '小樽', '小樽運河'] },
   { name: '다자이후 텐만구', cityKey: 'fukuoka', area: '다자이후', aliases: ['다자이후', '다자이후 텐만구', 'dazaifu tenmangu'] },
   { name: '노토반도', cityKey: 'kanazawa', area: '노토', dayTrip: true, aliases: ['노토반도', '노토 반도', 'noto peninsula'] },
-  { name: '시라카와고', cityKey: 'kanazawa', area: '기후 시라카와고', dayTrip: true, aliases: ['시라카와고', 'shirakawago'] },
+  { name: '시라카와고', cityKey: 'kanazawa', area: '기후 시라카와고', dayTrip: true, aliases: ['시라카와고', 'shirakawago', 'shirakawa-go', '白川郷'] },
   { name: '원폭돔', cityKey: 'hiroshima', area: '히로시마', aliases: ['원폭돔', '원폭 돔', 'atomic bomb dome'] },
   { name: '사쿠라지마', cityKey: 'kagoshima', area: '가고시마', aliases: ['사쿠라지마', 'sakurajima'] },
-  { name: '후라노 라벤더밭', cityKey: 'asahikawa', area: '후라노', dayTrip: true, aliases: ['후라노', '라벤더', 'furano lavender'] },
-  { name: '비에이 청의 호수', cityKey: 'asahikawa', area: '비에이', aliases: ['비에이', '청의 호수', 'biei blue pond'] },
+  { name: '후라노 라벤더밭', cityKey: 'asahikawa', area: '후라노', dayTrip: true, aliases: ['후라노', '라벤더', 'furano lavender', 'furano', '富良野'] },
+  { name: '비에이 청의 호수', cityKey: 'asahikawa', area: '비에이', aliases: ['비에이', '청의 호수', 'biei blue pond', 'biei', '美瑛', '青い池'] },
   { name: '후지큐 하이랜드', cityKey: 'tokyo', area: '야마나시 후지요시다', dayTrip: true, aliases: ['후지큐', '후지큐 하이랜드', 'fujikyu highland'] },
   { name: '나가시마 스파랜드', cityKey: 'nagoya', area: '미에 구와나', fullDay: true, aliases: ['나가시마 스파랜드', 'nagashima spa land'] },
   { name: '닌텐도 뮤지엄', cityKey: 'kyoto', area: '교토', aliases: ['닌텐도 뮤지엄', 'nintendo museum'] },
   { name: '지브리파크', cityKey: 'nagoya', area: '아이치 나가쿠테', fullDay: true, aliases: ['지브리파크', 'ghibli park'] },
   { name: '도쿄 해리포터 스튜디오', cityKey: 'tokyo', area: '네리마', dayTrip: true, aliases: ['해리포터 스튜디오', 'harry potter studio tokyo'] },
   { name: '하코다테 아침시장', cityKey: 'hakodate', area: '하코다테', aliases: ['하코다테 아침시장', 'hakodate morning market'] },
-  { name: '니가타 사케 양조장', cityKey: 'niigata', area: '니가타', aliases: ['사케 양조장', '사케 투어', 'brewery tour'] },
-  { name: '오키나와 스노클링', cityKey: 'okinawa', area: '오키나와', aliases: ['스노클링', 'snorkeling'] },
+  // (예전 '니가타 사케 양조장'·'오키나와 스노클링'은 한 장소가 아닌 활동·일반 명칭이라, '야쿠시마 트레킹'은 조몬스기 트레일과 같은 곳이라 뺐다)
   { name: '알펜루트', cityKey: 'toyama', area: '다테야마', fullDay: true, aliases: ['알펜루트', '다테야마 쿠로베', 'tateyama kurobe alpine route'] },
-  { name: '구마노고도', cityKey: 'kobe', area: '와카야마 다나베', dayTrip: true, aliases: ['구마노고도', 'kumano kodo'] },
-  { name: '가마쿠라', cityKey: 'tokyo', area: '가나가와 가마쿠라', dayTrip: true, aliases: ['가마쿠라', 'kamakura'] },
-  { name: '에노시마', cityKey: 'tokyo', area: '가나가와 후지사와', dayTrip: true, aliases: ['에노시마', 'enoshima'] },
+  // 구마노고도(나카헤치)의 목적지. 고베에서 140km라 난키 시라하마의 당일치기로 둔다(위키데이터 Q705035).
+  { name: '구마노 혼구 다이샤', cityKey: 'nanki_shirahama', area: '와카야마 다나베', dayTrip: true, aliases: ['구마노 혼구 다이샤', '구마노 혼구', '구마노고도', '구마노 고도', 'kumano hongu taisha', 'kumano hongū taisha', 'kumano kodo', 'kumano kodō', '熊野本宮大社', '熊野古道'] },
+  { name: '가마쿠라', cityKey: 'tokyo', area: '가나가와 가마쿠라', dayTrip: true, aliases: ['가마쿠라', 'kamakura', '鎌倉'] },
+  { name: '에노시마', cityKey: 'tokyo', area: '가나가와 후지사와', dayTrip: true, aliases: ['에노시마', 'enoshima', '江ノ島', '江の島'] },
   { name: '오이라세 계곡', cityKey: 'aomori', area: '도와다', dayTrip: true, aliases: ['오이라세 계곡', 'oirase gorge'] },
   { name: '시레토코 국립공원', cityKey: 'memanbetsu', area: '시레토코', dayTrip: true, aliases: ['시레토코', 'shiretoko'] },
-  { name: '야쿠시마 트레킹', cityKey: 'yakushima', area: '야쿠시마', fullDay: true, aliases: ['야쿠시마', 'yakushima'] },
   { name: '아소산', cityKey: 'kumamoto', area: '아소', dayTrip: true, aliases: ['아소산', 'aso'] },
   { name: '돗토리 사구', cityKey: 'tottori', area: '돗토리', aliases: ['돗토리 사구', 'tottori sand dune'] },
-  { name: '카미코치', cityKey: 'matsumoto', area: '가미코치', dayTrip: true, aliases: ['카미코치', 'kamikochi'] },
-  { name: '쿠사츠 온천', cityKey: 'tokyo', area: '군마 쿠사츠', dayTrip: true, aliases: ['쿠사츠 온천', 'kusatsu onsen'] },
-  { name: '긴잔 온천', cityKey: 'yamagata', area: '오바나자와', dayTrip: true, aliases: ['긴잔온천', '긴잔 온천', 'ginzan onsen'] },
-  { name: '노보리베츠 온천', cityKey: 'sapporo', area: '노보리베츠', dayTrip: true, aliases: ['노보리베츠', 'noboribetsu'] },
-  { name: '게로 온천', cityKey: 'nagoya', area: '기후 게로', dayTrip: true, aliases: ['게로온천', '게로 온천', 'gero onsen'] },
-  { name: '키노사키 온천', cityKey: 'tajima', area: '다지마', aliases: ['키노사키', 'kinosaki onsen'] },
+  // 마쓰모토 도시 명소 '가미코치'와 같은 이름(말로 '카미코치'라고 해도 한 곳으로 찾는다)
+  { name: '가미코치', cityKey: 'matsumoto', area: '가미코치', dayTrip: true, aliases: ['가미코치', '카미코치', 'kamikochi', 'kamikōchi', '上高地'] },
+  { name: '쿠사츠 온천', cityKey: 'tokyo', area: '군마 쿠사츠', dayTrip: true, aliases: ['쿠사츠 온천', '쿠사츠', '구사쓰 온천', '구사쓰', '구사츠 온천', '쿠사쓰 온천', 'kusatsu onsen', '草津温泉'] },
+  { name: '긴잔 온천', cityKey: 'yamagata', area: '오바나자와', dayTrip: true, aliases: ['긴잔온천', '긴잔 온천', 'ginzan onsen', '銀山温泉'] },
+  { name: '노보리베츠 온천', cityKey: 'sapporo', area: '노보리베츠', dayTrip: true, aliases: ['노보리베츠', '노보리베츠 온천', '노보리베쓰', '노보리베쓰 온천', 'noboribetsu', 'noboribetsu onsen', '登別', '登別温泉'] },
+  { name: '게로 온천', cityKey: 'nagoya', area: '기후 게로', dayTrip: true, aliases: ['게로온천', '게로 온천', 'gero onsen', '下呂温泉'] },
+  // 다지마 도시 명소 '기노사키 온천'과 같은 이름(말로 '키노사키'라고 해도 한 곳으로 찾는다)
+  { name: '기노사키 온천', cityKey: 'tajima', area: '기노사키', aliases: ['기노사키 온천', '기노사키온천', '기노사키', '키노사키 온천', '키노사키', 'kinosaki', 'kinosaki onsen', '城崎温泉', '城崎'] },
   { name: '아리마 온천', cityKey: 'kobe', area: '아리마', aliases: ['아리마 온천', 'arima onsen'] },
   { name: '시부 온천', cityKey: 'matsumoto', area: '나가노 야마노우치', dayTrip: true, aliases: ['시부온천', '시부 온천', 'shibu onsen'] },
   { name: '스노우몽키 파크', cityKey: 'matsumoto', area: '나가노 야마노우치', dayTrip: true, aliases: ['스노우몽키', 'snow monkey'] },
+  // 공항이 없는 인기 여행지: 가까운 지원 도시의 당일치기로 둔다('닛코 2일' → 도쿄 + 닛코 당일치기). 모두 위키데이터의 실제 장소이고
+  // 사진·좌표·en/ja 이름은 assets/city-places.json media(scripts/build-city-places.js MEDIA_ITEMS)에서 온다.
+  // 별칭은 다른 낱말에 섞이지 않는 것만: '이세'는 '이세탄'(백화점)에, '日光'은 '日光浴'에, '高山'은 '高山病'에도 들어 있어 별칭이 아니라
+  // contextAliases로 둔다(낱말 하나로 쓰였을 때만, 뒤에 조사·'여행'·숫자가 올 때 그 장소: '高山で2日間', '이세 2일', 'Ise 2 days' — contextAliasInText).
+  { name: '닛코 도쇼구', cityKey: 'tokyo', area: '도치기 닛코', category: '문화', dayTrip: true, aliases: ['닛코 도쇼구', '닛코도쇼구', '닛코 동조궁', '닛코', 'nikko toshogu', 'nikkō tōshō-gū', 'nikko', 'nikkō', '日光東照宮', '日光市'], contextAliases: ['日光'] },
+  { name: '가루이자와', cityKey: 'tokyo', area: '나가노 가루이자와', dayTrip: true, aliases: ['가루이자와', '카루이자와', 'karuizawa', '軽井沢'] },
+  { name: '가와구치코', cityKey: 'tokyo', area: '야마나시 후지카와구치코', category: '자연', dayTrip: true, aliases: ['가와구치코', '카와구치코', '가와구치호', '가와구치 호수', '후지산', '후지 산', '후지고코', 'kawaguchiko', 'lake kawaguchi', 'mount fuji', 'mt. fuji', 'mt fuji', 'fuji five lakes', '河口湖', '富士山', '富士五湖'] },
+  { name: '다카야마 산마치', cityKey: 'nagoya', area: '기후 다카야마', category: '산책', dayTrip: true, aliases: ['다카야마 산마치', '다카야마', '타카야마', '히다 다카야마', 'takayama', 'hida takayama', 'sanmachi', '飛騨高山', '高山市', '三町'], contextAliases: ['高山'] },
+  { name: '이세 신궁', cityKey: 'nagoya', area: '미에 이세', category: '문화', dayTrip: true, aliases: ['이세 신궁', '이세신궁', '이세 진구', '이세진구', 'ise jingu', 'ise jingū', 'ise grand shrine', 'ise shrine', '伊勢神宮'], contextAliases: ['이세', 'ise', '伊勢'] },
+  { name: '히메지성', cityKey: 'kobe', area: '효고 히메지', category: '문화', dayTrip: true, aliases: ['히메지성', '히메지 성', '히메지', 'himeji castle', 'himeji', '姫路城', '姫路'] },
+  { name: '히메지성', cityKey: 'osaka', area: '효고 히메지', category: '문화', dayTrip: true, aliases: ['히메지성', '히메지 성', '히메지', 'himeji castle', 'himeji', '姫路城', '姫路'] },
+  { name: '뵤도인', cityKey: 'kyoto', area: '우지', category: '문화', aliases: ['뵤도인', '보도인', '평등원', '우지', 'byodoin', 'byodo-in', 'byōdō-in', 'uji', '平等院', '宇治'] },
+  { name: '아마노하시다테', cityKey: 'kyoto', area: '교토 미야즈', category: '자연', dayTrip: true, aliases: ['아마노하시다테', 'amanohashidate', '天橋立'] },
+  { name: '고야산', cityKey: 'osaka', area: '와카야마 고야', category: '문화', dayTrip: true, aliases: ['고야산', '코야산', '곤고부지', 'koyasan', 'mount koya', 'mt. koya', 'kongobuji', '高野山', '金剛峯寺'] },
+  { name: '지추 미술관', cityKey: 'takamatsu', area: '가가와 나오시마', category: '미술관', dayTrip: true, aliases: ['지추 미술관', '나오시마', 'chichu art museum', 'naoshima', '地中美術館', '直島'] },
+  { name: '지추 미술관', cityKey: 'okayama', area: '가가와 나오시마', category: '미술관', dayTrip: true, aliases: ['지추 미술관', '나오시마', 'chichu art museum', 'naoshima', '地中美術館', '直島'] },
+  { name: '구로카와 온천', cityKey: 'kumamoto', area: '구마모토 미나미오구니', category: '온천', dayTrip: true, aliases: ['구로카와 온천', '구로카와온천', '쿠로카와 온천', 'kurokawa onsen', '黒川温泉'] },
+  { name: '구로카와 온천', cityKey: 'oita', area: '구마모토 미나미오구니', category: '온천', dayTrip: true, aliases: ['구로카와 온천', '구로카와온천', '쿠로카와 온천', 'kurokawa onsen', '黒川温泉'] },
+  { name: '젠코지', cityKey: 'matsumoto', area: '나가노', category: '문화', dayTrip: true, aliases: ['젠코지', 'zenkoji', 'zenko-ji', 'zenkō-ji', '善光寺', '나가노', 'nagano', '長野'] },
+  // 도시 명소(highlights)에 있지만 말로 했을 때 그 도시를 찾도록(도시 명소 풀에서는 같은 이름이라 한 번만 나온다)
+  { name: '마쓰시마', cityKey: 'sendai', area: '마쓰시마', aliases: ['마쓰시마', '마츠시마', 'matsushima', '松島'] },
+  { name: '쿠라시키 미관지구', cityKey: 'okayama', area: '쿠라시키', aliases: ['쿠라시키 미관지구', '구라시키 미관지구', '쿠라시키', '구라시키', 'kurashiki', 'kurashiki bikan', '倉敷美観地区', '倉敷'] },
   // 당일치기(도시 데이터가 없는 근교): 규칙·AI 일정이 '종일' 칸에 넣는다.
   { name: '하코네', cityKey: 'tokyo', area: '가나가와 하코네', category: '온천', dayTrip: true, aliases: ['하코네', 'hakone', '箱根'] },
   { name: '나라 공원·도다이지', cityKey: 'osaka', area: '나라', dayTrip: true, aliases: ['나라 공원', '나라공원', '도다이지', '나라', 'nara park', 'todaiji', 'nara', '奈良公園', '東大寺', '奈良'] },
@@ -1165,13 +1291,246 @@ const EXTRA_PLACES = [
   { name: '슈리성', cityKey: 'okinawa', area: '나하', category: '문화', bestTime: '09:00-11:00', stayMin: 90, lat: 26.2172, lng: 127.7195, en: 'Shuri Castle', ja: '首里城', aliases: ['슈리성', '슈리 성', 'shuri castle', 'shurijo', '首里城'] }
 ];
 
+// ══════════════════════════════════════════════════════════════════════
+// 도시 주변 실제 명소: assets/city-places.json (scripts/build-city-places.js가 위키데이터에서 만든다)
+//  - 큐레이션 명소(highlights·MUST_ATTRACTIONS·EXTRA_PLACES)가 반나절 명소 12곳에 못 미치는 도시를 채운다.
+//  - 모두 위키데이터 항목(QID)·좌표가 있는 실제 장소다. 규칙 일정과 AI 일정은 이 목록 안에서만 고른다(지어낸 장소 없음).
+//  - EXTRA_PLACES 뒤에 generated: true로 붙인다 → 도시 명소 풀(curatedCityPool)의 마지막 순서. 이름·en/ja·지역·좌표·분류는 파일 그대로.
+//  - 큐레이션 명소가 3곳보다 적은 도시(설명형 이름을 지운 섬 등)는 도시 명소(highlights)도 이 목록의 앞쪽 명소로 3곳까지 채운다.
+//  - few: 도시 주변의 반나절 명소가 9곳보다 적은 곳(작은 섬). 다른 도시 장소로 채우지 않고 일정 팁으로 그렇다고 알린다.
+//  - 사진·좌표·en/ja 이름(media)은 PLACE_IMAGES(place-images.json)에 없는 이름만 보탠다(아래 PLACE_IMAGES 단계).
+//  - 파일이 없거나 깨지면 이 단계 없이(큐레이션 데이터만으로) 동작한다.
+// ══════════════════════════════════════════════════════════════════════
+const CITY_PLACES_FILE = path.join(__dirname, 'assets', 'city-places.json');
+const CITY_PLACE_TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d$/;
+// 이름 비교용(대소문자·공백·기호 무시) — placeNameKey와 같은 규칙(이 단계는 그 함수가 쓰는 표보다 먼저 돈다)
+const cityPlaceKey = (s) => String(s || '').toLowerCase().replace(/[\s()（）[\]・·.,'"`_-]/g, '');
+
+function loadCityPlaces() {
+  const cities = new Map(); // cityKey → { few, places: [EXTRA_PLACES 모양 + media] }
+  const media = new Map(); // '<cityKey>|<이름>' → place-images.json places 항목 모양(사진·좌표·위키데이터·labels)
+  const fileLabel = path.relative(__dirname, CITY_PLACES_FILE) || CITY_PLACES_FILE;
+  try {
+    if (!fs.existsSync(CITY_PLACES_FILE)) {
+      console.warn(`[city-places] ${fileLabel} 파일이 없어 큐레이션 명소만으로 동작합니다.`);
+      return { cities, media };
+    }
+    const raw = JSON.parse(fs.readFileSync(CITY_PLACES_FILE, 'utf8').replace(/^﻿/, ''));
+    const text = (v, max) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max) : '');
+    const inJapan = (lat, lng) => Number.isFinite(lat) && Number.isFinite(lng) && lat >= 20 && lat <= 46.5 && lng >= 122 && lng <= 154;
+    const isQid = (v) => /^Q\d+$/.test(String(v || ''));
+    const mediaOf = (p, labels) => ({ image: p.image, filePage: p.filePage, license: p.license, artist: p.artist, lat: p.lat, lng: p.lng, wikidata: p.wikidata, labels });
+    for (const [ck, c] of Object.entries((raw && raw.cities) || {})) {
+      if (!CITY_DATA[ck] || !c || !Array.isArray(c.places)) continue;
+      const places = [];
+      for (const p of c.places) {
+        const name = text(p && p.name, 80);
+        // 위키데이터 항목과 일본 안 좌표가 없는 항목은 쓰지 않는다(실제 장소만)
+        if (!name || !isQid(p.wikidata) || !inJapan(p.lat, p.lng)) continue;
+        const en = text(p.en, 80);
+        const ja = text(p.ja, 80);
+        // 도시 이름을 앞에 붙인 이름('구시로 이쓰쿠시마 신사')의 원래 이름: 다른 곳과 겹치지 않을 때만 말로 찾는다(generatedMatchNames)
+        const aliases = (Array.isArray(p.aliases) ? p.aliases : []).map((a) => text(a, 80)).filter(Boolean).slice(0, 4);
+        places.push({
+          name,
+          ...(aliases.length ? { aliases } : {}),
+          cityKey: ck,
+          area: text(p.area, 60) || CITY_DATA[ck].label,
+          areaEn: text(p.areaEn, 80),
+          areaJa: text(p.areaJa, 80),
+          category: text(p.category, 20) || '관광',
+          bestTime: CITY_PLACE_TIME_RE.test(String(p.bestTime || '')) ? p.bestTime : '10:00-17:00',
+          stayMin: clamp(Math.round(Number(p.stayMin) || 90), 30, 480),
+          ...(p.indoor === true ? { indoor: true } : {}),
+          // 하루 전체가 드는 곳: 큰 테마파크(fullDay), 1,000m 넘는 산 등반(dayTrip) — 규칙 일정은 '종일' 칸에 혼자 넣는다
+          ...(p.fullDay === true ? { fullDay: true } : (p.dayTrip === true ? { dayTrip: true } : {})),
+          lat: p.lat,
+          lng: p.lng,
+          ...(en ? { en } : {}),
+          ...(ja ? { ja } : {}),
+          wikidata: p.wikidata,
+          generated: true,
+          media: mediaOf(p, { ...(en ? { en } : {}), ...(ja ? { ja } : {}) })
+        });
+      }
+      cities.set(ck, { few: c.few === true, places });
+    }
+    for (const [key, v] of Object.entries((raw && raw.media) || {})) {
+      const sep = key.indexOf('|');
+      if (sep <= 0 || !CITY_DATA[key.slice(0, sep)] || !v || typeof v !== 'object' || !isQid(v.wikidata)) continue;
+      media.set(key, v);
+    }
+    const count = [...cities.values()].reduce((n, c) => n + c.places.length, 0);
+    console.log(`[city-places] 도시 주변 실제 명소 ${count}곳(${cities.size}개 도시), 큐레이션 명소 사진·좌표 ${media.size}곳 로드`);
+  } catch (err) {
+    console.warn(`[city-places] ${fileLabel}을(를) 읽지 못해 큐레이션 명소만으로 동작합니다: ${err.message}`);
+  }
+  return { cities, media };
+}
+
+const CITY_PLACES = loadCityPlaces();
+
+// 도시마다: 이미 있는 이름(큐레이션 명소·대표 명소·추가 명소)과 겹치지 않는 것만 EXTRA_PLACES에 붙이고,
+// 도시 명소(highlights)가 3곳보다 적으면 앞쪽(하루짜리가 아닌) 명소로 채운다.
+for (const [ck, c] of CITY_PLACES.cities) {
+  const city = CITY_DATA[ck];
+  const taken = new Set([
+    ...(city.highlights || []).map((h) => h.name),
+    ...MUST_ATTRACTIONS.filter((m) => m.cityKey === ck).flatMap((m) => [m.name, ...(m.aliases || [])]),
+    ...EXTRA_PLACES.filter((e) => e.cityKey === ck).flatMap((e) => [e.name, e.en, e.ja, ...(e.aliases || [])])
+  ].map(cityPlaceKey).filter(Boolean));
+  const added = [];
+  for (const p of c.places) {
+    const keys = [p.name, p.en, p.ja].map(cityPlaceKey).filter(Boolean);
+    if (keys.some((k) => taken.has(k))) continue;
+    keys.forEach((k) => taken.add(k));
+    const { media, ...extra } = p;
+    EXTRA_PLACES.push(extra);
+    added.push(extra);
+  }
+  for (const p of added) {
+    if ((city.highlights || []).length >= 3) break;
+    if (p.fullDay || p.dayTrip) continue;
+    city.highlights.push({ name: p.name, area: p.area, category: p.category, stayMin: p.stayMin, bestTime: p.bestTime, crowdScore: 2, generated: true });
+  }
+}
+
+// 도시 주변 반나절 명소가 적은 도시인지(few) — 일정 팁으로 알린다
+function cityHasFewSights(cityKey) {
+  return Boolean(CITY_PLACES.cities.get(String(cityKey || ''))?.few);
+}
+
+// 도시 주변 실제 명소(generated)의 이름 중 말로 한 장소 찾기에 쓰는 이름. 다른 도시의 대표·큐레이션 명소나 도시 이름과 같은 이름
+// (구시로의 'Itsukushima Shrine'), 두 도시 이상에 같은 이름이 있는 것, 두 글자 이하('城山')·한 단어 로마자 6자 미만('Toro')은 뺀다
+// → 'Hiroshima 2 days, must see Itsukushima Shrine'이 구시로로, 'toro sushi'가 시즈오카 토로 유적으로 가지 않는다.
+let GENERATED_MATCH_NAMES = null;
+function generatedMatchNames(e) {
+  if (!GENERATED_MATCH_NAMES) {
+    const owners = new Map(); // 이름 키 → Set(cityKey)
+    const add = (label, owner) => { const k = cityPlaceKey(label); if (!k) return; if (!owners.has(k)) owners.set(k, new Set()); owners.get(k).add(owner); };
+    for (const m of MUST_ATTRACTIONS) [m.name, ...(m.aliases || []), ...(m.contextAliases || [])].forEach((a) => add(a, m.cityKey));
+    for (const [ck, c] of Object.entries(CITY_DATA)) {
+      for (const h of c.highlights || []) if (!h.generated) add(h.name, ck);
+      for (const a of CITY_ALIASES[ck] || []) add(a, ck);
+    }
+    for (const x of EXTRA_PLACES) if (!x.generated) [x.name, x.en, x.ja, ...(x.aliases || [])].forEach((a) => add(a, x.cityKey));
+    const genCities = new Map();
+    for (const x of EXTRA_PLACES) {
+      if (!x.generated) continue;
+      for (const k of new Set([x.name, x.en, x.ja, ...(x.aliases || [])].filter(Boolean).map(cityPlaceKey))) {
+        if (!genCities.has(k)) genCities.set(k, new Set());
+        genCities.get(k).add(x.cityKey);
+      }
+    }
+    GENERATED_MATCH_NAMES = new Map();
+    for (const x of EXTRA_PLACES) {
+      if (!x.generated) continue;
+      GENERATED_MATCH_NAMES.set(x, [x.name, x.en, x.ja, ...(x.aliases || [])].filter(Boolean).filter((l) => {
+        const k = cityPlaceKey(l);
+        const t = String(l).trim();
+        // 두 글자 이하는 흔한 이름('城山')이라 빼되, 두 글자 한자·가나 이름('端島')은 낱말 하나로 쓰였을 때만 찾는다(extraPlaceHits)
+        if (!k || (k.length <= 2 && !SHORT_CJK_NAME_RE.test(t))) return false;
+        if (/^[a-z0-9'-]+$/i.test(t) && t.length < 6) return false;
+        if ([...(owners.get(k) || [])].some((ck) => ck !== x.cityKey)) return false;
+        return (genCities.get(k)?.size || 0) <= 1;
+      }));
+    }
+  }
+  return GENERATED_MATCH_NAMES.get(e) || [];
+}
+
+// 추가 명소의 '말로 찾기' 이름: 큐레이션 추가 명소는 이름·en/ja·별칭, 도시 주변 실제 명소는 generatedMatchNames
+function extraPlaceMatchLabels(e) {
+  return e.generated ? generatedMatchNames(e) : [e.name, e.en, e.ja, ...(e.aliases || [])].filter(Boolean);
+}
+
+const CONTEXT_ALIAS_TAIL_SRC = '(?=\\s*(?:で|に|へ|から|まで|を|は|の旅|旅行|観光|\\d|一|二|三|에서|에|로|으로|은|는|여행|관광|당일|for\\b|trip\\b|day\\b|,|、|。|!|\\?|$))';
+const SHORT_CJK_NAME_RE = /^[぀-ヿ一-鿿]{2}$/;
+const CONTEXT_TAIL_RE = new RegExp(`^${CONTEXT_ALIAS_TAIL_SRC.replace(/^\(\?=/, '(?:')}`, 'i');
+
+// 글 속 추가 명소 언급 [{ place, idx, len, label }]: 더 긴 이름 안에 든 짧은 이름('Hokkaido Museum' ⊂ 'Hokkaido Museum of Northern Peoples')은 뺀다
+function extraPlaceHits(text) {
+  const lower = String(text || '').toLowerCase();
+  if (!lower.trim()) return [];
+  const hits = [];
+  for (const e of EXTRA_PLACES) {
+    for (const label of extraPlaceMatchLabels(e)) {
+      const t = String(label).trim();
+      const len = t.length;
+      const short = e.generated && SHORT_CJK_NAME_RE.test(t);
+      for (const idx of aliasHitPositions(lower, label)) {
+        // 두 글자 한자 이름('端島')은 앞에 한자·가나가 붙지 않고 뒤에 조사·일수가 올 때만('端島 2日間', '端島に行きたい')
+        if (short && (/[぀-ヿ一-鿿]/.test(lower[idx - 1] || '') || !CONTEXT_TAIL_RE.test(lower.slice(idx + len)))) continue;
+        hits.push({ place: e, idx, len, label });
+      }
+    }
+  }
+  hits.sort((a, b) => (b.len - a.len) || (a.idx - b.idx));
+  const kept = [];
+  for (const h of hits) {
+    if (kept.some((k) => k.len > h.len && h.idx < k.idx + k.len && k.idx < h.idx + h.len && k.place !== h.place)) continue;
+    if (kept.some((k) => k.place === h.place)) continue;
+    kept.push(h);
+  }
+  return kept.sort((a, b) => a.idx - b.idx);
+}
+
 // 별칭·이름·en/ja 이름이 글 속에 있는 추가 명소(EXTRA_PLACES). preferredCityKeys 도시의 것을 앞에 둔다.
 function matchExtraPlaces(text, preferredCityKeys = []) {
-  const lower = String(text || '').toLowerCase();
-  if (!lower) return [];
   const prefer = new Set((preferredCityKeys || []).filter(Boolean));
-  return EXTRA_PLACES.filter((e) => [e.name, e.en, e.ja, ...(e.aliases || [])].some((a) => a && aliasInText(lower, String(a).toLowerCase())))
+  return extraPlaceHits(text).map((h) => h.place)
     .sort((a, b) => Number(prefer.has(b.cityKey)) - Number(prefer.has(a.cityKey)));
+}
+
+// 도시 없이 장소 이름만 말한 글('다케토미섬 2일', 'Hashima Island 2 days')의 도시: 그 장소(추가 명소·도시 주변 실제 명소)의 도시.
+// 세 글자 이상 이름만 보고, 가장 긴 이름이 여러 도시에 걸치면 정하지 않는다.
+function cityOfNamedPlace(text) {
+  const hits = extraPlaceHits(text).filter((h) => h.len >= 3 || SHORT_CJK_NAME_RE.test(String(h.label).trim()));
+  if (!hits.length) return '';
+  const longest = Math.max(...hits.map((h) => h.len));
+  const cities = new Set(hits.filter((h) => h.len === longest).map((h) => h.place.cityKey));
+  return cities.size === 1 ? [...cities][0] : '';
+}
+
+// 장소 이름 속 다른 도시 이름·랜드마크는 도시로 보지 않도록 지운 글('Matsumoto Seicho Memorial Museum'(기타큐슈)의 'Matsumoto',
+// '홋카이도 오비히로 미술관'의 '홋카이도'(삿포로), '하나마키 기요미즈데라'의 '기요미즈'(교토)). 그 장소 도시의 이름은 남긴다.
+function maskOtherCityPlaceNames(text) {
+  const raw = String(text || '');
+  const cityHits = cityMentionHits(raw, { landmarks: true });
+  let out = raw;
+  for (const h of extraPlaceHits(raw)) {
+    for (const c of cityHits) {
+      if (c.key === h.place.cityKey || c.len >= h.len || c.idx < h.idx || c.idx + c.len > h.idx + h.len) continue;
+      out = out.slice(0, c.idx) + ' '.repeat(c.len) + out.slice(c.idx + c.len);
+    }
+  }
+  return out;
+}
+
+// 도시 주변 실제 명소 이름 속에 든 다른 도시 대표 명소 별칭은 그 명소로 보지 않도록 지운 글
+// ('구시로 이쓰쿠시마 신사'의 '이쓰쿠시마 신사'(히로시마), '하나마키 기요미즈데라'의 '기요미즈데라'(교토))
+function maskMustInsidePlaceNames(text) {
+  const raw = String(text || '');
+  const lower = raw.toLowerCase();
+  let out = raw;
+  for (const h of extraPlaceHits(raw)) {
+    if (!h.place.generated) continue;
+    const inside = MUST_ATTRACTIONS.some((m) => m.cityKey !== h.place.cityKey && (m.aliases || []).some((a) => {
+      const al = String(a).toLowerCase();
+      return al.length < h.len && aliasHitPositions(lower, al).some((i) => i >= h.idx && i + al.length <= h.idx + h.len);
+    }));
+    if (inside) out = out.slice(0, h.idx) + ' '.repeat(h.len) + out.slice(h.idx + h.len);
+  }
+  return out;
+}
+
+// 장소 이름(대표 명소·추가 명소·도시 주변 실제 명소)의 도시 키. 모르면 ''.
+function placeCityKeyOf(name) {
+  const n = String(name || '').trim();
+  if (!n) return '';
+  const must = MUST_ATTRACTIONS.find((m) => m.name === n);
+  if (must) return must.cityKey;
+  return extraPlaceByName(n)?.cityKey || '';
 }
 
 // 이름·별칭·en/ja 이름이 정확히 같은 추가 명소(대소문자·공백 무시)
@@ -1194,11 +1553,25 @@ function aliasInText(lowerText, alias) {
   return lowerText.includes(a);
 }
 
+// 다른 낱말에도 들어 있는 짧은 이름('高山'·'日光'·'이세'·'ise')이 낱말 하나로 쓰였는지: 앞은 같은 글자가 붙지 않고,
+// 뒤에 조사·'여행/観光'·숫자(일수)·문장 부호가 온다. '高山で2日間'·'이세 2일'·'Ise 2 days'는 맞고 '高山病'·'이세탄'·'日光浴'은 아니다.
+function contextAliasInText(lowerText, alias) {
+  const a = String(alias || '').toLowerCase().trim();
+  if (!a) return false;
+  const head = /^[가-힣]/.test(a) ? '(?:^|[^가-힣])' : (/^[a-z]/.test(a) ? '(?:^|[^a-z0-9])' : '(?:^|[^぀-ヿ一-鿿])');
+  return new RegExp(`${head}${escapeRegExp(a)}${CONTEXT_ALIAS_TAIL_SRC}`, 'i').test(String(lowerText || '').toLowerCase());
+}
+// 대표 명소 이름·별칭(contextAliases 포함)과 정확히 같은 낱말인지
+function mustNameEquals(item, lowerToken) {
+  const t = String(lowerToken || '').toLowerCase().trim();
+  return Boolean(t) && (item.name.toLowerCase() === t || [...(item.aliases || []), ...(item.contextAliases || [])].some((a) => String(a).toLowerCase() === t));
+}
+
 function matchMustAttractions(text) {
   const lower = String(text || '').toLowerCase();
   const hits = [];
   for (const item of MUST_ATTRACTIONS) {
-    if (item.aliases.some((a) => aliasInText(lower, a))) {
+    if (item.aliases.some((a) => aliasInText(lower, a)) || (item.contextAliases || []).some((a) => contextAliasInText(lower, a))) {
       hits.push(item);
     }
   }
@@ -1501,61 +1874,103 @@ function readBody(req, maxBytes = BODY_LIMIT_DEFAULT) {
   });
 }
 
+// ── 글 속 도시 이름 찾기(공통) ──
+// 도시 별칭(CITY_ALIASES: 키·한글·en·ja·표기 변형)과 랜드마크 낱말(LANDMARK_CITY_HINTS)이 글의 어디에 있는지 찾고,
+// 더 긴 이름 안에 든 짧은 이름은 버린다: 'Kitakyushu'·'北九州' 안의 'kyushu'·'九州'(후쿠오카), '기타다이토' 안의 '이토'(시즈오카),
+// '삿포로 오카다마' 안의 '삿포로'. 로마자 별칭은 단어 경계('saga' ≠ 'sagano'), 두 글자 이하 한글 별칭은 앞에 한글이 붙지 않을 때만
+// ('우리나라'의 '나라'), '나하고'·'사가지고'처럼 흔한 말의 일부인 짧은 별칭은 그 꼬리가 붙으면 도시로 보지 않는다.
+const SHORT_ALIAS_STOP_TAIL = { '나하': /^(?:고|구|한)/, '사가': /^(?:지고|지구|서|져|면|다|자|는데)/, '미토': /^(?:콘)/ };
+function aliasHitPositions(lower, alias) {
+  const a = String(alias || '').toLowerCase().trim();
+  if (!a) return [];
+  const out = [];
+  const latin = /^[a-z0-9 .'-]+$/.test(a);
+  const shortKo = /^[가-힣]{1,2}$/.test(a);
+  const stopTail = SHORT_ALIAS_STOP_TAIL[a];
+  let from = 0;
+  while (from <= lower.length - a.length) {
+    const idx = lower.indexOf(a, from);
+    if (idx < 0) break;
+    from = idx + 1;
+    const before = idx > 0 ? lower[idx - 1] : '';
+    const after = lower.slice(idx + a.length);
+    if (latin && (/[a-z0-9]/.test(before) || /^[a-z0-9]/.test(after))) continue;
+    if (shortKo && /[가-힣]/.test(before)) continue;
+    if (stopTail && stopTail.test(after)) continue;
+    out.push(idx);
+  }
+  return out;
+}
+
+// 글 속 도시 언급 [{ key, idx, len, matched, src: 'alias'|'label'|'key'|'landmark' }] (위치 순).
+// landmarks: 랜드마크 낱말도 찾는다. labelsOnly: 도시 한글 이름과 키만. 더 긴 언급과 겹치는 짧은 언급은 뺀다.
+function cityMentionHits(text, opts = {}) {
+  const lower = String(text || '').toLowerCase();
+  if (!lower.trim()) return [];
+  const entries = [];
+  if (!opts.labelsOnly) for (const [key, aliases] of Object.entries(CITY_ALIASES)) for (const a of aliases || []) entries.push([key, String(a), 'alias']);
+  for (const [key, city] of Object.entries(CITY_DATA)) {
+    if (city?.label) entries.push([key, String(city.label), 'label']);
+    entries.push([key, key, 'key']);
+    if (key.includes('_')) { entries.push([key, key.replace(/_/g, ' '), 'key']); entries.push([key, key.replace(/_/g, '-'), 'key']); }
+  }
+  if (opts.landmarks) for (const [key, words] of Object.entries(LANDMARK_CITY_HINTS)) for (const w of words) entries.push([key, String(w), 'landmark']);
+  const hits = [];
+  const seen = new Set();
+  for (const [key, alias, src] of entries) {
+    const len = alias.trim().length;
+    for (const idx of aliasHitPositions(lower, alias)) {
+      const id = `${key}|${idx}|${len}`;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      hits.push({ key, idx, len, matched: alias, src });
+    }
+  }
+  // 긴 언급부터 남기고, 이미 남긴 더 긴 언급과 겹치는 짧은 언급(다른 도시)은 버린다
+  hits.sort((a, b) => (b.len - a.len) || (a.idx - b.idx));
+  const kept = [];
+  for (const h of hits) {
+    const overlap = kept.some((k) => k.len > h.len && h.idx < k.idx + k.len && k.idx < h.idx + h.len && k.key !== h.key);
+    if (!overlap) kept.push(h);
+  }
+  return kept.sort((a, b) => (a.idx - b.idx) || (b.len - a.len));
+}
+
+// 도시 키 차례(예전 규칙 그대로: CITY_ALIASES에 먼저 적힌 도시가 먼저) 중 글에 나온 첫 도시
+function firstCityKeyInOrder(hits) {
+  const keys = new Set(hits.map((h) => h.key));
+  for (const key of [...Object.keys(CITY_ALIASES), ...Object.keys(CITY_DATA)]) if (keys.has(key)) return key;
+  return '';
+}
+
 function cityKeyByInput(input) {
   const raw = String(input || '').toLowerCase().trim();
   if (!raw) return 'tokyo';
   if (CITY_DATA[raw]) return raw;
-  for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
-    if (aliases.some((alias) => raw.includes(String(alias).toLowerCase()))) return key;
-  }
-  for (const [key, city] of Object.entries(CITY_DATA)) {
-    const label = String(city?.label || '').toLowerCase();
-    if ((label && raw.includes(label)) || raw.includes(String(key).toLowerCase())) return key;
-  }
-  return 'tokyo';
+  return firstCityKeyInOrder(cityMentionHits(raw)) || 'tokyo';
 }
 
 function detectCityKeyByInput(input) {
   const raw = String(input || '').toLowerCase().trim();
   if (!raw) return '';
   if (CITY_DATA[raw]) return raw;
-  for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
-    if (aliases.some((alias) => raw.includes(String(alias).toLowerCase()))) return key;
-  }
-  for (const [key, city] of Object.entries(CITY_DATA)) {
-    const label = String(city?.label || '').toLowerCase();
-    if ((label && raw.includes(label)) || raw.includes(String(key).toLowerCase())) return key;
-  }
-  return '';
+  return firstCityKeyInOrder(cityMentionHits(raw));
 }
 
+// 랜드마크 낱말('도톤보리', '하카타')로 정한 도시. 도시 이름 안에 든 낱말('기타다이토'의 '이토')은 세지 않는다.
 function cityKeyFromLandmark(text) {
-  const raw = String(text || '').toLowerCase();
-  for (const [cityKey, words] of Object.entries(LANDMARK_CITY_HINTS)) {
-    if (words.some((w) => raw.includes(String(w).toLowerCase()))) return cityKey;
-  }
+  const landmarkKeys = new Set(cityMentionHits(text, { landmarks: true }).filter((h) => h.src === 'landmark').map((h) => h.key));
+  for (const cityKey of Object.keys(LANDMARK_CITY_HINTS)) if (landmarkKeys.has(cityKey)) return cityKey;
   return '';
 }
 
 function detectAllCityKeysFromText(text) {
-  const raw = String(text || '').toLowerCase();
+  const hits = cityMentionHits(text, { landmarks: true });
   const found = new Set();
-  for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
-    if (aliases.some((a) => raw.includes(String(a).toLowerCase()))) {
-      found.add(key);
-    }
-  }
-  for (const [key, city] of Object.entries(CITY_DATA)) {
-    const label = String(city?.label || '').toLowerCase();
-    if ((label && raw.includes(label)) || raw.includes(String(key).toLowerCase())) {
-      found.add(key);
-    }
-  }
-  for (const [key, words] of Object.entries(LANDMARK_CITY_HINTS)) {
-    if (words.some((w) => raw.includes(String(w).toLowerCase()))) {
-      found.add(key);
-    }
-  }
+  const cityKeys = new Set(hits.filter((h) => h.src !== 'landmark').map((h) => h.key));
+  for (const key of [...Object.keys(CITY_ALIASES), ...Object.keys(CITY_DATA)]) if (cityKeys.has(key)) found.add(key);
+  const landmarkKeys = new Set(hits.filter((h) => h.src === 'landmark').map((h) => h.key));
+  for (const key of Object.keys(LANDMARK_CITY_HINTS)) if (landmarkKeys.has(key)) found.add(key);
   return Array.from(found);
 }
 
@@ -1569,115 +1984,25 @@ function cityKeyByAirport(airportCode) {
 }
 
 function detectMentionedCityKeysOrdered(text) {
-  const raw = String(text || '').toLowerCase();
-  if (!raw) return [];
-  const hits = [];
-  const pushHit = (key, idx) => {
-    if (!key || idx < 0) return;
-    if (hits.some((h) => h.key === key)) return;
-    hits.push({ key, idx });
-  };
-
-  for (const [key, city] of Object.entries(CITY_DATA)) {
-    const label = String(city?.label || '').toLowerCase();
-    if (label) {
-      const idx = raw.indexOf(label);
-      if (idx >= 0) pushHit(key, idx);
-    }
-    const keyIdx = raw.indexOf(String(key).toLowerCase());
-    if (keyIdx >= 0) pushHit(key, keyIdx);
-  }
-
-  for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
-    for (const alias of aliases || []) {
-      const a = String(alias || '').toLowerCase().trim();
-      if (!a) continue;
-      const idx = raw.indexOf(a);
-      if (idx >= 0) pushHit(key, idx);
-    }
-  }
-
-  hits.sort((a, b) => a.idx - b.idx);
-  return hits.map((h) => h.key);
+  const out = [];
+  for (const h of cityMentionHits(text)) if (!out.includes(h.key)) out.push(h.key);
+  return out;
 }
 
 function detectCityMentionsDetailed(text) {
-  const raw = String(text || '');
-  const lower = raw.toLowerCase();
-  if (!raw) return [];
-  const hits = [];
-  const push = (key, idx, matched) => {
-    if (!key || idx < 0) return;
-    const exist = hits.find((h) => h.key === key && h.idx === idx);
-    if (exist) return;
-    hits.push({ key, idx, matched });
-  };
-
-  for (const [key, city] of Object.entries(CITY_DATA)) {
-    const label = String(city?.label || '').trim();
-    if (label) {
-      let from = 0;
-      while (from < raw.length) {
-        const idx = raw.indexOf(label, from);
-        if (idx < 0) break;
-        push(key, idx, label);
-        from = idx + Math.max(1, label.length);
-      }
-    }
-    const keyText = String(key).toLowerCase();
-    if (keyText) {
-      let from = 0;
-      while (from < lower.length) {
-        const idx = lower.indexOf(keyText, from);
-        if (idx < 0) break;
-        push(key, idx, keyText);
-        from = idx + Math.max(1, keyText.length);
-      }
-    }
-  }
-
-  for (const [key, aliases] of Object.entries(CITY_ALIASES)) {
-    for (const aliasRaw of aliases || []) {
-      const alias = String(aliasRaw || '').trim();
-      if (!alias) continue;
-      const aliasLower = alias.toLowerCase();
-      let from = 0;
-      while (from < lower.length) {
-        const idx = lower.indexOf(aliasLower, from);
-        if (idx < 0) break;
-        push(key, idx, alias);
-        from = idx + Math.max(1, aliasLower.length);
-      }
-    }
-  }
-
-  hits.sort((a, b) => a.idx - b.idx);
-  const dedupKeys = [];
+  const out = [];
   const seen = new Set();
-  for (const h of hits) {
+  for (const h of cityMentionHits(text)) {
     if (seen.has(h.key)) continue;
     seen.add(h.key);
-    dedupKeys.push(h);
+    out.push({ key: h.key, idx: h.idx, matched: h.matched });
   }
-  return dedupKeys;
+  return out;
 }
 
 function detectMentionedCityKeysByLabels(text) {
-  const raw = String(text || '');
-  const lower = raw.toLowerCase();
-  const found = [];
-  for (const [key, city] of Object.entries(CITY_DATA)) {
-    const label = String(city?.label || '').trim();
-    if (label && raw.includes(label) && !found.includes(key)) {
-      found.push(key);
-      continue;
-    }
-    const keyText = String(key).toLowerCase();
-    if (keyText && lower.includes(keyText) && !found.includes(key)) {
-      found.push(key);
-    }
-  }
-  return found;
+  const keys = new Set(cityMentionHits(text, { labelsOnly: true }).map((h) => h.key));
+  return Object.keys(CITY_DATA).filter((k) => keys.has(k));
 }
 
 function toCustomCityKey(label) {
@@ -2316,7 +2641,7 @@ function canonicalWantedName(token, cityKeys = []) {
   if (!t) return '';
   const lower = t.toLowerCase();
   const keys = (cityKeys || []).filter(Boolean);
-  const must = dedupeMustMatches(MUST_ATTRACTIONS.filter((m) => m.name.toLowerCase() === lower || (m.aliases || []).some((a) => String(a).toLowerCase() === lower)), keys)
+  const must = dedupeMustMatches(MUST_ATTRACTIONS.filter((m) => mustNameEquals(m, lower)), keys)
     .sort((a, b) => Number(keys.includes(b.cityKey)) - Number(keys.includes(a.cityKey)))[0];
   if (must) return must.name;
   const extra = extraPlaceByName(t);
@@ -2326,17 +2651,35 @@ function canonicalWantedName(token, cityKeys = []) {
   return t;
 }
 
+// 낱말이 가리키는 데이터 속 장소의 표준 이름(대표 명소 별칭·추가 명소·도시 주변 실제 명소·도시 명소 표기). 모르면 ''.
+// AI 채팅 해석이 '데이터 없음'(unsupportedPlaces)으로 돌려준 이름을 다시 볼 때 쓴다.
+function knownPlaceForToken(token, cityKeys = []) {
+  const t = String(token || '').trim();
+  if (!t || exactCityKeyForToken(t)) return '';
+  const lower = t.toLowerCase();
+  const must = dedupeMustMatches(MUST_ATTRACTIONS.filter((m) => mustNameEquals(m, lower)), cityKeys)[0];
+  if (must) return must.name;
+  const extra = extraPlaceByName(t);
+  if (extra) return extra.name;
+  // 낱말이 장소 이름 하나를 거의 다 덮을 때('다케토미섬은'처럼 조사가 붙은 경우)
+  const hit = extraPlaceHits(t).find((h) => h.len >= Math.max(3, t.replace(/\s+/g, '').length - 2));
+  if (hit) return hit.place.name;
+  const label = placeLabelMatches(t, cityKeys)[0];
+  return label?.ko || '';
+}
+
 // 낱말이 가리키는 데이터 속 장소가 있는지(대표 명소·추가 명소·도시 명소·내장 장소 표기)
 function isKnownPlaceName(name) {
   const t = String(name || '').trim();
   if (!t) return false;
   const lower = t.toLowerCase();
-  if (MUST_ATTRACTIONS.some((m) => m.name.toLowerCase() === lower || (m.aliases || []).some((a) => String(a).toLowerCase() === lower))) return true;
+  if (MUST_ATTRACTIONS.some((m) => mustNameEquals(m, lower))) return true;
   if (extraPlaceByName(t)) return true;
   return placeLabelMatches(t, []).length > 0;
 }
 
-function extractWantedPlacesFromMessage(text, cityKey) {
+// routeKeys: 메시지에 함께 나온 다른 도시(그 도시의 도시 주변 실제 명소도 받는다)
+function extractWantedPlacesFromMessage(text, cityKey, routeKeys = []) {
   const city = CITY_DATA[cityKey] || CITY_DATA.tokyo;
   const raw = String(text || '');
   const lower = raw.toLowerCase();
@@ -2360,7 +2703,7 @@ function extractWantedPlacesFromMessage(text, cityKey) {
 
   const cityWords = LANDMARK_CITY_HINTS[cityKey] || [];
   // 대표 명소의 별칭인 랜드마크 낱말('유니버설', 'USJ')은 명소 이름으로 한 번만 넣는다.
-  const mustMatched = matchMustAttractions(raw);
+  const mustMatched = matchMustAttractions(maskMustInsidePlaceNames(raw));
   const mustAliasSet = new Set(mustMatched.flatMap((m) => [m.name, ...(m.aliases || [])]).map((a) => String(a).toLowerCase()));
   // 이미 찾은 장소 이름·별칭의 일부인 낱말('fushimi' ⊂ 'fushimi inari', '기요미즈' ⊂ '기요미즈데라')은 따로 넣지 않는다.
   const foundLowers = [...mustAliasSet].filter((a) => aliasInText(lower, a));
@@ -2379,9 +2722,13 @@ function extractWantedPlacesFromMessage(text, cityKey) {
     if (!hits.includes(m.name)) hits.unshift(m.name);
   });
 
-  // 추가 명소(가이유칸·팀랩 플래닛 …): 이 도시의 것, 또는 다른 도시라도 네 글자 이상 별칭으로 분명히 말한 것
+  // 추가 명소(가이유칸·팀랩 플래닛 …): 이 도시의 것, 또는 다른 도시라도 네 글자 이상 별칭으로 분명히 말한 것.
+  // 도시 주변 실제 명소(generated)는 그 도시가 경로(이 도시·함께 말한 도시)에 있을 때만: 다른 도시의 같은 이름 장소로
+  // 갈 수 없는 '도시 이동' 날을 만들지 않는다(도시가 없는 글은 parseTravelChatInput이 먼저 그 장소의 도시로 정한다).
+  const routeSet = new Set([cityKey, ...(routeKeys || [])].filter(Boolean));
   for (const e of matchExtraPlaces(raw, [cityKey])) {
-    const specific = e.cityKey === cityKey || [e.name, e.en, e.ja, ...(e.aliases || [])].some((a) => a && String(a).length >= 4 && aliasInText(lower, String(a).toLowerCase()));
+    if (e.generated && !routeSet.has(e.cityKey)) continue;
+    const specific = routeSet.has(e.cityKey) || extraPlaceMatchLabels(e).some((a) => a && String(a).length >= 4 && aliasInText(lower, String(a).toLowerCase()));
     if (specific && !hits.includes(e.name)) hits.push(e.name);
   }
 
@@ -2538,13 +2885,19 @@ const CITY_TRANSFER_HINTS = {
   '교토|나라': '전철 약 45~60분'
 };
 
+// 도시 중심 사이가 이보다 멀면 기차·버스 1~3시간 거리가 아니다(도쿄 → 이시가키, 히로시마 → 구시로): 비행기 이동으로 알린다
+const FLIGHT_TRANSFER_KM = 250;
 function transferHint(fromCity, toCity) {
   const a = String(fromCity || '').trim();
   const b = String(toCity || '').trim();
   if (!a || !b || a === b) return '대중교통 기준 이동';
   const key1 = `${a}|${b}`;
   const key2 = `${b}|${a}`;
-  return CITY_TRANSFER_HINTS[key1] || CITY_TRANSFER_HINTS[key2] || '대중교통 기준 1~3시간';
+  if (CITY_TRANSFER_HINTS[key1] || CITY_TRANSFER_HINTS[key2]) return CITY_TRANSFER_HINTS[key1] || CITY_TRANSFER_HINTS[key2];
+  const ca = CITY_CENTER_COORDS[cityKeyForExactLabel(a)];
+  const cb = CITY_CENTER_COORDS[cityKeyForExactLabel(b)];
+  if (ca && cb && haversineKm(ca, cb) > FLIGHT_TRANSFER_KM) return '비행기 이동, 공항 오가는 시간 포함 반나절 이상';
+  return '대중교통 기준 1~3시간';
 }
 
 function deriveRouteCities(payload, picks, defaultCityLabel) {
@@ -2893,7 +3246,7 @@ function dayTripSubstituteFor(token, preferredCityKeys = []) {
   const lower = String(token || '').toLowerCase().trim();
   if (!lower) return '';
   const hits = dedupeMustMatches(MUST_ATTRACTIONS.filter((m) => (m.fullDay || m.dayTrip)
-    && (m.aliases || []).some((a) => String(a).toLowerCase() === lower || aliasInText(lower, a))), preferredCityKeys);
+    && (mustNameEquals(m, lower) || (m.aliases || []).some((a) => aliasInText(lower, a)) || (m.contextAliases || []).some((a) => contextAliasInText(lower, a)))), preferredCityKeys);
   return hits[0]?.name || '';
 }
 
@@ -2902,32 +3255,36 @@ function parseTravelChatInput(payload = {}) {
   const context = payload.context || {};
   // 부정된 구절("디즈니랜드는 빼고", "쇼핑은 빼줘")을 지운 글로 도시·가고 싶은 곳을 찾는다.
   const positive = stripNegatedPhrases(message);
+  // 도시 찾기용 글: 다른 도시 장소 이름 속 도시 이름('Matsumoto Seicho Memorial Museum'의 Matsumoto = 기타큐슈 명소)은 지운다
+  const cityText = maskOtherCityPlaceNames(positive);
   const specialPrefs = parseSpecialPrefsFromText(message);
-  const locality = extractRequestedLocality(positive);
+  const locality = extractRequestedLocality(cityText);
   const fallbackCity = cityKeyByInput(context.city || 'tokyo');
   const airportInText = extractAirportCodeFromText(message);
   const cityFromAirport = cityKeyByAirport(airportInText);
   const cityFromLocalityMap = locality ? (LOCALITY_PARENT_CITY_MAP[locality] || '') : '';
-  const cityFromLandmark = cityKeyFromLandmark(locality || positive);
-  const cityFromText = detectCityKeyByInput(locality || positive);
+  const cityFromLandmark = cityKeyFromLandmark(locality || cityText);
+  const cityFromText = detectCityKeyByInput(locality || cityText);
   const excludedMust = findExcludedMustAttractions(message);
   const mentionedCityKeys = Array.from(new Set([
-    ...detectMentionedCityKeysByLabels(positive),
-    ...detectMentionedCityKeysOrdered(positive),
-    ...detectAllCityKeysFromText(positive)
+    ...detectMentionedCityKeysByLabels(cityText),
+    ...detectMentionedCityKeysOrdered(cityText),
+    ...detectAllCityKeysFromText(cityText)
   ]));
   const preliminaryCity = cityFromAirport || cityFromLocalityMap || cityFromLandmark || cityFromText || '';
-  const mustMatches = dedupeMustMatches(matchMustAttractions(positive), [preliminaryCity, ...mentionedCityKeys])
+  const mustMatches = dedupeMustMatches(matchMustAttractions(maskMustInsidePlaceNames(positive)), [preliminaryCity, ...mentionedCityKeys])
     .filter((m) => !excludedMust.some((x) => x.name === m.name));
-  // 메시지에서 찾은 도시(공항 코드·지명·랜드마크·본문·대표 명소). 폼에서 온 도시는 '말한 도시'로 치지 않는다.
-  const cityFromMessage = preliminaryCity || mustMatches[0]?.cityKey || '';
+  // 도시도 대표 명소도 없이 장소 이름만 말했으면('다케토미섬 2일', 'Hashima Island 2 days', '端島 2日間') 그 장소의 도시로
+  const cityFromPlace = (!preliminaryCity && mustMatches.length === 0) ? cityOfNamedPlace(positive) : '';
+  // 메시지에서 찾은 도시(공항 코드·지명·랜드마크·본문·대표 명소·장소). 폼에서 온 도시는 '말한 도시'로 치지 않는다.
+  const cityFromMessage = preliminaryCity || mustMatches[0]?.cityKey || cityFromPlace || '';
   const cityKey = cityFromMessage || fallbackCity;
   const city = CITY_DATA[cityKey] || CITY_DATA.tokyo;
   const explicitLocality = Boolean(locality) && new RegExp(`${locality}\\s*라는`).test(message);
   const localityMappedCity = locality ? (LOCALITY_PARENT_CITY_MAP[locality] || cityKeyFromLandmark(locality)) : '';
   const useLocalityAsCity = Boolean(locality) && (explicitLocality || !localityMappedCity);
   const cityLabel = useLocalityAsCity ? locality : city.label;
-  const rawWantedPlaces = extractWantedPlacesFromMessage(positive, cityKey);
+  const rawWantedPlaces = extractWantedPlacesFromMessage(positive, cityKey, [...mentionedCityKeys, ...mustMatches.map((m) => m.cityKey)]);
   let inferredCityKeys = [...mentionedCityKeys];
   if (specialPrefs.cheapFlightPriority && inferredCityKeys.length === 0) {
     inferredCityKeys = ['osaka', 'fukuoka', 'tokyo'];
@@ -2963,7 +3320,8 @@ function parseTravelChatInput(payload = {}) {
       const n = String(name || '').trim();
       if (!n || arr.indexOf(name) !== i) return false;
       if (n === city.label || exactCityKeyForToken(n)) return false;
-      if (locality && n === locality) return false;
+      // 머무는 동네 이름('신주쿠에서')은 가고 싶은 곳이 아니다. 다만 당일치기 대표 명소('하코네에서 2일')는 그대로 넣는다.
+      if (locality && n === locality && !MUST_ATTRACTIONS.some((m) => m.name === n && (m.dayTrip || m.fullDay))) return false;
       if (unsupportedPlaces.includes(n)) return false;
       const k = placeNameKey(n);
       return !excludedKeys.some((x) => x === k || (k.length >= 2 && x.includes(k)));
@@ -3349,7 +3707,10 @@ function placeMentionedIn(name, message) {
   const msg = squash(message);
   if (!msg || !name) return false;
   const variants = new Set([name]);
-  MUST_ATTRACTIONS.filter((m) => m.name === name).forEach((m) => (m.aliases || []).forEach((a) => variants.add(a)));
+  const musts = MUST_ATTRACTIONS.filter((m) => m.name === name);
+  musts.forEach((m) => (m.aliases || []).forEach((a) => variants.add(a)));
+  // 짧은 이름('高山')은 낱말 하나로 쓰였을 때만
+  if (musts.some((m) => (m.contextAliases || []).some((a) => contextAliasInText(message, a)))) return true;
   const extra = extraPlaceByName(name);
   if (extra) [extra.name, extra.en, extra.ja, ...(extra.aliases || [])].forEach((a) => variants.add(a));
   for (const e of placeLabelIndex()) if (e.ko === name) variants.add(e.label);
@@ -3372,6 +3733,16 @@ function normalizeTravelChatParsed(candidate, fallback, opts = {}) {
   if (aiCityKey) {
     used();
     cityKey = (msgCity && aiCityKey !== msgCity) ? msgCity : aiCityKey;
+  }
+  // 메시지에 도시가 없고 그 도시가 메시지에도 없는데, AI가 꼭 갈 곳·미지원으로 돌려준 이름이 데이터 속 다른 도시의 장소면
+  // 그 장소의 도시로('高山で2日間' → 나고야 + 다카야마 산마치, '다케토미섬 2일' → 이시가키). 메시지에 근거가 있는 이름만 본다.
+  if (!msgCity && !detectAllCityKeysFromText(message).includes(cityKey)) {
+    const named = [...(Array.isArray(raw.wantedPlaces) ? raw.wantedPlaces : []), ...(Array.isArray(raw.unsupportedPlaces) ? raw.unsupportedPlaces : [])]
+      .map((x) => String(x || '').trim()).filter(Boolean);
+    const owner = named.map((x) => ({ x, n: canonicalWantedName(x, [cityKey]) }))
+      .filter(({ x, n }) => placeMentionedIn(n, message) || placeMentionedIn(x, message))
+      .map(({ n }) => placeCityKeyOf(n)).find((k) => k && CITY_DATA[k] && k !== cityKey);
+    if (owner) cityKey = owner;
   }
   const city = CITY_DATA[cityKey] || CITY_DATA.tokyo;
   const cityLabel = fallback._localityAsCity && cityKey === fallback.cityKey ? fallback.cityLabel : city.label;
@@ -3433,10 +3804,19 @@ function normalizeTravelChatParsed(candidate, fallback, opts = {}) {
   // 미지원 지역: 알려진 도시로 풀리는 이름은 뺀다. 당일치기 데이터가 있으면 그 명소로 바꿔 넣는다.
   // 금액("1인 50만원")·일반 표현·음식·메시지에 없는 이름은 장소가 아니라서 받지 않는다.
   const routeKeysForSubs = routeKeysForNames;
+  // AI가 '데이터 없음'으로 돌려준 이름이 데이터 속 장소(대표 명소·추가 명소·도시 주변 실제 명소)면 미지원이 아니라 꼭 갈 곳이다
+  // (AI 채팅 프롬프트는 도시 주변 실제 명소 목록을 모른다: '다케토미섬 2일' → '아직 데이터가 없어요'가 되지 않게).
+  const knownFromUnsupported = [];
   const aiUnsupported = (Array.isArray(raw.unsupportedPlaces) ? raw.unsupportedPlaces : [])
     .map((x) => String(x || '').trim().slice(0, 40)).filter(Boolean)
-    .filter((u) => !isNonPlaceWord(u) && placeMentionedIn(u, message));
-  if (aiUnsupported.length) used();
+    .filter((u) => !isNonPlaceWord(u) && placeMentionedIn(u, message))
+    .filter((u) => {
+      const name = knownPlaceForToken(u, routeKeysForNames);
+      if (!name) return true;
+      if (!knownFromUnsupported.includes(name)) knownFromUnsupported.push(name);
+      return false;
+    });
+  if (aiUnsupported.length || knownFromUnsupported.length) used();
   const unsupportedPlaces = [];
   const substitutes = [...(fallback._substitutes || [])];
   for (const u of [...(fallback.unsupportedPlaces || []), ...aiUnsupported]) {
@@ -3463,6 +3843,7 @@ function normalizeTravelChatParsed(candidate, fallback, opts = {}) {
   if (aiWanted.length) used();
   const wantedPlaces = dedupePlaceNames([
     ...aiWanted,
+    ...knownFromUnsupported,
     ...(fallback.wantedPlaces || []),
     ...substitutes.filter((s) => unsupportedPlaces.includes(s.token)).map((s) => s.name)
   ], 8).filter((n) => !isExcludedName(n) && !unsupportedPlaces.includes(n) && !exactCityKeyForToken(n) && n !== city.label);
@@ -4970,6 +5351,33 @@ function loadPlaceImages() {
 
 const PLACE_IMAGES = loadPlaceImages();
 
+// 도시 주변 실제 명소·큐레이션 명소 보충(assets/city-places.json)의 사진·좌표·en/ja 이름: place-images.json에 없는 이름만 보탠다
+// (검증 규칙은 readPlaceMediaEntry 그대로 — 위키미디어 공용 사진 + 파일 페이지 + 라이선스, 일본 안 좌표).
+(function mergeCityPlacesMedia() {
+  const entries = [
+    ...[...CITY_PLACES.cities].flatMap(([ck, c]) => c.places.map((p) => [`${ck}|${p.name}`, p.media])),
+    ...CITY_PLACES.media
+  ];
+  const reviewed = new Set([...CITY_PLACES.media].map(([key]) => key));
+  for (const [key, v] of entries) {
+    if (!v) continue;
+    const known = PLACE_IMAGES.byKey.get(key);
+    if (known) {
+      // place-images.json에 사진만 있고 좌표가 없는 큐레이션 명소(오미초 시장·모지코 레트로 등): 검토한 위키데이터 항목(media)의 좌표만 보탠다
+      if (known.lat === null && reviewed.has(key)) {
+        const coords = readPlaceMediaEntry(v);
+        if (coords.lat !== null) Object.assign(known, { lat: coords.lat, lng: coords.lng });
+      }
+      continue;
+    }
+    const name = key.slice(key.indexOf('|') + 1);
+    const entry = readPlaceMediaEntry(v);
+    PLACE_IMAGES.byKey.set(key, entry);
+    if (!PLACE_IMAGES.byName.has(name)) PLACE_IMAGES.byName.set(name, []);
+    PLACE_IMAGES.byName.get(name).push(entry);
+  }
+})();
+
 // photoCredit.scope: 'place'(그 장소 사진) | 'city'(도시 대표 사진) | 'genre'(음식 장르 예시 사진)
 function mediaCredit(media, scope) {
   return { artist: media.artist, license: media.license, filePage: media.filePage, scope };
@@ -5063,38 +5471,20 @@ const CURATED_PLACE_I18N = {
   'kyoto|기요미즈데라': { en: 'Kiyomizu-dera Temple', ja: '清水寺' },
   'kyoto|아라시야마 대나무숲': { en: 'Arashiyama Bamboo Grove', ja: '嵐山 竹林の小径' },
   // 사진 데이터(place-images.json)에 en/ja 이름이 없는 명소(설명형 이름이거나 위키 문서가 없는 곳)
-  'akita|아키타 시립박물관': { en: 'Akita city museum', ja: '秋田市の博物館' },
+  // (설명형 이름이던 명소 — '이와테 산책로'·'섬 해안 절벽' 등 — 는 도시 데이터에서 지우고 위키데이터의 실제 명소로 바꿨다: assets/city-places.json)
+  'akita|아키타 현립 미술관': { en: 'Akita Museum of Art', ja: '秋田県立美術館' },
   'hanamaki|하나마키 온천': { en: 'Hanamaki Onsen', ja: '花巻温泉' },
   'hanamaki|미야자와 겐지 기념관': { en: 'Miyazawa Kenji Memorial Museum', ja: '宮沢賢治記念館' },
-  'hanamaki|이와테 산책로': { en: 'Iwate walking trail', ja: '岩手の散策路' },
-  'shizuoka|시즈오카 차밭': { en: 'Shizuoka tea fields', ja: '静岡の茶畑' },
   'matsuyama|보찬 열차': { en: 'Botchan Train', ja: '坊っちゃん列車' },
-  'oita|유후인 거리': { en: 'Yufuin town streets', ja: '湯布院の街並み' },
   'miyazaki|선멧세 니치난': { en: 'Sun Messe Nichinan', ja: 'サンメッセ日南' },
-  'rishiri|섬 해안 드라이브': { en: 'Island coastal drive', ja: '島の海岸ドライブ' },
   'kushiro|와쇼 시장': { en: 'Washo Market', ja: '釧路和商市場' },
-  'nakashibetsu|네무로 해안': { en: 'Nemuro coast', ja: '根室の海岸' },
-  'nakashibetsu|현지 목장 체험': { en: 'Local farm experience', ja: '地元の牧場体験' },
-  'ibaraki|오아라이 해변': { en: 'Oarai beach', ja: '大洗の海岸' },
+  'ibaraki|오아라이 해변': { en: 'Ōarai Coast', ja: '大洗海岸' },
   'matsumoto|나카마치 거리': { en: 'Nakamachi Street', ja: '中町通り' },
   'iwakuni|시라헤비 신사': { en: 'Iwakuni White Snake Shrine', ja: '岩国白蛇神社' },
-  'yamaguchi_ube|우베 공원': { en: 'Ube park', ja: '宇部の公園' },
-  'amami|아마미 블루 해변': { en: 'Amami blue-water beaches', ja: '奄美の青い海のビーチ' },
-  'amami|망그로브 카약': { en: 'Mangrove kayaking', ja: 'マングローブカヤック' },
+  'yamaguchi_ube|도키와 공원': { en: 'Tokiwa Park', ja: 'ときわ公園' },
   'amami|아야마루 곶': { en: 'Cape Ayamaru', ja: 'あやまる岬' },
-  'tanegashima|우라마 산책로': { en: 'Urama walking trail', ja: 'ウラマの散策路' },
-  'tanegashima|해변 일몰': { en: 'Beach sunset', ja: '浜辺の夕日' },
-  'ishigaki|환상적인 석양 포인트': { en: 'Sunset viewpoint', ja: '夕日の名所' },
   'shimojishima|17END 비치': { en: '17END Beach', ja: '17END' },
-  'shimojishima|스노클링 포인트': { en: 'Snorkeling spot', ja: 'シュノーケリングスポット' },
-  'kumejima|열대 해변 산책': { en: 'Tropical beach walk', ja: '南国のビーチ散策' },
-  'kita_daito|섬 해안 절벽': { en: 'Island coastal cliffs', ja: '島の海岸の断崖' },
-  'kita_daito|로컬 등대': { en: 'Local lighthouse', ja: '島の灯台' },
-  'kita_daito|바다 조망길': { en: 'Ocean-view trail', ja: '海を望む遊歩道' },
-  'yonaguni|드라마티컬 절벽': { en: 'Dramatic sea cliffs', ja: '海の断崖絶壁' },
   'tokunoshima|무시로세 해안': { en: 'Mushirose coast', ja: 'ムシロ瀬' },
-  'tokunoshima|아마기 산책로': { en: 'Amagi walking trail', ja: '天城の散策路' },
-  'tokunoshima|야생 자연 보호지': { en: 'Wildlife reserve', ja: '野生生物の保護区' },
   // 사진 데이터의 위키데이터 이름이 카드 대상과 다른 명소(성·단체·산 이름 대신 카드가 가리키는 곳의 이름)
   'akita|센슈공원': { en: 'Senshu Park', ja: '千秋公園' },
   'odate|아키타견 박물관': { en: 'Akita Dog Museum', ja: '秋田犬会館' },
@@ -5177,8 +5567,20 @@ const CURATED_AREA_I18N = {
   '텐진바시': { en: 'Tenjinbashi', ja: '天神橋' }, '닛폰바시': { en: 'Nipponbashi', ja: '日本橋' }, '우메코지': { en: 'Umekoji', ja: '梅小路' },
   '가라스마오이케': { en: 'Karasuma Oike', ja: '烏丸御池' }, '니조': { en: 'Nijo', ja: '二条' }, '니시구': { en: 'Nishi Ward', ja: '西区' },
   '우미노나카미치': { en: 'Uminonakamichi', ja: '海の中道' }, '나카스카와바타': { en: 'Nakasu-Kawabata', ja: '中洲川端' }, '도미구스쿠': { en: 'Tomigusuku', ja: '豊見城' },
-  '가나가와 하코네': { en: 'Hakone, Kanagawa', ja: '神奈川県箱根町' }, '나라': { en: 'Nara', ja: '奈良' }
+  '가나가와 하코네': { en: 'Hakone, Kanagawa', ja: '神奈川県箱根町' }, '나라': { en: 'Nara', ja: '奈良' },
+  // 공항 없는 인기 여행지(당일치기 대표 명소)의 지역
+  '도치기 닛코': { en: 'Nikko, Tochigi', ja: '栃木県日光市' }, '나가노 가루이자와': { en: 'Karuizawa, Nagano', ja: '長野県軽井沢町' },
+  '야마나시 후지카와구치코': { en: 'Fujikawaguchiko, Yamanashi', ja: '山梨県富士河口湖町' }, '기후 다카야마': { en: 'Takayama, Gifu', ja: '岐阜県高山市' },
+  '미에 이세': { en: 'Ise, Mie', ja: '三重県伊勢市' }, '효고 히메지': { en: 'Himeji, Hyogo', ja: '兵庫県姫路市' }, '우지': { en: 'Uji', ja: '宇治' },
+  '교토 미야즈': { en: 'Miyazu, Kyoto', ja: '京都府宮津市' }, '와카야마 고야': { en: 'Koya, Wakayama', ja: '和歌山県高野町' },
+  '가가와 나오시마': { en: 'Naoshima, Kagawa', ja: '香川県直島町' }, '구마모토 미나미오구니': { en: 'Minamioguni, Kumamoto', ja: '熊本県南小国町' },
+  '나가노': { en: 'Nagano', ja: '長野' }, '쿠라시키': { en: 'Kurashiki', ja: '倉敷' }
 };
+// 도시 주변 실제 명소(assets/city-places.json)의 지역(위키데이터 P131의 이름): 표에 없는 것만 보탠다
+for (const e of EXTRA_PLACES) {
+  if (!e.generated || !e.area || CURATED_AREA_I18N[e.area] || !e.areaEn || !e.areaJa) continue;
+  CURATED_AREA_I18N[e.area] = { en: e.areaEn, ja: e.areaJa };
+}
 
 const CURATED_CATEGORY_I18N = {
   '문화': { en: 'Culture', ja: '文化' }, '전망': { en: 'Viewpoint', ja: '展望' }, '자연': { en: 'Nature', ja: '自然' },
@@ -5186,7 +5588,12 @@ const CURATED_CATEGORY_I18N = {
   '트레킹': { en: 'Hiking', ja: 'トレッキング' }, '야경': { en: 'Night view', ja: '夜景' }, '로컬': { en: 'Local', ja: 'ローカル' },
   '명소': { en: 'Landmark', ja: '名所' }, '관광': { en: 'Sightseeing', ja: '観光' }, '도심 산책': { en: 'City walk', ja: '街歩き' },
   '요청 명소': { en: 'Requested spot', ja: 'リクエストした名所' }, '대표 명소': { en: 'Top sight', ja: '定番スポット' },
-  '추천 여행지': { en: 'Recommended spot', ja: 'おすすめスポット' }
+  '추천 여행지': { en: 'Recommended spot', ja: 'おすすめスポット' },
+  // 추가 명소(EXTRA_PLACES)·도시 주변 실제 명소(assets/city-places.json)의 분류
+  '박물관': { en: 'Museum', ja: '博物館' }, '미술관': { en: 'Art museum', ja: '美術館' }, '수족관': { en: 'Aquarium', ja: '水族館' },
+  '동물원': { en: 'Zoo', ja: '動物園' }, '온천': { en: 'Hot spring', ja: '温泉' }, '시장': { en: 'Market', ja: '市場' },
+  '정원': { en: 'Garden', ja: '庭園' }, '체험': { en: 'Experience', ja: '体験' }, '전시': { en: 'Exhibition', ja: '展示' },
+  '테마파크': { en: 'Theme park', ja: 'テーマパーク' }
 };
 
 // 내장 맛집 이름 en/ja (도쿄·오사카·교토). 나머지는 도시 공통 이름 규칙(로컬 이자카야·대표 라멘)만 바꾸고 원문 유지.
@@ -5240,7 +5647,7 @@ const REGIONAL_FOOD_I18N = {
   '치즈 플래터': { en: 'Cheese platter', ja: 'チーズプレート' }, '우유 아이스크림': { en: 'Milk ice cream', ja: 'ミルクアイス' },
   '수프카레': { en: 'Soup curry', ja: 'スープカレー' }, '사과 디저트': { en: 'Apple desserts', ja: 'りんごスイーツ' },
   '히메마스 요리': { en: 'Himemasu trout dishes', ja: 'ヒメマス料理' }, '히나이 토리': { en: 'Hinai chicken', ja: '比内地鶏' },
-  '쇼진요리': { en: 'Shojin ryori temple cuisine', ja: '精進料理' }, '아구 돼지 요리': { en: 'Agu pork dishes', ja: 'アグー豚料理' },
+  '쇼진요리': { en: 'Shojin ryori temple cuisine', ja: '精進料理' }, '아귀 전골': { en: 'Anko nabe anglerfish hotpot', ja: 'あんこう鍋' },
   '낫토 정식': { en: 'Natto set meal', ja: '納豆定食' }, '신슈 소바': { en: 'Shinshu soba', ja: '信州そば' },
   '해산물 정식': { en: 'Seafood set meal', ja: '海鮮定食' }, '온천 달걀 요리': { en: 'Onsen egg dishes', ja: '温泉卵料理' },
   '고베규 스테이크': { en: 'Kobe beef steak', ja: '神戸牛ステーキ' }, '아카시야키': { en: 'Akashiyaki', ja: '明石焼き' },
@@ -5320,7 +5727,8 @@ const RULE_PLAN_TEXT = {
       lowBudget: '저예산 기준: 테마파크·유료 전망대·수족관은 빼고 무료·저렴한 명소 위주로 구성',
       firstTimeJapan: '일본 첫 여행 기준으로 대표 명소를 우선 반영',
       multiCity: (list) => `다중 도시 일정: ${list.join(' -> ')} 순서로 동선을 구성`,
-      freeTime: '추천할 장소를 모두 배치해 남는 시간은 자유 일정으로 두었어요'
+      freeTime: '추천할 장소를 모두 배치해 남는 시간은 자유 일정으로 두었어요',
+      fewSights: (city, n) => `${city}${koTopicParticle(city)} 작은 지역이라 앱 데이터에 있는 명소가 ${n}곳뿐이에요. 다른 도시 장소로 채우지 않고 남는 시간은 자유 일정으로 두었어요`
     }
   },
   en: {
@@ -5353,7 +5761,8 @@ const RULE_PLAN_TEXT = {
       lowBudget: 'Low budget: theme parks, paid observation decks and aquariums left out; free and cheap sights first',
       firstTimeJapan: 'Classic sights first for a first trip to Japan',
       multiCity: (list) => `Multi-city trip: ${list.join(' -> ')}`,
-      freeTime: 'All suggested places are scheduled; remaining slots are left as free time'
+      freeTime: 'All suggested places are scheduled; remaining slots are left as free time',
+      fewSights: (city, n) => `${city} is a small area: the app knows only ${n} sights there. Remaining time is left free instead of filling it with places from other cities`
     }
   },
   ja: {
@@ -5386,7 +5795,8 @@ const RULE_PLAN_TEXT = {
       lowBudget: '低予算：テーマパーク・有料展望台・水族館を外し、無料・手頃なスポット中心に構成',
       firstTimeJapan: '初めての日本旅行向けに定番スポットを優先',
       multiCity: (list) => `複数都市の旅程：${list.join(' -> ')}の順`,
-      freeTime: 'おすすめの場所をすべて配置し、残りの時間は自由時間にしました'
+      freeTime: 'おすすめの場所をすべて配置し、残りの時間は自由時間にしました',
+      fewSights: (city, n) => `${city}は小さな地域のため、アプリのデータにある名所は${n}か所だけです。ほかの都市の場所で埋めず、残りの時間は自由時間にしました`
     }
   }
 };
@@ -5399,7 +5809,8 @@ const TRANSFER_HINT_I18N = {
   '전철 약 30~50분': { en: 'Train, about 30-50 min', ja: '電車 約30～50分' },
   '전철 약 45~60분': { en: 'Train, about 45-60 min', ja: '電車 約45～60分' },
   '대중교통 기준 이동': { en: 'by public transport', ja: '公共交通機関で移動' },
-  '대중교통 기준 1~3시간': { en: 'about 1-3 h by public transport', ja: '公共交通機関で約1～3時間' }
+  '대중교통 기준 1~3시간': { en: 'about 1-3 h by public transport', ja: '公共交通機関で約1～3時間' },
+  '비행기 이동, 공항 오가는 시간 포함 반나절 이상': { en: 'by plane, half a day or more with airport transfers', ja: '飛行機で移動、空港への移動を含め半日以上' }
 };
 
 // 규칙 기반 일정의 "자유 일정" 칸 이름(지도·좌표 대상에서 뺀다)
@@ -5784,6 +6195,58 @@ const CITY_NAME_I18N = {
   '요나구니': ['Yonaguni', '与那国'], '도쿠노시마': ['Tokunoshima', '徳之島']
 };
 
+// ── 도시 별칭 보강(말로 한 도시 이름 인식) ──
+// (1) 위 표의 en/ja 표기('函館で2日間', 'Kitakyushu 2 days'), (2) 키의 밑줄을 공백·하이픈으로(cityMentionHits),
+// (3) 한국어 표기 변형: 첫 글자 가↔카·고↔코·구↔쿠·기↔키·다↔타·도↔토 …, 쓰↔츠('카나자와', '다카마츠', '쿠마모토'),
+// (4) 흔히 쓰는 다른 이름(공항 도시의 이웃 도시·섬 이름: 那覇·小倉·網走·水戸·盛岡·会津 …).
+// 다른 낱말과 겹치는 표기는 넣지 않는다: '石垣'(돌담) 대신 '石垣島'·'石垣市', '코치'(코치·coach), '山口'(성씨) 대신 '山口県'·'山口市'.
+const CITY_ALIAS_SKIP = new Set(['石垣', '코치']);
+const CITY_EXTRA_ALIASES = {
+  okinawa: ['나하', 'naha', '那覇'],
+  nanki_shirahama: ['시라하마', '난키시라하마', 'shirahama', 'nanki shirahama', 'nanki-shirahama', '白浜', '南紀'],
+  kitakyushu: ['기타규슈', '키타규슈', '고쿠라', 'kokura', '小倉', 'kita-kyushu', 'kita kyushu', 'kitakyūshū'],
+  memanbetsu: ['아바시리', 'abashiri', '網走'],
+  ibaraki: ['미토', 'mito', '水戸'],
+  hanamaki: ['모리오카', 'morioka', '盛岡'],
+  fukushima: ['아이즈', '아이즈와카마쓰', '아이즈와카마츠', 'aizu', 'aizuwakamatsu', 'aizu-wakamatsu', 'aizu wakamatsu', '会津', '会津若松'],
+  shonai: ['쓰루오카', '츠루오카', '사카타', 'tsuruoka', 'sakata', '鶴岡', '酒田'],
+  tajima: ['도요오카', 'toyooka', '豊岡'],
+  yamaguchi_ube: ['야마구치', '우베', 'yamaguchi', 'ube', 'yamaguchi ube', 'yamaguchi-ube', '宇部', '山口県', '山口市', '山口宇部'],
+  ishigaki: ['이시가키섬', '이시가키지마', 'ishigaki island', 'ishigakijima', '石垣島', '石垣市'],
+  miyako: ['미야코', '미야코섬', 'miyako', 'miyakojima', 'miyako island', '宮古島'],
+  amami: ['아마미오시마', '아마미 오시마', 'amami oshima', 'amami-oshima', 'amami ōshima', '奄美大島'],
+  kita_daito: ['기타다이토섬', '기타다이토지마', 'kitadaito', 'kita-daito', 'kita daito', 'kitadaitojima', 'kitadaitō', '北大東島', '北大東'],
+  okadama: ['오카다마', 'okadama', 'sapporo okadama', '丘珠', '札幌丘珠'],
+  rishiri: ['리시리섬', 'rishiri island', '利尻島'],
+  yonaguni: ['요나구니섬', 'yonaguni island', '与那国島'],
+  kumejima: ['구메섬', 'kume island', '久米島'],
+  tanegashima: ['다네가섬', '種子島'],
+  yakushima: ['야쿠섬', '屋久島'],
+  tokunoshima: ['徳之島'],
+  shimojishima: ['시모지섬', 'shimoji island', '下地島']
+};
+const KO_INITIAL_SWAP = { 가: '카', 카: '가', 고: '코', 코: '고', 구: '쿠', 쿠: '구', 기: '키', 키: '기', 다: '타', 타: '다', 도: '토', 토: '도', 데: '테', 테: '데', 게: '케', 케: '게', 교: '쿄', 쿄: '교' };
+function koSpellingVariants(label) {
+  const base = String(label || '').trim();
+  if (!/^[가-힣 ]+$/.test(base)) return [];
+  const forms = new Set([base, base.replace(/쓰/g, '츠'), base.replace(/츠/g, '쓰')]);
+  for (const f of [...forms]) {
+    const swapped = KO_INITIAL_SWAP[f[0]];
+    if (swapped) forms.add(swapped + f.slice(1));
+  }
+  return [...forms].filter((f) => f !== base && !CITY_ALIAS_SKIP.has(f));
+}
+for (const [key, city] of Object.entries(CITY_DATA)) {
+  if (city.dynamic) continue;
+  const row = CITY_NAME_I18N[city.label] || [];
+  CITY_ALIASES[key] = Array.from(new Set([
+    ...(CITY_ALIASES[key] || []),
+    ...row.filter((x) => x && !CITY_ALIAS_SKIP.has(x)).map((x) => (/^[A-Za-z]/.test(x) ? x.toLowerCase() : x)),
+    ...koSpellingVariants(city.label),
+    ...(CITY_EXTRA_ALIASES[key] || [])
+  ]));
+}
+
 // 사진 데이터(cities)의 위키데이터 en/ja 이름 — 도시 항목 대신 이웃 항목의 사진을 빌린 경우(예: 이바라키 → 미토)가 있어서,
 // en 이름이 cityKey와 맞을 때만(같은 항목일 때만) 쓴다. 위 표에 없는 도시의 대체 표기용.
 function cityLabelsFromMedia(cityKey) {
@@ -5816,8 +6279,9 @@ function recommendationSummary(cityKey, count, lang) {
 }
 
 // 내장 큐레이션 명소 + 위키미디어 사진/좌표 (Google 호출 없음)
+// 큐레이션 명소가 max보다 적으면 도시 주변 실제 명소(assets/city-places.json, 파일 순서 = 위키데이터에서 많이 다룬 순)를 뒤에 붙인다.
 function buildCuratedPicks(cityKey, city, theme, lang, max) {
-  return (city.highlights || [])
+  const curated = (city.highlights || [])
     .map((p) => attachPlaceMedia({
       ...p,
       city: city.label,
@@ -5825,8 +6289,13 @@ function buildCuratedPicks(cityKey, city, theme, lang, max) {
       mapUrl: mapUrl(`${p.name} ${city.label}`)
     }, cityKey, p.name))
     .map((p) => localizeCuratedPlace(p, cityKey, lang))
-    .sort((a, b) => b.aiScore - a.aiScore)
-    .slice(0, max);
+    .sort((a, b) => b.aiScore - a.aiScore);
+  if (curated.length >= max) return curated.slice(0, max);
+  const taken = new Set(curated.map((p) => placeNameKey(placeOriginalName(p))));
+  const nearby = EXTRA_PLACES
+    .filter((e) => e.generated && e.cityKey === cityKey && !e.fullDay && !e.dayTrip && !taken.has(placeNameKey(e.name)))
+    .map((e) => localizeCuratedPlace(attachPlaceMedia({ ...extraPlaceCard(e, city), aiScore: 60 }, cityKey, e.name), cityKey, lang));
+  return [...curated, ...nearby].slice(0, max);
 }
 
 async function recommendDestinations(payload) {
@@ -5954,8 +6423,10 @@ function curatedCityPool(cityKey, lang = 'ko') {
     ...(m.dayTrip ? { dayTrip: true } : {}),
     mapUrl: mapUrl(`${m.name} ${c.label}`)
   }));
-  // 마지막 순서: 추가 명소(박물관·수족관 등). 도시 명소·대표 명소를 다 쓴 뒤에만 쓰이고, '실내 위주'일 때 실내 후보가 된다.
-  const extras = EXTRA_PLACES.filter((e) => e.cityKey === cityKey).map((e) => extraPlaceCard(e, c));
+  // 마지막 순서: 추가 명소(박물관·수족관 등), 그다음 도시 주변 실제 명소(generated, assets/city-places.json).
+  // 도시 명소·대표 명소를 다 쓴 뒤에만 쓰이고, '실내 위주'일 때 실내 후보가 된다. 도시 명소로 올라간 것은 한 번만 둔다.
+  const highlightNames = new Set(highlights.map((h) => h.name));
+  const extras = EXTRA_PLACES.filter((e) => e.cityKey === cityKey && !highlightNames.has(e.name)).map((e) => extraPlaceCard(e, c));
   return [...highlights, ...must, ...extras].map((p) => localizeCuratedPlace(attachPlaceMedia(p, cityKey, p.name), cityKey, lang));
 }
 
@@ -5973,6 +6444,9 @@ function extraPlaceCard(e, city) {
     lat: e.lat,
     lng: e.lng,
     ...(e.indoor ? { indoor: true } : {}),
+    ...(e.fullDay ? { fullDay: true } : {}),
+    ...(e.dayTrip ? { dayTrip: true } : {}),
+    ...(e.wikidata ? { wikidata: e.wikidata } : {}),
     mapUrl: mapUrl(`${e.name} ${c.label || ''}`)
   };
 }
@@ -6055,7 +6529,7 @@ function isPaidSightPlace(p, cityKey = '') {
 
 // 실내(비를 피할 수 있는) 장소인지. 신사·절·공원·정원·성(정원)·거리·바깥 시장·해변·옥외 전망대(시부야 스카이)는 실내가 아니다.
 const INDOOR_PLACE_NAMES = new Set(['긴자 식스', '캐널시티 하카타', '도쿄 타워', '우메다 스카이 빌딩', '삿포로 TV 타워', '후쿠오카 타워', '츄라우미 수족관',
-  '니시키 시장', '닌텐도 뮤지엄', '도쿄 해리포터 스튜디오', '네부타 박물관', '아키타 시립박물관', '미야자와 겐지 기념관', '니가타 수족관', '글래스 미술관',
+  '니시키 시장', '닌텐도 뮤지엄', '도쿄 해리포터 스튜디오', '네부타 박물관', '아키타 현립 미술관', '미야자와 겐지 기념관', '니가타 수족관', '글래스 미술관',
   '도요타 산업기술 기념관', '오아시스21', '아와오도리 회관', '아바시리 유빙관', '삿포로 맥주박물관', '미사와 항공박물관', '아키타견 박물관', '가모 수족관',
   '모래 미술관', '다네가시마 우주센터', '아오모리 현립미술관', '하카타 리버레인']);
 const OUTDOOR_PLACE_NAMES = new Set(['시부야 스카이']);
@@ -6160,6 +6634,30 @@ function isExcludedPlace(p, excludedKeys) {
 }
 
 // 이름 비교: 같거나, 블록 이름이 후보 이름을 포함하거나(도톤보리 거리 ⊃ 도톤보리), 3자 이상 블록 이름이 후보에 포함될 때
+// 이름의 글자(한글 음절·한자·가나·로마자·숫자) 목록. 공백·기호는 뺀다.
+function nameLetters(s) {
+  return Array.from(String(s || '').toLowerCase().normalize('NFKC')).filter((ch) => /[\p{L}\p{N}]/u.test(ch));
+}
+// 두 이름이 같은 글자를 얼마나 나눠 갖는지: 겹친 글자 수 / 긴 쪽 글자 수 (0..1)
+function nameOverlap(a, b) {
+  const x = nameLetters(a);
+  const y = nameLetters(b);
+  if (!x.length || !y.length) return 0;
+  return sharedLetterCount(x, y) / Math.max(x.length, y.length);
+}
+function sharedLetterCount(x, y) {
+  const pool = new Map();
+  for (const ch of y) pool.set(ch, (pool.get(ch) || 0) + 1);
+  let n = 0;
+  for (const ch of x) { const c = pool.get(ch) || 0; if (c > 0) { n += 1; pool.set(ch, c - 1); } }
+  return n;
+}
+// 이름과 여러 표기 중 가장 많이 겹친 글자 수
+function sharedLetters(name, labels) {
+  const x = nameLetters(name);
+  return Math.max(0, ...(labels || []).map((l) => sharedLetterCount(x, nameLetters(l))));
+}
+
 function placeKeyMatches(blockKey, candKey) {
   if (!blockKey || !candKey) return false;
   return blockKey === candKey || (candKey.length >= 2 && blockKey.includes(candKey)) || (blockKey.length >= 3 && candKey.includes(blockKey));
@@ -6746,9 +7244,9 @@ function buildAiContext(payload, picks, city) {
     days,
     startDate,
     maxPlacesPerDay: Number(prefs.maxPlacesPerDay) > 0 ? clamp(Number(prefs.maxPlacesPerDay), 1, 5) : 4,
-    // 하루 2곳 기준으로 넉넉히(최소 12, 최대 20곳) 넘겨 같은 장소를 여러 날 반복하지 않게 한다.
+    // 하루 3곳 기준으로 넉넉히(최소 12, 최대 20곳: expandPicksForAi 목표와 같다) 넘겨 같은 장소를 여러 날 반복하지 않게 한다.
     // id = 후보 번호, city = 그 후보의 도시(dayPlan과 같은 표기), allDay = 하루 전체가 드는 곳(종일 칸 전용)
-    picks: (picks || []).slice(0, Math.min(20, Math.max(12, days * 2))).map((p, i) => ({
+    picks: (picks || []).slice(0, Math.min(20, Math.max(12, days * 3))).map((p, i) => ({
       id: i,
       name: p.name,
       area: p.area,
@@ -6866,6 +7364,10 @@ function classifyAiError(provider, err) {
   } else if (!raw) {
     code = 'empty_error';
     action = `${provider} 응답이 비어 있습니다. 모델/네트워크 상태를 다시 확인해 주세요.`;
+  } else if (err?.geminiTimeout) {
+    // 모델들이 제한 시간 안에 답하지 못함(느린 503 포함): 네트워크 고장이 아니라 'AI가 바쁨'으로 알린다
+    code = 'timeout';
+    action = `${provider} 응답이 제한 시간 안에 오지 않아 규칙 기반 일정으로 대신 만들었습니다. 잠시 후 다시 시도해 주세요.`;
   } else if (
     /\b503\b/.test(low) ||
     low.includes('unavailable') ||
@@ -6914,13 +7416,13 @@ function classifyAiError(provider, err) {
     code = 'network_error';
     action = '서버 네트워크/방화벽/DNS에서 외부 API 도메인 접근이 가능한지 확인해 주세요.';
   }
-  // 사용량 한도(429)·과부하(503)는 'AI가 바쁨'(AI_BUSY): 화면은 잠시 후 다시 시도하라고 안내한다.
+  // 사용량 한도(429)·과부하(503)·Gemini 체인 시간 초과는 'AI가 바쁨'(AI_BUSY): 화면은 잠시 후 다시 시도하라고 안내한다.
   // 하루 무료 한도 소진은 'AI_DAILY_LIMIT': 오늘은 기본 일정으로 만들고, 한도가 다시 생기는 시각을 알린다.
   const reasonCode = code === 'output_truncated' ? 'AI_TRUNCATED'
     : code === 'invalid_model_response' ? 'AI_INVALID_OUTPUT'
       : code === 'missing_key' ? 'AI_KEY_MISSING'
         : code === 'daily_quota' ? 'AI_DAILY_LIMIT'
-          : (code === 'quota_or_rate_limit' || code === 'overloaded') ? 'AI_BUSY'
+          : (code === 'quota_or_rate_limit' || code === 'overloaded' || code === 'timeout') ? 'AI_BUSY'
             : 'AI_ERROR';
   const retryAfterSec = reasonCode === 'AI_DAILY_LIMIT' ? Math.ceil(geminiDailyResetMs() / 1000) : Number(err?.retryAfterSec);
   return {
@@ -7109,8 +7611,8 @@ function postProcessItinerary(itinerary, opts = {}) {
   const lang = normalizeLang(opts.lang);
   const T = RULE_PLAN_TEXT[lang] || RULE_PLAN_TEXT.ko;
   const prefs = opts.prefs || {};
-  // 앞의 8개는 응답 계약(itineraryInfo.postProcess). 뒤의 3개는 진단용: 채운 저녁 수·채운 관광 수·실내로 바꾼 수
-  const stats = { mealsMoved: 0, sightsRelabeled: 0, allDayMerged: 0, mustInserted: 0, trimmed: 0, shifted: 0, repeatsReplaced: 0, unverified: 0, mealsAdded: 0, sightsAdded: 0, indoorSwapped: 0 };
+  // 앞의 8개는 응답 계약(itineraryInfo.postProcess). 뒤의 4개는 진단용: 채운 저녁 수·채운 관광 수·실내로 바꾼 수·후보 이름으로 되돌린 수
+  const stats = { mealsMoved: 0, sightsRelabeled: 0, allDayMerged: 0, mustInserted: 0, trimmed: 0, shifted: 0, repeatsReplaced: 0, unverified: 0, mealsAdded: 0, sightsAdded: 0, indoorSwapped: 0, namesRestored: 0 };
   const picks = (opts.picks || []).filter((p) => p && p.name);
   const foods = (opts.foods || []).filter((f) => f && f.name);
   const must = (opts.mustVisit || []).filter((m) => m && m.name);
@@ -7126,10 +7628,20 @@ function postProcessItinerary(itinerary, opts = {}) {
   const pickKeys = picks.map(keysOf);
   const foodKeys = foods.map(keysOf);
   const mustKeys = must.map(keysOf);
+  // 같은 이름이 먼저, 그다음 포함 관계 중 길이가 가장 비슷한 후보('마쓰야마성 로프웨이'가 '마쓰야마성'보다 '마쓰야마성 로프웨이' 후보로)
   const findIdx = (name, keyLists) => {
     const k = placeNameKey(name);
     if (!k) return -1;
-    return keyLists.findIndex((ks) => ks.some((x) => placeKeyMatches(k, x)));
+    const exact = keyLists.findIndex((ks) => ks.includes(k));
+    if (exact >= 0) return exact;
+    let best = -1;
+    let bestDiff = Infinity;
+    keyLists.forEach((ks, i) => ks.forEach((x) => {
+      if (!placeKeyMatches(k, x)) return;
+      const diff = Math.abs(x.length - k.length);
+      if (diff < bestDiff) { best = i; bestDiff = diff; }
+    }));
+    return best;
   };
   const pickOf = (name) => { const i = findIdx(name, pickKeys); return i >= 0 ? picks[i] : null; };
   const mustOf = (name) => { const i = findIdx(name, mustKeys); return i >= 0 ? must[i] : null; };
@@ -7266,6 +7778,72 @@ function postProcessItinerary(itinerary, opts = {}) {
         seenMeal.add(b.period);
         return true;
       });
+    }
+
+    // (c-2) 후보 이름을 다르게 적은 관광 블록: AI가 일본어 후보 이름을 번역·음역하거나 섞어 쓴 이름('釜淵노타키', 'おび히로動物園',
+    // '포트타워 세리온', 'Kamabuchi Falls')은 같은 후보의 표기(한·영·일 이름)와 같거나 글자가 많이 겹치면 그 후보 이름으로 되돌린다.
+    // 어느 후보·꼭 갈 곳·경로 도시의 내장 장소와도 맞지 않는 이름(지어낸 곳)은 아직 쓰지 않은 후보로 바꾸거나 지운다(unverified로 센다).
+    // 되돌린 이름이 다른 날과 겹치면 반복 정리(g-2)가, 비게 된 낮은 빈 낮 채우기(h)가 맡는다.
+    {
+      const routeKeys = Array.from(new Set([cityKeyByLabel(opts.cityLabel), ...dayPlan.map((dp) => cityKeyByLabel(dp?.city))].filter(Boolean)));
+      const labelCache = new Map();
+      const labelsOfPick = (p) => {
+        if (labelCache.has(p)) return labelCache.get(p);
+        const ko = String(p.nameKo || p.name || '');
+        const ck = cityKeyByLabel(p.city) || routeKeys[0] || '';
+        const media = ck ? placeMediaFor(ck, ko) : null;
+        const labels = Array.from(new Set([p.name, p.nameKo, media?.labels?.en, media?.labels?.ja,
+          ...placeLabelIndex().filter((e) => e.ko === ko && (!ck || e.ck === ck)).map((e) => e.label)].filter(Boolean).map(String)));
+        labelCache.set(p, labels);
+        return labels;
+      };
+      const restorable = [...picks, ...must.map((m) => m.pick || { name: m.name, nameKo: m.nameKo, area: m.area, city: m.city })];
+      const resolvePick = (name) => {
+        const k = placeNameKey(name);
+        if (!k) return null;
+        const exact = restorable.find((p) => labelsOfPick(p).some((l) => placeNameKey(l) === k));
+        if (exact) return exact;
+        // 글자(한글·한자·가나) 겹침 비율: 가장 비슷한 후보가 0.6 이상이고 3글자 이상 겹치며 둘째와 분명히 다를 때만.
+        // 로마자뿐인 이름은 글자 수가 적어 아무 이름과도 겹치므로 같은 표기만 본다.
+        if (nameLetters(name).filter((ch) => !/[a-z0-9]/.test(ch)).length < 3) return null;
+        let best = null;
+        let bestScore = 0;
+        let secondScore = 0;
+        for (const p of restorable) {
+          const s = Math.max(...labelsOfPick(p).map((l) => nameOverlap(name, l)));
+          if (s > bestScore) { secondScore = bestScore; bestScore = s; best = p; } else if (s > secondScore) secondScore = s;
+        }
+        return best && bestScore >= 0.6 && bestScore - secondScore >= 0.15 && sharedLetters(name, labelsOfPick(best)) >= 3 ? best : null;
+      };
+      // 후보에는 없지만 경로 도시의 내장 장소인 이름(후보 수를 넘은 도시 명소 등): 그 장소의 화면 언어 이름으로
+      const knownInRoute = (name) => placeLabelMatches(name, routeKeys).find((e) => routeKeys.includes(e.ck)) || null;
+      const unknown = [];
+      days.forEach((d, di) => d.items.forEach((b) => {
+        if (!isSightBlock(b)) return;
+        // 띄어쓰기·기호만 다르거나 줄이거나 덧붙인 후보 이름('일본현대시가문학관', 도시 이름을 뺀 '아사히교')은 후보 표기 그대로
+        // (지도 좌표·사진이 이름으로 찾는다)
+        const same = pickOf(b.name);
+        if (same && same.name !== b.name) b.name = same.name;
+        if (same || mustOf(b.name) || isFoodName(b.name)) return;
+        const hit = resolvePick(b.name);
+        if (hit) {
+          b.name = hit.name;
+          if (!b.area && hit.area) b.area = hit.area;
+          stats.namesRestored += 1;
+          return;
+        }
+        const known = knownInRoute(b.name);
+        if (!known) { unknown.push([di, b]); return; }
+        const shown = lang === 'ko' ? known.ko : localizePlaceLabel(known.ko, [known.ck], lang);
+        if (shown && shown !== b.name) { b.name = shown; stats.namesRestored += 1; }
+      }));
+      for (const [di, b] of unknown) {
+        stats.unverified += 1;
+        const d = days[di];
+        const next = b.period === '종일' ? null : takeUnused(di);
+        d.items = next ? d.items.map((x) => (x === b ? newPostBlock(b.period, b.start, b.end, next.name, next.area || '') : x)) : d.items.filter((x) => x !== b);
+      }
+      unused = null;
     }
 
     // (d-0) 후보(picks)에도 꼭 갈 곳에도 없는 하루짜리(테마파크·먼 당일치기, 예: AI가 프롬프트 예시를 보고 넣은 '도쿄 디즈니랜드')는 지운다.
@@ -7571,8 +8149,9 @@ function postProcessItinerary(itinerary, opts = {}) {
           stats.repeatsReplaced += 1;
           return [newPostBlock(b.period, b.start, b.end, next.name, next.area || '')];
         }
-        if (mustOf(b.name)) { stats.trimmed += 1; return []; }
-        return [b];
+        // 바꿀 후보가 없으면(명소가 적은 섬 등) 같은 곳을 또 넣지 않고 지운다: 빈 시간은 아래 단계가 자유 일정으로 둔다
+        stats.trimmed += 1;
+        return [];
       });
     });
 
@@ -7615,9 +8194,11 @@ function postProcessItinerary(itinerary, opts = {}) {
       days.forEach((d, di) => fillDay(d, di, upTo));
     }
 
-    // (h-1b) 식사 칸에 들어간 '자유 일정'(예: "점심(12:30-13:30): 자유 일정 (오사카 주변 식당)")은 그날 도시 맛집으로 바꾼다
+    // (h-1b) 식사 칸에 들어간 '자유 일정'·'자유 식사'(예: "점심(12:30-13:30): 자유 일정 (오사카 주변 식당)", 맛집이 적은 도시에서
+    // AI가 반복을 피하려고 쓴 "저녁(18:00-19:30): 자유 식사 (이즈모)")는 장소가 아니므로 그날 도시 맛집으로 바꾼다
+    const FREE_MEAL_RE = /^(?:자유\s*(?:식사|점심|저녁)|식사\s*자유|free\s*(?:meal|lunch|dinner)|(?:lunch|dinner|meal)\s+on\s+your\s+own|自由(?:食|に食事|な食事|昼食|夕食)|食事は自由)/i;
     days.forEach((d, di) => d.items.forEach((b) => {
-      if (b.plain || !MEAL_PERIODS.has(b.period) || !FREE_TIME_TITLES.has(b.name)) return;
+      if (b.plain || !MEAL_PERIODS.has(b.period) || !(FREE_TIME_TITLES.has(b.name) || FREE_MEAL_RE.test(b.name))) return;
       const f = chooseFood(di);
       if (!f) return;
       Object.assign(b, foodBlock(b.period, b.start, b.end, f));
@@ -7813,14 +8394,15 @@ async function probeGemini() {
     return { configured: false, ok: false, reason: 'missing_key' };
   }
   try {
-    await callGeminiGenerateContent('Return {"ok":true} as JSON only.', {
+    const data = await callGeminiGenerateContent('Return {"ok":true} as JSON only.', {
       temperature: 0,
       topP: 0.1,
       maxOutputTokens: 20,
       thinkingBudget: 0,
       responseMimeType: 'application/json'
     });
-    return { configured: true, ok: true, model: GEMINI_API_MODEL };
+    // model = 실제로 답한 모델(주 모델이 쉬는 중이면 대체 모델)
+    return { configured: true, ok: true, model: data?._usedModel || GEMINI_API_MODEL };
   } catch (err) {
     const classified = classifyAiError('Gemini', err);
     return { configured: true, ok: false, model: GEMINI_API_MODEL, error: classified };
@@ -7920,7 +8502,12 @@ async function buildAiDiagnostics({ probe = false } = {}) {
       gemini: {
         configured: Boolean(GEMINI_API_KEY),
         model: GEMINI_API_MODEL,
-        keyFormatOk: looksLikeGeminiKey(GEMINI_API_KEY)
+        keyFormatOk: looksLikeGeminiKey(GEMINI_API_KEY),
+        // 시도 순서(주 모델 포함)·그 출처('default' | 'env')·체인 전체 시간 예산·지금 쉬는 모델(이름과 남은 초)
+        modelChain: GEMINI_MODEL_CHAIN,
+        fallbackSource: GEMINI_FALLBACK_SOURCE,
+        totalBudgetMs: GEMINI_TOTAL_BUDGET_MS,
+        coolingModels: geminiCoolingModels()
       },
       openai: {
         configured: Boolean(OPENAI_API_KEY),
@@ -8055,14 +8642,13 @@ async function callGeminiGenerateContent(prompt, opts = {}) {
     responseMimeType: opts.responseMimeType || 'application/json'
   };
   if (opts.responseSchema) baseGenerationConfig.responseSchema = opts.responseSchema;
-  // 2.5 계열과 flash 별칭(gemini-flash-latest 등)은 생각(thinking) 토큰도 maxOutputTokens를 나눠 쓰므로 예산을 작게 둔다
-  // (안 그러면 대체 모델의 JSON이 MAX_TOKENS로 잘린다). pro는 최소 128이 필요하다. 2.0 계열은 이 필드를 받지 않음.
-  const bodyForModel = (model) => {
+  // 생각(thinking) 토큰도 maxOutputTokens를 나눠 쓰므로 끈다. 모델마다 받는 형식이 달라 geminiThinkingStyle()이 고른다.
+  const wantsThinkingConfig = opts.thinkingBudget !== undefined;
+  const thinkingBudget = Math.max(0, Number(opts.thinkingBudget) || 0);
+  const bodyForModel = (model, style) => {
     const generationConfig = { ...baseGenerationConfig };
-    if (opts.thinkingBudget !== undefined && (/^gemini-2\.5-/.test(model) || (/flash/.test(model) && !/pro/.test(model)))) {
-      const budget = Math.max(0, Number(opts.thinkingBudget) || 0);
-      generationConfig.thinkingConfig = { thinkingBudget: /pro/.test(model) ? Math.max(128, budget) : budget };
-    }
+    const thinkingConfig = wantsThinkingConfig ? geminiThinkingConfig(style, model, thinkingBudget) : null;
+    if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
     return {
       contents: [
         {
@@ -8073,75 +8659,175 @@ async function callGeminiGenerateContent(prompt, opts = {}) {
       generationConfig
     };
   };
-  const timeoutMs = Math.max(AI_REQUEST_TIMEOUT_MS, Number(opts.timeoutMs) || 0);
+  // 호출 하나의 제한 시간(채팅 15초·일정 30초)과 체인 전체의 시간 예산(GEMINI_TOTAL_BUDGET_MS)
+  const perCallTimeoutMs = Math.max(AI_REQUEST_TIMEOUT_MS, Number(opts.timeoutMs) || 0);
+  // opts.totalBudgetMs: 화면이 더 일찍 끊는 요청(교통비 30초)용으로 예산을 더 줄일 때만(GEMINI_TOTAL_BUDGET_MS보다 늘리지는 않음)
+  const budgetMs = Number(opts.totalBudgetMs) > 0
+    ? Math.max(4000, Math.min(GEMINI_TOTAL_BUDGET_MS, Number(opts.totalBudgetMs)))
+    : GEMINI_TOTAL_BUDGET_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + budgetMs;
 
-  // Try primary model first, then fallbacks on 429 (with circuit breaker)
-  const allModels = [opts.model || GEMINI_API_MODEL, ...GEMINI_FALLBACK_MODELS];
+  // 주 모델 → 대체 모델 순서. 쉬는 모델(서킷 브레이커)은 건너뛴다.
+  const allModels = [...new Set([opts.model || GEMINI_API_MODEL, ...GEMINI_FALLBACK_MODELS])];
   const modelsToTry = getAvailableModels(allModels);
   if (modelsToTry.length < allModels.length) {
     const skipped = allModels.filter(m => !modelsToTry.includes(m));
     console.log(`[circuit-breaker] Skipping cooled-down models: ${skipped.join(', ')}`);
   }
-  const tried = new Set();
   let lastError = null;
   let busyError = null;
   let dailyModels = 0;
-  let minuteBusy = false;
+  let minuteBusy = false; // 잠깐 뒤면 될 수도 있는 실패(분당 429·503·5xx·시간 초과)가 하나라도 있었는지
+  let timedOut = false;
+  let notTried = [];
+  let truncatedByThinking = null;
+  const failed = [];
 
-  for (const model of modelsToTry) {
-    if (tried.has(model)) continue;
-    tried.add(model);
-
-    // 키는 URL이 아닌 헤더로 보낸다(오류 메시지·로그에 URL이 남아도 키가 새지 않게).
-    const url = `${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent`;
-    try {
-      const res = await fetchWithTimeout(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
-        body: JSON.stringify(bodyForModel(model))
-      }, timeoutMs);
-
-      if (res.ok) {
-        const json = await res.json();
-        // Tag which model was actually used
-        if (json && json.candidates) json._usedModel = model;
-        if (model !== modelsToTry[0]) {
-          console.log(`[gemini] Primary model rate-limited, succeeded with fallback: ${model}`);
+  models:
+  for (let i = 0; i < modelsToTry.length; i += 1) {
+    const model = modelsToTry[i];
+    let style = geminiThinkingStyle(model);
+    // pass 0 = 기본 설정, pass 1 = 400을 받은 뒤 다른 생각 형식으로 한 번 더
+    for (let pass = 0; pass < 2; pass += 1) {
+      const remaining = deadline - Date.now();
+      if (remaining < GEMINI_MIN_ATTEMPT_MS) {
+        notTried = modelsToTry.slice(pass === 0 ? i : i + 1);
+        break models;
+      }
+      const timeoutMs = Math.min(perCallTimeoutMs, remaining);
+      let r;
+      try {
+        r = await geminiPostOnce(model, bodyForModel(model, style), timeoutMs);
+      } catch (err) {
+        if (err?.geminiTimeout) {
+          // 느린 모델(느린 503 포함): 제 시간을 다 받고도 못 답했으면 쉬게 한다
+          // (남은 예산 때문에 짧게 끊은 호출은 모델 탓이 아니라 쉬게 하지 않음). 남은 시간이 있으면 다음 모델.
+          lastError = err.message;
+          timedOut = true;
+          minuteBusy = true;
+          failed.push(`${model}(timeout)`);
+          if (timeoutMs >= perCallTimeoutMs) recordModelFailure(model, 'timeout');
+          console.log(`[gemini] Model ${model} timed out after ${timeoutMs}ms, trying next...`);
+          continue models;
         }
+        // DNS·연결 거부 같은 네트워크 오류는 모델을 바꿔도 같으므로 바로 알린다
+        throw err;
+      }
+
+      if (r.ok) {
+        let json;
+        try {
+          json = JSON.parse(r.text);
+        } catch {
+          throw new AiOutputError('AI_INVALID_OUTPUT', `Gemini returned a non-JSON body (${model})`);
+        }
+        // 실제로 답한 모델을 붙인다
+        if (json && typeof json === 'object') json._usedModel = model;
+        if (pass === 1) {
+          _geminiThinkingLearned.set(model, style);
+          console.log(`[gemini] ${model} accepts thinking style '${style}' (remembered until restart)`);
+        }
+        // 생각 토큰이 출력 한도를 다 써서 잘린 응답(설정 탓)은 다음 모델에 맡긴다. 끝까지 안 되면 이 응답을 돌려준다(→ AI_TRUNCATED).
+        const finish = String(json?.candidates?.[0]?.finishReason || '').toUpperCase();
+        if (finish === 'MAX_TOKENS' && Number(json?.usageMetadata?.thoughtsTokenCount) > 0 && i < modelsToTry.length - 1) {
+          truncatedByThinking = truncatedByThinking || json;
+          failed.push(`${model}(thinking used the output limit)`);
+          console.log(`[gemini] Model ${model} spent the output limit on thinking (MAX_TOKENS), trying next...`);
+          continue models;
+        }
+        if (failed.length) console.log(`[gemini] Succeeded with fallback ${model} after: ${failed.join(', ')}`);
         return json;
       }
 
-      const text = await res.text();
-      lastError = `Gemini error ${res.status} (${model}): ${text.slice(0, 200)}`;
+      const text = r.text;
+      lastError = `Gemini error ${r.status} (${model}): ${text.slice(0, 200)}`;
       // 한도(429)·과부하(503) 오류는 따로 기억한다. 마지막 모델이 404여도 원인은 '바쁨'으로 알린다.
       // 429 중 '하루 무료 한도'(quotaId …PerDay…)는 잠시 뒤가 아니라 한도가 풀릴 때(태평양 시간 자정)까지 안 되므로 따로 센다.
-      const daily = res.status === 429 && /PerDay|per\s*day|daily/i.test(text);
-      if (res.status === 429 || res.status === 503) {
+      const daily = r.status === 429 && /PerDay|per\s*day|daily/i.test(text);
+      if (r.status === 429 || r.status === 503) {
         busyError = lastError;
         if (daily) dailyModels += 1; else minuteBusy = true;
+        failed.push(`${model}(${r.status}${daily ? ' daily' : ''})`);
+        recordModelFailure(model, r.status, daily ? geminiDailyResetMs() : 0);
+        console.log(`[gemini] Model ${model} unavailable (${r.status}${daily ? ', daily quota' : ''}), trying next...`);
+        continue models;
       }
-
-      // Retry on 429 (rate limit), 503 (overloaded), 404 (model not found)
-      if (res.status === 429 || res.status === 503 || res.status === 404) {
-        recordModelFailure(model, res.status, daily ? geminiDailyResetMs() : 0);
-        console.log(`[gemini] Model ${model} unavailable (${res.status}${daily ? ', daily quota' : ''}), trying next...`);
-      } else {
-        throw new Error(lastError);
+      if (r.status === 404) {
+        // 종료된 모델('no longer available')·없는 이름: 하루 쉰다
+        failed.push(`${model}(404)`);
+        recordModelFailure(model, 404, MODEL_GONE_COOLDOWN_MS);
+        console.log(`[gemini] Model ${model} not available (404), skipping it for a day, trying next...`);
+        continue models;
       }
-    } catch (err) {
-      if (err.message && err.message.includes('Gemini error')) throw err;
-      lastError = err.message;
-      throw err;
+      if (r.status === 500 || r.status === 502 || r.status === 504) {
+        minuteBusy = true;
+        failed.push(`${model}(${r.status})`);
+        recordModelFailure(model, r.status);
+        console.log(`[gemini] Model ${model} server error (${r.status}), trying next...`);
+        continue models;
+      }
+      if (r.status === 400 && !GEMINI_ACCOUNT_ERROR_RE.test(text)) {
+        // 이 모델이 요청 설정을 거절(예: thinkingBudget을 받지 않는 모델): 다른 생각 형식으로 한 번 더, 그래도 안 되면 다음 모델
+        const alt = style === 'budget' ? 'level' : (style === 'level' ? 'budget' : null);
+        if (pass === 0 && wantsThinkingConfig && alt) {
+          console.log(`[gemini] Model ${model} rejected the request (400) with thinking style '${style}', retrying with '${alt}'...`);
+          style = alt;
+          continue;
+        }
+        failed.push(`${model}(400)`);
+        console.log(`[gemini] Model ${model} rejected the request (400), trying next...`);
+        continue models;
+      }
+      // 키·권한·지역 문제(400 API_KEY_INVALID, 401, 403 …)는 모델을 바꿔도 같으므로 바로 알린다
+      throw new Error(lastError);
     }
   }
 
+  if (notTried.length) {
+    console.log(`[gemini] Time budget ${budgetMs}ms used up after ${Date.now() - startedAt}ms; not tried: ${notTried.join(', ')}`);
+  }
+  if (truncatedByThinking) return truncatedByThinking;
   const exhausted = new Error(busyError || lastError || 'All Gemini models exhausted');
   // 시도한 모델이 모두 '하루 무료 한도'로 막혔으면(잠깐 붐빈 모델이 없으면) 오늘 한도 소진으로 알린다.
   if (dailyModels > 0 && !minuteBusy) exhausted.quotaDaily = true;
+  // 한도·과부하 응답 없이 시간만 다 썼으면 '바쁨'(AI_BUSY, code timeout)으로 알린다.
+  if (timedOut && !busyError) exhausted.geminiTimeout = true;
+  if (notTried.length) exhausted.budgetExceeded = true;
   // 서킷 브레이커가 모델을 막고 있으면 가장 빨리 풀리는 모델까지 남은 초를 붙인다.
   const retryAfterSec = modelCooldownRemainingSec(allModels);
   if (retryAfterSec > 0) exhausted.retryAfterSec = retryAfterSec;
   throw exhausted;
+}
+
+// 400 중 모델을 바꿔도 같은 것(키·권한·지역·결제). 이런 400은 다음 모델로 넘기지 않는다.
+const GEMINI_ACCOUNT_ERROR_RE = /API_KEY_INVALID|API key not valid|API key expired|API_KEY_SERVICE_BLOCKED|PERMISSION_DENIED|unregistered callers|location is not supported|FAILED_PRECONDITION|SERVICE_DISABLED|billing/i;
+
+// Gemini 호출 한 번. 키는 URL이 아닌 헤더로 보낸다(오류 메시지·로그에 URL이 남아도 키가 새지 않게).
+// 본문 읽기까지 같은 제한 시간 안에서 끝낸다(헤더만 오고 본문이 멈춰도 기다리지 않게).
+async function geminiPostOnce(model, body, timeoutMs) {
+  const url = `${GEMINI_ENDPOINT}/${encodeURIComponent(model)}:generateContent`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const text = await res.text();
+    return { status: res.status, ok: res.ok, text };
+  } catch (err) {
+    if (controller.signal.aborted || err?.name === 'AbortError') {
+      const e = new Error(`Gemini timeout after ${timeoutMs}ms (${model})`);
+      e.geminiTimeout = true;
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // 모델 쿨다운 중 가장 빨리 풀리는 것까지 남은 초(막힌 모델이 없으면 0)
@@ -8805,6 +9491,13 @@ async function buildTravelPlan(rawPayload) {
 
   // 지도용 좌표: 각 날의 places + 전체 placeCoords
   const withCoords = attachItineraryCoordinates(it.itinerary, [...mergedRecommendations, ...picksForItinerary, ...aiPicks], foodCityKeys);
+  // 도시 주변 명소가 적은 곳(작은 섬, assets/city-places.json few): 다른 도시 장소로 채우지 않았다고 팁 맨 앞에 알린다(규칙·AI 일정 모두)
+  const tips = Array.isArray(it.tips) ? [...it.tips] : [];
+  if (cityHasFewSights(key) && routeCityKeys.length === 1) {
+    const sightCount = new Set(curatedCityPool(key, 'ko').filter((p) => !allDayPlaceKind(p, key)).map((p) => placeNameKey(p.name))).size;
+    const fewTip = (RULE_PLAN_TEXT[lang] || RULE_PLAN_TEXT.ko).tips.fewSights(localizedCityName(key, lang), sightCount);
+    if (!tips.includes(fewTip)) tips.unshift(fewTip);
+  }
 
   return {
     source: 'integrated_travel_planner_v1',
@@ -8819,7 +9512,7 @@ async function buildTravelPlan(rawPayload) {
     itinerarySource: it.source,
     itineraryInfo,
     itineraryModel: it.source || null,
-    tips: it.tips,
+    tips,
     summary: planSummary(key, mergedRecommendations.length, it.itinerary.length, lang),
     aiNote: summarizeAiErrors(aiErrors),
     aiErrors: publicAiErrors(aiErrors)
@@ -10296,11 +10989,13 @@ JSON 형식:
 - 장거리 신칸센은 해당 요금 반영${RT.aiLang ? `\n- tip과 routeTip은 ${RT.aiLang}로 작성` : ''}`;
 
       // gemini-2.0-flash 고정은 모델 종료(404)로 매번 한 번씩 헛호출이 나서 기본 모델을 쓴다.
+      // 화면은 30초에 요청을 끊으므로 체인 전체를 20초로 줄여, 그 안에 못 받으면 아래 추정값으로 답한다.
       const geminiResp = await callGeminiGenerateContent(prompt, {
         temperature: 0.1,
         maxOutputTokens: 1500,
         thinkingBudget: 0,
-        responseMimeType: 'application/json'
+        responseMimeType: 'application/json',
+        totalBudgetMs: 20_000
       });
 
       const text = geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -11107,6 +11802,12 @@ async function handleApi(req, res, parsedUrl) {
         ai: {
           geminiConfigured: Boolean(GEMINI_API_KEY),
           geminiModel: GEMINI_API_MODEL,
+          // 시도 순서(주 모델 포함), 그 출처('default' | 'env' = GEMINI_FALLBACK_MODELS), 한 번 생성할 때 체인 전체의 시간 예산
+          geminiModelChain: GEMINI_MODEL_CHAIN,
+          geminiFallbackSource: GEMINI_FALLBACK_SOURCE,
+          geminiTotalBudgetMs: GEMINI_TOTAL_BUDGET_MS,
+          // 지금 쉬는 모델(한도·과부하·시간 초과·종료): [{ model, secondsLeft }]만, 오류 내용은 없음
+          geminiCoolingModels: geminiCoolingModels(),
           openaiConfigured: Boolean(OPENAI_API_KEY),
           openaiModel: OPENAI_MODEL,
           chatParseStrictAi: CHAT_PARSE_STRICT_AI,

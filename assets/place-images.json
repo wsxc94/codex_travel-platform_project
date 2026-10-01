@@ -638,19 +638,6 @@
         "ja": "神戸ハーバーランド"
       }
     },
-    "kobe|구마노고도": {
-      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6a/Daimonzaka28-640.jpg/500px-Daimonzaka28-640.jpg",
-      "filePage": "https://commons.wikimedia.org/wiki/File:Daimonzaka28-640.jpg",
-      "license": "CC BY 2.5",
-      "artist": "663highland",
-      "lat": 34.45246,
-      "lng": 136.7213,
-      "wikidata": "Q17050475",
-      "labels": {
-        "en": "Kumano Kodō",
-        "ja": "熊野古道"
-      }
-    },
     "kobe|기타노 이진칸": {
       "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/Kitano_Street_Kobe02s3s4272.jpg/500px-Kitano_Street_Kobe02s3s4272.jpg",
       "filePage": "https://commons.wikimedia.org/wiki/File:Kitano_Street_Kobe02s3s4272.jpg",
@@ -1964,19 +1951,6 @@
       }
     },
     "tajima|기노사키 온천": {
-      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/65/Kinosaki_onsen02_1920.jpg/500px-Kinosaki_onsen02_1920.jpg",
-      "filePage": "https://commons.wikimedia.org/wiki/File:Kinosaki_onsen02_1920.jpg",
-      "license": "CC BY 2.5",
-      "artist": "663highland",
-      "lat": 35.62778,
-      "lng": 134.8,
-      "wikidata": "Q11426141",
-      "labels": {
-        "en": "Kinosaki Onsen",
-        "ja": "城崎温泉"
-      }
-    },
-    "tajima|키노사키 온천": {
       "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/65/Kinosaki_onsen02_1920.jpg/500px-Kinosaki_onsen02_1920.jpg",
       "filePage": "https://commons.wikimedia.org/wiki/File:Kinosaki_onsen02_1920.jpg",
       "license": "CC BY 2.5",

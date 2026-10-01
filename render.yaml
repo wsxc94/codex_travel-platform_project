@@ -41,6 +41,12 @@ services:
         sync: false
       - key: GEMINI_API_MODEL
         sync: false
+      # 대체 모델 목록(쉼표 구분, 'none'이면 주 모델만). 비우면 서버의 실측 순서(README 표 참고).
+      - key: GEMINI_FALLBACK_MODELS
+        sync: false
+      # 한 번 생성할 때 Gemini 모델 체인 전체가 쓸 수 있는 시간(ms). 비우면 40000.
+      - key: GEMINI_TOTAL_BUDGET_MS
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL

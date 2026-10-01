@@ -8,7 +8,8 @@
  *     가짜 벤더 서버(tests/support/mock-vendor.js, 포트 3205)를 가리킨다.
  *   · 그 밖의 외부 호출(환율·날씨 등)은 tests/support/net-guard.js가 가짜 서버로 돌린다.
  * - 서버(포트 13581)를 설정만 바꿔 여러 번 띄운다: 무료 모드(기본) → 무료 모드 사진·en/ja 이름 → 프록시 신뢰
- *   → Google 결제 꺼짐 → Google 정상 + Gemini → 일일 상한 → Geocoding 거부 → OAuth state·AI 오류 원문 제거.
+ *   → Google 결제 꺼짐 → Google 정상 + Gemini → 일일 상한 → Geocoding 거부 → OAuth state·AI 오류 원문 제거
+ *   → … → Gemini 모델 체인(순서·GEMINI_FALLBACK_MODELS·쉬는 모델·생각 설정·전체 시간 예산).
  * - 브랜드(Tabimaru)와 도메인에 묶인 값(운영 주소, 서비스 이름, OAuth 콜백, sid 쿠키, localStorage 키)도 검사한다.
  * - 첫 화면(app.js 부팅)은 tests/support/browser-sandbox.js로 실행해 유료 API를 부르지 않는지 본다.
  *   같은 흉내 안에서 사진·출처 표시 함수에 악성 주소·HTML을 넣어 허용 목록과 이스케이프도 확인한다.
@@ -407,7 +408,7 @@ async function runTests() {
     const start = appCode.indexOf('var I18N = {');
     const dict = vm.runInNewContext('(' + extractBalanced(appCode, appCode.indexOf('{', start)) + ')', {});
     if (only.has('sandbox')) { await sandboxSchedulingTests(htmlCode, appCode, dict); await sandboxStorageTests(htmlCode, appCode, dict); }
-    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree };
+    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, chain: phaseGeminiChain, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree };
     const chosen = Object.keys(phases).filter((k) => only.has(k));
     if (chosen.length) {
       await mock.start();
@@ -483,7 +484,7 @@ async function runTests() {
 
   const jsFiles = ['server.js', 'public/app.js', 'test_all.js', '_test_api.js',
     'tests/support/mock-vendor.js', 'tests/support/net-guard.js', 'tests/support/browser-sandbox.js']
-    .concat(fs.existsSync(path.join(PROJECT, 'scripts', 'build-place-images.js')) ? ['scripts/build-place-images.js'] : []);
+    .concat(['build-place-images.js', 'build-city-places.js', 'ja-names.js'].filter((f) => fs.existsSync(path.join(PROJECT, 'scripts', f))).map((f) => `scripts/${f}`));
   for (const f of jsFiles) {
     const r = spawnSync(process.execPath, ['--check', path.join(PROJECT, f)], { encoding: 'utf8' });
     log(r.status === 0, `node --check ${f}`, short(r.stderr, 400));
@@ -931,6 +932,7 @@ async function runTests() {
   try {
     await phaseFree();
     await phaseFreeMedia();
+    await phaseCityCoverage();
     await phaseTrustedProxy();
     await phaseGoogleBilling();
     await phaseGoogleLive();
@@ -940,6 +942,7 @@ async function runTests() {
     await phaseSessionsAndStorage();
     await phaseIntentRegression();
     await phaseAiItinerary();
+    await phaseGeminiChain();
   } finally {
     await stopServer();
     await mock.stop();
@@ -1734,6 +1737,208 @@ async function phaseFreeMedia() {
   log(mock.googleHits() === 0, 'free media phase made zero Google calls', String(mock.googleHits()));
   checkNoUnexpectedExternal('Free media');
   checkNoFatal('Free media');
+}
+
+// ── Phase 1c: 도시 주변 실제 명소(assets/city-places.json) + 62개 도시 3일 규칙 일정 ──
+// 파일 자체(형식·위키데이터 QID·좌표·도시 반경·사진 출처)를 먼저 보고, 서버로 모든 도시의 3일 규칙 일정을 만들어
+// 다른 도시 장소가 없고, 명소 없는 날은 안내(자유 일정 + 팁)가 있으며, 명소가 적은 도시(few)는 그렇다고 알리는지 본다.
+// 끝으로 가짜 Gemini로 AI 후보(프롬프트 picks)가 이 데이터 안의 실제 장소뿐인지 본다.
+const CITY_PLACE_CATEGORIES = new Set(['문화', '수족관', '동물원', '미술관', '박물관', '온천', '정원', '시장', '산책', '전망', '자연', '관광', '테마파크', '쇼핑']);
+const PLAN_SIGHT_RE = /^(오전|오후|종일|아침)\((\d{2}:\d{2})-(\d{2}:\d{2})\):\s*(.+)$/;
+const FREE_TIME_NAME_RE = /^(자유 일정|Free time|自由時間)/;
+function kmBetween(a, b) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const h = Math.sin(rad(b.lat - a.lat) / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lng - a.lng) / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(h));
+}
+
+async function phaseCityCoverage() {
+  section('Phase 1c: city-places.json (real sights near every city), 3-day rule plan for every city, AI candidates');
+  let asset = null;
+  try { asset = JSON.parse(read('assets/city-places.json')); } catch (e) { log(false, 'assets/city-places.json parses', e.message); return; }
+  let images = {};
+  try { images = JSON.parse(read('assets/place-images.json')).places || {}; } catch { images = {}; }
+  const centers = objectLiteralFromServer('const CITY_CENTER_COORDS = ') || {};
+  const cityEntries = Object.entries(asset.cities || {});
+  const allPlaces = cityEntries.flatMap(([ck, c]) => (c.places || []).map((p) => [ck, p]));
+
+  // (a) 파일 형식: 버전·생성 시각·출처, 장소마다 위키데이터 QID + 일본 안 좌표 + en/ja 이름 + 분류·시간, 사진은 공용 파일 + 라이선스 + 출처
+  log(asset.version === 1 && !Number.isNaN(Date.parse(asset.generatedAt)) && asset.source?.script === 'scripts/build-city-places.js' && /Wikidata/.test(asset.source?.data || ''),
+    'city-places.json: version 1, generatedAt, source (Wikidata, scripts/build-city-places.js)', short({ version: asset.version, generatedAt: asset.generatedAt, source: asset.source?.script }));
+  const badShape = allPlaces.filter(([, p]) => !(typeof p.name === 'string' && p.name.trim() && /^Q\d+$/.test(p.wikidata || '')
+    && Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.lat >= 20 && p.lat <= 46.5 && p.lng >= 122 && p.lng <= 154
+    && typeof p.en === 'string' && p.en && !HANGUL_RE.test(p.en) && typeof p.ja === 'string' && p.ja && !HANGUL_RE.test(p.ja)
+    && ['fix', 'kowiki', 'ko', 'translit', 'ja'].includes(p.nameFrom) && CITY_PLACE_CATEGORIES.has(p.category)
+    && /^\d{2}:\d{2}-\d{2}:\d{2}$/.test(p.bestTime || '') && p.stayMin >= 30 && p.stayMin <= 480 && typeof p.area === 'string' && p.area));
+  log(allPlaces.length >= 300 && badShape.length === 0, `city-places.json: every place has name, Wikidata QID, coordinates in Japan, en/ja names, category, bestTime, stayMin (${allPlaces.length} places)`,
+    short(badShape.slice(0, 3).map(([ck, p]) => `${ck}|${p.name}`)));
+  const badPhoto = allPlaces.filter(([, p]) => p.image !== null && !(String(p.image).startsWith('https://upload.wikimedia.org/wikipedia/commons/')
+    && String(p.filePage || '').startsWith('https://commons.wikimedia.org/wiki/File:') && p.license && p.artist && !/^GFDL/i.test(p.license)));
+  const withPhoto = allPlaces.filter(([, p]) => p.image);
+  log(withPhoto.length > allPlaces.length / 2 && badPhoto.length === 0, `city-places.json photos: Commons file + file page + free license + credit (${withPhoto.length}/${allPlaces.length} with a photo)`,
+    short(badPhoto.slice(0, 3).map(([ck, p]) => `${ck}|${p.name}`)));
+  const bathPhoto = allPlaces.filter(([, p]) => p.image && (p.kind === 'onsen' || /温泉|온천|onsen|風呂|浴/i.test(`${p.name} ${p.ja} ${p.filePage}`)));
+  log(bathPhoto.length === 0, 'city-places.json: no unreviewed hot-spring / bath photo (no-bathers rule)', short(bathPhoto.map(([ck, p]) => `${ck}|${p.name}`)));
+
+  // (b) 도시마다: 서버 CITY_CENTER_COORDS와 같은 중심, 반경 안의 장소만, 도시 안 QID 중복 없음, 큐레이션 항목(place-images.json)과 겹치지 않음
+  const farOff = [];
+  const centerDrift = [];
+  const dupQids = [];
+  const curatedDup = [];
+  for (const [ck, c] of cityEntries) {
+    const center = centers[ck];
+    if (!center || Math.abs(center.lat - c.center?.lat) > 1e-4 || Math.abs(center.lng - c.center?.lng) > 1e-4) centerDrift.push(ck);
+    const curatedQids = new Set(Object.entries(images).filter(([k]) => k.startsWith(`${ck}|`)).map(([, v]) => v.wikidata).filter(Boolean));
+    const seen = new Set();
+    const circles = [{ lat: c.center?.lat, lng: c.center?.lng, radiusKm: c.radiusKm }, ...(c.extraCenters || [])];
+    for (const p of c.places || []) {
+      const d = kmBetween(c.center, p);
+      const inside = circles.every((x) => x.radiusKm > 0 && x.radiusKm <= 40) && circles.some((x) => kmBetween(x, p) <= x.radiusKm + 0.05);
+      if (!inside) farOff.push(`${ck}|${p.name} ${d.toFixed(1)}km > ${c.radiusKm}`);
+      if (seen.has(p.wikidata)) dupQids.push(`${ck}|${p.wikidata}`);
+      seen.add(p.wikidata);
+      if (curatedQids.has(p.wikidata)) curatedDup.push(`${ck}|${p.name}`);
+    }
+  }
+  log(centerDrift.length === 0, `city-places.json: each city's center is the server's CITY_CENTER_COORDS (${cityEntries.length} cities)`, centerDrift.join(', '));
+  log(farOff.length === 0, 'city-places.json: no place farther from its city than the city radius (<= 40 km)', short(farOff.slice(0, 4)));
+  log(dupQids.length === 0 && curatedDup.length === 0, 'city-places.json: no Wikidata item twice in a city, none duplicating a curated place (place-images.json)', short([...dupQids, ...curatedDup].slice(0, 4)));
+  const thin = cityEntries.filter(([, c]) => !c.few && (c.curatedHalfDay || 0) + (c.places || []).filter((p) => !p.fullDay && !p.dayTrip).length < (asset.source?.minSights || 9)).map(([ck]) => ck);
+  const fewWrong = cityEntries.filter(([, c]) => c.few && (c.curatedHalfDay || 0) + (c.places || []).filter((p) => !p.fullDay && !p.dayTrip).length >= (asset.source?.minSights || 9)).map(([ck]) => ck);
+  log(thin.length === 0 && fewWrong.length === 0, `city-places.json: every city has >= ${asset.source?.minSights || 9} half-day sights (curated + nearby) or the honest "few" flag (${cityEntries.filter(([, c]) => c.few).map(([ck]) => ck).join(', ') || 'none'})`,
+    short({ thin, fewWrong }));
+  const mediaBad = Object.entries(asset.media || {}).filter(([k, v]) => !/^[a-z0-9_]+\|.+$/.test(k) || !/^Q\d+$/.test(v.wikidata || '') || !(v.lat >= 20 && v.lat <= 46.5 && v.lng >= 122 && v.lng <= 154)
+    || !serverCode.includes(`'${k.split('|')[1]}'`));
+  log(Object.keys(asset.media || {}).length >= 10 && mediaBad.length === 0, `city-places.json media: curated names (in server.js) with a Wikidata item and coordinates (${Object.keys(asset.media || {}).length})`, short(mediaBad.map(([k]) => k)));
+  log(!/'섬 해안 절벽'|'이와테 산책로'|'환상적인 석양 포인트'|'스노클링 포인트'|'오키나와 스노클링'|'니가타 사케 양조장'/.test(serverCode.replace(/^\s*\/\/.*$/gm, '')),
+    'server.js: descriptive non-places (섬 해안 절벽, 환상적인 석양 포인트, 오키나와 스노클링 …) are gone from the curated data');
+  log(/name: '구마노 혼구 다이샤', cityKey: 'nanki_shirahama'/.test(serverCode) && !/name: '구마노고도', cityKey: 'kobe'/.test(serverCode) && !images['kobe|구마노고도'],
+    'Kumano Kodō (Hongū Taisha) is a day trip from Nanki-Shirahama, not Kobe (140 km)');
+  // 검토로 뺀 곳(닫은 미술관·상륙할 수 없는 바위섬·주거 섬·스키 점프대·도로 고개·센카쿠 신사)은 다시 들어오지 않는다
+  const REVIEWED_OUT = ['Q6940951', 'Q862944', 'Q11482667', 'Q11589594', 'Q3912774', 'Q11288918', 'Q11476897', 'Q11577742', 'Q11607237', 'Q17230291', 'Q391408'];
+  const back = allPlaces.filter(([, p]) => REVIEWED_OUT.includes(p.wikidata)).map(([ck, p]) => `${ck}|${p.name}`);
+  log(back.length === 0, 'city-places.json: reviewed-out items (closed museum, no-landing rocks, residential islands, ski jump, road passes, Senkaku Shrine) are not in the data', back.join(', '));
+  // 한국어 화면 이름은 모두 한글(일본어 이름은 읽기를 한글로 옮기거나 검토한 이름), 영어 화면 이름에는 한자·가나가 없다
+  const jaOnly = allPlaces.filter(([, p]) => !HANGUL_RE.test(p.name)).map(([ck, p]) => `${ck}|${p.name}`);
+  const enCjk = allPlaces.filter(([, p]) => /[぀-ヿ一-鿿]/.test(p.en)).map(([ck, p]) => `${ck}|${p.en}`);
+  log(jaOnly.length === 0 && enCjk.length === 0, `city-places.json: every Korean name has Hangul and every English name is in Latin script (${allPlaces.length} places)`, short({ jaOnly: jaOnly.slice(0, 5), enCjk: enCjk.slice(0, 5) }));
+  // 다른 도시의 유명한 곳과 같은 이름(구시로의 厳島神社, 하나마키의 清水寺)은 도시 이름을 앞에 붙여 구분한다
+  const famous = allPlaces.filter(([ck, p]) => (ck !== 'hiroshima' && /^(이쓰쿠시마 신사|Itsukushima Shrine|厳島神社)$/.test(p.name + '') ) || (ck !== 'kyoto' && /^(기요미즈데라|清水寺)$/.test(p.name))).map(([ck, p]) => `${ck}|${p.name}`);
+  log(famous.length === 0 && allPlaces.some(([ck, p]) => ck === 'kushiro' && p.name === '구시로 이쓰쿠시마 신사' && p.ja === '釧路厳島神社'),
+    "city-places.json: a place named like a famous one elsewhere has its city in front ('구시로 이쓰쿠시마 신사' / '釧路厳島神社')", famous.join(', '));
+  try {
+    const J = require(path.join(PROJECT, 'scripts', 'ja-names.js'));
+    const cases = [[J.koFromEnglish('Ryōzen Shrine'), '료젠 신사'], [J.koFromEnglish('Mount Shinobu'), '시노부산'], [J.koFromEnglish('Kasama Castle'), '가사마성'],
+      [J.koFromEnglish('Kamabuchi Falls'), '가마부치 폭포'], [J.koFromEnglish('Seiryū-ji Temple'), '세이류지'], [J.koFromEnglish('Shimane Museum of Ancient Izumo'), '시마네 고대 이즈모 박물관'],
+      [J.koFromEnglish('Akita Port Tower'), null], [J.koFromKana('霊山神社', 'りょうぜんじんじゃ'), '료젠 신사'], [J.koFromKana('千尋の滝', 'せんぴろのたき'), '센피로 폭포'],
+      [J.kanaToRomaji('とうきょう'), 'tokyo'], [J.enFromKana('台温泉', 'だいおんせん'), 'Dai Onsen']];
+    const wrong = cases.filter(([got, want]) => got !== want).map(([got, want]) => `${got} != ${want}`);
+    log(wrong.length === 0, 'scripts/ja-names.js: Japanese names in Korean by the official rules (가마부치 폭포, 료젠 신사, 시노부산, 세이류지 …) and Hepburn English', wrong.join(', '));
+  } catch (e) { log(false, 'scripts/ja-names.js loads', e.message); }
+
+  // (c) 서버: 모든 도시의 3일 규칙 일정(Gemini 없음)
+  mock.reset();
+  try { await startServer('city-coverage', { TRUST_PROXY: '1' }); } catch (e) { log(false, 'Server (city coverage) started', e.message); return; }
+  let seq = 0;
+  const ip = () => { seq += 1; return `198.18.${100 + Math.floor(seq / 200)}.${1 + (seq % 200)}`; };
+  const startDate = futureDate(20);
+  const cityList = (await fetchUrl('/api/cities', { ip: ip() })).json?.cities || [];
+  const missingAsset = cityList.filter((c) => !asset.cities?.[c.key]).map((c) => c.key);
+  log(cityList.length >= 62 && missingAsset.length === 0, `every city of /api/cities has an entry in city-places.json (${cityList.length})`, missingAsset.join(', '));
+  const otherCity = [];
+  const emptyNoNote = [];
+  const fewNoTip = [];
+  const notFull = [];
+  const failed = [];
+  let sightsTotal = 0;
+  for (const c of cityList) {
+    const r = await postJson('/api/travel-plan', { city: c.key, theme: 'mixed', days: 3, budget: 'mid', startDate, lang: 'ko', useAi: true }, { ip: ip(), record: false });
+    const j = r.json || {};
+    const days = j.itinerary || [];
+    if (r.status !== 200 || days.length !== 3) { failed.push(`${c.key}:${r.status}/${days.length}`); continue; }
+    const recs = j.recommendations || [];
+    const tips = j.tips || [];
+    const freeTip = tips.some((t) => /자유 일정으로 두었어요/.test(t));
+    const fewTip = tips.some((t) => /명소가 \d+곳뿐이에요/.test(t));
+    if (asset.cities?.[c.key]?.few && (!fewTip || tips.some((t) => /은\(는\)/.test(t)))) fewNoTip.push(c.key);
+    let free = 0;
+    for (const d of days) {
+      let real = 0;
+      for (const b of d.blocks || []) {
+        const m = PLAN_SIGHT_RE.exec(b);
+        if (!m) continue;
+        const name = m[4].replace(/\s*\([^()]*\)\s*$/, '').trim();
+        if (FREE_TIME_NAME_RE.test(name)) { free += 1; continue; }
+        real += 1;
+        const rec = recs.find((x) => x.name === name || x.nameKo === name);
+        if (!rec || rec.city !== j.city) otherCity.push(`${c.key} D${d.day}: ${name}${rec ? ` (${rec.city})` : ' (not a card of this city)'}`);
+      }
+      if (real === 0 && !((d.blocks || []).some((b) => /자유 일정/.test(b)) && (freeTip || fewTip))) emptyNoNote.push(`${c.key} D${d.day}`);
+      sightsTotal += real;
+    }
+    if (!asset.cities?.[c.key]?.few && free > 0) notFull.push(`${c.key}(${free})`);
+  }
+  log(failed.length === 0, `3-day rule plan returns 3 days for every city (${cityList.length})`, failed.join(', '));
+  log(otherCity.length === 0, `3-day rule plans use only places of their own city (${sightsTotal} sights in ${cityList.length} plans)`, short(otherCity.slice(0, 5)));
+  log(emptyNoNote.length === 0, '3-day rule plans: a day without a sight always has a free-time block and the tip that says why', short(emptyNoNote.slice(0, 5)));
+  log(fewNoTip.length === 0, "cities with few sights (city-places.json few) get the honest tip (no filler from other cities), with the right particle ('도쿠노시마는', not '은(는)')", fewNoTip.join(', '));
+  // 멀리 떨어진 두 도시(도쿄 → 삿포로)는 '대중교통 1~3시간'이 아니라 비행기 이동으로 안내한다
+  try {
+    const far = await postJson('/api/travel-plan', { city: 'tokyo', theme: 'mixed', days: 4, budget: 'mid', startDate, lang: 'ko', useAi: false,
+      _routeCities: ['도쿄', '삿포로'], _regionDayPlan: [{ cityLabel: '도쿄', days: 2, unit: 'day' }, { cityLabel: '삿포로', days: 2, unit: 'day' }] }, { ip: ip() });
+    const transfer = (far.json?.itinerary || []).flatMap((d) => d.blocks || []).find((b) => /^도시 이동/.test(b)) || '';
+    log(/도쿄 -> 삿포로/.test(transfer) && /비행기 이동/.test(transfer) && !/1~3시간/.test(transfer), "far route Tokyo -> Sapporo: the transfer line says plane, not 'public transport 1-3 h'", transfer);
+  } catch (e) { log(false, 'far route transfer hint', e.message); }
+  // 화면 흐름(폼 도시 도쿄): 도시 주변 실제 명소 이름만 말한 채팅 → 그 도시 일정, 갈 수 없는 '도시 이동' 날이 없다
+  try {
+    const bad = [];
+    for (const [message, lang, city, place] of [['다케토미섬 2일', 'ko', 'ishigaki', '다케토미섬'], ['Hashima Island 2 days', 'en', 'nagasaki', 'Hashima'], ['산나이마루야마 유적 2일', 'ko', 'aomori', '산나이마루야마']]) {
+      const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 3, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+      const p = chat.json?.parsed || {};
+      const plan = await postJson('/api/travel-plan', { city: p.cityKey, theme: 'mixed', days: p.days, budget: 'mid', startDate, lang, useAi: true, request: message, mustVisit: p.wantedPlaces || [] }, { ip: ip() });
+      const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+      if (p.cityKey !== city || blocks.some((b) => /도시 이동|Transfer:/.test(b)) || !blocks.some((b) => b.includes(place))) bad.push(`${message}: ${p.cityKey} ${short(blocks, 200)}`);
+    }
+    log(bad.length === 0, "chat naming only a nearby place (다케토미섬, Hashima Island, 산나이마루야마 유적) -> that place's city, the place in the plan, no transfer day", short(bad));
+  } catch (e) { log(false, 'chat nearby place flow', e.message); }
+  log(notFull.length === 0, '3-day rule plan of every other city fills every sightseeing slot with a real place (no free-time slot)', notFull.join(', '));
+
+  // (d) en/ja 화면: 새 명소 이름·지역·분류에 한국어가 남지 않는다
+  try {
+    const leftovers = [];
+    for (const [city, lang] of [['kita_daito', 'en'], ['fukushima', 'ja'], ['yonaguni', 'en'], ['nakashibetsu', 'ja']]) {
+      const r = await postJson('/api/travel-plan', { city, theme: 'mixed', days: 3, budget: 'mid', startDate, lang }, { ip: ip() });
+      for (const [field, text] of displayedTexts(r.json || {})) if (HANGUL_RE.test(text)) leftovers.push(`${city}/${lang} ${field}: ${text}`);
+      if (lang === 'en' && asset.cities?.[city]?.few && !(r.json?.tips || []).some((t) => /only \d+ sights/.test(t))) leftovers.push(`${city}/en: no few-sights tip`);
+    }
+    log(leftovers.length === 0, 'lang=en/ja plans of cities filled with nearby sights have no Korean text (names, areas, categories, tips)', short(leftovers.slice(0, 5)));
+  } catch (e) { log(false, 'en/ja nearby sights', e.message); }
+  log(mock.googleHits() === 0, 'city coverage phase made zero Google calls', String(mock.googleHits()));
+  checkNoUnexpectedExternal('City coverage');
+  checkNoFatal('City coverage');
+
+  // (e) AI 후보: 가짜 Gemini 프롬프트의 picks가 그 도시의 데이터(큐레이션 + city-places.json) 안의 장소뿐이고, 3일이면 9곳 이상
+  mock.reset({ gemini: 'ok' });
+  try { await startServer('city-coverage-ai', { GEMINI_API_KEY: 'GEMKEY-city-coverage-5b1f', TRUST_PROXY: '1' }); } catch (e) { log(false, 'Server (city coverage AI) started', e.message); return; }
+  try {
+    const bad = [];
+    for (const city of ['fukushima', 'toyama', 'hiroshima', 'kumejima']) {
+      const before = mock.entries('gemini').length;
+      const r = await postJson('/api/travel-plan', { city, theme: 'mixed', days: 3, budget: 'mid', startDate, lang: 'ko', useAi: true }, { ip: ip() });
+      const entry = mock.entries('gemini').slice(before).filter((e) => e.isItinerary).pop();
+      let ctx = null;
+      try { ctx = JSON.parse(String(entry?.prompt || '').split('Context:\n')[1]); } catch { ctx = null; }
+      const picks = ctx?.picks || [];
+      const known = new Set([...(asset.cities?.[city]?.places || []).map((p) => p.name), ...(r.json?.recommendations || []).map((p) => p.nameKo || p.name),
+        ...Object.keys(asset.media || {}).filter((k) => k.startsWith(`${city}|`)).map((k) => k.split('|')[1])]);
+      const unknown = picks.filter((p) => !known.has(p.name) && !serverCode.includes(`'${p.name}'`)).map((p) => p.name);
+      // 3일 = 관광 칸 6개. 요청하지 않은 하루짜리(알펜루트 등)는 후보 확장 뒤 빠지므로 8곳 이상이면 반복·빈칸 없이 채울 수 있다
+      const want = asset.cities?.[city]?.few ? 1 : 8;
+      if (!ctx || picks.length < want || unknown.length) bad.push(`${city}: ${picks.length} picks${unknown.length ? `, unknown ${unknown.join('/')}` : ''}`);
+    }
+    log(bad.length === 0, 'AI itinerary candidates (prompt picks) are real places from the city data only: >= 8 for a 3-day trip in former 2-3-sight cities', short(bad));
+  } catch (e) { log(false, 'AI candidates from city data', e.message); }
+  checkNoFatal('City coverage AI');
 }
 
 // ── Phase 2: 프록시 신뢰(Render와 같은 설정) — 모든 도시 날씨 + X-Forwarded-For 위조 ──
@@ -2795,7 +3000,31 @@ const INTENT_CASES = [
   ['S2 E01 en skip/must/start', 'Kyoto 3 days, skip Kiyomizu-dera, must see Fushimi Inari, start at 11am', { lang: 'en' }, { city: 'kyoto', days: 3, wanted: ['후시미 이나리'], excluded: ['기요미즈데라'], startTime: '11:00' }],
   ['S2 A04 en must visit', 'Tokyo 2 days, no Disney, must visit teamLab Planets, start at 11am', { lang: 'en' }, { city: 'tokyo', days: 2, wanted: ['팀랩 플래닛'], noWanted: /디즈니/, startTime: '11:00' }],
   ['S2 J01 ja must/none', '大阪3日間、海遊館は必ず行きたい、USJはなし', { lang: 'ja' }, { city: 'osaka', days: 3, wanted: ['가이유칸'], excluded: [USJ] }],
-  ['S2 en skip mall', 'Tokyo 3 days, skip Ginza Six', { lang: 'en' }, { city: 'tokyo', days: 3, excluded: ['긴자 식스'], noWanted: /긴자/ }]
+  ['S2 en skip mall', 'Tokyo 3 days, skip Ginza Six', { lang: 'en' }, { city: 'tokyo', days: 3, excluded: ['긴자 식스'], noWanted: /긴자/ }],
+  // 2026-10-02 전국 점검: 일본어·영어 도시 이름, 한국어 표기 변형, 더 긴 이름 우선(부분 일치 충돌), 공항 없는 곳의 짧은 이름, 도시 주변 실제 명소의 도시
+  ['C01 ja city', '函館で2日間', { lang: 'ja' }, { city: 'hakodate', days: 2 }],
+  ['C02 ja city', '鹿児島で3日間', { lang: 'ja' }, { city: 'kagoshima', days: 3 }],
+  ['C03 en longest', 'Kitakyushu 2 days', { lang: 'en' }, { city: 'kitakyushu', days: 2 }],
+  ['C04 ja longest', '北九州で2日間', { lang: 'ja' }, { city: 'kitakyushu', days: 2 }],
+  ['C05 ko longest', '기타다이토 2일', {}, { city: 'kita_daito', days: 2, noWanted: /이토/, unsupported: [] }],
+  ['C06 ko longest', '삿포로 오카다마 2일', {}, { city: 'okadama', days: 2 }],
+  ['C07 en underscore key', 'Nanki-Shirahama 2 days', { lang: 'en' }, { city: 'nanki_shirahama', days: 2 }],
+  ['C08 ko spelling', '카나자와 2일', {}, { city: 'kanazawa', days: 2 }],
+  ['C09 ko spelling', '다카마츠 2일', {}, { city: 'takamatsu', days: 2 }],
+  ['C10 other name', '나하 3일', {}, { city: 'okinawa', days: 3 }],
+  ['C11 ja short name', '高山で2日間', { lang: 'ja' }, { city: 'nagoya', days: 2, wanted: ['다카야마 산마치'], unsupported: [] }],
+  ['C12 en short name', 'Ise 2 days', { lang: 'en' }, { city: 'nagoya', days: 2, wanted: ['이세 신궁'] }],
+  ['C13 not a short name', '도쿄 2일, 이세탄 쇼핑', {}, { city: 'tokyo', days: 2, noWanted: /이세 신궁/ }],
+  ['C14 locality day trip', '하코네에서 2일', {}, { city: 'tokyo', days: 2, wanted: ['하코네'] }],
+  ['C15 nearby place city', '다케토미섬 2일', {}, { city: 'ishigaki', days: 2, wanted: ['다케토미섬'], unsupported: [] }],
+  ['C16 nearby place city en', 'Hashima Island 2 days', { lang: 'en' }, { city: 'nagasaki', days: 2, wanted: ['나가사키 하시마섬'] }],
+  ['C17 famous name not elsewhere', 'Hiroshima 2 days, must see Itsukushima Shrine', { lang: 'en' }, { city: 'hiroshima', days: 2, wanted: ['이쓰쿠시마 신사'], noWanted: /구시로/ }],
+  ['C18 ja famous name', '厳島神社に行きたい 2日間', { lang: 'ja' }, { city: 'hiroshima', days: 2, wanted: ['이쓰쿠시마 신사'], noWanted: /구시로/ }],
+  ['C19 food word not a place', 'Tokyo 3 days, I want to eat toro sushi', { lang: 'en' }, { city: 'tokyo', days: 3, noWanted: /토로|toro/i }],
+  ['C20 famous temple', 'Kyoto 2 days Kiyomizu-dera Temple', { lang: 'en' }, { city: 'kyoto', days: 2, wanted: ['기요미즈데라'], noWanted: /하나마키/ }],
+  ['C21 city word inside a place', 'Matsumoto Seicho Memorial Museum 2 days', { lang: 'en' }, { city: 'kitakyushu', days: 2 }],
+  ['C22 one card for the island', '미야지마 2일', {}, { city: 'hiroshima', days: 2, wanted: ['이쓰쿠시마 신사'], noWanted: /^미야지마$/ }],
+  ['C23 spelling variant must', '카미코치 2일', {}, { city: 'matsumoto', days: 2, wanted: ['가미코치'] }]
 ];
 
 function intentMismatches(p, exp, ctx) {
@@ -2952,6 +3181,20 @@ async function phaseIntentRegression() {
       && np.specialPrefs?.publicTransitOnly !== true && np.specialPrefs?.removeShopping !== true,
       "Gemini noise is filtered: wanted ['라멘','무료 명소','1인 50만원','센소지','도쿄 타워'] -> ['센소지'] (food -> foodKeyword), AI days 4 -> message 3, unsupported prefs dropped",
       short({ days: np.days, wanted: np.wantedPlaces, food: np.foodKeyword, sp: np.specialPrefs }, 400));
+    // AI 채팅 해석이 데이터 속 장소를 '데이터 없음'으로 돌려주고 도시를 틀려도(채팅 프롬프트는 도시 주변 실제 명소 목록을 모른다)
+    // 서버가 그 장소의 도시와 꼭 갈 곳으로 바로잡는다: '다케토미섬 2일'(AI: 오키나와 + 미지원) → 이시가키, '高山で2日間'(AI: 도쿄) → 나고야
+    mock.reset({ gemini: 'chat_place_unknown' });
+    const take = await chat('다케토미섬 2일');
+    const tp = take.json?.parsed || {};
+    log(take.json?.sourceInfo?.kind === 'ai' && tp.cityKey === 'ishigaki' && (tp.wantedPlaces || []).includes('다케토미섬') && (tp.unsupportedPlaces || []).length === 0
+      && !/데이터가 없어/.test(String(take.json?.reply || '')),
+      "Gemini 'chat_place_unknown' 다케토미섬 2일 (AI: okinawa, unsupported 다케토미섬) -> ishigaki + must-visit 다케토미섬, no 'no data' reply", short({ p: { city: tp.cityKey, wanted: tp.wantedPlaces, unsupported: tp.unsupportedPlaces }, reply: take.json?.reply }, 400));
+    const tak = await chat('高山で2日間', { lang: 'ja' });
+    const tk = tak.json?.parsed || {};
+    log(tak.json?.sourceInfo?.kind === 'ai' && tk.cityKey === 'nagoya' && (tk.wantedPlaces || []).includes('다카야마 산마치') && (tk.unsupportedPlaces || []).length === 0
+      && !/データがない/.test(String(tak.json?.reply || '')) && !HANGUL_RE.test(String(tak.json?.reply || '')),
+      "Gemini 'chat_place_unknown' 高山で2日間 (AI: tokyo, unsupported 高山) -> nagoya + 다카야마 산마치, ja reply without 'no data' or Korean", short({ p: { city: tk.cityKey, wanted: tk.wantedPlaces, unsupported: tk.unsupportedPlaces }, reply: tak.json?.reply }, 400));
+
     // 후속 대화(AI 경로): AI가 이전 도시를 그대로 말해도 규칙 병합 결과는 같다
     mock.reset({ gemini: 'chat_ok' });
     const f2 = await chat('교토 하루 더 늘려줘', { body: { history, prevParsed: prev } });
@@ -3061,7 +3304,22 @@ async function phaseAiItinerary() {
       "lunch_repeat: the daily '점심 식사' stays every day; the repeated sight is replaced by an unused pick", short(lrDays.map((d) => d.blocks)));
     mock.scenario = { gemini: 'invented_place' };
     const inv = await plan('tokyo');
-    log(inv.json?.itineraryInfo?.kind === 'ai' && inv.json?.itineraryInfo?.postProcess?.unverified >= 1, 'invented_place: a place found in no candidate/data list is counted in postProcess.unverified', short(inv.json?.itineraryInfo?.postProcess));
+    log(inv.json?.itineraryInfo?.kind === 'ai' && inv.json?.itineraryInfo?.postProcess?.unverified >= 1 && !allBlocks(inv).some((b) => /하늘정원/.test(b)),
+      'invented_place: a place found in no candidate/data list is counted in postProcess.unverified and taken out of the plan', short({ pp: inv.json?.itineraryInfo?.postProcess, blocks: allBlocks(inv) }, 400));
+    // AI가 후보 이름을 다르게 적은 일정(하나마키, 실측): 일본어 표기·띄어쓰기 차이·덧붙인 글자는 후보 이름으로 되돌리고,
+    // 지어낸 곳은 빼며, 식사 칸의 '자유 식사'는 그 도시 맛집으로 바꾼다. 되돌린 이름이 다른 날과 겹치면 하나만 남는다.
+    mock.scenario = { gemini: 'renamed_places' };
+    const rn = await plan('hanamaki', { days: 2 });
+    const rnBlocks = allBlocks(rn);
+    const rnSights = (rn.json?.itinerary || []).flatMap((d) => sightBlocks(d).map(blockName));
+    log(rn.json?.itineraryInfo?.kind === 'ai' && rnSights.includes('가마부치 폭포') && rnSights.filter((n) => n === '가마부치 폭포').length === 1
+      && rnSights.includes('일본 현대 시가 문학관') && !rnBlocks.some((b) => /釜淵|가마부치폭포수|일본현대시가문학관|하늘정원|자유 식사/.test(b))
+      && rnSights.every((n) => /[가-힣]/.test(n)) && rn.json?.itineraryInfo?.postProcess?.unverified >= 1 && rn.json?.itineraryInfo?.postProcess?.namesRestored >= 1,
+      "renamed_places: '釜淵ノ滝'/'가마부치폭포수' -> 가마부치 폭포 (once), '일본현대시가문학관' -> '일본 현대 시가 문학관', invented place removed, '자유 식사' -> a real food",
+      short({ pp: rn.json?.itineraryInfo?.postProcess, days: (rn.json?.itinerary || []).map((d) => d.blocks) }, 600));
+    const rnPrompt = lastItinPrompt();
+    log(/Copy every place and food name exactly as written/.test(rnPrompt) && /never write a placeholder such as "자유 식사"/.test(rnPrompt),
+      'itinerary prompt: copy names character for character, meals only from foods (no "자유 식사" placeholder)');
     // 알려진 한계: 도시별 날짜(dayPlan)와 다른 도시의 장소(오사카 날의 후시미 이나리)는 아직 고치지 않는다 → 형식·출처만 본다.
     mock.scenario = { gemini: 'wrong_city_day' };
     const wc = await plan('osaka', { days: 4, _routeCities: ['오사카', '교토'], _regionDayPlan: [{ cityLabel: '오사카', days: 2, unit: 'day' }, { cityLabel: '교토', days: 2, unit: 'day' }] });
@@ -3118,6 +3376,150 @@ async function phaseAiItinerary() {
   checkNoSecrets('AI itinerary', [GEM]);
   checkNoUnexpectedExternal('AI itinerary');
   checkNoFatal('AI itinerary');
+}
+
+// ── Phase 10: Gemini 모델 체인 — 순서·환경변수로 바꾸기·쉬는 모델 건너뛰기·하루 한도 넘기기·404 하루 쉼·모델별 생각 설정·
+//    전체 시간 예산·/api/health 표시. 가짜 Gemini만 쓴다(실제 호출 0회). ──
+// 2026-10-01 실측 순서(server.js GEMINI_DEFAULT_FALLBACK_MODELS). 운영 주 모델이 gemini-2.5-flash-lite라 체인이 이 순서 그대로다.
+const GEMINI_DEFAULT_CHAIN = ['gemini-2.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-flash-latest'];
+
+async function phaseGeminiChain() {
+  section('Gemini model chain: order, env override, cooled-model skip, daily 429 hand-off, per-model thinking config, time budget, health');
+  const GEM = 'GEMKEY-chain-test-3f9a20';
+  const FAKE_KEY_IN_LIST = 'AIzaSyFAKE-not-a-model-0123456789abcdefgh';
+  const plan = (extra = {}) => postJson('/api/travel-plan', { city: 'osaka', theme: 'mixed', days: 2, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: true, ...extra }, { ip: nextIntentIp() });
+  const chat = (message = '도쿄 3일') => postJson('/api/ai-travel-chat', { message, context: { city: 'tokyo', days: 3 } }, { ip: nextIntentIp() });
+  const called = () => mock.entries('gemini').map((e) => e.model);
+  const thinking = (e) => e?.body?.generationConfig?.thinkingConfig;
+  const aiHealth = async () => (await fetchUrl('/api/health', { record: false })).json?.ai || {};
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const source = (r) => String(r.json?.itinerarySource || '');
+
+  // (1) 코드 기본 주 모델(gemini-2.5-flash): 실측 순서에서 주 모델만 빠진다
+  mock.reset({ gemini: 'ok' });
+  try {
+    await startServer('chain-default', { GEMINI_API_KEY: GEM, TRUST_PROXY: '1' });
+    const h = await aiHealth();
+    log(same(h.geminiModelChain, ['gemini-2.5-flash', ...GEMINI_DEFAULT_CHAIN.filter((m) => m !== 'gemini-2.5-flash')]) && h.geminiFallbackSource === 'default'
+      && h.geminiTotalBudgetMs === 40000 && same(h.geminiCoolingModels, []),
+      'health: default chain = gemini-2.5-flash + the measured fallback order (primary not repeated), source default, budget 40000 ms, nothing cooling', short(h, 500));
+    const dg = (await fetchUrl('/api/ai-diagnostics')).json?.providers?.gemini || {};
+    log(same(dg.modelChain, h.geminiModelChain) && dg.fallbackSource === 'default' && dg.totalBudgetMs === 40000 && same(dg.coolingModels, []),
+      'ai-diagnostics (public) shows the same chain, budget and cooling list', short(dg, 400));
+  } catch (e) { log(false, 'Gemini chain (default primary)', e.stack || e.message); }
+
+  // (2) 운영과 같은 주 모델(gemini-2.5-flash-lite) — 하루 한도·쉬는 모델·404·생각 설정·잘림·키 오류
+  mock.reset({ gemini: 'ok', geminiModels: { 'gemini-2.5-flash-lite': 'error429_daily', 'gemini-3.1-flash-lite': 'error429_daily', 'gemini-3-flash-preview': 'error429_daily' } });
+  try {
+    await startServer('chain-prod', { GEMINI_API_KEY: GEM, GEMINI_API_MODEL: 'gemini-2.5-flash-lite', TRUST_PROXY: '1' });
+    const h0 = await aiHealth();
+    log(same(h0.geminiModelChain, GEMINI_DEFAULT_CHAIN), 'health: GEMINI_API_MODEL=gemini-2.5-flash-lite (production) -> the chain is exactly the measured order', short(h0.geminiModelChain));
+
+    // 앞의 3개 모델이 하루 한도(429 PerDay) → 4번째(gemini-3.5-flash-lite)가 일정을 만든다
+    const p1 = await plan();
+    const e1 = mock.entries('gemini');
+    log(p1.json?.itineraryInfo?.kind === 'ai' && source(p1).includes('(gemini-3.5-flash-lite)') && same(called(), GEMINI_DEFAULT_CHAIN.slice(0, 4)),
+      'daily 429 on the first 3 models -> tried in chain order, the 4th (gemini-3.5-flash-lite) makes the AI itinerary', short({ src: source(p1), called: called(), ii: p1.json?.itineraryInfo }, 400));
+    // 모델별 생각 설정: 2.5·3.x flash는 thinkingBudget 0, 3.5-flash-lite는 thinkingLevel 'minimal'(thinkingBudget을 보내면 실제로 400)
+    log(e1.length === 4 && e1.slice(0, 3).every((e) => same(thinking(e), { thinkingBudget: 0 })) && same(thinking(e1[3]), { thinkingLevel: 'minimal' }),
+      "per-model thinking config: thinkingBudget 0 for 2.5-flash-lite / 3.1-flash-lite / 3-flash-preview, thinkingLevel 'minimal' (no thinkingBudget) for 3.5-flash-lite",
+      short(e1.map((e) => [e.model, thinking(e)])));
+    const cool1 = (await aiHealth()).geminiCoolingModels || [];
+    log(same(cool1.map((c) => c.model), GEMINI_DEFAULT_CHAIN.slice(0, 3)) && cool1.every((c) => same(Object.keys(c).sort(), ['model', 'secondsLeft']) && c.secondsLeft > 30 && c.secondsLeft <= 6 * 3600),
+      'health: the 3 daily-limited models are cooling until the daily reset (at most 6 h), shown as name + secondsLeft only', short(cool1));
+
+    // 쉬는 모델은 건너뛴다: 다음 일정은 바로 gemini-3.5-flash-lite
+    mock.reset({ gemini: 'ok' });
+    const p2 = await plan();
+    log(p2.json?.itineraryInfo?.kind === 'ai' && same(called(), ['gemini-3.5-flash-lite']), 'the next request skips the 3 cooling models (one call, straight to gemini-3.5-flash-lite)', short(called()));
+
+    // 404(모델 종료 'no longer available'): 다음 모델이 답하고, 그 모델은 하루 쉰다
+    mock.reset({ gemini: 'ok', geminiModels: { 'gemini-3.5-flash-lite': 'error404' } });
+    const p3 = await plan();
+    const gone = ((await aiHealth()).geminiCoolingModels || []).find((c) => c.model === 'gemini-3.5-flash-lite');
+    log(p3.json?.itineraryInfo?.kind === 'ai' && source(p3).includes('(gemini-2.5-flash)') && same(called(), ['gemini-3.5-flash-lite', 'gemini-2.5-flash'])
+      && Boolean(gone) && gone.secondsLeft > 6 * 3600 && gone.secondsLeft <= 24 * 3600,
+      "404 'no longer available' -> the next model answers, the gone model cools down for a day (> 6 h)", short({ called: called(), gone }));
+
+    // 목록에 없는 생각 형식: 400 INVALID_ARGUMENT면 다른 형식으로 한 번 더 보내고, 받아들인 형식을 기억한다
+    mock.reset({ gemini: 'ok', geminiModels: { 'gemini-2.5-flash': 'error400_thinking_budget' } });
+    const p4 = await plan();
+    const e4 = mock.entries('gemini');
+    log(p4.json?.itineraryInfo?.kind === 'ai' && source(p4).includes('(gemini-2.5-flash)') && same(called(), ['gemini-2.5-flash', 'gemini-2.5-flash'])
+      && same(thinking(e4[0]), { thinkingBudget: 0 }) && same(thinking(e4[1]), { thinkingLevel: 'minimal' }),
+      "a model that rejects thinkingBudget with 400 is retried once with thinkingLevel 'minimal' and answers", short(e4.map((e) => [e.model, thinking(e)])));
+    mock.reset({ gemini: 'ok', geminiModels: { 'gemini-2.5-flash': 'error400_thinking_budget' } });
+    const p5 = await plan();
+    log(p5.json?.itineraryInfo?.kind === 'ai' && same(called(), ['gemini-2.5-flash']) && same(thinking(mock.entries('gemini')[0]), { thinkingLevel: 'minimal' }),
+      'the accepted thinking style is remembered: the next request sends it first (one call)', short(called()));
+
+    // 생각 토큰이 출력 한도를 다 쓴 잘림(설정 탓)은 다음 모델에 맡긴다. 생각 없이 잘린 응답은 그대로 AI_TRUNCATED(다른 모델 한도를 쓰지 않음).
+    mock.reset({ gemini: 'ok', geminiModels: { 'gemini-2.5-flash': 'max_tokens_thoughts' } });
+    const p6 = await plan();
+    log(p6.json?.itineraryInfo?.kind === 'ai' && source(p6).includes('(gemini-3.6-flash)') && same(called(), ['gemini-2.5-flash', 'gemini-3.6-flash']),
+      'MAX_TOKENS caused by thinking tokens -> the next model answers', short({ called: called(), src: source(p6) }));
+    mock.reset({ gemini: 'max_tokens' });
+    const p7 = await plan();
+    log(p7.json?.itineraryInfo?.kind === 'rule' && p7.json?.itineraryInfo?.reasonCode === 'AI_TRUNCATED' && called().length === 1,
+      'plain MAX_TOKENS (no thinking tokens) -> AI_TRUNCATED after one call (no other model spent)', short({ called: called(), ii: p7.json?.itineraryInfo }));
+
+    // 키 문제 400(API_KEY_INVALID)은 모델을 바꿔도 같아서 다음 모델로 넘기지 않는다
+    mock.reset({ gemini: 'error400' });
+    const c1 = await chat();
+    log(c1.json?.sourceInfo?.kind === 'rule' && c1.json?.sourceInfo?.reasonCode === 'AI_ERROR' && called().length === 1,
+      'key-level 400 (API_KEY_INVALID) stops the chain after one call -> rule parse, AI_ERROR', short({ called: called(), si: c1.json?.sourceInfo }));
+
+    // 남은 모델도 모두 하루 한도 → AI_DAILY_LIMIT, health에 7개 모두. 그다음 요청은 가장 오래 쉰 모델 하나만 다시 확인(404 모델은 빼고)
+    mock.reset({ gemini: 'error429_daily' });
+    const p8 = await plan();
+    const h8 = await aiHealth();
+    log(p8.json?.itineraryInfo?.reasonCode === 'AI_DAILY_LIMIT' && same(called(), ['gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-flash-latest'])
+      && same((h8.geminiCoolingModels || []).map((c) => c.model), GEMINI_DEFAULT_CHAIN),
+      'every remaining model at its daily limit -> AI_DAILY_LIMIT, health lists all 7 models as cooling (chain order)', short({ called: called(), cooling: h8.geminiCoolingModels }, 500));
+    mock.reset({ gemini: 'error429_daily' });
+    const p9 = await plan();
+    log(p9.json?.itineraryInfo?.reasonCode === 'AI_DAILY_LIMIT' && same(called(), ['gemini-2.5-flash-lite']),
+      'all models cooling -> one re-check of the longest-cooling model (never the 404 one)', short(called()));
+  } catch (e) { log(false, 'Gemini chain (production primary)', e.stack || e.message); }
+  checkNoSecrets('Gemini chain', [GEM]);
+  checkNoUnexpectedExternal('Gemini chain');
+  checkNoFatal('Gemini chain');
+
+  // (3) GEMINI_FALLBACK_MODELS로 바꾼 체인 + 전체 시간 예산(호출 하나 5초, 체인 전체 8초)
+  mock.reset({ gemini: 'chat_ok', geminiDelayMs: { 'gemini-test-a': 12000, 'gemini-test-b': 12000 } });
+  try {
+    await startServer('chain-env', {
+      GEMINI_API_KEY: GEM, TRUST_PROXY: '1', GEMINI_API_MODEL: 'gemini-test-a',
+      GEMINI_FALLBACK_MODELS: ` gemini-test-b, gemini-test-a,gemini-test-b , models/gemini-test-c,Bad Name!,${FAKE_KEY_IN_LIST},,gemini-test-d`,
+      AI_REQUEST_TIMEOUT_MS: '5000', GEMINI_TOTAL_BUDGET_MS: '8000'
+    });
+    const hr = await fetchUrl('/api/health');
+    const h = hr.json?.ai || {};
+    log(same(h.geminiModelChain, ['gemini-test-a', 'gemini-test-b', 'gemini-test-c', 'gemini-test-d']) && h.geminiFallbackSource === 'env' && h.geminiTotalBudgetMs === 8000,
+      'GEMINI_FALLBACK_MODELS replaces the fallback list: trimmed, de-duplicated, primary excluded, models/ prefix dropped, invalid names dropped', short(h, 400));
+    log(!hr.body.includes('AIza') && !/Bad Name/.test(hr.body) && !serverLogs().includes(FAKE_KEY_IN_LIST) && /GEMINI_FALLBACK_MODELS에서 모델 이름 형식이 아닌 값 2개를 뺐습니다/.test(serverLogs()),
+      'a key pasted into GEMINI_FALLBACK_MODELS is not used as a model, not shown in /api/health and not logged (only the count of dropped values)');
+
+    const t0 = Date.now();
+    const slow = await chat();
+    const elapsed = Date.now() - t0;
+    log(same(called(), ['gemini-test-a', 'gemini-test-b']) && elapsed >= 7500 && elapsed < 9500,
+      `time budget: 2 slow models tried (5000 ms, then the 3000 ms left), the rest not tried; answered in ${elapsed} ms (< 10000 ms without the budget)`, short({ called: called(), elapsed }));
+    log(slow.status === 200 && slow.json?.sourceInfo?.kind === 'rule' && slow.json?.sourceInfo?.reasonCode === 'AI_BUSY' && (slow.json?.aiErrors || [])[0]?.code === 'timeout' && slow.json?.parsed?.days === 3,
+      'chain out of time -> rule parse, reasonCode AI_BUSY (code timeout, not a network error)', short({ si: slow.json?.sourceInfo, errs: slow.json?.aiErrors }));
+    const cool = (await aiHealth()).geminiCoolingModels || [];
+    log(same(cool.map((c) => c.model), ['gemini-test-a']) && cool.every((c) => c.secondsLeft > 0 && c.secondsLeft <= 60),
+      'health: the model that used its full 5000 ms cools down for 60 s; the one cut short by the budget does not', short(cool));
+    mock.reset({ gemini: 'chat_ok', geminiDelayMs: { 'gemini-test-a': 12000 } });
+    const t1 = Date.now();
+    const fast = await chat();
+    const fastMs = Date.now() - t1;
+    log(fast.json?.sourceInfo?.kind === 'ai' && same(called(), ['gemini-test-b']) && fastMs < 4000,
+      `the next chat skips the cooling slow model and gets the AI parse from gemini-test-b (${fastMs} ms)`, short({ called: called(), si: fast.json?.sourceInfo }));
+  } catch (e) { log(false, 'Gemini chain (env override + time budget)', e.stack || e.message); }
+  checkNoSecrets('Gemini chain (env)', [GEM, FAKE_KEY_IN_LIST]);
+  checkNoUnexpectedExternal('Gemini chain (env)');
+  checkNoFatal('Gemini chain (env)');
 }
 
 function cleanupTestData() {

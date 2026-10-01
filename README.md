@@ -60,6 +60,8 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 
 지역·출발일·일수·테마를 고르고 [일정 만들기]를 누르거나, "유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고 3박 4일"처럼 말로 요청하면 조건을 자동으로 채웁니다. 상단 툴바에서 내보내기·체크리스트·긴급 연락처·회화·날씨·찜·검색 기록을 쓸 수 있고, 한국어/영어/일본어로 바꿀 수 있습니다. 첫 화면을 여는 것만으로는 일정을 만들지 않습니다.
 
+말로 한 도시 이름은 62개 도시 모두 한국어·영어·일본어로 알아듣습니다('函館で2日間', 'Kitakyushu 2 days', '카나자와'·'다카마츠' 같은 표기 변형, '나하'·'小倉'·'網走'·'会津' 같은 이웃 이름). 더 긴 이름이 먼저라 'Kitakyushu'가 '규슈'(후쿠오카)로, '기타다이토'가 '이토'(시즈오카)로 가지 않습니다. 도시 없이 장소만 말하면('다케토미섬 2일', 'Hashima Island 2 days', '高山で2日間') 그 장소가 있는 도시로 만들고, AI 해석이 데이터에 있는 장소를 '데이터 없음'으로 돌려줘도 서버가 바로잡습니다. 멀리 떨어진 두 도시(도쿄 → 삿포로)의 이동은 '대중교통 1~3시간'이 아니라 비행기 이동으로 안내합니다.
+
 ![여행 조건](docs/screenshots/main.png)
 
 ### 추천 결과: 추천 여행지 + AI 일정
@@ -145,7 +147,7 @@ API 응답은 기존 필드(`source` 등)를 그대로 두고, 다음 정보 객
 
 | 칸 | 범위(2026-10-01 기준) | 설명 |
 |---|---|---|
-| `places` | 명소 197곳: 사진 187곳, 좌표 194곳, 영어 이름 195곳, 일본어 이름 197곳 | 키는 `<도시 키>\|<명소 이름>`. 영어 이름이 없는 2곳(하나마키 온천, 와쇼 시장)은 서버 번역 표로 채움 |
+| `places` | 명소 195곳: 사진 185곳, 좌표 192곳, 영어 이름 193곳, 일본어 이름 195곳 | 키는 `<도시 키>\|<명소 이름>`. 영어 이름이 없는 2곳(하나마키 온천, 와쇼 시장)은 서버 번역 표로 채움 |
 | `cities` | 62개 도시 중 58곳 | 도시(섬) 항목의 대표 사진. 이름으로 찾지 못한 곳과 사진이 부적절한 곳은 공항 근처 항목을 직접 지정 |
 | `foodGenres` | 음식 장르 23개(내장 맛집 250곳 중 228곳 해당) | 장르별 대표 음식 사진(파일 이름 고정) |
 
@@ -163,6 +165,22 @@ API 응답은 기존 필드(`source` 등)를 그대로 두고, 다음 정보 객
 - 예시 사진이 없는 음식 장르: 향토요리, 쿠시카츠, 분식, 구이, 패스트푸드, 샐러드, 유제품(맛집 22곳). 이 맛집은 사진 없이 보입니다.
 - 영어·일본어 이름은 위키데이터 항목 이름이라 카드가 말하는 대상과 조금 다를 수 있습니다(예: "하코다테 야경" → Mount Hakodate). 어색한 이름은 서버의 번역 표(`CURATED_PLACE_I18N`)에서 고칩니다.
 - google 모드에서 Google 결과 맛집에 사진이 없으면 음식 장르 사진으로 채우지 않습니다(내장 맛집에만 붙임).
+
+## 도시 주변 실제 명소 데이터 (`assets/city-places.json`)
+
+내장 큐레이션 명소는 도시마다 3~6곳뿐이라, 3~4일 일정이 '자유 일정'으로 채워지던 도시가 많았습니다. `assets/city-places.json`(버전 1)은 `scripts/build-city-places.js`(`npm run build:city-places`)가 키 없이 Wikidata(장소·좌표·이름, CC0)와 Commons(사진)로 만든, 도시 주변의 실제 명소 목록입니다. 서버는 시작할 때 한 번 읽고, 실행 중에는 위키미디어를 부르지 않습니다.
+
+- 범위(2026-10-02 기준): 도시 주변 명소 511곳(62개 도시 중 60곳), 사진 461곳, 한국어 이름 511곳 모두(아래 '이름'). `media` 25곳. `few` 6곳(리시리·다네가시마·시모지시마·구메지마·기타다이토·도쿠노시마).
+- **큐레이션이 먼저입니다.** 도시의 반나절 명소(도시 명소 + 대표 명소 + 추가 명소)가 12곳이 될 때까지만 채우고, 도시 명소 풀에서는 늘 맨 뒤에 둡니다. 도쿄·교토처럼 이미 충분한 도시는 채우지 않습니다.
+- **실제 장소만 씁니다.** 모든 항목에 위키데이터 QID와 좌표가 있고, 도시 중심(`CITY_CENTER_COORDS`)에서 정한 반경(대도시 12~15km, 보통 20km, 섬은 섬 크기) 안의 절·신사·성·박물관·미술관·공원·정원·전망대·온천·수족관·시장·명승·유적만 고릅니다. 역·학교·행정구역·강·국립공원처럼 한 곳을 가리키지 않는 항목, 도시가 있는 섬 자체는 뺍니다. 순서는 위키데이터에서 많이 다룬 순(사이트링크 수, 한국어 이름이 있으면 가산)이고, 같은 종류가 몰리지 않게 종류마다 상한을 둡니다.
+- 규칙 일정과 AI 일정은 이 목록과 큐레이션 데이터 안에서만 장소를 고릅니다(지어낸 장소 없음). 다른 도시의 장소로 빈칸을 채우지 않습니다.
+- **이름**: 한국어 이름은 눈으로 확인한 이름(`nameFrom: "fix"`, 외래어·긴 기관 이름: 스크립트의 `NAME_FIXES`) → 한국어 위키백과 제목(`kowiki`, 위키데이터 한국어 이름이 틀린 곳이 있어 먼저 봄) → 위키데이터 한국어 이름(`ko`) → 일본어 이름을 국립국어원 일본어 표기법으로 옮긴 이름(`translit`, `scripts/ja-names.js`: 가나 읽기(P1814)나 헵번식 영어 이름에서 '霊山神社 → 료젠 신사', 'Mount Shinobu → 시노부산', 'Kamabuchi Falls → 가마부치 폭포') 순입니다. 일본어로만 남은 이름은 없습니다(AI가 일본어 후보 이름을 번역·음역해 엉뚱한 이름을 쓰던 원인). 영어 이름이 없는 곳은 가나 읽기의 헵번식('Dai Onsen')을 씁니다.
+- **이름이 겹치는 곳**: 다른 도시의 유명한 곳과 같은 이름(구시로의 厳島神社, 하나마키의 清水寺)이나 위키데이터가 구분 괄호를 붙인 이름(福山城 (備中国))은 도시 이름을 앞에 붙입니다('구시로 이쓰쿠시마 신사' / '釧路厳島神社' / 'Kushiro Itsukushima Shrine'). 채팅은 이런 이름과 두 도시 이상에 있는 이름, 'Toro' 같은 짧은 로마자 이름으로는 장소를 찾지 않습니다.
+- **검토로 뺀 곳**(`EXCLUDE_QIDS`): 닫은 미술관(도야마 현립 근대미술관, 2016), 상륙할 수 없는 바위섬(소야곶 앞 벤텐섬·히라섬, 다나베 神島, 甲島), 주거 섬(히코섬·시마다섬), 스키 점프대, 도로 고개 2곳, 센카쿠 신사, 이름 없는 산. 같은 곳 중복(성과 그 성터 공원, 섬과 그 등대, 공원 안 미술관)은 하나로 합칩니다.
+- **사진**: 자유 라이선스 Commons 사진만, 저작자·라이선스·파일 페이지와 함께 씁니다(사진 데이터와 같은 규칙). 온천·목욕 사진은 눈으로 확인한 파일(`REVIEWED_BATH_FILES`)만 쓰고 나머지는 빼 둡니다.
+- **`few`**: 주변에 반나절 명소가 9곳보다 적은 작은 섬은 `few: true`입니다. 일정 팁 맨 앞에 "명소가 N곳뿐이라 남는 시간은 자유 일정으로 두었다"고 알립니다.
+- **`media`**: 사진 데이터(`place-images.json`)에 없는 큐레이션 이름(공항 없는 인기 여행지의 당일치기 대표 명소 등)의 사진·좌표·영어/일본어 이름입니다. 항목마다 스크립트의 `MEDIA_ITEMS`에 확인한 위키데이터 항목을 적어 둡니다.
+- 공항이 없는 인기 여행지(닛코·가루이자와·가와구치코/후지산·다카야마·이세 신궁·히메지성·뵤도인(우지)·아마노하시다테·고야산·나오시마(지추 미술관)·구로카와 온천·젠코지(나가노))는 가까운 도시의 당일치기 대표 명소(`MUST_ATTRACTIONS`)로 두어, '닛코 2일'이라고 하면 도쿄 + 닛코 당일치기가 됩니다. 구마노고도는 고베가 아니라 난키 시라하마의 당일치기(구마노 혼구 다이샤)입니다.
 
 ## Google로 다시 전환하기
 
@@ -242,8 +260,8 @@ npm test                  # = node test_all.js
 - 브랜드 검사: `/api/health`의 `app`이 `tabimaru`, 페이지 제목·매니페스트 이름이 Tabimaru인지, 언어를 바꾸면 제목도 바뀌는지, 외부 호출의 User-Agent가 `TabimaruBot/0.1`인지 봅니다. 도메인에 묶인 값(운영 주소, Render 서비스 이름, OAuth 콜백 경로, `sid` 쿠키, localStorage 키, 매니페스트 `start_url`)이 그대로인지도 봅니다.
 - 첫 화면은 `tests/support/browser-sandbox.js`로 `app.js`를 실제로 부팅해, 유료 API를 부르지 않는지 확인합니다. 이어서 [일정 만들기]를 두 번 눌러도 일정 1회 + 항공·맛집·숙소 각 1회만 부르는지, 카드에 실제 `<img>`와 위키미디어 출처가 붙는지, Leaflet이 일정이 생긴 뒤에만 SRI와 함께 로드되는지, 빈 일정에 안내 문구가 나오는지도 봅니다. 사진·출처 표시 함수(`safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`)와 추천·맛집 카드에는 악성 값(`javascript:`·`data:` 주소, 비슷한 호스트, `/\`·`//` 우회 주소, 따옴표·HTML이 든 이름과 저작자)을 넣습니다. 그래도 사진은 Commons나 `/api/place-photo`, 출처 링크는 Commons 파일 페이지나 Google 기여자 페이지만 남고, 나머지 값은 모두 이스케이프되는지 봅니다.
 - 그 밖에 응답에 키가 섞이지 않는지, 날씨 응답이 날짜·숫자만 담는지, CSRF 출처 검사, 긴급 전화번호 표시 = `tel:` 링크, CSS 변수 자기참조, CSS 중복 사본·키보드 포커스 링·다크 모드 토큰, 사전 누락·중복 키·코드가 쓰는 키(`t('…')`, `data-i18n`)의 ko/en/ja 존재, `index.html` 기본 글자 = ko 사전, `alert(`·`prompt(` 없음, localStorage 새 키는 `tabimaru.draft.v1` 하나, `render.yaml`·`.env.example`·README의 환경변수 목록과 기본값 누락도 검사합니다.
-- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-01 기준 641개 검사가 모두 통과합니다(30초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간).
-- 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`oauth`·`session`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
+- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-02 기준 729개 검사가 모두 통과합니다(40초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간, 8초는 Gemini 모델 체인의 시간 예산 검사).
+- 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`chain`·`oauth`·`session`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
 - GitHub Actions(`.github/workflows/ci.yml`)가 push와 pull request마다 Node 20으로 `npm test`를 돌립니다. `.github/workflows/keepalive.yml`은 테스트가 아니라 3일마다 운영 `/api/keepalive`를 부르는 예약 작업입니다(정적 검사로 내용만 확인).
 
 수동 점검(개발용, CI 제외): `node _test_api.js`는 로컬 서버만 확인합니다. `node _test_api.js --google`을 붙이면 Google Places·Geocoding을 한 번씩 실제로 호출하므로 과금될 수 있습니다. `node scripts/prompt-matrix.mjs --base http://127.0.0.1:3000`은 실행 중인 서버에 대표 요청 16개를 보내 해석과 날짜별 일정을 표로 보여 줍니다(실제 Gemini 약 32회, 무료 한도를 씀). 화면 손가락 끌기 같은 브라우저 점검 순서는 [ARCHITECTURE.md 14](ARCHITECTURE.md#14-수동-점검-체크리스트)에 있습니다.
@@ -266,7 +284,9 @@ npm test                  # = node test_all.js
 | `GOOGLE_PHOTO_MONTHLY_LIMIT` | `900` | 사진의 월 상한. 넘으면 사진 대신 글자 타일 |
 | `DIAGNOSTICS_TOKEN` | — | `/api/ai-diagnostics?probe=1`(실제 외부 호출)에 필요한 토큰. 헤더 `x-diagnostics-token`. 없으면 probe는 403 |
 | `GEMINI_API_KEY` | — | Gemini 키(별칭 `GOOGLE_API_KEY`) |
-| `GEMINI_API_MODEL` | `gemini-2.5-flash` | 1순위 모델. 429·503·404가 나면 gemini-2.5-flash → gemini-2.5-flash-lite → gemini-flash-latest 순으로 시도 |
+| `GEMINI_API_MODEL` | `gemini-2.5-flash` | 1순위 모델(운영은 `gemini-2.5-flash-lite` 권장). 429·503·404·5xx·시간 초과가 나면 아래 대체 모델을 차례로 시도 |
+| `GEMINI_FALLBACK_MODELS` | 실측 순서 | 대체 모델 목록(쉼표 구분, 앞에서부터 시도, 1순위 모델과 같은 이름·중복은 빠짐, 최대 9개). `none`이면 1순위 모델만. 비우면 `gemini-2.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-3-flash-preview` → `gemini-3.5-flash-lite` → `gemini-2.5-flash` → `gemini-3.6-flash` → `gemini-flash-latest`(2026-10-01 실측). 무료 한도는 모델마다 하루 20회라 모델이 많을수록 하루에 더 씀. 실제 순서는 `/api/health`의 `ai.geminiModelChain` |
+| `GEMINI_TOTAL_BUDGET_MS` | `40000` | 한 번 생성(채팅 해석·일정 하나)에 Gemini 모델 체인 전체가 쓰는 최대 시간(최소 4000). 호출 하나는 `AI_REQUEST_TIMEOUT_MS`(일정 30초)와 남은 시간 중 짧은 쪽까지만 기다리고, 시간이 다 되면 다음 모델 없이 규칙 기반(`AI_BUSY`) |
 | `OPENAI_API_KEY` | — | OpenAI 키(별칭 `OPENAI_KEY`). Gemini가 실패했을 때 사용 |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI 모델 |
 | `AI_REQUEST_TIMEOUT_MS` | `15000` | AI 요청 타임아웃(최소 4000). 일정 생성은 30초 |
@@ -316,7 +336,7 @@ npm test                  # = node test_all.js
 | `/api/auth/*` | Google·Naver·Kakao 로그인, `me`, `logout`, `providers` |
 | `/api/my-plans/save · list · load · delete` | 로그인 사용자의 내 일정(응답은 `Cache-Control: no-store`). Supabase가 설정돼 있으면 `travel_plans`(`source = 'my-plans'`, 자기 일정만), 없으면 `TABIMARU_DATA_DIR`의 파일. 사용자당 50개(넘으면 409 `PLAN_LIMIT`, 덮어쓰기는 허용), 일정 하나 400KB(넘으면 413 `PLAN_TOO_LARGE`). NUL·짝 없는 서로게이트는 저장 전에 정리. Supabase에 닿지 않거나 키·표 문제면 503 `PROVIDER_UNAVAILABLE`(파일에 대신 쓰지 않음), 저장소가 내용을 거절하면 400 `INVALID_PLAN` |
 | `/api/travel-plan/save · list · get` | 로그인 사용자의 Supabase 플랜 저장·조회(저장소가 없으면 503, 같은 개수·크기 상한, 화면에서는 쓰지 않음) |
-| `GET /api/health` | 상태·공급자 모드(외부 호출 없음). `{ "ok": true, "app": "tabimaru", "brand": "Tabimaru", "providers": …, "supabaseConfigured", "supabaseReachable", "supabaseCheck", "sessionSecretConfigured", "sessionSecretWeak", "loginRestricted" }`(참·거짓과 상태 단어만, 값 없음). `supabaseCheck`: `ok`·`auth_error`(키 거부)·`schema_error`(표 없음)·`unreachable` |
+| `GET /api/health` | 상태·공급자 모드(외부 호출 없음). `{ "ok": true, "app": "tabimaru", "brand": "Tabimaru", "providers": …, "supabaseConfigured", "supabaseReachable", "supabaseCheck", "sessionSecretConfigured", "sessionSecretWeak", "loginRestricted", "ai" }`(참·거짓과 상태 단어만, 값 없음). `supabaseCheck`: `ok`·`auth_error`(키 거부)·`schema_error`(표 없음)·`unreachable`. `ai.geminiModelChain`: Gemini 시도 순서(주 모델 포함), `ai.geminiFallbackSource`: `default`·`env`(`GEMINI_FALLBACK_MODELS`), `ai.geminiTotalBudgetMs`, `ai.geminiCoolingModels`: 지금 쉬는 모델 `[{ "model", "secondsLeft" }]`(오류 내용 없음) |
 | `GET /api/keepalive` | Supabase에 가벼운 조회(`travel_plans?select=id&limit=1`)를 실제로 해서 무료 프로젝트가 일시 중지되지 않게 함(성공은 10분, 실패는 15초 재사용). `{ "ok": true, "supabase": "ok" \| "unreachable" \| "auth_error" \| "schema_error" \| "off", "checkedAt" }`. GitHub Actions(`keepalive.yml`)가 3일마다 부름 |
 | `GET /api/ai-diagnostics` | 설정 진단(비밀값 없음). `?probe=1`은 `DIAGNOSTICS_TOKEN` 필요 |
 
@@ -329,6 +349,9 @@ server.js                    Node.js API 서버(외부 패키지 없음)
 public/                      프론트엔드(index.html, app.js, styles.css, manifest, favicon.svg)
 assets/place-images.json     무료 모드 사진·좌표·영어/일본어 이름(위키미디어)
 scripts/build-place-images.js  위 파일을 다시 만드는 스크립트(npm run build:place-images)
+assets/city-places.json      도시 주변 실제 명소(위키데이터 QID·좌표·이름, Commons 사진)
+scripts/build-city-places.js 위 파일을 다시 만드는 스크립트(npm run build:city-places, 초당 1건 이하)
+scripts/ja-names.js          일본어 장소 이름 → 한국어(국립국어원 일본어 표기법)·헵번식 영어(위 스크립트가 씀)
 scripts/prompt-matrix.mjs    대표 요청 16개의 해석·일정을 실제 서버로 확인하는 수동 점검표(실제 AI 호출)
 test_all.js, tests/support/  통합 테스트와 가짜 벤더 서버·네트워크 차단·DOM 흉내
 _test_api.js                 수동 점검 스크립트(개발용)

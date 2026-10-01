@@ -12,7 +12,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test_all.js",
-    "build:place-images": "node scripts/build-place-images.js"
+    "build:place-images": "node scripts/build-place-images.js",
+    "build:city-places": "node scripts/build-city-places.js"
   },
   "engines": {
     "node": ">=20"

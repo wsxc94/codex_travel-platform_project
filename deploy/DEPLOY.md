@@ -24,7 +24,7 @@
 
    `TRUST_PROXY_HOPS`를 필요보다 크게 잡으면 방문자가 직접 보낸 `X-Forwarded-For` 값이 기준 IP가 되어 레이트리밋을 우회할 수 있습니다. 로그로 확인한 뒤에만 바꾸세요.
 2. `GET /api/health` → `app`이 `tabimaru`, `brand`가 `Tabimaru`, `providers`가 `{ "places": "free", "map": "osm" }`(무료 모드)인지 확인합니다.
-3. Render 로그의 `[place-images] 197곳 로드 (사진 187곳, 좌표 194곳, en/ja 이름 197곳), 도시 사진 58곳, 음식 장르 사진 23개` 줄로 사진 데이터가 읽혔는지 확인합니다. 파일이 없으면 사진·좌표 없이 동작하고 경고가 남습니다.
+3. Render 로그의 `[place-images] 195곳 로드 (사진 185곳, 좌표 192곳, en/ja 이름 195곳), 도시 사진 58곳, 음식 장르 사진 23개` 줄로 사진 데이터가, `[city-places] 도시 주변 실제 명소 …곳(…개 도시), 큐레이션 명소 사진·좌표 …곳 로드` 줄로 도시 주변 명소 데이터가 읽혔는지 확인합니다. 파일이 없으면 사진·좌표 없이(또는 큐레이션 명소만으로) 동작하고 경고가 남습니다.
 4. 사이트에서 [일정 만들기]를 눌러 확인합니다(요청칸에 "오사카 3일, 유니버셜은 꼭, 도톤보리는 빼고"처럼 써 보면 채팅 해석까지 한 번에 확인됩니다).
    - 카드에 사진과 "사진: 저작자 · 라이선스" 표기가 나온다. 도시 대표 사진·음식 예시 사진에는 앞에 "도시 대표 사진" / "음식 예시 사진"이 붙는다.
    - 채팅 말풍선 아래 의도 칩(꼭 갈 곳·제외·조건)이 나오고, 일정에 꼭 갈 곳이 들어가고 제외한 곳이 없다. AI 한도가 바닥나 있으면 "AI 사용량이 잠시 몰려 기본 일정으로 만들었어요" 안내와 함께 규칙 기반 일정이 나온다(정상 동작).
@@ -70,6 +70,13 @@
 
 **Gemini 무료 한도는 키 단위로 함께 씁니다.** 로컬 `.env`와 Render에 같은 `GEMINI_API_KEY`를 넣었다면, 로컬에서 시험하거나 `node scripts/prompt-matrix.mjs`(16건 = Gemini 약 32회)를 돌린 만큼 운영의 하루·분당 한도도 줄어듭니다. 한도가 바닥나면 운영 화면은 규칙 기반 일정 + `AI_BUSY` 안내로 바뀝니다(서버는 429·503을 받은 모델을 60초부터 최대 5분까지 쉬게 하고 다음 모델을 씁니다). 시험용 키를 따로 쓰거나, 시험은 몇 건만(`--only`) 돌리세요.
 
+**Gemini 모델 체인(2026-10-01).** 무료 한도는 모델마다 하루 20회라, 서버는 1순위 모델(`GEMINI_API_MODEL`, 운영은 `gemini-2.5-flash-lite` 권장) 다음에 대체 모델을 차례로 씁니다. 기본 순서(실측): `gemini-2.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-3-flash-preview` → `gemini-3.5-flash-lite` → `gemini-2.5-flash` → `gemini-3.6-flash` → `gemini-flash-latest`(1순위와 같은 이름은 빠짐). **새 필수 변수는 없습니다** — Render 설정을 바꾸지 않아도 이 순서가 적용됩니다.
+- 순서를 바꾸려면 `GEMINI_FALLBACK_MODELS`에 쉼표로 적습니다(예: `gemini-3.1-flash-lite,gemini-2.5-flash`). `none`이면 1순위 모델만 씁니다. 형식이 틀린 이름(대문자·공백 등)은 빼고 로그에 개수만 남깁니다.
+- 모델을 쉬게 하는 기준: 분당 한도(429)·과부하(503)·5xx·시간 초과는 60초(연속이면 두 배, 최대 5분), 하루 한도(429 `PerDay`)는 태평양 시간 자정까지(최대 6시간), 종료된 모델(404 `no longer available`)은 하루. 키 문제 400(`API_KEY_INVALID`)·401·403은 모델을 바꿔도 같아서 바로 규칙 기반으로 갑니다.
+- 기다리는 시간: 한 번 생성(채팅 해석·일정 하나)에 체인 전체가 `GEMINI_TOTAL_BUDGET_MS`(기본 40초)까지만 씁니다. 다 쓰면 남은 모델은 시도하지 않고 규칙 기반 + `AI_BUSY` 안내로 바뀝니다.
+- 확인: `https://japanjapantravel.onrender.com/api/health`의 `ai.geminiModelChain`(실제 순서), `ai.geminiCoolingModels`(지금 쉬는 모델 이름과 남은 초). 어느 모델이 일정을 만들었는지는 `/api/travel-plan` 응답의 `itinerarySource`(예: `gemini_itinerary_v1 (gemini-3.5-flash-lite)`)에 남습니다.
+- 넣지 않은 모델: `gemini-3.5-flash`(10초 뒤 503), `gemini-3.7-flash`(계속 503), `gemma-4`(같은 말을 반복하다 잘림), `gemini-flash-lite-latest`(`gemini-3.5-flash-lite`의 별칭이라 한도를 같이 씀).
+
 | 구분 | 변수 | 비고 |
 |---|---|---|
 | 권장 | `SESSION_SECRET` | 32자 이상 무작위 값(만들기: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`). 로그인 쿠키 서명용. 32자 미만이거나 서로 다른 글자가 10개 미만이면 서버가 쓰지 않음(health `sessionSecretWeak: true`). 없거나 약하면 재시작 때마다 로그인이 풀림. 바꾸면 모든 기기가 로그아웃되지만 저장한 일정은 그대로 |
@@ -77,7 +84,7 @@
 | 권장 | `PUBLIC_BASE_URL` | `https://japanjapantravel.onrender.com` (CSRF 허용 출처) |
 | 로그인 | `OAUTH_BASE_URL` | 운영 주소와 같은 값. OAuth 콜백 기준 |
 | 로그인 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `KAKAO_REST_API_KEY`, `KAKAO_CLIENT_SECRET` | 없는 공급자의 로그인 버튼은 숨겨지고, 그 주소(`/api/auth/<공급자>`)로 직접 들어오면 `/?authError=<공급자>`로 돌려보냄 |
-| AI | `GEMINI_API_KEY`, `GEMINI_API_MODEL`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `AI_REQUEST_TIMEOUT_MS`, `CHAT_PARSE_STRICT_AI` | 없으면 규칙 기반 일정·채팅 해석(`AI_KEY_MISSING`). 무료 한도 공유 주의는 위 문단 |
+| AI | `GEMINI_API_KEY`, `GEMINI_API_MODEL`, `GEMINI_FALLBACK_MODELS`, `GEMINI_TOTAL_BUDGET_MS`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `AI_REQUEST_TIMEOUT_MS`, `CHAT_PARSE_STRICT_AI` | 없으면 규칙 기반 일정·채팅 해석(`AI_KEY_MISSING`). 대체 모델 순서·시간 예산은 아래 "Gemini 모델 체인" 문단. 무료 한도 공유 주의는 위 문단 |
 | 항공 | `TRAVELPAYOUTS_TOKEN` | 없으면 예시 데이터 |
 | 숙소 | `RAKUTEN_APP_ID`, `RAKUTEN_ACCESS_KEY` | 없으면 예시 데이터 |
 | 환율 | `FX_USD_KRW`, `FX_JPY_KRW` | 실시간 조회가 모두 실패할 때만 쓰는 고정값 |
