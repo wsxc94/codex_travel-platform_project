@@ -6,7 +6,7 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 
 - **운영 주소:** https://japanjapantravel.onrender.com/ (Render 무료 플랜이라 한동안 접속이 없으면 첫 로딩이 느릴 수 있습니다)
 - **저장소:** https://github.com/wsxc94/tabimaru-japan-travel-planner
-- **예전 이름:** JapanTravel Suite(저장소 `codex_travel-platform_project`). 이름만 바뀌었습니다. 운영 주소, Render 서비스 이름(`japantravel-suite`), 로그인 콜백 주소, 브라우저에 저장된 찜·메모·체크리스트는 그대로입니다. 예전 저장소 주소로 들어와도 GitHub가 새 주소로 연결해 줍니다.
+- **예전 이름:** JapanTravel Suite(저장소 `codex_travel-platform_project`). 이름만 바뀌었습니다. 운영 주소와 Render 서비스(`japanjapantravel`), 로그인 콜백 주소, 브라우저에 저장된 찜·메모·체크리스트는 그대로입니다. 예전 저장소 주소로 들어와도 GitHub가 새 주소로 연결해 줍니다.
 
 ## 지금 동작 방식 요약
 
@@ -19,29 +19,41 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 
 ## 화면
 
-> **주의: 아래 스크린샷은 옛 화면입니다(2026-09-30 촬영, 예전 이름 JapanTravel Suite).** 그때 운영 서버는 결제가 꺼진 Google 키 때문에 매번 대체 목록으로 떨어지고 있었습니다. 그래서 장소 사진 대신 글자 타일이, 출처 줄에는 내부 이름(`local_curated_fallback`)이 보입니다. 새 이름(Tabimaru)과 무료 모드(위키미디어 사진·OpenStreetMap 지도)로 바뀐 화면은 배포 후 다시 찍어 교체할 예정입니다.
+운영 사이트의 실제 화면입니다(2026-10-01, 무료 모드: 위키미디어 사진 + OpenStreetMap 지도, AI 일정은 Gemini).
 
 ### 여행 조건 + AI 조건 채팅
 
-지역·출발일·일수·테마를 고르고 [추천+AI일정 통합 생성]을 누르거나, "유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고 3박 4일"처럼 자연어로 입력하면 조건을 자동으로 채웁니다. 상단 툴바에서 내보내기·체크리스트·긴급 연락처·회화·날씨·찜·검색 기록을 쓸 수 있고, 한국어/영어/일본어로 바꿀 수 있습니다.
+지역·출발일·일수·테마를 고르고 [추천+AI일정 통합 생성]을 누르거나, "유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고 3박 4일"처럼 자연어로 입력하면 조건을 자동으로 채웁니다. 상단 툴바에서 내보내기·체크리스트·긴급 연락처·회화·날씨·찜·검색 기록을 쓸 수 있고, 한국어/영어/일본어로 바꿀 수 있습니다. 첫 화면을 여는 것만으로는 일정을 만들지 않습니다.
 
-![여행 조건 (옛 화면)](docs/screenshots/main.png)
+![여행 조건](docs/screenshots/main.png)
 
 ### 추천 결과: 추천 여행지 + AI 일정
 
-추천 여행지 카드는 끌어다 놓아 일정에 넣을 수 있습니다. 일정은 오전·오후·종일 블록과 아침·점심·저녁 맛집 칸으로 나뉘며, 되돌리기/다시 실행과 경로 교통비 계산을 지원합니다. 장소가 모자란 칸은 지어낸 장소 대신 "자유 일정"으로 표시하고, 지도와 교통비 계산에서는 뺍니다.
+추천 여행지 카드에는 위키미디어 공용 사진과 저작자·라이선스가 붙습니다. 카드는 끌어다 놓아 일정에 넣을 수 있습니다. 일정은 오전·오후·종일 블록과 아침·점심·저녁 맛집 칸으로 나뉘며, 되돌리기/다시 실행과 경로 교통비 계산을 지원합니다. 장소가 모자란 칸은 지어낸 장소 대신 "자유 일정"으로 표시하고, 지도와 교통비 계산에서는 뺍니다.
 
-![추천 결과 (옛 화면)](docs/screenshots/plan.png)
+![추천 결과](docs/screenshots/plan.png)
+
+### 일정 지도 (OpenStreetMap)
+
+일정의 장소를 순서대로 번호 마커로 보여 줍니다. 위치 정보가 없는 장소는 지도에서 빼고 개수를 알려 줍니다.
+
+![일정 지도](docs/screenshots/map.png)
 
 ### 탐색: 여행지·맛집
 
-![탐색 (옛 화면)](docs/screenshots/explore.png)
+![탐색](docs/screenshots/explore.png)
 
 ### 항공권 탐색
 
-편도·왕복·다구간을 지원하고, 추천순·최저가순·최단시간순으로 정렬합니다. Skyscanner·KAYAK 링크도 제공합니다.
+편도·왕복·다구간을 지원하고, 추천순·최저가순·최단시간순으로 정렬합니다. 요청한 날짜의 가격이 없으면 가까운 날짜(±7일) 항공편을 "다른 날짜"로 표시해 보여 줍니다. Skyscanner·KAYAK 링크도 제공합니다.
 
-![항공권 탐색 (옛 화면)](docs/screenshots/flights.png)
+![항공권 탐색](docs/screenshots/flights.png)
+
+### 숙소 탐색 (Rakuten Travel)
+
+실시간 요금과 숙소 사진, 가까운 역 정보를 보여 줍니다.
+
+![숙소 탐색](docs/screenshots/stays.png)
 
 ## 주요 기능
 
@@ -276,7 +288,7 @@ scripts/build-place-images.js  위 파일을 다시 만드는 스크립트(npm r
 test_all.js, tests/support/  통합 테스트와 가짜 벤더 서버·네트워크 차단·DOM 흉내
 _test_api.js                 수동 점검 스크립트(개발용)
 deploy/                      배포 가이드(DEPLOY.md), Supabase 스키마
-docs/screenshots/            README 화면(옛 화면)
+docs/screenshots/            README 화면(운영 사이트 캡처)
 .github/workflows/ci.yml     CI(npm test)
 render.yaml                  Render 설정(환경변수 이름 목록)
 ARCHITECTURE.md              구조 설명
