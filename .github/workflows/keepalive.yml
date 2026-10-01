@@ -1,0 +1,36 @@
+name: Supabase keepalive
+
+# 무료 Supabase 프로젝트는 7일 동안 활동이 없으면 일시 중지된다.
+# 3일마다 운영 서버의 /api/keepalive를 불러 서버가 Supabase에 가벼운 조회(travel_plans 1행 id)를 한 번 하게 한다.
+# 비밀값은 필요 없다(응답은 {"ok":true,"supabase":"ok|unreachable|off","checkedAt":…}뿐).
+# 주의: 공개 저장소의 예약 실행(schedule)은 저장소에 60일 동안 활동이 없으면 GitHub가 자동으로 끈다.
+#       꺼지면 GitHub → Actions 탭 → "Supabase keepalive" → "Enable workflow"로 다시 켠다(deploy/DEPLOY.md 5번).
+
+on:
+  schedule:
+    # 매월 1·4·7…일 03:17 UTC(한국 시간 12:17). 정각을 피해 GitHub 예약 실행이 밀리는 시간대를 비켜 간다.
+    - cron: '17 3 */3 * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call /api/keepalive (Render free plan wakes up in about 50 seconds, so retry)
+        env:
+          KEEPALIVE_URL: https://japanjapantravel.onrender.com/api/keepalive
+        run: |
+          for i in 1 2 3 4 5; do
+            body="$(curl -sS --max-time 90 -H 'Accept: application/json' "$KEEPALIVE_URL" || true)"
+            echo "try $i: ${body:0:300}"
+            if printf '%s' "$body" | grep -q '"supabase":"ok"'; then
+              echo "Supabase keepalive ok"
+              exit 0
+            fi
+            if [ "$i" -lt 5 ]; then sleep 30; fi
+          done
+          echo "::error::/api/keepalive did not report \"supabase\":\"ok\" after 5 tries (Render down, Supabase paused, or env vars missing)"
+          exit 1

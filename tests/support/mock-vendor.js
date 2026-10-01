@@ -21,8 +21,24 @@
  *   travelpayouts: 'ok' | 'empty' | 'error'
  *   weather:       'ok' | 'hostile' (open-meteo 응답에 예상 밖 필드·HTML·잘못된 날짜를 섞음)
  *
- * OAuth 토큰 교환(네이버·카카오·Google)은 kind 'oauth'로 기록하고 늘 401로 거절한다.
- * 콜백이 state 검사를 통과했는지만 보려는 것이고, 로그인이 실제로 끝나 data/users.json에 쓰이지 않게 한다.
+ *   oauth:         'refuse'(기본) | 'ok'
+ *   supabase:      'ok' | 'down' (모든 Supabase 요청에 503 + 원문 SUPABASE_ERROR_TEXT)
+ *                  | 'auth' (모든 요청에 401 Invalid API key: 키가 틀렸거나 폐기됨)
+ *                  | 'reject_post' (POST만 400 22P05: 저장소가 내용을 거절)
+ *                  'ok'일 때도 POST 본문의 글자에 NUL(\u0000)이 있으면 400 22P05, 짝 없는 서로게이트가 있으면 400 22P02
+ *                  (실제 Postgres text·jsonb처럼).
+ *
+ * OAuth(네이버·카카오·Google) 호출은 kind 'oauth'로 기록한다. 기본('refuse')은 토큰 교환을 401로 거절한다
+ * (콜백이 state 검사를 통과했는지만 보려는 것). 'ok'면 토큰과 프로필(scenario.oauthProfile = { id, name, email, picture })을
+ * 돌려줘 로그인이 끝까지 간다 — 이때 서버의 users.json은 테스트가 준 임시 TABIMARU_DATA_DIR에만 쓰인다.
+ *
+ * 가짜 Supabase(PostgREST): SUPABASE_URL = <baseUrl>/supabase. kind 'supabase'로 헤더·쿼리·본문을 기록한다.
+ *   HEAD/GET /supabase/rest/v1/            연결 확인(200)
+ *   GET    /supabase/rest/v1/travel_plans  select(열 이름 목록 또는 *)·<열>=eq.<값>·order=<열>.asc|desc·limit
+ *   POST   /supabase/rest/v1/travel_plans  on_conflict=plan_key + Prefer resolution=merge-duplicates(없으면 겹치는 키는 409),
+ *                                          Prefer return=representation|minimal, 열 검사(city_key·payload not null, start_date 날짜, days 정수)
+ *   DELETE /supabase/rest/v1/travel_plans  eq 필터 필수, Prefer return=representation이면 지운 행(select 열)
+ *   그 밖의 연산자·열·경로는 400/404 + kind 'unknownMockRoute'(테스트가 실패로 본다).
  */
 const http = require('http');
 const { URL } = require('url');
@@ -58,6 +74,52 @@ const FREE_GEOCODE = {
 };
 
 const GOOGLE_KINDS = new Set(['places', 'placesMedia', 'geocode', 'directions']);
+
+// supabase: 'down' 응답의 원문. 이 글자가 클라이언트 응답에 나오면 안 된다.
+const SUPABASE_ERROR_TEXT = 'mock-supabase-detail-7c41: upstream database is restoring';
+const SUPABASE_PREFIX = '/supabase/rest/v1';
+// deploy/supabase/schema.sql의 public.travel_plans 열
+const TRAVEL_PLAN_COLUMNS = new Set(['id', 'plan_key', 'user_label', 'city_key', 'city_label', 'theme', 'budget', 'start_date', 'days', 'summary', 'source', 'payload', 'created_at', 'updated_at']);
+
+const DEFAULT_OAUTH_PROFILE = { id: 'mock-user-1', name: 'Mock User', email: 'mock-user@example.test', picture: 'https://lh3.googleusercontent.com/a/mock-avatar' };
+
+// scenario.oauth = 'ok'일 때 공급자별 응답(토큰 교환 → 프로필)
+function oauthOkResponse(host, p, profile) {
+  const P = { ...DEFAULT_OAUTH_PROFILE, ...(profile || {}) };
+  const token = { access_token: 'mock-oauth-access-token', token_type: 'bearer', expires_in: 3600 };
+  if ((host === 'nid.naver.com' && p === '/oauth2.0/token') || (host === 'kauth.kakao.com' && p === '/oauth/token') || (host === 'oauth2.googleapis.com' && p === '/token')) return token;
+  const withId = (obj, key = 'id') => (P.id === null || P.id === undefined ? obj : { [key]: P.id, ...obj });
+  if (host === 'openapi.naver.com' && p === '/v1/nid/me') {
+    return { resultcode: '00', message: 'success', response: withId({ nickname: P.name, email: P.email, profile_image: P.picture }) };
+  }
+  // 이메일 확인 여부: profile.emailVerified(기본 true)를 Google verified_email·Kakao is_email_verified로 돌려준다.
+  const verified = P.emailVerified !== false;
+  if (host === 'kapi.kakao.com' && p === '/v2/user/me') {
+    const kakao = { kakao_account: { email: P.email, is_email_valid: true, is_email_verified: verified, profile: { nickname: P.name, profile_image_url: P.picture } } };
+    return P.id === null || P.id === undefined ? kakao : { id: /^\d+$/.test(String(P.id)) ? Number(P.id) : P.id, ...kakao };
+  }
+  if (host === 'www.googleapis.com' && p === '/oauth2/v2/userinfo') return withId({ name: P.name, email: P.email, verified_email: verified, picture: P.picture });
+  return null;
+}
+
+// 실제 Postgres처럼 text·jsonb가 받지 않는 글자를 찾는다: NUL → '22P05', 짝 없는 서로게이트 → '22P02'
+function badPgText(value, depth = 0) {
+  if (depth > 200) return null;
+  const check = (s) => (s.includes('\u0000') ? '22P05' : (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s) ? '22P02' : null));
+  if (typeof value === 'string') return check(value);
+  if (!value || typeof value !== 'object') return null;
+  for (const [k, v] of Object.entries(value)) {
+    const bad = (Array.isArray(value) ? null : check(k)) || badPgText(v, depth + 1);
+    if (bad) return bad;
+  }
+  return null;
+}
+
+function strictDate(v) {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === v;
+}
 
 function hashText(text) {
   let h = 0;
@@ -197,17 +259,146 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
   const state = {
     log: [],
     scenario: {},
-    server: null
+    server: null,
+    db: { rows: [], lastTs: 0, seq: 0 }
   };
 
   function reset(scenario = {}) {
     state.log.length = 0;
-    state.scenario = { places: 'ok', geocode: 'ok', directions: 'ok', gemini: 'ok', travelpayouts: 'ok', weather: 'ok', ...scenario };
+    state.scenario = { places: 'ok', geocode: 'ok', directions: 'ok', gemini: 'ok', travelpayouts: 'ok', weather: 'ok', oauth: 'refuse', supabase: 'ok', ...scenario };
+    state.db = { rows: [], lastTs: 0, seq: 0 };
   }
   reset();
 
   function record(entry) {
     state.log.push({ at: Date.now(), ...entry });
+  }
+
+  // ── 가짜 Supabase(PostgREST) ──
+  function dbNow() {
+    state.db.lastTs = Math.max(Date.now(), state.db.lastTs + 1);
+    return new Date(state.db.lastTs).toISOString();
+  }
+
+  function unsupported(res, entry, message) {
+    record({ kind: 'unknownMockRoute', ...entry, note: message });
+    return sendJson(res, 400, { code: 'PGRST100', message: `mock supabase: ${message}` });
+  }
+
+  function handleSupabase(req, res, url, rest, body, headers) {
+    const prefer = String(headers.prefer || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const entry = { kind: 'supabase', method: req.method, path: rest, query: url.search, headers, body, prefer };
+    record(entry);
+    if (state.scenario.supabase === 'down') return sendJson(res, 503, { message: SUPABASE_ERROR_TEXT, hint: 'mock' });
+    if (state.scenario.supabase === 'auth') return sendJson(res, 401, { message: 'Invalid API key', hint: 'Double check your Supabase `anon` or `service_role` API key.' });
+    if (state.scenario.supabase === 'reject_post' && req.method === 'POST') {
+      return sendJson(res, 400, { code: '22P05', details: 'mock: content rejected', hint: null, message: 'unsupported Unicode escape sequence' });
+    }
+    if (rest === '' || rest === '/') {
+      if (req.method === 'HEAD') { res.writeHead(200, { 'Content-Type': 'application/openapi+json' }); return res.end(); }
+      if (req.method === 'GET') return sendJson(res, 200, { swagger: '2.0', info: { title: 'mock postgrest' } });
+      return unsupported(res, entry, `${req.method} on root`);
+    }
+    if (rest !== '/travel_plans') {
+      record({ kind: 'unknownMockRoute', method: req.method, path: SUPABASE_PREFIX + rest, query: url.search });
+      return sendJson(res, 404, { code: 'PGRST205', message: 'mock supabase: unknown table' });
+    }
+    // 쿼리 해석: select·order·limit·on_conflict 말고는 모두 <열>=eq.<값> 필터
+    let select = null;
+    let order = null;
+    let limit = null;
+    let onConflict = null;
+    const filters = [];
+    for (const [k, v] of url.searchParams) {
+      if (k === 'select') {
+        const cols = v.split(',').map((s) => s.trim());
+        if (!(cols.length === 1 && cols[0] === '*') && cols.some((c) => !TRAVEL_PLAN_COLUMNS.has(c))) return unsupported(res, entry, `select ${v}`);
+        select = cols[0] === '*' ? null : cols;
+      } else if (k === 'order') {
+        const m = /^([a-z_]+)\.(asc|desc)$/.exec(v);
+        if (!m || !TRAVEL_PLAN_COLUMNS.has(m[1])) return unsupported(res, entry, `order ${v}`);
+        order = { col: m[1], desc: m[2] === 'desc' };
+      } else if (k === 'limit') {
+        if (!/^\d+$/.test(v)) return unsupported(res, entry, `limit ${v}`);
+        limit = Number(v);
+      } else if (k === 'on_conflict') {
+        onConflict = v;
+      } else {
+        if (!TRAVEL_PLAN_COLUMNS.has(k) || !v.startsWith('eq.')) return unsupported(res, entry, `filter ${k}=${v}`);
+        filters.push([k, v.slice(3)]);
+      }
+    }
+    const matches = (row) => filters.every(([col, val]) => row[col] !== null && row[col] !== undefined && String(row[col]) === val);
+    const project = (row) => {
+      const copy = JSON.parse(JSON.stringify(row));
+      if (!select) return copy;
+      return Object.fromEntries(select.map((c) => [c, c in copy ? copy[c] : null]));
+    };
+    const wantsRows = prefer.includes('return=representation');
+
+    if (req.method === 'GET') {
+      let rows = state.db.rows.filter(matches);
+      if (order) {
+        rows = rows.slice().sort((a, b) => {
+          const x = String(a[order.col] ?? '');
+          const y = String(b[order.col] ?? '');
+          return order.desc ? (x < y ? 1 : x > y ? -1 : 0) : (x < y ? -1 : x > y ? 1 : 0);
+        });
+      }
+      if (limit !== null) rows = rows.slice(0, limit);
+      return sendJson(res, 200, rows.map(project));
+    }
+
+    if (req.method === 'POST') {
+      let incoming;
+      try { incoming = JSON.parse(body || 'null'); } catch { return sendJson(res, 400, { code: 'PGRST102', message: 'mock supabase: invalid JSON' }); }
+      incoming = Array.isArray(incoming) ? incoming : [incoming];
+      const badText = badPgText(incoming);
+      if (badText === '22P05') return sendJson(res, 400, { code: '22P05', details: '\\u0000 cannot be converted to text.', hint: null, message: 'unsupported Unicode escape sequence' });
+      if (badText) return sendJson(res, 400, { code: '22P02', details: 'Unicode low surrogate must follow a high surrogate.', hint: null, message: 'invalid input syntax for type json' });
+      const merge = prefer.includes('resolution=merge-duplicates');
+      if (merge && onConflict !== 'plan_key') return unsupported(res, entry, `on_conflict ${onConflict}`);
+      for (const r of incoming) {
+        if (!r || typeof r !== 'object' || Array.isArray(r)) return sendJson(res, 400, { code: 'PGRST102', message: 'mock supabase: row must be an object' });
+        const badCol = Object.keys(r).find((c) => !TRAVEL_PLAN_COLUMNS.has(c));
+        if (badCol) return sendJson(res, 400, { code: 'PGRST204', message: `mock supabase: column ${badCol} does not exist` });
+        if (typeof r.plan_key !== 'string' || !r.plan_key) return sendJson(res, 400, { code: '23502', message: 'mock supabase: plan_key is null' });
+        if (typeof r.city_key !== 'string' || !r.city_key) return sendJson(res, 400, { code: '23502', message: 'mock supabase: city_key is null' });
+        if (r.payload === null || r.payload === undefined) return sendJson(res, 400, { code: '23502', message: 'mock supabase: payload is null' });
+        if (r.start_date !== null && r.start_date !== undefined && !strictDate(r.start_date)) return sendJson(res, 400, { code: '22008', message: 'mock supabase: invalid date' });
+        if (r.days !== null && r.days !== undefined && !Number.isInteger(r.days)) return sendJson(res, 400, { code: '22P02', message: 'mock supabase: days must be integer' });
+      }
+      const affected = [];
+      for (const r of incoming) {
+        const existing = state.db.rows.find((x) => x.plan_key === r.plan_key);
+        if (existing && !merge) return sendJson(res, 409, { code: '23505', message: 'mock supabase: duplicate key value violates unique constraint' });
+        const ts = dbNow();
+        if (existing) {
+          Object.assign(existing, JSON.parse(JSON.stringify(r)), { id: existing.id, created_at: existing.created_at, updated_at: ts });
+          affected.push(existing);
+        } else {
+          state.db.seq += 1;
+          const row = { id: `00000000-0000-4000-8000-${String(state.db.seq).padStart(12, '0')}`, plan_key: null, user_label: null, city_key: null, city_label: null, theme: null, budget: null, start_date: null, days: null, summary: null, source: null, payload: null, created_at: ts, updated_at: ts };
+          Object.assign(row, JSON.parse(JSON.stringify(r)), { created_at: ts, updated_at: ts });
+          state.db.rows.push(row);
+          affected.push(row);
+        }
+      }
+      if (wantsRows) return sendJson(res, 201, affected.map(project));
+      res.writeHead(201);
+      return res.end();
+    }
+
+    if (req.method === 'DELETE') {
+      if (filters.length === 0) return unsupported(res, entry, 'unfiltered delete');
+      const gone = state.db.rows.filter(matches);
+      state.db.rows = state.db.rows.filter((r) => !matches(r));
+      if (wantsRows) return sendJson(res, 200, gone.map(project));
+      res.writeHead(204);
+      return res.end();
+    }
+
+    return unsupported(res, entry, `method ${req.method}`);
   }
 
   async function handle(req, res) {
@@ -224,6 +415,11 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
       const extPath = ext[3] || '/';
       if (OAUTH_EXTERNAL_HOSTS.has(extHost)) {
         record({ kind: 'oauth', host: extHost, path: extPath, query: url.search, method: req.method, headers, body });
+        if (sc.oauth === 'ok') {
+          const ok = oauthOkResponse(extHost, extPath, sc.oauthProfile);
+          if (ok) return sendJson(res, 200, ok);
+          return sendJson(res, 404, { error: 'mock: unknown oauth endpoint' });
+        }
         return sendJson(res, 401, { error: 'invalid_client', error_description: 'mock: token exchange refused (test)' });
       }
       const known = FREE_EXTERNAL_HOSTS.has(extHost);
@@ -244,6 +440,11 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
         return sendJson(res, 200, hit ? { results: [{ id: 1, country_code: 'JP', country: 'Japan', ...hit }], generationtime_ms: 0.1 } : { generationtime_ms: 0.1 });
       }
       return sendJson(res, 404, { error: 'unknown free endpoint' });
+    }
+
+    // ── 가짜 Supabase(PostgREST) ──
+    if (p === SUPABASE_PREFIX || p.startsWith(SUPABASE_PREFIX + '/')) {
+      return handleSupabase(req, res, url, p.slice(SUPABASE_PREFIX.length), body, headers);
     }
 
     // ── Google Places API (New) ──
@@ -378,6 +579,15 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
     count(kind) { return state.log.filter((e) => e.kind === kind).length; },
     entries(kind) { return state.log.filter((e) => e.kind === kind); },
     googleHits() { return state.log.filter((e) => GOOGLE_KINDS.has(e.kind)).length; },
+    // 가짜 Supabase 표(travel_plans)의 행 복사본 / 미리 넣기
+    supabaseRows() { return JSON.parse(JSON.stringify(state.db.rows)); },
+    seedSupabase(rows) {
+      for (const r of rows) {
+        const ts = dbNow();
+        state.db.seq += 1;
+        state.db.rows.push({ id: `00000000-0000-4000-8000-${String(state.db.seq).padStart(12, '0')}`, created_at: ts, updated_at: ts, ...JSON.parse(JSON.stringify(r)) });
+      }
+    },
     start() {
       return new Promise((resolve, reject) => {
         state.server = http.createServer((req, res) => {
@@ -399,4 +609,4 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
   };
 }
 
-module.exports = { createMockVendor, JPEG_BYTES, FREE_EXTERNAL_HOSTS, GEMINI_ERROR_TEXT, ITINERARY_SCENARIOS };
+module.exports = { createMockVendor, JPEG_BYTES, FREE_EXTERNAL_HOSTS, GEMINI_ERROR_TEXT, SUPABASE_ERROR_TEXT, ITINERARY_SCENARIOS };

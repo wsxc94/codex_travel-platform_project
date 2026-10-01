@@ -2,7 +2,9 @@
 -- 여러 번 실행해도 된다(모든 문장이 if not exists / or replace / drop ... if exists).
 -- 테이블·정책 이름(travel_plans 등)은 서버가 쓰는 이름이라 이름 변경(예전 이름 JapanTravel Suite) 뒤에도 그대로 둔다.
 -- 서버는 service role 키로만 접근한다(service role은 RLS를 우회). 브라우저(anon) 접근은 허용하지 않는다.
--- user_label: 서버가 넣는 로그인 사용자 id(세션의 userId). /api/travel-plan/save·list·get은 로그인이 필요하다.
+-- user_label: 서버가 넣는 로그인 사용자 id(세션의 userId = 'u_' + sha256(공급자:공급자 id) 앞 24자). 모든 경로가 로그인이 필요하다.
+-- 화면의 "내 일정"(/api/my-plans/*)은 source = 'my-plans', plan_key = 'my_' + 일정 id 행으로 저장한다(이 표 그대로, 열 추가 없음).
+-- /api/travel-plan/save·list·get(화면에서는 쓰지 않음)도 같은 표를 쓴다.
 
 -- Enable extension for UUID generation
 create extension if not exists pgcrypto;
@@ -58,3 +60,9 @@ create policy service_write on public.travel_plans
   for all
   using (current_setting('request.jwt.claims', true)::json->>'role' = 'service_role')
   with check (current_setting('request.jwt.claims', true)::json->>'role' = 'service_role');
+
+-- 새 프로젝트에서 테이블 자동 공개를 끈 경우에도 서버(service role)가 쓸 수 있게 권한을 명시한다.
+-- 브라우저 키(anon·authenticated)에는 주지 않는다.
+grant usage on schema public to service_role;
+grant select, insert, update, delete on public.travel_plans to service_role;
+revoke all on public.travel_plans from anon, authenticated;

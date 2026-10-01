@@ -45,7 +45,7 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 
 - 만든 일정과 고친 내용은 이 기기 브라우저에 초안 한 개로 자동 보관됩니다(localStorage `tabimaru.draft.v1`, 14일). 새로고침하거나 탭을 닫았다가 다시 열면 "저장하지 않은 일정이 있어요" 띠가 뜨고 **[이어서 편집]** / **[버리기]**를 고를 수 있습니다. 이어서 편집해도 AI를 다시 부르지 않습니다.
 - 직접 고친 일정이 있는 채로 탭을 닫으면 브라우저가 한 번 묻습니다.
-- 다른 기기에서도 보려면 로그인한 뒤 일정 옆의 **[💾 저장]**으로 "내 일정"에 저장합니다. **[📋 내보내기·공유]**는 글·마크다운·PDF·공유하기를 지원합니다.
+- 다른 기기에서도 보려면 로그인한 뒤 일정 옆의 **[💾 저장]**으로 "내 일정"에 저장합니다. 운영에서는 "내 일정"이 Supabase에 저장되어 서버가 재시작·재배포돼도 남고, 로그인(30일)도 유지됩니다. 저장소에 잠시 닿지 않으면 "저장소에 연결할 수 없어요. 잠시 후 다시 시도해 주세요."라고 알려 줍니다. **[📋 내보내기·공유]**는 글·마크다운·PDF·공유하기를 지원합니다.
 
 ### 화면 설정
 
@@ -105,8 +105,8 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 | 날씨 | Open-Meteo(무료, 키 없음), 모든 도시, 16일 예보(범위 밖 날짜는 안내) | 위치를 모르는 도시는 다른 도시 날씨로 대신하지 않음 |
 | 환율 | open.er-api(ExchangeRate-API) → Frankfurter(무료) | `FX_USD_KRW`·`FX_JPY_KRW` 고정값 → 코드의 대략값 |
 | 투어 | Klook 위젯 | 8초 안에 안 뜨면 Klook·Viator·GetYourGuide 링크 |
-| 로그인 · 내 일정 | Google · Naver · Kakao OAuth | 키가 없으면 로그인 버튼 숨김 |
-| 플랜 저장소 | Supabase(선택, 로그인 필요) | 없거나 연결되지 않으면 503 |
+| 로그인 · 내 일정 | Google · Naver · Kakao OAuth. 로그인은 서명 쿠키(30일)라 서버가 재시작해도 유지 | 키가 없으면 로그인 버튼 숨김 |
+| 내 일정 저장소 | Supabase(`SUPABASE_*` 설정 시, `travel_plans` 표) | 설정이 없으면 서버의 로컬 파일(`data/`, 로컬 개발용). 설정했는데 연결되지 않으면 503 |
 
 그 밖에 일정 되돌리기/다시 실행, 편집 중 초안 자동 보관, 계절 추천, 경로 최적화, 한/영/일 다국어(키 559개), 다크 모드(OS 설정), 레이트 리밋·보안 헤더·XSS 방어가 있습니다.
 
@@ -231,19 +231,20 @@ npm test                  # = node test_all.js
 ```
 
 - 실제 네트워크를 쓰지 않습니다. 서버를 벤더 키가 모두 빈 상태로 띄우고(`.env` 값은 쓰지 않음), Google·Gemini·Travelpayouts 주소를 테스트가 띄운 가짜 서버(포트 3205)로 돌립니다. 환율·날씨 같은 그 밖의 외부 호출은 `tests/support/net-guard.js`가 가짜 서버로 보냅니다.
-- 서버(포트 13581)를 설정만 바꿔 열 번 띄웁니다: 무료 모드(기본), 무료 모드 사진·영어/일본어 이름, 프록시 신뢰(모든 도시 날씨·X-Forwarded-For 위조), Google 결제 꺼짐(대체 목록 + 30분 차단), Google 정상(사진 프록시·Gemini 잘림/정상/빈 일정·Travelpayouts), 하루 호출 상한, Geocoding 거부, OAuth 로그인 state·AI 오류 원문 제거, 의도 회귀 표, AI 일정 후처리.
+- 서버(포트 13581)를 설정만 바꿔 스무 번 띄웁니다: 무료 모드(기본), 무료 모드 사진·영어/일본어 이름, 프록시 신뢰(모든 도시 날씨·X-Forwarded-For 위조), Google 결제 꺼짐(대체 목록 + 30분 차단), Google 정상(사진 프록시·Gemini 잘림/정상/빈 일정·Travelpayouts), 하루 호출 상한, Geocoding 거부, OAuth 로그인 state·AI 오류 원문 제거, 로그인 세션·내 일정 저장소(10번: 가짜 Supabase 정상·재시작·비밀값 교체·503·틀린 키 401·연결 거부·파일 저장소·로그인 허용 목록·약한 비밀값 2가지), 의도 회귀 표, AI 일정 후처리. 서버의 `users.json`·`saved_plans.json`은 늘 임시 폴더(`TABIMARU_DATA_DIR`)에만 쓰이고, 저장소의 `data/` 폴더가 그대로인지도 마지막에 확인합니다.
+- **로그인 세션·내 일정:** 가짜 OAuth로 로그인을 끝까지 해서 `sid` 쿠키 모양(`base64url(JSON).HMAC`, HttpOnly·SameSite=Lax·Path=/·30일), 고정 사용자 id(같은 계정 = 같은 id, 공급자별로 다름), 위조·변조·다른 비밀값·만료·너무 긴 쿠키·깨진 base64/JSON·예전 형식·`xsid=` 미끼 21가지, 같은 `SESSION_SECRET`으로 재시작해도 로그인 유지(바꾸면 로그아웃)를 봅니다. 내 일정은 가짜 Supabase(PostgREST)로 저장·목록·불러오기·삭제, 행 대응(`plan_key = 'my_' + id`, `source = 'my-plans'` 등), 다른 사용자가 보거나 덮어쓰거나 지우지 못함, `sb_secret_` 키는 `apikey`만·`eyJ…` 키는 Bearer도, Supabase 503·연결 거부 → 503 `PROVIDER_UNAVAILABLE`이고 파일에 쓰지 않음, 설정이 없으면 파일 저장소, `/api/health`의 참·거짓 값, `/api/keepalive` 캐시(성공 10분·실패 15초)를 확인합니다. 이어서 개인 일정 응답의 `Cache-Control: no-store`, NUL·짝 없는 서로게이트 정리(저장 200), 400KB 넘는 일정 413, 사용자당 50개 상한 409(덮어쓰기는 허용, 목록 50개), 저장소가 내용을 거절하면 400 `INVALID_PLAN`(저장소 상태는 정상 그대로), 틀린 키(401) → health `supabaseReachable: false`·`supabaseCheck: "auth_error"`, `ALLOWED_LOGINS` 밖 계정 → `/?authError=not_allowed`(sid 없음, 목록을 바꾸면 예전 sid 끊김), 약한 `SESSION_SECRET`은 쓰지 않음(그 값으로 위조한 sid 거절)을 봅니다. 화면 쪽은 `/api/auth/me` 502 한 번 → 다시 물어 로그인 화면 유지, 저장소 503 → "저장소에 연결할 수 없어요", 409·413·400 → 각 안내, `authError=not_allowed` → 허용 계정 안내를 샌드박스로 봅니다.
 - **의도 회귀 표(말로 한 요청을 제대로 알아듣는지):** 실제 Gemini로 돌려 본 요청(ai_live P01-P16·X1-X3), 코드 검수 요청(ai_code P01-P19), 정규식 보정 사례(SV-04)를 합친 58줄을 가짜 Gemini 400으로 규칙 해석기에 보내고, 일수·출발일(월·일, 올해/내년)·도시·테마·쇼핑 제외·꼭 갈 곳·제외·미지원 지역·도착/출발/시작 시각·하루 장소 수를 확인합니다. 줄 이름에 감사 ID와 요청이 붙고, 틀리면 어느 필드가 무엇이었는지 한 줄로 보입니다. 이어서 Gemini 해석 정규화(정직한 `sourceInfo`, '쇼핑은 빼줘'인데 테마 shopping 거부, 폼 도시보다 메시지의 도시), 영어·일본어 답변에 한국어가 남지 않는지, 후속 대화("교토 하루 더 늘려줘")를 봅니다.
 - **AI 일정:** 가짜 Gemini가 계약을 어긴 일정(저녁 칸의 관광, 오후 칸의 맛집, 반나절 칸의 USJ, 빠진 꼭 갈 곳, 매일 같은 점심, 지어낸 장소, 제외한 디즈니)을 돌려줘도 서버 후처리가 고치는지, 프롬프트에 요청 원문·꼭 갈 곳·도시별 날짜·`Constraints:`가 들어가는지, 429·503이 `AI_BUSY`가 되는지 봅니다.
-- **직접 배치(샌드박스):** `placeBlock`(식사 맞바꾸기·같은 식사 칸 2개 금지·오전 순서·종류가 다르면 그대로), 추가 창(직접 입력 뒤 카드 추가·강조된 시간대 = 들어간 시간대·[옮기기]), 끌어 놓기 공용 경로와 ☰ 손잡이 터치 끌기, 직접 고친 일정 보호, 요청 의도 전달(`request`·`mustVisit`·`excludedPlaces`·`foodWishes`·`history`·`prevParsed`), 설정 안 된 로그인 버튼 숨김, 초안 복구(유료 호출 0회)를 봅니다.
+- **직접 배치(샌드박스):** `placeBlock`(식사 맞바꾸기·같은 식사 칸 2개 금지·오전 순서·종류가 다르면 그대로, '🌙 저녁 이후' 칸 항목을 같은 날·다른 날 오후 칸으로 옮기면 오후 시각으로, 바뀔 것이 없으면 `place-noop` 안내, 추가 창의 '저녁 이후' 선택지), 추가 창(직접 입력 뒤 카드 추가·강조된 시간대 = 들어간 시간대·[옮기기]), 끌어 놓기 공용 경로와 ☰ 손잡이 터치 끌기, 직접 고친 일정 보호, 요청 의도 전달(`request`·`mustVisit`·`excludedPlaces`·`foodWishes`·`history`·`prevParsed`), 설정 안 된 로그인 버튼 숨김, 초안 복구(유료 호출 0회)를 봅니다.
 - 보안 회귀 검사: 네이버·카카오·Google 로그인 시작 응답의 `oauth_state` 쿠키(HttpOnly, SameSite=Lax, Path=/api/auth, 10분) 값이 이동 주소의 `state`와 같은지 봅니다. 콜백에 쿠키가 없거나, 다른 쿠키이거나, `state`가 없거나, 다른 공급자의 `state`이거나, 한 번 통과한 `state`를 다시 보내면 모두 `/?authError=invalid_state`로 가는지도 봅니다. 토큰 교환은 가짜 서버가 거절하므로 실제 로그인이나 사용자 저장은 일어나지 않습니다. Gemini가 400과 오류 원문을 돌려줘도 `travel-plan`·`ai-travel-chat` 응답의 `aiErrors`에는 `provider`·`code`·`reasonCode`·`action`만 있고 원문은 없어야 합니다.
 - 사진 검사: 도시 대표 사진(`scope: city`, 도시 좌표는 붙이지 않음)과 음식 장르 사진(`scope: genre`)이 Commons 주소·저작자·라이선스와 함께 붙는지, 사진 종류마다 `place-images.json`의 맞는 칸과 같은지, 예시 사진이 없는 장르는 비워 두는지 봅니다.
 - 이름 검사: 영어·일본어 응답의 카드 이름이 `labels`를 쓰는지, 카드·맛집·일정 글자에 한국어가 남지 않는지, 현지화된 이름으로도 지도 좌표를 찾는지 봅니다.
 - 브랜드 검사: `/api/health`의 `app`이 `tabimaru`, 페이지 제목·매니페스트 이름이 Tabimaru인지, 언어를 바꾸면 제목도 바뀌는지, 외부 호출의 User-Agent가 `TabimaruBot/0.1`인지 봅니다. 도메인에 묶인 값(운영 주소, Render 서비스 이름, OAuth 콜백 경로, `sid` 쿠키, localStorage 키, 매니페스트 `start_url`)이 그대로인지도 봅니다.
 - 첫 화면은 `tests/support/browser-sandbox.js`로 `app.js`를 실제로 부팅해, 유료 API를 부르지 않는지 확인합니다. 이어서 [일정 만들기]를 두 번 눌러도 일정 1회 + 항공·맛집·숙소 각 1회만 부르는지, 카드에 실제 `<img>`와 위키미디어 출처가 붙는지, Leaflet이 일정이 생긴 뒤에만 SRI와 함께 로드되는지, 빈 일정에 안내 문구가 나오는지도 봅니다. 사진·출처 표시 함수(`safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`)와 추천·맛집 카드에는 악성 값(`javascript:`·`data:` 주소, 비슷한 호스트, `/\`·`//` 우회 주소, 따옴표·HTML이 든 이름과 저작자)을 넣습니다. 그래도 사진은 Commons나 `/api/place-photo`, 출처 링크는 Commons 파일 페이지나 Google 기여자 페이지만 남고, 나머지 값은 모두 이스케이프되는지 봅니다.
 - 그 밖에 응답에 키가 섞이지 않는지, 날씨 응답이 날짜·숫자만 담는지, CSRF 출처 검사, 긴급 전화번호 표시 = `tel:` 링크, CSS 변수 자기참조, CSS 중복 사본·키보드 포커스 링·다크 모드 토큰, 사전 누락·중복 키·코드가 쓰는 키(`t('…')`, `data-i18n`)의 ko/en/ja 존재, `index.html` 기본 글자 = ko 사전, `alert(`·`prompt(` 없음, localStorage 새 키는 `tabimaru.draft.v1` 하나, `render.yaml`·`.env.example`·README의 환경변수 목록과 기본값 누락도 검사합니다.
-- 포트 13581과 3205가 비어 있어야 합니다. 2026-10-01 기준 488개 검사가 모두 통과합니다(몇 초 걸림).
-- 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`oauth`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
-- GitHub Actions(`.github/workflows/ci.yml`)가 push와 pull request마다 Node 20으로 `npm test`를 돌립니다.
+- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-01 기준 641개 검사가 모두 통과합니다(30초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간).
+- 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`oauth`·`session`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
+- GitHub Actions(`.github/workflows/ci.yml`)가 push와 pull request마다 Node 20으로 `npm test`를 돌립니다. `.github/workflows/keepalive.yml`은 테스트가 아니라 3일마다 운영 `/api/keepalive`를 부르는 예약 작업입니다(정적 검사로 내용만 확인).
 
 수동 점검(개발용, CI 제외): `node _test_api.js`는 로컬 서버만 확인합니다. `node _test_api.js --google`을 붙이면 Google Places·Geocoding을 한 번씩 실제로 호출하므로 과금될 수 있습니다. `node scripts/prompt-matrix.mjs --base http://127.0.0.1:3000`은 실행 중인 서버에 대표 요청 16개를 보내 해석과 날짜별 일정을 표로 보여 줍니다(실제 Gemini 약 32회, 무료 한도를 씀). 화면 손가락 끌기 같은 브라우저 점검 순서는 [ARCHITECTURE.md 14](ARCHITECTURE.md#14-수동-점검-체크리스트)에 있습니다.
 
@@ -275,7 +276,8 @@ npm test                  # = node test_all.js
 | `RAKUTEN_ACCESS_KEY` | — | Rakuten Travel accessKey |
 | `FX_USD_KRW` | — | 실시간 환율 조회가 모두 실패할 때 쓰는 고정값(둘 다 설정해야 `env`로 표시) |
 | `FX_JPY_KRW` | — | 위와 같음(엔→원) |
-| `SESSION_SECRET` | 실행마다 임의 값 | 세션 쿠키 서명값. 32바이트 이상 무작위 값 권장. 없으면 재시작 때 로그인이 풀림 |
+| `SESSION_SECRET` | 실행마다 임의 값 | 로그인 쿠키(`sid`, 30일) 서명값. **32자 이상 + 서로 다른 글자 10개 이상**이어야 쓰고, 그보다 약하면 버리고 임의 값을 씀(경고 로그, health `sessionSecretWeak: true`). 만들기: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. 없거나 약하면 재시작 때 로그인이 풀림. 바꾸면 모든 기기가 로그아웃되지만 저장한 일정은 그대로(사용자 id는 이 값과 무관) |
+| `ALLOWED_LOGINS` | — (누구나) | 로그인할 수 있는 계정(쉼표 구분): `u_…`(로그인 후 `/api/auth/me`의 `userId`), `google:<id>`·`kakao:<id>`·`naver:<id>`, 또는 공급자가 확인한 이메일(Google·Kakao만). 목록 밖 계정은 `/?authError=not_allowed`. 바꾸면 모든 기기가 한 번 로그아웃됨. 혼자 쓰면 설정 권장 |
 | `PUBLIC_BASE_URL` | — | 공개 주소(예: `https://japanjapantravel.onrender.com`). CSRF 허용 출처 |
 | `OAUTH_BASE_URL` | `http://localhost:<PORT>` | OAuth 콜백 기준 주소. CSRF 허용 출처에도 포함 |
 | `TRUST_PROXY` | Render에서는 자동 | `1`이면 `X-Forwarded-For`의 마지막 값(프록시가 붙인 값)을 클라이언트 IP로 씀. 그 값이 Cloudflare 주소면 한 칸 앞 값 |
@@ -286,8 +288,9 @@ npm test                  # = node test_all.js
 | `NAVER_CLIENT_SECRET` | — | 네이버 로그인 |
 | `KAKAO_REST_API_KEY` | — | 카카오 로그인 |
 | `KAKAO_CLIENT_SECRET` | — | 카카오 로그인(선택) |
-| `SUPABASE_URL` | — | 플랜 저장소(선택) |
-| `SUPABASE_SERVICE_ROLE_KEY` | — | 서버 전용 Supabase 키 |
+| `SUPABASE_URL` | — | "내 일정" 저장소(선택). 프로젝트 주소 `https://<프로젝트>.supabase.co`. 비우면 로컬 파일 저장 |
+| `SUPABASE_SERVICE_ROLE_KEY` | — | 서버 전용 Supabase 키. 새 형식 secret 키(`sb_secret_…`, `apikey` 헤더로만 보냄) 또는 예전 service_role 키(`eyJ…`, `Authorization: Bearer`도 보냄). 브라우저용 publishable/anon 키는 넣지 않음 |
+| `TABIMARU_DATA_DIR` | `<저장소>/data` | 로컬 파일 저장 폴더(절대 경로): `users.json`(로그인 기록), `saved_plans.json`(Supabase가 없을 때의 내 일정). 테스트는 임시 폴더를 줌 |
 
 테스트 전용(운영에서는 비워 둠): `PLACES_API_BASE`, `GEOCODE_API_BASE`, `GEMINI_API_BASE`, `TRAVELPAYOUTS_API_BASE`, `RAKUTEN_API_BASE`, `PLACE_IMAGES_FILE`.
 
@@ -311,9 +314,10 @@ npm test                  # = node test_all.js
 | `GET /api/maps-config` | `{ "provider": "osm" }` 또는 `{ "provider": "google", "key": <브라우저 키> }` |
 | `GET /api/place-photo?name=places/…/photos/…&w=100..1600` | google 모드의 사진 프록시(키 없이 이미지만 전달). 무료 모드에서는 404 |
 | `/api/auth/*` | Google·Naver·Kakao 로그인, `me`, `logout`, `providers` |
-| `/api/my-plans/save · list · load · delete` | 로그인 사용자의 내 일정(서버 `data/` 파일) |
-| `/api/travel-plan/save · list · get` | 로그인 사용자의 Supabase 플랜 저장·조회(저장소가 없으면 503) |
-| `GET /api/health` | 상태·공급자 모드(외부 호출 없음). `{ "ok": true, "app": "tabimaru", "brand": "Tabimaru", "providers": … }` |
+| `/api/my-plans/save · list · load · delete` | 로그인 사용자의 내 일정(응답은 `Cache-Control: no-store`). Supabase가 설정돼 있으면 `travel_plans`(`source = 'my-plans'`, 자기 일정만), 없으면 `TABIMARU_DATA_DIR`의 파일. 사용자당 50개(넘으면 409 `PLAN_LIMIT`, 덮어쓰기는 허용), 일정 하나 400KB(넘으면 413 `PLAN_TOO_LARGE`). NUL·짝 없는 서로게이트는 저장 전에 정리. Supabase에 닿지 않거나 키·표 문제면 503 `PROVIDER_UNAVAILABLE`(파일에 대신 쓰지 않음), 저장소가 내용을 거절하면 400 `INVALID_PLAN` |
+| `/api/travel-plan/save · list · get` | 로그인 사용자의 Supabase 플랜 저장·조회(저장소가 없으면 503, 같은 개수·크기 상한, 화면에서는 쓰지 않음) |
+| `GET /api/health` | 상태·공급자 모드(외부 호출 없음). `{ "ok": true, "app": "tabimaru", "brand": "Tabimaru", "providers": …, "supabaseConfigured", "supabaseReachable", "supabaseCheck", "sessionSecretConfigured", "sessionSecretWeak", "loginRestricted" }`(참·거짓과 상태 단어만, 값 없음). `supabaseCheck`: `ok`·`auth_error`(키 거부)·`schema_error`(표 없음)·`unreachable` |
+| `GET /api/keepalive` | Supabase에 가벼운 조회(`travel_plans?select=id&limit=1`)를 실제로 해서 무료 프로젝트가 일시 중지되지 않게 함(성공은 10분, 실패는 15초 재사용). `{ "ok": true, "supabase": "ok" \| "unreachable" \| "auth_error" \| "schema_error" \| "off", "checkedAt" }`. GitHub Actions(`keepalive.yml`)가 3일마다 부름 |
 | `GET /api/ai-diagnostics` | 설정 진단(비밀값 없음). `?probe=1`은 `DIAGNOSTICS_TOKEN` 필요 |
 
 `GET /api/rakuten-config`는 삭제되었습니다(Rakuten 키는 서버에서만 씀).
@@ -331,9 +335,10 @@ _test_api.js                 수동 점검 스크립트(개발용)
 deploy/                      배포 가이드(DEPLOY.md), Supabase 스키마
 docs/screenshots/            README 화면(운영 사이트 캡처)
 .github/workflows/ci.yml     CI(npm test)
+.github/workflows/keepalive.yml  3일마다 /api/keepalive 호출(Supabase 무료 프로젝트 일시 중지 방지)
 render.yaml                  Render 설정(환경변수 이름 목록)
 ARCHITECTURE.md              구조 설명
-data/                        로그인 사용자·내 일정(로컬 파일, Git 제외)
+data/                        로컬 파일 저장(users.json, Supabase가 없을 때의 내 일정). Git 제외, TABIMARU_DATA_DIR로 바꿀 수 있음
 ```
 
 ## 배포
@@ -347,3 +352,6 @@ Render에서 `main` 브랜치를 자동 배포합니다. 키는 Render 대시보
 - 예전 `GOOGLE_MAPS_API_KEY`와 Rakuten accessKey는 예전 코드(`/api/maps-config`, `/api/rakuten-config`)로 공개된 적이 있으니 새로 발급해 교체하세요.
 - `/api/ai-diagnostics?probe=1`은 실제 외부 호출(과금 가능)을 하므로 `DIAGNOSTICS_TOKEN`이 맞을 때만 동작합니다.
 - OAuth 로그인은 `state`를 로그인을 시작한 브라우저의 쿠키(`oauth_state`, HttpOnly, 10분)에 묶고 한 번만 쓸 수 있게 해, 다른 사람의 로그인 링크로 로그인되는 공격(로그인 CSRF)을 막습니다.
+- 로그인 쿠키 `sid`는 서버에 저장하지 않는 HMAC-SHA256 서명 쿠키(HttpOnly, SameSite=Lax, HTTPS면 Secure, 30일)입니다. 서명 키는 `scrypt(SESSION_SECRET)`에 로그인 허용 목록을 섞어 만들므로, `SESSION_SECRET`만 알면 누구의 쿠키든 만들 수 있습니다. 그래서 약한 값(32자 미만·서로 다른 글자 10개 미만)은 쓰지 않습니다. 로그아웃은 그 브라우저의 쿠키만 지웁니다(서버에 지울 세션이 없음). 쿠키가 새어 나갔다고 생각되면 `SESSION_SECRET`을 바꿔 모든 기기를 한꺼번에 로그아웃시키세요(저장한 일정은 그대로).
+- 혼자 쓰는 앱이면 `ALLOWED_LOGINS`에 자기 계정만 넣으세요. 비워 두면 아무 Google·Kakao·Naver 계정이나 로그인해 일정을 저장할 수 있습니다(사용자당 50개·하나 400KB 상한은 있음).
+- Supabase 키(`SUPABASE_SERVICE_ROLE_KEY`)는 서버에서만 씁니다. 응답·로그에 키가 나오지 않고, Supabase 오류 원문은 서버 로그에만 남습니다.

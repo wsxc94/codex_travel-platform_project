@@ -1182,6 +1182,11 @@ function getFlightCardsPerRow() {
   return 3;
 }
 
+// 항공 카드는 숙소와 같은 규칙으로 나눠 보인다: 처음과 [더보기]마다 2줄(최소 3장). 휴대폰(1열)에서 1장씩만 늘던 문제.
+function flightPageSize() {
+  return Math.max(3, getFlightCardsPerRow() * 2);
+}
+
 function flightCardTemplate(x) {
   const first = x.legs[0];
   const last = x.legs[x.legs.length - 1];
@@ -1270,7 +1275,7 @@ function allFlights() {
 function renderFlightCards(reset = false) {
   if (refreshFlightSelection()) { renderPlanExtras(); renderItineraryTimeline(); }
   if (reset) {
-    visibleFlightCount = getFlightCardsPerRow();
+    visibleFlightCount = flightPageSize();
   }
 
   const sorted = [...flightResults].sort((a, b) => {
@@ -2832,7 +2837,9 @@ function alignTripDatesToFlight(flight) {
   var nextDays = fd.days || curDays;
   if (fd.start === curStart && nextDays === curDays) return true;
   var range = fd.end && fd.end !== fd.start ? fd.start + ' ~ ' + fd.end : fd.start;
-  if (!confirm(fillText(t('confirm-flight-dates'), { dates: range, days: nextDays }))) return false;
+  // 직접 고친 일정은 다시 만들지 않으므로(편집 보호) 날짜만 바뀐다고 정확히 묻는다. 일정은 안내 띠의 [일수 맞추기]로 맞춘다.
+  var askKey = itineraryIsEdited() ? 'confirm-flight-dates-edited' : 'confirm-flight-dates';
+  if (!confirm(fillText(t(askKey), { dates: range, days: nextDays }))) return false;
   el('startDate').value = fd.start;
   el('days').value = nextDays;
   syncDatesToDependentForms();
@@ -3211,7 +3218,7 @@ async function searchFlights(opts) {
 el('btnFlights').addEventListener('click', () => { searchFlights({ fromButton: true }); });
 
 el('btnFlightMore').addEventListener('click', () => {
-  visibleFlightCount += getFlightCardsPerRow();
+  visibleFlightCount += flightPageSize();
   renderFlightCards(false);
 });
 
@@ -3307,6 +3314,16 @@ function nightDropWindow(dayData) {
   return { start: minToTime(start), end: minToTime(end) };
 }
 
+// 이 오후 블록이 '🌙 저녁 이후' 칸에 그려지는지: 그날 저녁 식사 시작(없으면 저녁 칸 기본 시작) 이후에 시작 — itinDayLayout과 같은 기준
+function isNightAfternoonBlock(dayData, block) {
+  if (!block || block.period !== SLOT_DEFS.afternoon.period) return false;
+  var dinner = periodBlocks(dayData, SLOT_DEFS.dinner.period)[0];
+  var cut = dinner ? timeToMin(dinner.parsed.startTime) : NaN;
+  if (!Number.isFinite(cut)) cut = timeToMin(SLOT_DEFS.dinner.start);
+  var s = timeToMin(block.startTime);
+  return Number.isFinite(s) && s >= cut;
+}
+
 function placeBlock(opts) {
   opts = opts || {};
   if (!currentItineraryData || !Array.isArray(currentItineraryData.itinerary)) return { ok: false, reason: 'no-plan' };
@@ -3342,9 +3359,11 @@ function placeBlock(opts) {
       var srcStart = timeToMin(sourceBlock.startTime);
       if (srcDay === tgtDay && sourceBlock.period === def.period && srcStart >= timeToMin(win.start) && srcStart < timeToMin(win.end)) return { ok: false, reason: 'noop' };
     } else {
-      if (srcDay === tgtDay && sourceBlock.period === def.period) return { ok: false, reason: 'noop' };
-      // 시간대가 같고 날만 바뀌면 원래 시각을 유지한다.
-      if (sourceBlock.period === def.period) { start = sourceBlock.startTime; end = sourceBlock.endTime; }
+      // '저녁 이후' 칸의 항목(시간대는 오후)을 보통 오후 칸에 놓으면: 같은 날이어도 할 일이 있고, 오후 기본 시각(빈 시간)으로 옮긴다.
+      var srcNight = isNightAfternoonBlock(srcDay, sourceBlock);
+      if (srcDay === tgtDay && sourceBlock.period === def.period && !srcNight) return { ok: false, reason: 'noop' };
+      // 시간대가 같고 날만 바뀌면 원래 시각을 유지한다(저녁 이후 항목은 오후 칸에 맞게 기본 시각으로).
+      if (sourceBlock.period === def.period && !srcNight) { start = sourceBlock.startTime; end = sourceBlock.endTime; }
     }
   } else {
     name = String(opts.name || '').trim();
@@ -3520,6 +3539,15 @@ function setModalPickActive(index) {
   });
 }
 
+// 창의 시간대 선택지 '🌙 저녁 이후'(여행지만): 오후 블록으로, 저녁 식사·밤 일정 뒤 시간(nightDropWindow)에 넣는다.
+// 그날 밤 일정이 없어 '저녁 이후' 칸이 그려지지 않아도 야경 같은 곳을 저녁 식사 뒤로 넣을 수 있게 한다.
+var MODAL_NIGHT_SLOT = 'night';
+
+function modalSlotValid(slot, type) {
+  if (slot === MODAL_NIGHT_SLOT) return type === 'dest';
+  return Boolean(SLOT_DEFS[slot] && SLOT_DEFS[slot].kind === type);
+}
+
 // 유형(여행지/맛집)에 맞는 시간대 줄만 보이고, 실제로 들어갈 시간대(pendingAddSlot)에 강조를 맞춘다.
 function paintAddModalSlots() {
   var destSlots = el('destSlots');
@@ -3552,7 +3580,7 @@ function showAddToPlanModal(name, opts) {
   pendingAddType = opts.addType === 'food' ? 'food' : 'dest';
   pendingAddPlace = { name: name || '', area: opts.area || '', custom: !name };
   var defaultSlot = pendingAddType === 'food' ? 'dinner' : 'afternoon';
-  pendingAddSlot = opts.slot && SLOT_DEFS[opts.slot] && SLOT_DEFS[opts.slot].kind === pendingAddType ? opts.slot : defaultSlot;
+  pendingAddSlot = opts.slot && modalSlotValid(opts.slot, pendingAddType) ? opts.slot : defaultSlot;
 
   var isMove = pendingAddMode === 'move';
   var customMode = !isMove && !name;
@@ -3609,9 +3637,12 @@ function hideAddToPlanModal() {
 function confirmAddToPlan() {
   if (!currentItineraryData) { hideAddToPlanModal(); return; }
   var dayNum = Number((el('modalDaySelect') || {}).value);
+  // '저녁 이후' = 오후 블록 + 그날 저녁 식사 뒤의 시간 창(끌어 놓기의 '🌙 저녁 이후' 칸과 같은 경로)
+  var slotKey = pendingAddSlot === MODAL_NIGHT_SLOT ? 'afternoon' : pendingAddSlot;
+  var win = pendingAddSlot === MODAL_NIGHT_SLOT ? nightDropWindow(findItineraryDay(dayNum)) : null;
   var result;
   if (pendingAddMode === 'move') {
-    result = placeBlock({ mode: 'move', day: dayNum, slotKey: pendingAddSlot, from: pendingMoveFrom });
+    result = placeBlock({ mode: 'move', day: dayNum, slotKey: slotKey, from: pendingMoveFrom, window: win });
   } else {
     var place = pendingAddPlace || { name: '', area: '', custom: true };
     var name = place.name;
@@ -3627,9 +3658,11 @@ function confirmAddToPlan() {
       if (input && typeof input.focus === 'function') input.focus();
       return;
     }
-    result = placeBlock({ mode: 'add', day: dayNum, slotKey: pendingAddSlot, name: name, area: area, kind: pendingAddType });
+    result = placeBlock({ mode: 'add', day: dayNum, slotKey: slotKey, name: name, area: area, kind: pendingAddType, window: win });
   }
-  if (result.ok || result.reason === 'noop') { hideAddToPlanModal(); return; }
+  if (result.ok) { hideAddToPlanModal(); return; }
+  // 이미 그 날·그 칸에 있으면 창을 닫고 바뀐 것이 없다고 알린다(조용히 닫히면 실패처럼 보인다).
+  if (result.reason === 'noop') { hideAddToPlanModal(); showMemoToast(t('place-noop'), 2000); return; }
   if (result.reason === 'kind-mismatch') { showMemoToast(t('drop-kind-mismatch')); return; }
   if (result.reason === 'cancelled') return; // 다른 칸을 고를 수 있게 창은 열어 둔다
   hideAddToPlanModal();
@@ -3905,7 +3938,7 @@ document.addEventListener('click', function(e) {
   var typeBtn = target.closest('.type-btn');
   if (typeBtn) {
     pendingAddType = typeBtn.dataset.type === 'food' ? 'food' : 'dest';
-    if (!SLOT_DEFS[pendingAddSlot] || SLOT_DEFS[pendingAddSlot].kind !== pendingAddType) pendingAddSlot = pendingAddType === 'food' ? 'dinner' : 'afternoon';
+    if (!modalSlotValid(pendingAddSlot, pendingAddType)) pendingAddSlot = pendingAddType === 'food' ? 'dinner' : 'afternoon';
     // 유형이 바뀌면 칩 목록도 그 유형으로 다시 그리고 칩 선택은 푼다.
     if (addModalCustomMode) {
       pendingAddPlace = { name: '', area: '', custom: true };
@@ -3919,7 +3952,7 @@ document.addEventListener('click', function(e) {
 
   var slotBtn = target.closest('.slot-btn');
   if (slotBtn) {
-    if (SLOT_DEFS[slotBtn.dataset.slot]) pendingAddSlot = slotBtn.dataset.slot;
+    if (modalSlotValid(slotBtn.dataset.slot, pendingAddType)) pendingAddSlot = slotBtn.dataset.slot;
     paintAddModalSlots();
     return;
   }
@@ -3974,7 +4007,9 @@ document.addEventListener('click', function(e) {
     var mvInfo = parsePlaceInfo(mvParsed.place);
     showAddToPlanModal(mvInfo.name, {
       mode: 'move', from: { day: mvDay, blockIndex: mvIdx }, day: mvDay,
-      slot: PERIOD_TO_SLOT[mvParsed.period], addType: isMealPeriod(mvParsed.period) ? 'food' : 'dest', area: mvInfo.info
+      // '🌙 저녁 이후' 칸의 항목이면 창에서도 '저녁 이후'를 미리 고른다(지금 있는 칸)
+      slot: isNightAfternoonBlock(mvDayData, mvParsed) ? MODAL_NIGHT_SLOT : PERIOD_TO_SLOT[mvParsed.period],
+      addType: isMealPeriod(mvParsed.period) ? 'food' : 'dest', area: mvInfo.info
     });
     return;
   }
@@ -4095,6 +4130,7 @@ function applyDropToZone(dd, zone) {
     ? placeBlock({ mode: 'move', day: day, slotKey: slotKey, from: { day: dd.day, blockIndex: dd.blockIndex }, window: win })
     : placeBlock({ mode: 'add', day: day, slotKey: slotKey, name: dd.name, area: dd.area, kind: dd.kind, window: win });
   if (!result.ok && result.reason === 'kind-mismatch') showMemoToast(t('drop-kind-mismatch'));
+  if (!result.ok && result.reason === 'noop') showMemoToast(t('place-noop'), 1500);
   return result;
 }
 
@@ -6189,6 +6225,7 @@ function showAuthErrorNotice() {
   var providerLabels = { naver: t('provider-naver'), kakao: t('provider-kakao'), google: 'Google' };
   var msg = code === 'invalid_state'
     ? t('auth-err-state')
+    : code === 'not_allowed' ? t('auth-err-not-allowed')
     : providerLabels[code] ? fillText(t('auth-err-provider'), { p: providerLabels[code] }) : t('auth-err-generic');
   showMemoToast(msg, 6000);
   try {
@@ -6521,17 +6558,26 @@ async function initExchangeRateChip() {
 
 var currentUser = null;
 
-// 로그인 상태 확인
+// 로그인 상태 확인. 로그인은 서명 쿠키라 서버가 다시 시작돼도 유지된다.
+// 서버가 깨어나는 중이라 5xx·네트워크 오류가 나면 두 번까지 잠시 뒤 다시 묻는다(로그아웃 화면으로 잘못 바뀌지 않게).
+function sleepMs(ms) { return new Promise(function(resolve) { setTimeout(resolve, ms); }); }
+
 (async function checkAuth() {
-  try {
-    var resp = await fetch('/api/auth/me');
-    var data = await resp.json();
-    currentUser = data.user;
-    renderAuthUI();
-  } catch(e) {
-    currentUser = null;
-    renderAuthUI();
+  var user = null;
+  for (var attempt = 0; attempt < 3; attempt++) {
+    try {
+      var resp = await fetch('/api/auth/me');
+      if (resp.status >= 500) throw new Error('HTTP ' + resp.status);
+      var data = await resp.json();
+      user = data && data.user ? data.user : null;
+      break;
+    } catch(e) {
+      user = null;
+      if (attempt < 2) await sleepMs(1500 * (attempt + 1));
+    }
   }
+  currentUser = user;
+  renderAuthUI();
 
   // 설정된 로그인만 보인다. 응답 전에는 세 버튼을 모두 숨겨 두어 깜빡이지 않게 한다.
   try {
@@ -6719,6 +6765,8 @@ async function savePlanToServer() {
   try {
     var listResp = await fetch('/api/my-plans/list');
     if (listResp.status === 401) { cleanup(); handleAuthExpired(); return; }
+    // 저장소(Supabase)에 닿지 않으면 저장도 실패하므로 창을 닫고 바로 알린다.
+    if (listResp.status === 503) { cleanup(); showMemoToast(t('store-unavailable'), 5000); return; }
     var listData = await listResp.json();
     existingPlans = listData.plans || [];
   } catch(e) {}
@@ -6808,8 +6856,17 @@ async function savePlanToServer() {
           showMemoToast(overwriteId ? t('save-overwrite-done') : t('save-success'));
         } else if (resp.status === 401) {
           expired = true;
+        } else if (resp.status === 503) {
+          showMemoToast(t('store-unavailable'), 5000);
         } else {
-          showMemoToast(t('save-fail'));
+          // 저장소가 이유를 알려 준 실패(개수 상한·크기·저장할 수 없는 글자)는 그 안내를, 그 밖에는 일반 실패 안내를 띄운다.
+          var failInfo = null;
+          try { failInfo = await resp.json(); } catch (e2) { failInfo = null; }
+          var failCode = failInfo && failInfo.reasonCode;
+          if (failCode === 'PLAN_LIMIT') showMemoToast(fillText(t('plan-limit'), { n: Number(failInfo.limit) || 50 }), 6000);
+          else if (failCode === 'PLAN_TOO_LARGE') showMemoToast(t('plan-too-large'), 6000);
+          else if (failCode === 'INVALID_PLAN') showMemoToast(t('plan-invalid'), 6000);
+          else showMemoToast(t('save-fail'));
         }
       } catch(e) {
         showMemoToast(t('save-error'));
@@ -6833,6 +6890,10 @@ async function loadMyPlansList() {
       var panel = el('myPlansPanel');
       if (panel && panel.classList.contains('show')) togglePanel('myPlansPanel');
       handleAuthExpired();
+      return;
+    }
+    if (resp.status === 503) {
+      container.innerHTML = '<p class="my-plans-empty">' + escapeHtml(t('store-unavailable')) + '</p>';
       return;
     }
     var data = await resp.json();
@@ -6877,6 +6938,7 @@ async function loadPlanFromServer(planId) {
   try {
     var resp = await fetch('/api/my-plans/load?id=' + encodeURIComponent(planId));
     if (resp.status === 401) { handleAuthExpired(); return; }
+    if (resp.status === 503) { showMemoToast(t('store-unavailable'), 5000); return; }
     var data = await resp.json();
     if (!resp.ok || !data.plan) {
       showMemoToast(t('load-fail'));
@@ -6975,6 +7037,7 @@ async function deletePlanFromServer(planId) {
   try {
     var resp = await fetch('/api/my-plans/delete?id=' + encodeURIComponent(planId), { method: 'DELETE' });
     if (resp.status === 401) { handleAuthExpired(); return; }
+    if (resp.status === 503) { showMemoToast(t('store-unavailable'), 5000); return; }
     var data = await resp.json();
     if (resp.ok && data.deleted) {
       showMemoToast(t('delete-success'));
@@ -7576,6 +7639,10 @@ var I18N = {
     'save-overwrite-done': '기존 일정을 덮어썼어요.',
     'save-fail': '저장하지 못했어요.',
     'save-error': '저장하는 중에 문제가 생겼어요.',
+    'store-unavailable': '저장소에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.',
+    'plan-limit': '일정은 {n}개까지 저장할 수 있어요. 안 쓰는 일정을 지운 뒤 다시 저장해 주세요.',
+    'plan-too-large': '일정이 너무 커서 저장할 수 없어요. 항공·숙소 검색 결과를 줄인 뒤 다시 저장해 주세요.',
+    'plan-invalid': '저장할 수 없는 글자가 들어 있어요. 제목이나 메모를 고친 뒤 다시 저장해 주세요.',
     'loading-plans': '불러오는 중...',
     'no-saved-plans': '저장한 일정이 아직 없어요.',
     'plan-default': '일정',
@@ -7636,6 +7703,7 @@ var I18N = {
     'flight-other-date': '다른 날짜',
     'flight-other-date-tip': '요청한 날짜와 다른 날짜의 항공편이에요',
     'confirm-flight-dates': '이 항공편은 {dates} 일정이라 지금 여행 날짜와 달라요.\n여행 날짜를 이 항공편에 맞춰({days}일) 일정에 넣을까요?',
+    'confirm-flight-dates-edited': '이 항공편은 {dates} 일정이라 지금 여행 날짜와 달라요.\n여행 날짜만 이 항공편에 맞출까요({days}일)? 직접 고친 일정은 그대로 두니, 일정의 날 수는 안내 띠의 [일수 맞추기]로 맞춰 주세요.',
     'err-generic': '요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.',
     'route-cost-fail': '교통비를 계산하지 못했어요. 잠시 후 다시 시도해 주세요.',
     'nearest-station': '가까운 역',
@@ -7759,6 +7827,7 @@ var I18N = {
     'auth-err-state': '로그인 확인 시간이 지났거나 다른 창에서 로그인을 시작했어요. 다시 시도해 주세요.',
     'auth-err-provider': '{p} 로그인을 완료하지 못했어요. 잠시 후 다시 시도해 주세요.',
     'auth-err-generic': '로그인을 완료하지 못했어요. 잠시 후 다시 시도해 주세요.',
+    'auth-err-not-allowed': '이 앱은 허용된 계정만 로그인할 수 있어요.',
     'title-save-plan': '현재 일정 저장',
     'title-my-plans': '내 저장 일정',
     'saved-suffix': ' 저장',
@@ -7779,6 +7848,7 @@ var I18N = {
     'pref-themes': '선호 테마: ',
     'btn-copy': '📋 복사',
     'drop-kind-mismatch': '맛집은 아침·점심·저녁 칸에, 장소는 오전·오후·종일 칸에 놓아 주세요',
+    'place-noop': '이미 그 칸에 있어요.',
     'confirm-replace-meal': '이 식사 칸에는 이미 {n}이(가) 있어요. 바꿀까요?',
     'confirm-duplicate-place': '{n}은(는) 이미 이날 일정에 있어요. 한 번 더 넣을까요?',
     'added-to-plan-toast': '{d}일차 {p}에 {n}을(를) 넣었어요',
@@ -8094,6 +8164,10 @@ var I18N = {
     'save-overwrite-done': 'Plan overwritten.',
     'save-fail': 'Could not save.',
     'save-error': 'Something went wrong while saving.',
+    'store-unavailable': 'Can\'t reach the plan storage right now. Please try again in a moment.',
+    'plan-limit': 'You can save up to {n} plans. Delete one you no longer need and save again.',
+    'plan-too-large': 'This plan is too large to save. Clear some flight or stay results and save again.',
+    'plan-invalid': 'The plan contains characters that can\'t be saved. Edit the title or notes and save again.',
     'loading-plans': 'Loading...',
     'no-saved-plans': 'No saved plans yet.',
     'plan-default': 'Plan',
@@ -8165,6 +8239,7 @@ var I18N = {
     'flight-other-date': 'Different dates',
     'flight-other-date-tip': 'This flight is on different dates from the ones you asked for',
     'confirm-flight-dates': 'This flight is on {dates}, which differs from your trip dates.\nChange your trip dates to match this flight ({days} days) and add it to the plan?',
+    'confirm-flight-dates-edited': 'This flight is on {dates}, which differs from your trip dates.\nChange only the trip dates to match this flight ({days} days)? Your edited plan stays as it is; use [Match day count] in the notice to fit its days.',
     'err-generic': 'Something went wrong. Please try again shortly.',
     'route-cost-fail': 'Couldn\'t calculate transit costs. Please try again shortly.',
     'nearest-station': 'Nearest station',
@@ -8288,6 +8363,7 @@ var I18N = {
     'auth-err-state': 'Your sign-in timed out or was started in another window. Please try again.',
     'auth-err-provider': 'Sign-in with {p} was not completed. Please try again in a moment.',
     'auth-err-generic': 'Sign-in was not completed. Please try again in a moment.',
+    'auth-err-not-allowed': 'Only approved accounts can sign in to this app.',
     'title-save-plan': 'Save current plan',
     'title-my-plans': 'My saved plans',
     'saved-suffix': ' saved',
@@ -8308,6 +8384,7 @@ var I18N = {
     'pref-themes': 'Favorite themes: ',
     'btn-copy': '📋 Copy',
     'drop-kind-mismatch': 'Drop restaurants on Breakfast, Lunch or Dinner, and places on Morning, Afternoon or All Day',
+    'place-noop': 'It\'s already in that slot.',
     'confirm-replace-meal': '{n} is already in this meal slot. Replace it?',
     'confirm-duplicate-place': '{n} is already on this day. Add it again?',
     'added-to-plan-toast': 'Added {n} to Day {d} {p}',
@@ -8623,6 +8700,10 @@ var I18N = {
     'save-overwrite-done': 'プランを上書きしました。',
     'save-fail': '保存できませんでした。',
     'save-error': '保存中に問題が起きました。',
+    'store-unavailable': '保存先に接続できません。しばらくしてからもう一度お試しください。',
+    'plan-limit': '保存できるプランは{n}件までです。使わないプランを削除してからもう一度保存してください。',
+    'plan-too-large': 'プランが大きすぎて保存できません。航空券・宿泊の検索結果を減らしてからもう一度保存してください。',
+    'plan-invalid': '保存できない文字が含まれています。タイトルやメモを直してからもう一度保存してください。',
     'loading-plans': '読み込み中...',
     'no-saved-plans': '保存したプランはまだありません。',
     'plan-default': 'プラン',
@@ -8694,6 +8775,7 @@ var I18N = {
     'flight-other-date': '別の日付',
     'flight-other-date-tip': 'ご希望とは別の日付の便です',
     'confirm-flight-dates': 'この便は{dates}の日程で、現在の旅行日程と異なります。\n旅行日程をこの便に合わせて（{days}日間）プランに追加しますか？',
+    'confirm-flight-dates-edited': 'この便は{dates}の日程で、現在の旅行日程と異なります。\n旅行日程だけをこの便に合わせますか（{days}日間）？編集したプランはそのままなので、日数はお知らせの［日数を合わせる］で合わせてください。',
     'err-generic': '処理できませんでした。しばらくしてから再度お試しください。',
     'route-cost-fail': '交通費を計算できませんでした。しばらくしてから再度お試しください。',
     'nearest-station': '最寄り駅',
@@ -8817,6 +8899,7 @@ var I18N = {
     'auth-err-state': 'ログインの確認時間が過ぎたか、別のウィンドウでログインを始めたようです。もう一度お試しください。',
     'auth-err-provider': '{p}でのログインを完了できませんでした。しばらくしてからもう一度お試しください。',
     'auth-err-generic': 'ログインを完了できませんでした。しばらくしてからもう一度お試しください。',
+    'auth-err-not-allowed': 'このアプリには許可されたアカウントだけがログインできます。',
     'title-save-plan': '現在のプランを保存',
     'title-my-plans': '保存済みプラン',
     'saved-suffix': ' 保存',
@@ -8837,6 +8920,7 @@ var I18N = {
     'pref-themes': '好みのテーマ: ',
     'btn-copy': '📋 コピー',
     'drop-kind-mismatch': 'グルメは朝食・昼食・夕食の枠に、スポットは午前・午後・終日の枠に置いてください',
+    'place-noop': 'すでにその枠に入っています。',
     'confirm-replace-meal': 'この食事枠には{n}があります。入れ替えますか？',
     'confirm-duplicate-place': '{n}はこの日の予定にすでにあります。もう一度追加しますか？',
     'added-to-plan-toast': '{n}を{d}日目の{p}に追加しました',

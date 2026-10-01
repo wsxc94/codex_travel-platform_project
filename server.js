@@ -412,22 +412,11 @@ function checkCsrf(req) {
 }
 
 // Clean up rate limit map periodically
+// (로그인 세션은 서명 쿠키라 서버에 지울 것이 없다. OAuth state는 위의 _oauthStates 정리가 맡는다.)
 setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of _rateLimitMap) {
     if (now - entry.windowStart > RATE_LIMIT_WINDOW_MS * 2) _rateLimitMap.delete(ip);
-  }
-  // Clean up expired sessions (7 days)
-  for (const [sid, sess] of sessionStore) {
-    if (!sid.startsWith('oauth_state_') && sess.createdAt && (Date.now() - sess.createdAt) > 7 * 24 * 60 * 60 * 1000) {
-      sessionStore.delete(sid);
-    }
-  }
-  // Clean up expired OAuth state tokens (max 10 min lifetime)
-  for (const [key, val] of sessionStore) {
-    if (key.startsWith('oauth_state_') && now - (val.createdAt || 0) > 600_000) {
-      sessionStore.delete(key);
-    }
   }
 }, 120_000);
 
@@ -497,21 +486,145 @@ const KAKAO_REST_API_KEY = envValue('KAKAO_REST_API_KEY');
 const KAKAO_CLIENT_SECRET = envValue('KAKAO_CLIENT_SECRET');
 const GOOGLE_OAUTH_CLIENT_ID = envValue('GOOGLE_OAUTH_CLIENT_ID');
 const GOOGLE_OAUTH_CLIENT_SECRET = envValue('GOOGLE_OAUTH_CLIENT_SECRET');
-// 세션 서명 비밀값. 설정이 없으면 추측할 수 없는 임의 값을 실행마다 새로 만든다(재시작하면 로그인이 풀림).
+// 세션 서명 비밀값. 이 값 하나로 누구의 sid든 만들 수 있으므로 길고 추측할 수 없어야 한다:
+// 32자 이상 + 서로 다른 글자 10개 이상(예: node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))").
+// 없거나 이 기준보다 약하면 그 값을 쓰지 않고, 추측할 수 없는 임의 값을 실행마다 새로 만든다(재시작하면 로그인이 풀림).
+// 값을 바꾸면 모든 기기의 로그인이 풀린다(저장한 일정은 그대로: 사용자 id는 이 값과 관계없다).
+const SESSION_SECRET_MIN_CHARS = 32;
+const SESSION_SECRET_MIN_DISTINCT = 10;
+function sessionSecretState(value) {
+  const s = String(value || '');
+  if (!s) return 'missing';
+  return s.length >= SESSION_SECRET_MIN_CHARS && new Set(s).size >= SESSION_SECRET_MIN_DISTINCT ? 'ok' : 'weak';
+}
+const SESSION_SECRET_STATE = sessionSecretState(envValue('SESSION_SECRET'));
+// health용: 쓸 수 있는 SESSION_SECRET이 설정돼 있는지(약한 값은 false) / 설정됐지만 약해서 버렸는지
+const SESSION_SECRET_CONFIGURED = SESSION_SECRET_STATE === 'ok';
+const SESSION_SECRET_WEAK = SESSION_SECRET_STATE === 'weak';
 const SESSION_SECRET = (() => {
-  const configured = envValue('SESSION_SECRET');
-  if (configured) return configured;
-  warnOnce('session-secret-missing', '[session] SESSION_SECRET이 없어 이번 실행에서만 쓰는 임의 비밀값을 만들었습니다. 재시작하면 로그인 세션이 풀리니 운영에서는 SESSION_SECRET을 설정하세요.');
+  if (SESSION_SECRET_STATE === 'ok') return envValue('SESSION_SECRET');
+  if (SESSION_SECRET_STATE === 'weak') {
+    warnOnce('session-secret-weak', `[session] SESSION_SECRET이 너무 짧거나 단순해서 쓰지 않습니다(${SESSION_SECRET_MIN_CHARS}자 이상, 서로 다른 글자 ${SESSION_SECRET_MIN_DISTINCT}개 이상 필요). 이번 실행에서만 쓰는 임의 비밀값을 만들었으니 재시작하면 로그인이 풀립니다. 임의 값으로 바꾸세요.`);
+  } else {
+    warnOnce('session-secret-missing', '[session] SESSION_SECRET이 없어 이번 실행에서만 쓰는 임의 비밀값을 만들었습니다. 재시작하면 로그인 세션이 풀리니 운영에서는 SESSION_SECRET을 설정하세요.');
+  }
   return randomBytes(32).toString('hex');
 })();
 const OAUTH_BASE_URL = envValue('OAUTH_BASE_URL') || `http://localhost:${PORT}`;
 
-// ── 세션 저장소 (인메모리) ──
-const sessionStore = new Map();
-const { createHmac } = require('crypto');
+// ── 로그인 허용 목록(혼자 쓰는 앱용, 선택) ──
+// ALLOWED_LOGINS = 쉼표로 구분한 항목. 비워 두면 누구나 로그인할 수 있다.
+//   u_<24자리 16진수>  로그인한 뒤 /api/auth/me 의 userId
+//   google:<id> · kakao:<id> · naver:<id>  공급자 계정 id
+//   이메일              공급자가 확인했다고 알려 준 이메일만(Google verified_email, Kakao is_email_verified). Naver 이메일은 보지 않는다.
+// 목록 밖의 계정은 로그인 콜백에서 /?authError=not_allowed 로 돌려보내고 sid를 주지 않는다.
+// 목록을 바꾸면 쿠키 서명 키도 바뀌어 이전에 받은 sid는 모두 로그아웃된다(목록 밖 계정의 예전 쿠키도 함께 끊김).
+const ALLOWED_LOGINS = (() => {
+  const raw = envValue('ALLOWED_LOGINS');
+  const out = { active: Boolean(raw), uids: new Set(), ids: new Set(), emails: new Set(), key: '' };
+  if (!raw) return out;
+  let ignored = 0;
+  for (const part of raw.split(',')) {
+    const v = part.trim();
+    if (!v) continue;
+    const low = v.toLowerCase();
+    if (/^u_[0-9a-f]{24}$/.test(low)) out.uids.add(low);
+    else if (/^(google|kakao|naver):\S{1,200}$/i.test(v)) out.ids.add(`${low.slice(0, low.indexOf(':'))}:${v.slice(v.indexOf(':') + 1)}`);
+    else if (/^[^\s@,]+@[^\s@,]+\.[^\s@,]+$/.test(v)) out.emails.add(low);
+    else ignored += 1;
+  }
+  out.key = [...out.uids, ...out.ids, ...[...out.emails].map((e) => `email:${e}`)].sort().join(',');
+  if (ignored) warnOnce('allowed-logins-ignored', `[auth] ALLOWED_LOGINS에서 알아볼 수 없는 항목 ${ignored}개를 무시했습니다(u_…, 공급자:id, 이메일만).`);
+  if (!out.key) warnOnce('allowed-logins-empty', '[auth] ALLOWED_LOGINS에 쓸 수 있는 항목이 없어 아무도 로그인할 수 없습니다.');
+  return out;
+})();
 
-function signSession(sid) {
-  return createHmac('sha256', SESSION_SECRET).update(sid).digest('hex').slice(0, 16);
+// who = { provider, providerId, uid, email, emailVerified }
+function loginAllowed(who) {
+  if (!ALLOWED_LOGINS.active) return true;
+  if (ALLOWED_LOGINS.uids.has(who.uid)) return true;
+  if (ALLOWED_LOGINS.ids.has(`${who.provider}:${who.providerId}`)) return true;
+  const email = typeof who.email === 'string' ? who.email.trim().toLowerCase() : '';
+  return Boolean(who.emailVerified === true && email && ALLOWED_LOGINS.emails.has(email));
+}
+
+// ── 로그인 세션: 서버에 저장하지 않는 서명 쿠키 ──
+// sid = base64url(JSON {v:1, uid, p, n, img, iat, exp}) + '.' + base64url(HMAC-SHA256(SESSION_KEY, 앞부분))
+// SESSION_KEY = HMAC-SHA256(scrypt(SESSION_SECRET, 'tabimaru-sid-v1'), 'allow:' + 허용 목록) — 시작할 때 한 번 계산한다.
+//   scrypt는 쿠키 하나로 비밀값을 사전 대입해 보는 비용을 크게 늘리고, 허용 목록을 섞어 목록이 바뀌면 예전 sid가 끊긴다.
+// 서버 메모리·디스크에 아무것도 두지 않으므로 Render가 재시작해도 같은 SESSION_SECRET이면 로그인이 유지된다.
+// 예전 형식(sid=<uuid>.<16자리 서명>)은 검증을 통과하지 못해 로그아웃 상태로 본다.
+const { createHmac, scryptSync } = require('crypto');
+const SESSION_KEY = createHmac('sha256', scryptSync(SESSION_SECRET, 'tabimaru-sid-v1', 32, { N: 16384, r: 8, p: 1 }))
+  .update(`allow:${ALLOWED_LOGINS.key}`).digest();
+const SESSION_COOKIE = 'sid';
+const SESSION_TTL_SEC = 30 * 24 * 60 * 60; // 30일(혼자 쓰는 앱). 쿠키 Max-Age와 payload exp가 같은 값을 쓴다.
+const SESSION_COOKIE_MAX_CHARS = 3500;     // 이보다 긴 sid 값은 열어 보지 않고 버린다.
+const SESSION_PROVIDERS = new Set(['naver', 'kakao', 'google']);
+const SESSION_UID_RE = /^u_[0-9a-f]{24}$/;
+const SESSION_NICK_MAX = 40;               // 닉네임은 글자(코드 포인트) 40개까지
+const SESSION_IMG_MAX = 512;               // 프로필 사진 주소는 자르면 깨지므로, 512자를 넘거나 http(s)가 아니면 비운다
+
+// OAuth 신원(공급자 + 공급자 id)에서 항상 같은 사용자 id를 만든다. SESSION_SECRET·users.json과 관계없다.
+function stableUserId(provider, providerId) {
+  return 'u_' + createHash('sha256').update(`${provider}:${providerId}`).digest('hex').slice(0, 24);
+}
+
+// 공급자 응답의 사용자 id(문자열·숫자). 없으면 로그인을 끝내지 않는다(모든 사람이 같은 id를 받지 않게).
+function requireProviderId(provider, raw) {
+  const id = (typeof raw === 'string' || typeof raw === 'number') ? String(raw).trim() : '';
+  if (!id || id.length > 200) throw new Error(`${provider} profile has no usable id`);
+  return id;
+}
+
+function sessionNickname(value) {
+  return Array.from(String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim()).slice(0, SESSION_NICK_MAX).join('');
+}
+
+function sessionProfileImage(value) {
+  const s = String(value || '').trim();
+  return s.length <= SESSION_IMG_MAX && /^https?:\/\/[^\s"'<>\\]+$/i.test(s) ? s : '';
+}
+
+function signSessionPart(part) {
+  return createHmac('sha256', SESSION_KEY).update(part).digest('base64url');
+}
+
+function encodeSessionToken(payload) {
+  const part = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  return `${part}.${signSessionPart(part)}`;
+}
+
+// sid 값을 검증해 세션 객체를 돌려준다. 하나라도 이상하면 null(로그아웃 상태).
+function verifySessionToken(token, nowMs = Date.now()) {
+  if (typeof token !== 'string' || !token || token.length > SESSION_COOKIE_MAX_CHARS) return null;
+  const dot = token.indexOf('.');
+  if (dot <= 0 || dot !== token.lastIndexOf('.')) return null;
+  const part = token.slice(0, dot);
+  const sig = token.slice(dot + 1);
+  if (!/^[A-Za-z0-9_-]+$/.test(part) || !/^[A-Za-z0-9_-]{43}$/.test(sig)) return null;
+  const expected = Buffer.from(signSessionPart(part), 'utf8');
+  const given = Buffer.from(sig, 'utf8');
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
+  let raw;
+  try { raw = JSON.parse(Buffer.from(part, 'base64url').toString('utf8')); } catch { return null; }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  // 알려진 칸만 새 객체로 옮긴다(__proto__ 같은 키는 따라오지 않음).
+  const v = raw.v, uid = raw.uid, p = raw.p, iat = raw.iat, exp = raw.exp;
+  if (v !== 1) return null;
+  if (typeof uid !== 'string' || !SESSION_UID_RE.test(uid)) return null;
+  if (typeof p !== 'string' || !SESSION_PROVIDERS.has(p)) return null;
+  if (!Number.isInteger(iat) || !Number.isInteger(exp) || iat > exp) return null;
+  const nowSec = Math.floor(nowMs / 1000);
+  // 만료됐거나, 정책(30일)보다 길게 남은 값은 받지 않는다(시계 차이 60초 허용).
+  if (exp <= nowSec || exp > nowSec + SESSION_TTL_SEC + 60) return null;
+  return {
+    userId: uid,
+    provider: p,
+    nickname: typeof raw.n === 'string' ? sessionNickname(raw.n) : '',
+    profileImage: typeof raw.img === 'string' ? sessionProfileImage(raw.img) : '',
+    createdAt: iat * 1000
+  };
 }
 
 // HTTPS로 들어온 요청(신뢰하는 프록시의 x-forwarded-proto 포함)에는 Secure를 붙인다.
@@ -557,34 +670,44 @@ function consumeOauthState(req, provider, state) {
   return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
 }
 
+// userData = { userId, provider, nickname, profileImage } → { sid: 쿠키 값, cookie: Set-Cookie 한 줄 }
 function createSession(userData, req) {
-  const sid = randomUUID();
-  sessionStore.set(sid, { ...userData, createdAt: Date.now() });
-  const sig = signSession(sid);
-  return { sid, cookie: `sid=${sid}.${sig}; ${sessionCookieAttributes(req)}; Max-Age=604800` };
+  const iat = Math.floor(Date.now() / 1000);
+  const payload = {
+    v: 1,
+    uid: String(userData.userId || ''),
+    p: String(userData.provider || ''),
+    n: sessionNickname(userData.nickname),
+    img: sessionProfileImage(userData.profileImage),
+    iat,
+    exp: iat + SESSION_TTL_SEC
+  };
+  if (!SESSION_UID_RE.test(payload.uid) || !SESSION_PROVIDERS.has(payload.p)) throw new Error('invalid session user');
+  let token = encodeSessionToken(payload);
+  if (token.length > SESSION_COOKIE_MAX_CHARS) token = encodeSessionToken({ ...payload, img: '' });
+  return { sid: token, cookie: `${SESSION_COOKIE}=${token}; ${sessionCookieAttributes(req)}; Max-Age=${SESSION_TTL_SEC}` };
 }
 
-const SESSION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-
+// 요청의 sid 쿠키(이름이 정확히 sid인 것만)를 검증한다. → { userId, provider, nickname, profileImage, createdAt } | null
 function parseSession(req) {
-  const cookie = req.headers.cookie || '';
-  const match = cookie.match(/sid=([^.;]+)\.([^;]+)/);
-  if (!match) return null;
-  const [, sid, sig] = match;
-  if (signSession(sid) !== sig) return null;
-  const session = sessionStore.get(sid);
-  if (!session) return null;
-  if (session.createdAt && (Date.now() - session.createdAt) > SESSION_MAX_AGE_MS) {
-    sessionStore.delete(sid);
-    return null;
-  }
-  return session;
+  return verifySessionToken(cookieValue(req, SESSION_COOKIE));
 }
 
-function destroySession(req) {
-  const cookie = req.headers.cookie || '';
-  const match = cookie.match(/sid=([^.;]+)\./);
-  if (match) sessionStore.delete(match[1]);
+// 서버에 지울 세션이 없다(서명 쿠키). 로그아웃은 응답에서 sid 쿠키를 지우는 것으로 끝난다.
+// 모든 기기에서 한꺼번에 로그아웃시키려면 SESSION_SECRET을 바꾼다.
+function destroySession(req) { // eslint-disable-line no-unused-vars
+}
+
+function clearSessionCookie(req) {
+  return `${SESSION_COOKIE}=; ${sessionCookieAttributes(req)}; Max-Age=0`;
+}
+
+// 허용 목록(ALLOWED_LOGINS) 밖의 계정: sid를 주지 않고 첫 화면으로(화면이 authError=not_allowed 안내를 띄움).
+// 계정 id·이메일은 로그에 남기지 않는다. users.json에도 기록하지 않는다.
+function rejectNotAllowedLogin(req, res, provider) {
+  warnThrottled(`auth:not-allowed:${provider}`, `[auth] 허용 목록(ALLOWED_LOGINS)에 없는 ${provider} 계정의 로그인을 막았습니다.`);
+  res.writeHead(302, { 'Set-Cookie': clearOauthStateCookie(req), Location: '/?authError=not_allowed' });
+  return res.end();
 }
 
 // ── OAuth HTTPS 헬퍼 ──
@@ -597,30 +720,62 @@ async function oauthFetch(url, options = {}) {
   return resp.json();
 }
 
-// ── 파일 기반 사용자/일정 저장 (Supabase 없을 때 폴백) ──
-const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+// ── 파일 기반 사용자/일정 저장 (Supabase가 설정되지 않았을 때만: 로컬 개발용) ──
+// TABIMARU_DATA_DIR(절대 경로)를 주면 그 폴더를, 없으면 <저장소>/data 를 쓴다(테스트는 임시 폴더를 준다).
+const DATA_DIR = (() => {
+  const configured = envValue('TABIMARU_DATA_DIR');
+  if (!configured) return path.join(__dirname, 'data');
+  if (!path.isAbsolute(configured)) {
+    warnOnce('data-dir-relative', '[data] TABIMARU_DATA_DIR가 절대 경로가 아니라 저장소 폴더 기준으로 해석합니다.');
+  }
+  return path.resolve(__dirname, configured);
+})();
+try {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+} catch (err) {
+  warnOnce('data-dir-create', `[data] 데이터 폴더를 만들지 못했습니다: ${err?.code || err?.message || err}`);
+}
 
 function readJsonFile(name) {
   const fp = path.join(DATA_DIR, name);
   if (!fs.existsSync(fp)) return [];
-  try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return []; }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
 }
 function writeJsonFile(name, data) {
   fs.writeFileSync(path.join(DATA_DIR, name), JSON.stringify(data, null, 2), 'utf8');
 }
 
-function findOrCreateUser(provider, providerId, profile) {
-  const users = readJsonFile('users.json');
-  let user = users.find(u => u.provider === provider && u.providerId === providerId);
-  if (!user) {
-    user = { id: randomUUID(), provider, providerId, ...profile, createdAt: new Date().toISOString() };
-    users.push(user);
-  } else {
-    Object.assign(user, profile, { lastLoginAt: new Date().toISOString() });
+// 로컬 기록용 users.json(공급자별 프로필). 사용자 id의 출처가 아니며(id = stableUserId), 쓰지 못해도 로그인은 계속한다.
+// 예전 기록(id = 임의 UUID)은 그대로 두고 uid 칸만 붙여, 파일 저장소의 예전 일정을 같은 사람이 계속 볼 수 있게 한다.
+function findOrCreateUser(provider, providerId, uid, profile) {
+  const now = new Date().toISOString();
+  try {
+    const users = readJsonFile('users.json');
+    let user = users.find((u) => u && u.provider === provider && u.providerId === providerId);
+    if (!user) {
+      user = { id: uid, uid, provider, providerId, ...profile, createdAt: now };
+      users.push(user);
+    } else {
+      Object.assign(user, profile, { uid, lastLoginAt: now });
+    }
+    writeJsonFile('users.json', users);
+    return { ...user, uid };
+  } catch (err) {
+    warnThrottled('users-file', `[data] users.json을 쓰지 못했습니다(로그인은 계속): ${err?.code || err?.message || err}`);
+    return { id: uid, uid, provider, providerId, ...profile };
   }
-  writeJsonFile('users.json', users);
-  return user;
+}
+
+// 파일 저장소에서 이 사용자의 일정으로 볼 userId 목록: 지금 id + users.json에 남은 예전 id(같은 OAuth 신원)
+function fileStoreOwnerIds(uid) {
+  const ids = new Set([uid]);
+  for (const u of readJsonFile('users.json')) {
+    if (u && u.uid === uid && typeof u.id === 'string' && u.id) ids.add(u.id);
+  }
+  return ids;
 }
 
 const AI_REQUEST_TIMEOUT_MS = Math.max(4000, Number(process.env.AI_REQUEST_TIMEOUT_MS || 15000));
@@ -1146,56 +1301,151 @@ function hasSupabase() {
 
 const SUPABASE_TIMEOUT_MS = 8000;
 
-async function supabaseRequest(method, route, body) {
+// 키 헤더: 새 형식 키(sb_secret_… / sb_publishable_…)는 apikey 헤더로만 보낸다.
+// Authorization: Bearer는 예전 JWT 키(eyJ…로 시작)일 때만 붙인다(Supabase 문서 기준).
+function supabaseAuthHeaders() {
+  const headers = { apikey: SUPABASE_SERVICE_ROLE_KEY };
+  if (SUPABASE_SERVICE_ROLE_KEY.startsWith('eyJ')) headers.Authorization = `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`;
+  return headers;
+}
+
+function redactSupabaseKey(text) {
+  const s = String(text || '');
+  return SUPABASE_SERVICE_ROLE_KEY ? s.split(SUPABASE_SERVICE_ROLE_KEY).join('***') : s;
+}
+
+// PostgREST 호출. 실패하면 err.supabase = true(+ HTTP 상태는 err.status, PostgREST/Postgres 오류 코드는 err.pgCode)인 오류를 던진다.
+// options.prefer: Prefer 헤더를 바꿀 때(POST 기본값은 return=representation,resolution=merge-duplicates)
+// options.timeoutMs: 기본 8초
+async function supabaseRequest(method, route, body, options = {}) {
   if (!hasSupabase()) {
     throw new Error('Supabase is not configured');
   }
-  const headers = {
-    apikey: SUPABASE_SERVICE_ROLE_KEY,
-    Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
-  };
+  const headers = supabaseAuthHeaders();
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
   }
-  if (method === 'POST') {
+  if (options.prefer) {
+    headers.Prefer = options.prefer;
+  } else if (method === 'POST') {
     headers.Prefer = 'return=representation,resolution=merge-duplicates';
   }
-  const response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/${route}`, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined
-  }, SUPABASE_TIMEOUT_MS);
-  if (!response.ok) {
-    const text = await response.text();
-    // 원문은 서버 로그에만 남는다(응답에는 일반 안내만 나감).
-    throw new Error(`Supabase error ${response.status}: ${text.slice(0, 300)}`);
+  let response;
+  try {
+    response = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/${route}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined
+    }, options.timeoutMs || SUPABASE_TIMEOUT_MS);
+  } catch (err) {
+    const e = new Error(`Supabase request failed: ${err?.cause?.code || err?.message || err}`);
+    e.supabase = true;
+    throw e;
   }
-  if (response.status === 204) return [];
-  return response.json();
+  const text = await response.text().catch(() => '');
+  if (!response.ok) {
+    // 원문은 서버 로그에만 남는다(응답에는 일반 안내만 나감).
+    const e = new Error(`Supabase error ${response.status}: ${redactSupabaseKey(text.slice(0, 300))}`);
+    e.supabase = true;
+    e.status = response.status;
+    try {
+      const code = JSON.parse(text)?.code;
+      if (typeof code === 'string' && /^[A-Z0-9]{1,12}$/.test(code)) e.pgCode = code;
+    } catch { /* JSON이 아닌 오류 본문 */ }
+    throw e;
+  }
+  if (response.status === 204 || !text.trim()) return [];
+  try {
+    return JSON.parse(text);
+  } catch {
+    const e = new Error(`Supabase returned non-JSON (HTTP ${response.status})`);
+    e.supabase = true;
+    throw e;
+  }
 }
 
-// Supabase 연결 확인(값 비싼 작업 전에). 결과는 성공 5분·실패 1분 동안 재사용한다.
-const _supabaseProbe = { at: 0, reachable: null };
-async function supabaseStatus() {
-  if (!hasSupabase()) return { configured: false, reachable: false };
-  const ttl = _supabaseProbe.reachable ? 5 * 60_000 : 60_000;
-  if (_supabaseProbe.at && (Date.now() - _supabaseProbe.at) < ttl) {
-    return { configured: true, reachable: Boolean(_supabaseProbe.reachable) };
-  }
-  let reachable = false;
+// ── Supabase 상태 ──
+// 'ok' | 'auth_error'(401·403: 키가 틀렸거나 폐기됨) | 'schema_error'(404 등: travel_plans 표가 없음) | 'unreachable'(연결 실패·시간 초과·5xx·JSON 아님)
+// 요청 내용 때문에 생긴 4xx(400·409·413·422 …)는 저장소 상태가 아니므로 null(상태를 바꾸지 않음).
+function classifySupabaseError(err) {
+  if (!err || !err.status || err.status >= 500) return 'unreachable';
+  if (err.status === 401 || err.status === 403) return 'auth_error';
+  if (err.status === 404) return 'schema_error';
+  return null;
+}
+
+const SUPABASE_STATE_LOG = {
+  auth_error: '[supabase] 키가 거부됐습니다(HTTP 401·403). SUPABASE_SERVICE_ROLE_KEY에 지금 쓰는 sb_secret_ 키(또는 service_role 키)를 넣었는지 확인하세요.',
+  schema_error: '[supabase] travel_plans 표를 찾을 수 없습니다. deploy/supabase/schema.sql을 실행했는지 확인하세요.',
+  unreachable: '[supabase] 저장소에 연결할 수 없습니다'
+};
+
+// 실제 조회(travel_plans?select=id&limit=1, 행 데이터는 쓰지 않음)로 주소·키·표를 한 번에 확인한다.
+// /api/health의 연결 확인과 /api/keepalive가 함께 쓴다. 결과는 _supabaseProbe에도 기록한다.
+async function runSupabaseCheck(label) {
+  let state = 'unreachable';
   try {
-    const r = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/`, {
-      method: 'HEAD',
-      headers: { apikey: SUPABASE_SERVICE_ROLE_KEY }
-    }, 4000);
-    reachable = r.status < 500;
-    if (!reachable) warnThrottled('supabase:unreachable', `[supabase] 저장소 응답 오류 HTTP ${r.status}`);
+    const rows = await supabaseRequest('GET', 'travel_plans?select=id&limit=1', undefined, { timeoutMs: 5000 });
+    state = Array.isArray(rows) ? 'ok' : 'schema_error';
   } catch (err) {
-    warnThrottled('supabase:unreachable', `[supabase] 저장소에 연결할 수 없습니다: ${err?.cause?.code || err?.message || err}`);
+    state = classifySupabaseError(err) || 'schema_error';
+    warnThrottled(`supabase:${label}:${state}`, `${SUPABASE_STATE_LOG[state]} (${label}: ${redactSupabaseKey(err?.message || err)})`);
   }
+  noteSupabaseState(state);
+  return state;
+}
+
+// 연결 확인. 결과는 정상 5분·이상 1분 동안 재사용한다(force면 바로 다시 확인).
+// 서버가 뜬 직후 한 번, 그 뒤 10분마다 확인해서 /api/health의 supabaseReachable이 처음부터 채워진다.
+const _supabaseProbe = { at: 0, state: null, inflight: null };
+async function supabaseStatus({ force = false } = {}) {
+  if (!hasSupabase()) return { configured: false, reachable: false, state: null };
+  const ttl = _supabaseProbe.state === 'ok' ? 5 * 60_000 : 60_000;
+  if (!force && _supabaseProbe.at && (Date.now() - _supabaseProbe.at) < ttl) {
+    return { configured: true, reachable: _supabaseProbe.state === 'ok', state: _supabaseProbe.state };
+  }
+  if (!_supabaseProbe.inflight) {
+    _supabaseProbe.inflight = runSupabaseCheck('probe').finally(() => { _supabaseProbe.inflight = null; });
+  }
+  const state = await _supabaseProbe.inflight;
+  return { configured: true, reachable: state === 'ok', state };
+}
+
+function noteSupabaseState(state) {
+  if (!state) return;
   _supabaseProbe.at = Date.now();
-  _supabaseProbe.reachable = reachable;
-  return { configured: true, reachable };
+  _supabaseProbe.state = state;
+}
+
+// 저장소 요청이 실패했을 때: 저장소 상태를 기록하고, 요청 내용 탓(4xx)인지 돌려준다.
+function noteSupabaseFailure(err) {
+  const state = classifySupabaseError(err);
+  noteSupabaseState(state);
+  return state === null ? 'content' : state;
+}
+
+// GET /api/keepalive: 실제로 가벼운 조회를 해서 무료 Supabase 프로젝트가 활동 없음으로 일시 중지되지 않게 한다.
+// 성공은 10분, 실패는 15초 동안 재사용한다 → 성공하면 10분에 한 번만 조회하고, 실패하면 GitHub Actions의
+// 다음 재시도(30초 뒤)가 실제로 다시 확인한다(실패 중에도 Supabase 호출은 분당 4번 이하).
+const KEEPALIVE_CACHE_MS = 10 * 60_000;
+const KEEPALIVE_FAIL_CACHE_MS = 15_000;
+const _keepalive = { at: 0, result: null, checkedAt: null, inflight: null };
+async function supabaseKeepalive() {
+  if (!hasSupabase()) return { supabase: 'off', checkedAt: new Date().toISOString() };
+  const ttl = _keepalive.result === 'ok' ? KEEPALIVE_CACHE_MS : KEEPALIVE_FAIL_CACHE_MS;
+  if (_keepalive.at && (Date.now() - _keepalive.at) < ttl) {
+    return { supabase: _keepalive.result, checkedAt: _keepalive.checkedAt };
+  }
+  if (!_keepalive.inflight) {
+    _keepalive.inflight = (async () => {
+      const state = await runSupabaseCheck('keepalive');
+      _keepalive.at = Date.now();
+      _keepalive.result = state;
+      _keepalive.checkedAt = new Date(_keepalive.at).toISOString();
+    })().finally(() => { _keepalive.inflight = null; });
+  }
+  await _keepalive.inflight;
+  return { supabase: _keepalive.result, checkedAt: _keepalive.checkedAt };
 }
 
 // 저장소를 쓸 수 없을 때의 응답(503). 진행 전에 확인해서 AI·장소 검색 같은 비싼 작업을 돌리지 않는다.
@@ -2796,6 +3046,23 @@ const CHAT_THEME_LABELS = {
   ja: { foodie: 'グルメ', culture: '文化・歴史', shopping: 'ショッピング', nature: '自然・温泉' }
 };
 
+// 한국어 주제 조사: 마지막 글자가 한글이면 받침에 따라 '은'/'는'('나라는', '하코네는', '오타루 운하는'), 한글이 아니면 '은(는)'.
+function koHasFinalConsonant(word) {
+  const s = String(word || '').trim();
+  const last = s ? s.codePointAt(s.length - 1) : 0;
+  if (last >= 0xAC00 && last <= 0xD7A3) return (last - 0xAC00) % 28 !== 0;
+  return null;
+}
+function koTopicParticle(word) {
+  const f = koHasFinalConsonant(word);
+  return f === null ? '은(는)' : (f ? '은' : '는');
+}
+// 목적격 조사: '스시를', '라멘을'(한글이 아니면 '을(를)')
+function koObjectParticle(word) {
+  const f = koHasFinalConsonant(word);
+  return f === null ? '을(를)' : (f ? '을' : '를');
+}
+
 const CHAT_REPLY_TEXT = {
   ko: {
     setTrip: (city, days, date) => `${city} ${days}일 여행으로 맞췄어요 (출발 ${date}).`,
@@ -2803,7 +3070,8 @@ const CHAT_REPLY_TEXT = {
     must: (list) => `꼭 갈 곳: ${list}`,
     excluded: (list) => `제외: ${list}`,
     theme: (label) => `테마: ${label}`,
-    food: (food) => `맛집은 '${food}' 위주로 찾을게요.`,
+    // 일정은 먹고 싶은 음식마다 맞는 가게를 저녁에 하나씩 넣는다(전부 그 음식으로 채우지는 않음) → '위주로'라고 약속하지 않는다.
+    food: (food) => `맛집에 '${food}'${koObjectParticle(food)} 넣어 볼게요.`,
     conditions: (list) => `조건: ${list}`,
     cond: {
       indoor: '실내 위주', lateStart: (t) => `${t} 이후 시작`, maxPlaces: (n) => `하루 ${n}곳`, restDay: '중간에 휴식일',
@@ -2811,9 +3079,9 @@ const CHAT_REPLY_TEXT = {
       lowBudget: '저예산(무료·저렴한 곳 위주)',
       arrival: (t) => `첫날 ${t} 도착`, departure: (t) => `마지막 날 ${t} 출발`
     },
-    dayTripStay: (place, city) => `${place}은(는) ${city}에서 다녀오는 당일치기로 넣었어요. 숙소는 ${city} 기준으로 찾으니 ${place} 숙박(료칸)은 따로 확인해 주세요.`,
-    unsupported: (list, days) => `${list}은(는) 아직 데이터가 없어 일정에 넣지 못해요. 전체 ${days}일은 그대로 둘게요.`,
-    substitute: (place, sub, days) => `${place}은(는) 아직 도시 데이터가 없어 당일치기(${sub})로 넣었어요. 전체 ${days}일은 그대로 둘게요.`,
+    dayTripStay: (place, city) => `${place}${koTopicParticle(place)} ${city}에서 다녀오는 당일치기로 넣었어요. 숙소는 ${city} 기준으로 찾으니 ${place} 숙박(료칸)은 따로 확인해 주세요.`,
+    unsupported: (list, days) => `${list}${koTopicParticle(list)} 아직 데이터가 없어 일정에 넣지 못해요. 전체 ${days}일은 그대로 둘게요.`,
+    substitute: (place, sub, days) => `${place}${koTopicParticle(place)} 아직 도시 데이터가 없어 당일치기(${sub})로 넣었어요. 전체 ${days}일은 그대로 둘게요.`,
     region: (list) => `지역별 일정 분배: ${list}`,
     regionItem: (city, n, unit) => `${city} ${n}${unit === 'night' ? '박' : '일'}`,
     airport: (code) => `도착 공항: ${code}`,
@@ -2828,7 +3096,7 @@ const CHAT_REPLY_TEXT = {
     must: (list) => `Must-visit: ${list}`,
     excluded: (list) => `Excluded: ${list}`,
     theme: (label) => `Theme: ${label}`,
-    food: (food) => `Restaurants: mainly ${food}.`,
+    food: (food) => `Restaurants: I'll try to include ${food}.`,
     conditions: (list) => `Conditions: ${list}`,
     cond: {
       indoor: 'Indoor-first', lateStart: (t) => `Start after ${t}`, maxPlaces: (n) => `Up to ${n} places a day`, restDay: 'A rest day in the middle',
@@ -2853,7 +3121,7 @@ const CHAT_REPLY_TEXT = {
     must: (list) => `必ず行く場所：${list}`,
     excluded: (list) => `除外：${list}`,
     theme: (label) => `テーマ：${label}`,
-    food: (food) => `グルメは「${food}」中心で探します。`,
+    food: (food) => `グルメに「${food}」を入れてみます。`,
     conditions: (list) => `条件：${list}`,
     cond: {
       indoor: '屋内中心', lateStart: (t) => `${t}以降に開始`, maxPlaces: (n) => `1日${n}か所`, restDay: '途中に休息日',
@@ -6132,10 +6400,13 @@ function createItinerary(payload) {
     }
     const list = foodsByCity[dayCity] && foodsByCity[dayCity].length > 0 ? foodsByCity[dayCity] : (city.foods || []);
     if (list.length === 0) return null;
-    // 같은 도시에서 아직 안 간 곳부터(다 갔으면 순서대로 다시)
+    // 같은 도시에서 아직 안 간 곳부터. 실제 가게를 다 썼으면 같은 가게를 되풀이하기 전에
+    // 아직 안 쓴 '<도시> 이자카야 찾기' 같은 찾기 안내를 쓰고, 그것도 다 썼을 때만 순서대로 다시.
     const used = usedDinnerByCity.get(dayCity) || new Set();
     const fresh = list.filter((f) => !used.has(f.name));
-    return fresh.length ? fresh[0] : list[i % list.length];
+    if (fresh.length) return fresh[0];
+    const freshGeneric = all.filter((f) => f.generic && !used.has(f.name));
+    return freshGeneric.length ? freshGeneric[0] : list[i % list.length];
   };
   // 실제로 일정에 넣은 저녁만 '먹음'으로 센다(희망 음식·같은 가게 반복 방지)
   const markDinner = (dayCity, f) => {
@@ -10380,6 +10651,230 @@ async function fetchWeatherDaily(lat, lng) {
   }
 }
 
+// ── 내 일정(/api/my-plans/*) ──
+// 행 대응(Supabase travel_plans): plan_key = 'my_' + 일정 id, user_label = 세션 userId, source = 'my-plans',
+// city_key = cityKey || 'unknown', city_label, theme, start_date(올바른 YYYY-MM-DD일 때만, 아니면 null),
+// days(1 이상 정수, 아니면 null), summary = 제목, payload = 일정 객체 전체(파일 저장소와 같은 모양).
+// Supabase가 설정됐는데 닿지 않거나 키·표 문제면 503 PROVIDER_UNAVAILABLE(파일에 대신 쓰지 않음).
+// 저장소가 내용을 거절하면(4xx) 400 INVALID_PLAN, 너무 크면 413 PLAN_TOO_LARGE, 개수 상한이면 409 PLAN_LIMIT.
+// 응답은 모두 Cache-Control: no-store(개인 일정이 브라우저·중간 캐시에 남지 않게).
+const MY_PLANS_SOURCE = 'my-plans';
+const MY_PLAN_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+// 사용자당 저장 개수 상한. 목록도 같은 수까지 보여 줘서 저장한 일정은 모두 화면에서 지울 수 있다.
+const MY_PLANS_MAX_PER_USER = 50;
+const MY_PLANS_LIST_LIMIT = MY_PLANS_MAX_PER_USER;
+// 일정 하나의 최대 크기(JSON 바이트). 실제 일정(항공·숙소·추천 목록 포함)은 보통 150KB 안쪽이다.
+const MY_PLAN_MAX_BYTES = 400_000;
+const STORE_ERRORS = {
+  unavailable: [503, { error: '일정 저장소에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.', reasonCode: 'PROVIDER_UNAVAILABLE' }],
+  invalid: [400, { error: '저장할 수 없는 내용이 들어 있습니다.', reasonCode: 'INVALID_PLAN' }],
+  tooLarge: [413, { error: '일정이 너무 커서 저장할 수 없습니다.', reasonCode: 'PLAN_TOO_LARGE' }],
+  limit: [409, { error: `일정은 ${MY_PLANS_MAX_PER_USER}개까지 저장할 수 있습니다. 안 쓰는 일정을 지운 뒤 다시 저장해 주세요.`, reasonCode: 'PLAN_LIMIT', limit: MY_PLANS_MAX_PER_USER }]
+};
+function sendStoreError(res, kind) {
+  const [status, body] = STORE_ERRORS[kind] || STORE_ERRORS.unavailable;
+  return sendJson(res, status, body);
+}
+
+// 저장할 값 정리: Postgres text·jsonb가 받지 않는 글자를 고친다(NUL은 지우고, 짝 없는 서로게이트는 U+FFFD로).
+// 객체 키도 같이 고치고 '__proto__' 키는 버린다. 64단계보다 깊게 중첩된 값은 400.
+const STORE_MAX_DEPTH = 64;
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+function storeSafeString(value) {
+  const s = String(value).replace(/\u0000/g, '');
+  return typeof s.toWellFormed === 'function' ? s.toWellFormed() : s.replace(LONE_SURROGATE_RE, '\uFFFD');
+}
+function storeSafeValue(value, depth = 0) {
+  if (typeof value === 'string') return storeSafeString(value);
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (value === null || typeof value !== 'object') return typeof value === 'boolean' ? value : null;
+  if (depth >= STORE_MAX_DEPTH) throw new HttpError(400, 'plan is nested too deeply');
+  if (Array.isArray(value)) return value.map((v) => storeSafeValue(v, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    const key = storeSafeString(k);
+    if (key === '__proto__') continue;
+    out[key] = storeSafeValue(v, depth + 1);
+  }
+  return out;
+}
+
+function jsonBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+const MY_PLANS_ROUTES = new Map([
+  ['/api/my-plans/save', { method: 'POST', op: 'save' }],
+  ['/api/my-plans/list', { method: 'GET', op: 'list' }],
+  ['/api/my-plans/load', { method: 'GET', op: 'load' }],
+  ['/api/my-plans/delete', { method: 'DELETE', op: 'delete' }]
+]);
+
+// 달력에 있는 날짜(YYYY-MM-DD)만. '2026-02-30'처럼 Date.parse가 넘겨 버리는 값도 거른다.
+function strictIsoDate(value) {
+  const v = typeof value === 'string' ? value.trim() : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return '';
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === v ? v : '';
+}
+
+function myPlanText(value, max) {
+  const s = typeof value === 'string' ? value : (typeof value === 'number' && Number.isFinite(value) ? String(value) : '');
+  // 자른 뒤에 정리한다(자르다 갈라진 서로게이트 쌍도 U+FFFD가 된다).
+  return storeSafeString(s.slice(0, max));
+}
+
+// 요청 본문 → 저장할 일정 객체 { id, userId, title, cityKey, cityLabel, startDate, days, theme, data, savedAt }
+// 클라이언트 id는 안전한 모양(/^[A-Za-z0-9_-]{1,64}$/)일 때만 쓰고, 아니면 새 UUID를 만든다.
+// 글자는 storeSafeString/storeSafeValue로 정리한다(NUL·짝 없는 서로게이트 때문에 저장소가 거절하지 않게).
+function buildMyPlan(payload, userId) {
+  const clientId = typeof payload.id === 'string' && MY_PLAN_ID_RE.test(payload.id) ? payload.id : '';
+  const daysNum = Number(payload.days);
+  const plan = {
+    id: clientId || randomUUID(),
+    userId,
+    title: myPlanText(payload.title, 200),
+    cityKey: myPlanText(payload.cityKey, 40),
+    cityLabel: myPlanText(payload.cityLabel, 80),
+    startDate: myPlanText(payload.startDate, 10),
+    days: Number.isInteger(daysNum) && daysNum >= 0 && daysNum <= 365 ? daysNum : 0,
+    theme: myPlanText(payload.theme, 30),
+    data: payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data) ? storeSafeValue(payload.data) : {},
+    savedAt: new Date().toISOString()
+  };
+  return { plan, clientId: Boolean(clientId) };
+}
+
+function myPlanRow(plan) {
+  return {
+    plan_key: `my_${plan.id}`,
+    user_label: plan.userId,
+    city_key: plan.cityKey || 'unknown',
+    city_label: plan.cityLabel || null,
+    theme: plan.theme || null,
+    start_date: strictIsoDate(plan.startDate) || null,
+    days: Number.isInteger(plan.days) && plan.days > 0 ? plan.days : null,
+    summary: plan.title,
+    source: MY_PLANS_SOURCE,
+    payload: plan
+  };
+}
+
+function myPlanSummaryFromRow(row) {
+  return {
+    id: String(row.plan_key || '').replace(/^my_/, ''),
+    title: typeof row.summary === 'string' ? row.summary : '',
+    cityLabel: typeof row.city_label === 'string' ? row.city_label : '',
+    startDate: typeof row.start_date === 'string' ? row.start_date : '',
+    days: Number.isInteger(row.days) ? row.days : 0,
+    theme: typeof row.theme === 'string' ? row.theme : '',
+    savedAt: String(row.updated_at || row.created_at || '')
+  };
+}
+
+function myPlanSummary(p) {
+  return { id: p.id, title: p.title, cityLabel: p.cityLabel, startDate: p.startDate, days: p.days, theme: p.theme, savedAt: p.savedAt };
+}
+
+async function handleMyPlans(req, res, parsedUrl, op) {
+  // 개인 일정 응답(오류 포함)은 캐시하지 않는다. sendJson의 writeHead가 이 헤더를 합친다.
+  res.setHeader('Cache-Control', 'no-store');
+  const session = parseSession(req);
+  if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
+  const userId = session.userId;
+  let built = null;
+  if (op === 'save') {
+    const payload = await readBody(req, BODY_LIMIT_LARGE);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return sendJson(res, 400, { error: 'Invalid request body' });
+    built = buildMyPlan(payload, userId);
+    if (jsonBytes(built.plan) > MY_PLAN_MAX_BYTES) return sendStoreError(res, 'tooLarge');
+  }
+  const planId = op === 'load' || op === 'delete' ? String(parsedUrl.searchParams.get('id') || '') : '';
+  if ((op === 'load' || op === 'delete') && !planId) return sendJson(res, 400, { error: 'id is required' });
+  if (!hasSupabase()) return myPlansFileStore(res, op, userId, built, planId);
+  try {
+    const result = await myPlansSupabaseStore(res, op, userId, built, planId);
+    noteSupabaseState('ok');
+    return result;
+  } catch (err) {
+    if (!err?.supabase) throw err;
+    const kind = noteSupabaseFailure(err);
+    // 오류 종류(상태 코드·PostgREST 코드)마다 10분에 한 줄씩 남긴다(같은 종류만 줄인다).
+    warnThrottled(`supabase:my-plans:${op}:${err.status || 'net'}:${err.pgCode || ''}`, `[supabase] 내 일정 ${op} 실패: ${redactSupabaseKey(err.message)}`);
+    return sendStoreError(res, kind === 'content' && op === 'save' ? 'invalid' : 'unavailable');
+  }
+}
+
+async function myPlansSupabaseStore(res, op, userId, built, planId) {
+  const enc = encodeURIComponent;
+  const owner = `user_label=eq.${enc(userId)}&source=eq.${enc(MY_PLANS_SOURCE)}`;
+  if (op === 'save') {
+    const { plan, clientId } = built;
+    const planKey = `my_${plan.id}`;
+    let isNew = true;
+    if (clientId) {
+      // 다른 사용자의 일정(또는 내 일정이 아닌 행)을 덮어쓰지 못하게 기존 행의 주인을 먼저 본다.
+      const existing = await supabaseRequest('GET', `travel_plans?select=user_label,source&plan_key=eq.${enc(planKey)}&limit=1`);
+      const row = Array.isArray(existing) ? existing[0] : null;
+      if (row && (row.user_label !== userId || row.source !== MY_PLANS_SOURCE)) return sendJson(res, 404, { error: '일정을 찾을 수 없습니다' });
+      isNew = !row;
+    }
+    if (isNew) {
+      // 새 일정이면 개수 상한을 본다(덮어쓰기는 개수가 늘지 않으므로 늘 허용).
+      const mine = await supabaseRequest('GET', `travel_plans?select=plan_key&${owner}&limit=${MY_PLANS_MAX_PER_USER}`);
+      if (Array.isArray(mine) && mine.length >= MY_PLANS_MAX_PER_USER) return sendStoreError(res, 'limit');
+    }
+    await supabaseRequest('POST', 'travel_plans?on_conflict=plan_key', [myPlanRow(plan)], { prefer: 'return=minimal,resolution=merge-duplicates' });
+    return sendJson(res, 200, { saved: plan });
+  }
+  if (op === 'list') {
+    const rows = await supabaseRequest('GET', `travel_plans?select=plan_key,summary,city_label,start_date,days,theme,updated_at&${owner}&order=updated_at.desc&limit=${MY_PLANS_LIST_LIMIT}`);
+    const plans = (Array.isArray(rows) ? rows : [])
+      .filter((r) => r && typeof r.plan_key === 'string' && r.plan_key.startsWith('my_'))
+      .map(myPlanSummaryFromRow);
+    return sendJson(res, 200, { plans });
+  }
+  if (op === 'load') {
+    if (!MY_PLAN_ID_RE.test(planId)) return sendJson(res, 404, { error: '일정을 찾을 수 없습니다' });
+    const rows = await supabaseRequest('GET', `travel_plans?select=payload&plan_key=eq.${enc(`my_${planId}`)}&${owner}&limit=1`);
+    const plan = Array.isArray(rows) && rows[0] ? rows[0].payload : null;
+    if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return sendJson(res, 404, { error: '일정을 찾을 수 없습니다' });
+    return sendJson(res, 200, { plan });
+  }
+  // delete
+  if (!MY_PLAN_ID_RE.test(planId)) return sendJson(res, 200, { deleted: false });
+  const deleted = await supabaseRequest('DELETE', `travel_plans?plan_key=eq.${enc(`my_${planId}`)}&${owner}&select=plan_key`, undefined, { prefer: 'return=representation' });
+  return sendJson(res, 200, { deleted: Array.isArray(deleted) && deleted.length > 0 });
+}
+
+// 로컬 개발용 파일 저장소(DATA_DIR/saved_plans.json). users.json에 남은 예전 id의 일정도 같은 사람 것으로 본다.
+function myPlansFileStore(res, op, userId, built, planId) {
+  const owners = fileStoreOwnerIds(userId);
+  const plans = readJsonFile('saved_plans.json');
+  const mine = (p) => Boolean(p) && owners.has(p.userId);
+  if (op === 'save') {
+    const { plan } = built;
+    const existIdx = plans.findIndex((p) => mine(p) && p.id === plan.id);
+    if (existIdx >= 0) plans[existIdx] = plan;
+    else if (plans.filter(mine).length >= MY_PLANS_MAX_PER_USER) return sendStoreError(res, 'limit');
+    else plans.push(plan);
+    writeJsonFile('saved_plans.json', plans);
+    return sendJson(res, 200, { saved: plan });
+  }
+  if (op === 'list') {
+    const myPlans = plans.filter(mine).sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+    return sendJson(res, 200, { plans: myPlans.map(myPlanSummary) });
+  }
+  if (op === 'load') {
+    const plan = plans.find((p) => mine(p) && p.id === planId);
+    if (!plan) return sendJson(res, 404, { error: '일정을 찾을 수 없습니다' });
+    return sendJson(res, 200, { plan });
+  }
+  const kept = plans.filter((p) => !(mine(p) && p.id === planId));
+  if (kept.length < plans.length) writeJsonFile('saved_plans.json', kept);
+  return sendJson(res, 200, { deleted: kept.length < plans.length });
+}
+
 async function handleApi(req, res, parsedUrl) {
   try {
     // Rate limiting — 기본은 소켓 주소, 신뢰하는 프록시(Render·TRUST_PROXY=1) 뒤에서만 X-Forwarded-For의 마지막 값
@@ -10422,12 +10917,16 @@ async function handleApi(req, res, parsedUrl) {
           headers: { Authorization: `Bearer ${tokenData.access_token}` }
         });
         const p = profileData.response || {};
-        const user = findOrCreateUser('naver', p.id, {
+        const naverId = requireProviderId('naver', p.id);
+        const userId = stableUserId('naver', naverId);
+        // Naver 이메일은 확인 여부를 알 수 없어 허용 목록 대조에 쓰지 않는다(u_… 또는 naver:<id>로만).
+        if (!loginAllowed({ provider: 'naver', providerId: naverId, uid: userId, email: p.email, emailVerified: false })) return rejectNotAllowedLogin(req, res, 'naver');
+        const user = findOrCreateUser('naver', naverId, userId, {
           nickname: p.nickname || p.name || 'Naver User',
           email: p.email || '',
           profileImage: p.profile_image || ''
         });
-        const sess = createSession({ userId: user.id, provider: 'naver', nickname: user.nickname, profileImage: user.profileImage }, req);
+        const sess = createSession({ userId, provider: 'naver', nickname: user.nickname, profileImage: user.profileImage }, req);
         res.writeHead(302, { 'Set-Cookie': [sess.cookie, clearOauthStateCookie(req)], Location: '/' });
         return res.end();
       } catch (err) {
@@ -10468,12 +10967,16 @@ async function handleApi(req, res, parsedUrl) {
         });
         const kakaoAcct = profileData.kakao_account || {};
         const kakaoProfile = kakaoAcct.profile || {};
-        const user = findOrCreateUser('kakao', String(profileData.id), {
+        const kakaoId = requireProviderId('kakao', profileData.id);
+        const userId = stableUserId('kakao', kakaoId);
+        const kakaoEmailVerified = kakaoAcct.is_email_verified === true && kakaoAcct.is_email_valid !== false;
+        if (!loginAllowed({ provider: 'kakao', providerId: kakaoId, uid: userId, email: kakaoAcct.email, emailVerified: kakaoEmailVerified })) return rejectNotAllowedLogin(req, res, 'kakao');
+        const user = findOrCreateUser('kakao', kakaoId, userId, {
           nickname: kakaoProfile.nickname || 'Kakao User',
           email: kakaoAcct.email || '',
           profileImage: kakaoProfile.profile_image_url || ''
         });
-        const sess = createSession({ userId: user.id, provider: 'kakao', nickname: user.nickname, profileImage: user.profileImage }, req);
+        const sess = createSession({ userId, provider: 'kakao', nickname: user.nickname, profileImage: user.profileImage }, req);
         res.writeHead(302, { 'Set-Cookie': [sess.cookie, clearOauthStateCookie(req)], Location: '/' });
         return res.end();
       } catch (err) {
@@ -10513,12 +11016,15 @@ async function handleApi(req, res, parsedUrl) {
         const profileData = await oauthFetch('https://www.googleapis.com/oauth2/v2/userinfo', {
           headers: { Authorization: `Bearer ${tokenData.access_token}` }
         });
-        const user = findOrCreateUser('google', profileData.id, {
+        const googleId = requireProviderId('google', profileData.id);
+        const userId = stableUserId('google', googleId);
+        if (!loginAllowed({ provider: 'google', providerId: googleId, uid: userId, email: profileData.email, emailVerified: profileData.verified_email === true })) return rejectNotAllowedLogin(req, res, 'google');
+        const user = findOrCreateUser('google', googleId, userId, {
           nickname: profileData.name || 'Google User',
           email: profileData.email || '',
           profileImage: profileData.picture || ''
         });
-        const sess = createSession({ userId: user.id, provider: 'google', nickname: user.nickname, profileImage: user.profileImage }, req);
+        const sess = createSession({ userId, provider: 'google', nickname: user.nickname, profileImage: user.profileImage }, req);
         res.writeHead(302, { 'Set-Cookie': [sess.cookie, clearOauthStateCookie(req)], Location: '/' });
         return res.end();
       } catch (err) {
@@ -10530,74 +11036,30 @@ async function handleApi(req, res, parsedUrl) {
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/me') {
       const session = parseSession(req);
-      if (!session) return sendJson(res, 200, { user: null });
-      return sendJson(res, 200, { user: { userId: session.userId, provider: session.provider, nickname: session.nickname, profileImage: session.profileImage } });
+      if (!session) return sendJson(res, 200, { user: null }, { 'Cache-Control': 'no-store' });
+      return sendJson(res, 200, { user: { userId: session.userId, provider: session.provider, nickname: session.nickname, profileImage: session.profileImage } }, { 'Cache-Control': 'no-store' });
     }
 
     if (req.method === 'POST' && parsedUrl.pathname === '/api/auth/logout') {
       destroySession(req);
       res.writeHead(200, {
         'Content-Type': 'application/json',
-        'Set-Cookie': `sid=; ${sessionCookieAttributes(req)}; Max-Age=0`
+        'Set-Cookie': clearSessionCookie(req)
       });
       return res.end(JSON.stringify({ ok: true }));
     }
 
-    // ── 일정 저장/불러오기 (로그인 필요) ──
-    if (req.method === 'POST' && parsedUrl.pathname === '/api/my-plans/save') {
-      const session = parseSession(req);
-      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
-      const payload = await readBody(req, BODY_LIMIT_LARGE);
-      const plans = readJsonFile('saved_plans.json');
-      const plan = {
-        id: payload.id || randomUUID(),
-        userId: session.userId,
-        title: payload.title || '',
-        cityKey: payload.cityKey || '',
-        cityLabel: payload.cityLabel || '',
-        startDate: payload.startDate || '',
-        days: payload.days || 0,
-        theme: payload.theme || '',
-        data: payload.data || {},
-        savedAt: new Date().toISOString()
-      };
-      const existIdx = plans.findIndex(p => p.id === plan.id && p.userId === session.userId);
-      if (existIdx >= 0) plans[existIdx] = plan;
-      else plans.push(plan);
-      writeJsonFile('saved_plans.json', plans);
-      return sendJson(res, 200, { saved: plan });
+    // ── 내 일정 저장/불러오기 (로그인 필요) ──
+    // Supabase가 설정돼 있으면 travel_plans 표(source = 'my-plans'), 없으면(로컬 개발) DATA_DIR/saved_plans.json.
+    const myPlansRoute = MY_PLANS_ROUTES.get(parsedUrl.pathname);
+    if (myPlansRoute && req.method === myPlansRoute.method) {
+      return await handleMyPlans(req, res, parsedUrl, myPlansRoute.op);
     }
 
-    if (req.method === 'GET' && parsedUrl.pathname === '/api/my-plans/list') {
-      const session = parseSession(req);
-      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
-      const plans = readJsonFile('saved_plans.json');
-      const myPlans = plans.filter(p => p.userId === session.userId)
-        .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
-      return sendJson(res, 200, { plans: myPlans.map(p => ({ id: p.id, title: p.title, cityLabel: p.cityLabel, startDate: p.startDate, days: p.days, theme: p.theme, savedAt: p.savedAt })) });
-    }
-
-    if (req.method === 'GET' && parsedUrl.pathname === '/api/my-plans/load') {
-      const session = parseSession(req);
-      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
-      const planId = parsedUrl.searchParams.get('id');
-      if (!planId) return sendJson(res, 400, { error: 'id is required' });
-      const plans = readJsonFile('saved_plans.json');
-      const plan = plans.find(p => p.id === planId && p.userId === session.userId);
-      if (!plan) return sendJson(res, 404, { error: '일정을 찾을 수 없습니다' });
-      return sendJson(res, 200, { plan });
-    }
-
-    if (req.method === 'DELETE' && parsedUrl.pathname === '/api/my-plans/delete') {
-      const session = parseSession(req);
-      if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
-      const planId = parsedUrl.searchParams.get('id');
-      if (!planId) return sendJson(res, 400, { error: 'id is required' });
-      let plans = readJsonFile('saved_plans.json');
-      const before = plans.length;
-      plans = plans.filter(p => !(p.id === planId && p.userId === session.userId));
-      writeJsonFile('saved_plans.json', plans);
-      return sendJson(res, 200, { deleted: plans.length < before });
+    // 무료 Supabase 프로젝트가 활동 없음으로 일시 중지되지 않게 GitHub Actions가 3일마다 부른다(비밀값·행 데이터 없음).
+    if (req.method === 'GET' && parsedUrl.pathname === '/api/keepalive') {
+      const ka = await supabaseKeepalive();
+      return sendJson(res, 200, { ok: true, supabase: ka.supabase, checkedAt: ka.checkedAt }, { 'Cache-Control': 'no-store' });
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/auth/providers') {
@@ -10630,8 +11092,18 @@ async function handleApi(req, res, parsedUrl) {
         brand: APP_BRAND,
         providers: diagnostics.modes,
         supabaseConfigured: hasSupabase(),
-        // 마지막 연결 확인 결과(확인한 적 없으면 null). 헬스 체크 자체는 외부 호출을 하지 않는다.
-        supabaseReachable: hasSupabase() && _supabaseProbe.at ? Boolean(_supabaseProbe.reachable) : null,
+        // 마지막 확인 결과(서버 시작 직후·10분마다·저장소 요청 때 갱신, 아직 확인 전이면 null). 설정이 없으면 null.
+        // 확인 = 실제 조회(travel_plans?select=id&limit=1)라 주소·키·표가 모두 맞아야 true다.
+        // 헬스 체크 자체는 외부 호출을 하지 않는다.
+        supabaseReachable: hasSupabase() && _supabaseProbe.at ? _supabaseProbe.state === 'ok' : null,
+        // 'ok' | 'auth_error'(키 거부) | 'schema_error'(표 없음) | 'unreachable'(연결 실패·5xx) | null
+        supabaseCheck: hasSupabase() && _supabaseProbe.at ? _supabaseProbe.state : null,
+        // 쓸 수 있는 SESSION_SECRET이 있는지만(값은 내보내지 않음). false면 재시작할 때마다 로그인이 풀린다.
+        sessionSecretConfigured: SESSION_SECRET_CONFIGURED,
+        // SESSION_SECRET이 설정됐지만 너무 짧거나 단순해서 쓰지 않았는지(true면 임의 값으로 바꿔야 함)
+        sessionSecretWeak: SESSION_SECRET_WEAK,
+        // ALLOWED_LOGINS로 로그인할 수 있는 계정을 제한하고 있는지
+        loginRestricted: ALLOWED_LOGINS.active,
         ai: {
           geminiConfigured: Boolean(GEMINI_API_KEY),
           geminiModel: GEMINI_API_MODEL,
@@ -10719,6 +11191,7 @@ async function handleApi(req, res, parsedUrl) {
     // ── Supabase 일정 저장소 (로그인 필요, 자기 일정만) ──
     // user_label 열에 로그인 사용자 id를 넣고, 목록·조회는 그 사용자 것만 돌려준다.
     if (req.method === 'POST' && parsedUrl.pathname === '/api/travel-plan/save') {
+      res.setHeader('Cache-Control', 'no-store');
       const session = parseSession(req);
       if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
       const payload = await readBody(req, BODY_LIMIT_LARGE);
@@ -10735,24 +11208,32 @@ async function handleApi(req, res, parsedUrl) {
       if (await supabaseUnavailableResponse(res)) return;
       const userId = String(session.userId || '');
       const planKey = payload.planKey || randomUUID();
+      let isNewRow = true;
       if (payload.planKey) {
         // 다른 사용자의 plan_key를 덮어쓰지 못하게 기존 행의 주인을 확인한다.
         const existing = await supabaseRequest('GET', `travel_plans?select=user_label&plan_key=eq.${encodeURIComponent(planKey)}&limit=1`);
         if (existing[0] && existing[0].user_label !== userId) return sendJson(res, 404, { error: '일정을 찾을 수 없습니다' });
+        isNewRow = !existing[0];
       }
-      const plan = payload.plan || await buildTravelPlan(payload);
+      if (isNewRow) {
+        // 내 일정과 같은 개수 상한(이 사용자의 모든 행 기준). 비싼 일정 만들기 전에 본다.
+        const mine = await supabaseRequest('GET', `travel_plans?select=plan_key&user_label=eq.${encodeURIComponent(userId)}&limit=${MY_PLANS_MAX_PER_USER}`);
+        if (Array.isArray(mine) && mine.length >= MY_PLANS_MAX_PER_USER) return sendStoreError(res, 'limit');
+      }
+      const plan = storeSafeValue(payload.plan || await buildTravelPlan(payload));
+      if (jsonBytes(plan) > MY_PLAN_MAX_BYTES) return sendStoreError(res, 'tooLarge');
       const cityKey = cityKeyByInput(payload.city || plan.city);
       const row = {
         plan_key: planKey,
         user_label: userId,
         city_key: cityKey,
-        city_label: String(plan.city || CITY_DATA[cityKey]?.label || '').slice(0, 80),
+        city_label: storeSafeString(String(plan.city || CITY_DATA[cityKey]?.label || '').slice(0, 80)),
         theme: payload.theme || 'mixed',
         budget: payload.budget || 'mid',
         start_date: normalizeIsoDate(payload.startDate) || null,
         days: Number(payload.days || plan.itinerary?.length || 0),
-        summary: String(plan.summary || '').slice(0, 500),
-        source: String(plan.source || 'integrated_travel_planner_v1').slice(0, 80),
+        summary: storeSafeString(String(plan.summary || '').slice(0, 500)),
+        source: storeSafeString(String(plan.source || 'integrated_travel_planner_v1').slice(0, 80)),
         payload: plan
       };
       const saved = await supabaseRequest('POST', 'travel_plans?on_conflict=plan_key', [row]);
@@ -10760,6 +11241,7 @@ async function handleApi(req, res, parsedUrl) {
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/travel-plan/list') {
+      res.setHeader('Cache-Control', 'no-store');
       const session = parseSession(req);
       if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
       if (await supabaseUnavailableResponse(res)) return;
@@ -10771,6 +11253,7 @@ async function handleApi(req, res, parsedUrl) {
     }
 
     if (req.method === 'GET' && parsedUrl.pathname === '/api/travel-plan/get') {
+      res.setHeader('Cache-Control', 'no-store');
       const session = parseSession(req);
       if (!session) return sendJson(res, 401, { error: '로그인이 필요합니다' });
       const planKey = String(parsedUrl.searchParams.get('planKey') || '');
@@ -11035,7 +11518,14 @@ async function handleApi(req, res, parsedUrl) {
     const status = err instanceof HttpError ? err.status : 500;
     if (status === 413) return sendJson(res, 413, { error: '요청 내용이 너무 큽니다.' }, { Connection: 'close' });
     if (status === 400) return sendJson(res, 400, { error: '요청 형식이 올바르지 않습니다.' });
-    console.error(`[api] ${req.method} ${parsedUrl.pathname} 처리 실패:`, redactRakutenKeys(redactTravelpayoutsToken(redactGoogleKey(err?.message || err))));
+    // Supabase 호출 실패(/api/travel-plan/save·list·get 등): 500 대신 저장소 503(원문은 로그에만, 키는 가림).
+    // 저장할 내용을 저장소가 거절한 4xx(400·409·413·422 …)는 400 INVALID_PLAN(다시 시도해도 같으므로 '연결 불가'로 안내하지 않음).
+    if (err?.supabase) {
+      const kind = noteSupabaseFailure(err);
+      warnThrottled(`supabase:api:${parsedUrl.pathname}:${err.status || 'net'}:${err.pgCode || ''}`, `[supabase] ${req.method} ${parsedUrl.pathname} 저장소 오류: ${redactSupabaseKey(err.message)}`);
+      return sendStoreError(res, kind === 'content' && req.method === 'POST' ? 'invalid' : 'unavailable');
+    }
+    console.error(`[api] ${req.method} ${parsedUrl.pathname} 처리 실패:`, redactSupabaseKey(redactRakutenKeys(redactTravelpayoutsToken(redactGoogleKey(err?.message || err)))));
     return sendJson(res, 500, { error: '요청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.' });
   }
 }
@@ -11129,4 +11619,9 @@ process.on('unhandledRejection', (reason) => {
 
 server.listen(PORT, () => {
   console.log(`${APP_BRAND} — ${APP_TAGLINE.ko} server running at http://localhost:${PORT} (places=${PLACES_PROVIDER}, map=${MAP_PROVIDER})`);
+  // /api/health의 supabaseReachable을 처음부터 채운다: 시작 직후 한 번(기다리지 않음) + 실행 중 10분마다.
+  if (hasSupabase()) {
+    supabaseStatus({ force: true }).catch(() => {});
+    setInterval(() => { supabaseStatus({ force: true }).catch(() => {}); }, 10 * 60_000).unref();
+  }
 });

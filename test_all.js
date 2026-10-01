@@ -14,18 +14,76 @@
  *   같은 흉내 안에서 사진·출처 표시 함수에 악성 주소·HTML을 넣어 허용 목록과 이스케이프도 확인한다.
  */
 const http = require('http');
+const net = require('net');
+const os = require('os');
+const crypto = require('crypto');
 const vm = require('vm');
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { createMockVendor, JPEG_BYTES, GEMINI_ERROR_TEXT } = require('./tests/support/mock-vendor');
+const { createMockVendor, JPEG_BYTES, GEMINI_ERROR_TEXT, SUPABASE_ERROR_TEXT } = require('./tests/support/mock-vendor');
 const { createBrowser } = require('./tests/support/browser-sandbox');
 
-const PORT = 13581;
-const MOCK_PORT = 3205;
+// 포트는 기본 13581(서버)·3205(가짜 벤더). 여러 검사를 함께 돌릴 때만 TABIMARU_TEST_PORT·TABIMARU_TEST_MOCK_PORT로 바꾼다.
+const PORT = Number(process.env.TABIMARU_TEST_PORT) || 13581;
+const MOCK_PORT = Number(process.env.TABIMARU_TEST_MOCK_PORT) || 3205;
 const BASE = `http://localhost:${PORT}`;
 const PROJECT = __dirname;
 const GUARD = path.join(PROJECT, 'tests', 'support', 'net-guard.js');
+
+// 서버의 users.json·saved_plans.json은 늘 임시 폴더(TABIMARU_DATA_DIR)에만 쓰인다. 저장소의 data/는 건드리지 않는다.
+const TEST_DATA_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'tabimaru-test-'));
+const DEFAULT_TEST_DATA_DIR = path.join(TEST_DATA_ROOT, 'default');
+const REPO_DATA_DIR = path.join(PROJECT, 'data');
+function snapshotDir(dir) {
+  if (!fs.existsSync(dir)) return 'missing';
+  return fs.readdirSync(dir).sort().map((n) => {
+    const st = fs.statSync(path.join(dir, n));
+    return `${n}:${st.size}:${Math.floor(st.mtimeMs)}`;
+  }).join('|');
+}
+const REPO_DATA_BEFORE = snapshotDir(REPO_DATA_DIR);
+
+// ── 로그인 세션 쿠키: server.js와 같은 형식으로 직접 만들어 검증 경계를 시험한다 ──
+const TEST_SESSION_SECRET = 'test-only-session-secret-0123456789abcdef';
+const SESSION_TTL_SEC = 30 * 24 * 60 * 60;
+function stableUid(provider, id) {
+  return 'u_' + crypto.createHash('sha256').update(`${provider}:${id}`).digest('hex').slice(0, 24);
+}
+// 서명 키 = HMAC-SHA256(scrypt(SESSION_SECRET, 'tabimaru-sid-v1'), 'allow:' + 허용 목록 키) — server.js의 SESSION_KEY와 같은 식
+const _sessionKeys = new Map();
+function sessionKeyOf(secret = TEST_SESSION_SECRET, allowKey = '') {
+  const id = `${secret}\u0001${allowKey}`;
+  if (!_sessionKeys.has(id)) {
+    const base = crypto.scryptSync(secret, 'tabimaru-sid-v1', 32, { N: 16384, r: 8, p: 1 });
+    _sessionKeys.set(id, crypto.createHmac('sha256', base).update(`allow:${allowKey}`).digest());
+  }
+  return _sessionKeys.get(id);
+}
+function signSessionPart(part, secret = TEST_SESSION_SECRET, allowKey = '') {
+  return crypto.createHmac('sha256', sessionKeyOf(secret, allowKey)).update(part).digest('base64url');
+}
+function sessionTokenFromJson(json, secret) {
+  const part = Buffer.from(json, 'utf8').toString('base64url');
+  return `${part}.${signSessionPart(part, secret)}`;
+}
+function sessionToken(payload, secret) { return sessionTokenFromJson(JSON.stringify(payload), secret); }
+function sessionPayload(over = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  return { v: 1, uid: stableUid('google', 'forged-1'), p: 'google', n: 'Forged', img: '', iat: now, exp: now + 3600, ...over };
+}
+function decodeSessionToken(token) {
+  try { return JSON.parse(Buffer.from(String(token).split('.')[0], 'base64url').toString('utf8')); } catch { return null; }
+}
+
+// 아무도 듣지 않는 포트(연결 거부 시험용)
+function closedPort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+  });
+}
 
 // 브랜드(이름 변경: JapanTravel Suite → Tabimaru). 운영 주소·서비스 이름 같은 도메인 값은 바꾸지 않는다.
 const BRAND_TITLE = { ko: 'Tabimaru — AI 일본 여행 플래너', en: 'Tabimaru — AI Japan Trip Planner', ja: 'Tabimaru — AI日本旅行プランナー' };
@@ -149,7 +207,8 @@ function buildServerEnv(overrides = {}) {
     TRAVELPAYOUTS_API_BASE: MOCK,
     RAKUTEN_API_BASE: MOCK + '/rakuten',
     TEST_EXTERNAL_PROXY: MOCK + '/__external',
-    SESSION_SECRET: 'test-only-session-secret-0123456789abcdef'
+    SESSION_SECRET: TEST_SESSION_SECRET,
+    TABIMARU_DATA_DIR: DEFAULT_TEST_DATA_DIR
   }, overrides);
   return env;
 }
@@ -347,8 +406,8 @@ async function runTests() {
     results.push(`  [partial run: TEST_ONLY=${[...only].join(',')}]`);
     const start = appCode.indexOf('var I18N = {');
     const dict = vm.runInNewContext('(' + extractBalanced(appCode, appCode.indexOf('{', start)) + ')', {});
-    if (only.has('sandbox')) await sandboxSchedulingTests(htmlCode, appCode, dict);
-    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, oauth: phaseOauthAndAiErrors, live: phaseGoogleLive, free: phaseFree };
+    if (only.has('sandbox')) { await sandboxSchedulingTests(htmlCode, appCode, dict); await sandboxStorageTests(htmlCode, appCode, dict); }
+    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree };
     const chosen = Object.keys(phases).filter((k) => only.has(k));
     if (chosen.length) {
       await mock.start();
@@ -464,6 +523,12 @@ async function runTests() {
   // 키보드 포커스 링(MC-03): 조작 요소 전체에 :focus-visible 외곽선
   const focusRule = /:where\([^)]*\bbutton\b[^)]*\ba\b[^)]*\binput\b[^)]*\):focus-visible\s*\{[^}]*outline:\s*2px\s+solid\s+var\(--accent\)/.test(cssCode);
   log(focusRule, 'CSS: global :focus-visible rule (button, a, input …) draws a 2px accent outline');
+  // 안내 토스트는 글자뿐이라 클릭을 가로채지 않아야 한다(일정 넣기 창의 [추가] 위에 떠도 탭이 버튼으로 감), 창이 열리면 위쪽에
+  const cssNoComments = cssCode.replace(/\/\*[\s\S]*?\*\//g, '');
+  const toastRule = (/(^|\n)\.memo-toast\s*\{([^}]*)\}/.exec(cssNoComments) || [])[2] || '';
+  log(/pointer-events:\s*none/.test(toastRule) && /body:has\(\.plan-modal-overlay:not\(\.hidden\)\) \.memo-toast/.test(cssNoComments),
+    'CSS: .memo-toast has pointer-events: none and moves to the top while a modal is open', short(toastRule));
+  log(/(^|\n)::placeholder\s*\{[^}]*color:\s*var\(--fg-3\)[^}]*opacity:\s*1/.test(cssNoComments), 'CSS: ::placeholder uses var(--fg-3) at full opacity (dark-mode contrast)');
   // 다크 모드(MC-10): 밝은 :root의 색 토큰을 OS 다크 설정(@media)과 data-theme="dark" 양쪽에서 모두 다시 정한다
   try {
     const cleanCss = cssCode.replace(/\/\*[\s\S]*?\*\//g, '');
@@ -553,8 +618,28 @@ async function runTests() {
   log(lsConsts.get('DRAFT_KEY') === 'tabimaru.draft.v1' && lsUsed.has('tabimaru.draft.v1') && lsExtra.length === 0 && LS_KEYS.every((k) => lsUsed.has(k)),
     "localStorage: only one new key ('tabimaru.draft.v1') next to the 6 existing ones", short({ used: [...lsUsed], extra: lsExtra }));
   const oauthPaths = ['/api/auth/google/callback', '/api/auth/naver/callback', '/api/auth/kakao/callback'];
-  log(serverCode.includes('sid=${sid}.${sig}') && serverCode.includes("'Referer': 'https://japanjapantravel.onrender.com/'") && oauthPaths.every((p) => serverCode.includes(p)),
+  log(serverCode.includes("const SESSION_COOKIE = 'sid';") && serverCode.includes('`${SESSION_COOKIE}=${token}; ')
+    && serverCode.includes("'Referer': 'https://japanjapantravel.onrender.com/'") && oauthPaths.every((p) => serverCode.includes(p)),
     "Domain-bound: cookie 'sid', Rakuten Referer and OAuth callback paths unchanged");
+  // 세션·저장소 설계 고정점: 사용자 id는 OAuth 신원의 sha256(SESSION_SECRET과 무관), Bearer는 예전 JWT 키(eyJ…)에만
+  log(/return 'u_' \+ createHash\('sha256'\)\.update\(`\$\{provider\}:\$\{providerId\}`\)\.digest\('hex'\)\.slice\(0, 24\);/.test(serverCode),
+    "Session: stable user id = 'u_' + sha256(provider:providerId).slice(0,24) (independent of SESSION_SECRET)");
+  log(/if \(SUPABASE_SERVICE_ROLE_KEY\.startsWith\('eyJ'\)\) headers\.Authorization = `Bearer \$\{SUPABASE_SERVICE_ROLE_KEY\}`;/.test(serverCode) && !/Authorization: `Bearer \$\{SUPABASE_SERVICE_ROLE_KEY\}`/.test(serverCode),
+    'Supabase: Authorization: Bearer is sent only for legacy JWT keys (eyJ…); apikey header always');
+  log(!/sessionStore|new Map\(\);\s*\/\/\s*sessions?/i.test(serverCode), 'Session: no in-memory session Map left (stateless signed cookie)');
+  // SESSION_SECRET 하나로 누구의 sid든 만들 수 있으므로: 약한 값(32자 미만·서로 다른 글자 10개 미만)은 쓰지 않고, 키는 scrypt로 파생
+  log(/const SESSION_SECRET_MIN_CHARS = 32;/.test(serverCode) && /const SESSION_SECRET_MIN_DISTINCT = 10;/.test(serverCode)
+    && /if \(SESSION_SECRET_STATE === 'ok'\) return envValue\('SESSION_SECRET'\);/.test(serverCode)
+    && /scryptSync\(SESSION_SECRET, 'tabimaru-sid-v1', 32, \{ N: 16384, r: 8, p: 1 \}\)/.test(serverCode)
+    && /createHmac\('sha256', SESSION_KEY\)\.update\(part\)/.test(serverCode) && !/createHmac\('sha256', SESSION_SECRET\)/.test(serverCode),
+    'Session: a weak SESSION_SECRET (< 32 chars or < 10 distinct chars) is not used; the cookie key is scrypt(SESSION_SECRET) mixed with the login allowlist');
+  // keepalive: 실패는 짧게(워크플로 재시도 30초보다 짧게) 재사용해서 다음 재시도가 실제로 다시 확인한다
+  const kaFail = /const KEEPALIVE_FAIL_CACHE_MS = ([\d_]+);/.exec(serverCode);
+  log(Boolean(kaFail) && Number(kaFail[1].replace(/_/g, '')) > 0 && Number(kaFail[1].replace(/_/g, '')) < 30_000 && /const KEEPALIVE_CACHE_MS = 10 \* 60_000;/.test(serverCode),
+    'keepalive caches success for 10 minutes and failure for less than the workflow retry gap (30 s)', short(kaFail && kaFail[1]));
+  // 저장소 확인은 실제 조회(주소·키·표 모두 확인). 예전 HEAD /rest/v1/ 확인(401이어도 '닿음')은 없어야 한다
+  log(/supabaseRequest\('GET', 'travel_plans\?select=id&limit=1'/.test(serverCode) && !/\/rest\/v1\/`, \{\s*method: 'HEAD'/.test(serverCode),
+    "Supabase check = GET travel_plans?select=id&limit=1 (a wrong key or a missing table is not 'reachable')");
 
   // 공급자 모드 기본값: 무료(Google 호출 없음) + OSM
   log(/PLACES_PROVIDER = envValue\('PLACES_PROVIDER'\)\.toLowerCase\(\) === 'google' \? 'google' : 'free'/.test(serverCode), 'Server: PLACES_PROVIDER defaults to free');
@@ -604,6 +689,21 @@ async function runTests() {
   const ciPath = path.join(PROJECT, '.github', 'workflows', 'ci.yml');
   const ci = fs.existsSync(ciPath) ? fs.readFileSync(ciPath, 'utf8') : '';
   log(/\bpush\b/.test(ci) && /\bpull_request\b/.test(ci) && /node-version:\s*['"]?20/.test(ci) && /npm test/.test(ci), 'CI workflow runs npm test on Node 20 for push + pull_request');
+  // Supabase 무료 프로젝트 일시 중지 방지: 3일마다 운영 /api/keepalive(비밀값 없음, 권한 없음, 5번까지 다시 시도)
+  const kaPath = path.join(PROJECT, '.github', 'workflows', 'keepalive.yml');
+  const ka = fs.existsSync(kaPath) ? fs.readFileSync(kaPath, 'utf8') : '';
+  const kaChecks = {
+    cron: /-\s*cron:\s*'17 3 \*\/3 \* \*'/.test(ka),
+    dispatch: /^\s*workflow_dispatch:\s*$/m.test(ka),
+    noPermissions: /^permissions:\s*\{\}\s*$/m.test(ka),
+    runner: /runs-on:\s*ubuntu-latest/.test(ka) && /timeout-minutes:\s*10\b/.test(ka),
+    url: ka.includes('https://japanjapantravel.onrender.com/api/keepalive'),
+    retries: /for i in 1 2 3 4 5; do/.test(ka) && /--max-time 90\b/.test(ka) && /sleep 30\b/.test(ka),
+    okOnly: ka.includes(`grep -q '"supabase":"ok"'`) && /exit 1\s*$/.test(ka.trim() + '\n'),
+    noSecrets: !/\$\{\{\s*secrets\./.test(ka) && !/SUPABASE_SERVICE_ROLE_KEY|SESSION_SECRET/.test(ka)
+  };
+  log(Object.values(kaChecks).every(Boolean), "keepalive.yml: cron '17 3 */3 * *' + workflow_dispatch, permissions {}, ubuntu-latest 10 min, curl /api/keepalive 5 tries (90s, sleep 30), ok only on \"supabase\":\"ok\", no secrets",
+    short(Object.entries(kaChecks).filter(([, v]) => !v).map(([k]) => k)));
 
   // ── 1c. First page load (app.js boot in a DOM sandbox) ──
   section('First Page Load (app.js boot sandbox)');
@@ -824,6 +924,7 @@ async function runTests() {
 
   // ── 1d. 직접 배치·편집 보호·의도 전달·로그인 버튼·초안 복구 (app.js 샌드박스) ──
   await sandboxSchedulingTests(htmlCode, appCode, i18nDict);
+  await sandboxStorageTests(htmlCode, appCode, i18nDict);
 
   // ════════ Server phases ════════
   await mock.start();
@@ -836,6 +937,7 @@ async function runTests() {
     await phaseDailyCap();
     await phaseGeocodeDenied();
     await phaseOauthAndAiErrors();
+    await phaseSessionsAndStorage();
     await phaseIntentRegression();
     await phaseAiItinerary();
   } finally {
@@ -1186,6 +1288,65 @@ async function sandboxSchedulingTests(htmlCode, appCode, i18nDict) {
   } catch (e) {
     log(false, 'intent flow sandbox', e.stack || e.message);
   }
+
+  // ── '🌙 저녁 이후' 칸의 항목을 보통 오후 칸으로: 같은 날이어도 오후 시각으로 옮기고, 정말 바뀔 것이 없으면 안내한다 ──
+  const NIGHT_PLAN = {
+    ...schedulingPlanResponse(),
+    itinerary: [
+      { day: 1, date: futureDate(20), blocks: ['오후(13:00-15:00): 메이지 신궁 (하라주쿠)', '저녁(18:00-19:30): 스시다이 (츠키지)', '오후(20:00-21:00): 도톤보리 (난바)'] },
+      { day: 2, date: futureDate(21), blocks: ['오전(09:00-11:00): 센소지 (아사쿠사)', '저녁(18:00-19:30): 이치란 라멘 (신주쿠)', '오후(20:00-21:30): 도쿄 타워 야경 (시바)'] },
+      { day: 3, date: futureDate(22), blocks: ['오전(09:00-11:00): 도쿄 스카이트리 (오시아게)'] }
+    ]
+  };
+  const sn = createBrowser({ html: htmlCode, fetchRoutes: sandboxRoutes({ '/api/travel-plan': { body: NIGHT_PLAN } }), location: BASE + '/' });
+  const JN = (code) => { const s = sn.run(`JSON.stringify(${code})`); return s === undefined ? undefined : JSON.parse(String(s)); };
+  const nBlocks = (d) => JN(`((findItineraryDay(${d}) || {}).blocks || [])`) || [];
+  const nIdx = (d, name) => nBlocks(d).findIndex((b) => b.includes(': ' + name));
+  const nToast = () => String(sn.element('memoToast')?.textContent || '');
+  try {
+    await sn.boot(appCode, 'public/app.js');
+    sn.element('btnPlan').click();
+    await sn.settle(20000);
+    const nightSeg = JN(`itinDayLayout(groupItineraryBlocks(findItineraryDay(1).blocks)).night.map(function (g) { return g.place; })`) || [];
+    log(nightSeg.some((p) => /도톤보리/.test(p)), "setup: '오후(20:00-21:00): 도톤보리' after dinner is drawn in the night zone", short(nightSeg));
+    const same = JN(`placeBlock({ mode: 'move', day: 1, slotKey: 'afternoon', from: { day: 1, blockIndex: ${nIdx(1, '도톤보리')} } })`);
+    const moved = nBlocks(1)[nIdx(1, '도톤보리')] || '';
+    const movedStart = Number((/^오후\((\d{2}):(\d{2})/.exec(moved) || [])[1]);
+    log(same?.ok === true && /^오후\(\d{2}:\d{2}-\d{2}:\d{2}\): 도톤보리 \(난바\)$/.test(moved) && movedStart >= 13 && movedStart < 18 && nBlocks(1).filter((b) => b.includes('도톤보리')).length === 1,
+      "night-zone item -> the same day's afternoon zone moves it into the afternoon (was a silent no-op)", short({ same, moved, d1: nBlocks(1) }));
+    log(!(JN(`itinDayLayout(groupItineraryBlocks(findItineraryDay(1).blocks)).night.length`) > 0), 'after the move the night zone of day 1 is empty', short(nBlocks(1)));
+    const other = JN(`placeBlock({ mode: 'move', day: 3, slotKey: 'afternoon', from: { day: 2, blockIndex: ${nIdx(2, '도쿄 타워 야경')} } })`);
+    const otherBlock = nBlocks(3)[nIdx(3, '도쿄 타워 야경')] || '';
+    const otherStart = Number((/^오후\((\d{2})/.exec(otherBlock) || [])[1]);
+    log(other?.ok === true && otherStart >= 13 && otherStart < 18 && nIdx(2, '도쿄 타워 야경') < 0,
+      "night-zone item -> another day's afternoon zone lands in the afternoon (not at its night time under an 'afternoon' toast)", short({ other, otherBlock }));
+    sn.run('el("memoToast").textContent = ""');
+    const noop = JN(`placeBlock({ mode: 'move', day: 2, slotKey: 'morning', from: { day: 2, blockIndex: ${nIdx(2, '센소지')} } })`);
+    log(noop?.ok === false && noop?.reason === 'noop', 'moving an item onto its own slot is still a no-op', short(noop));
+    sn.run(`applyDropToZone({ source: 'itin', day: 2, blockIndex: ${nIdx(2, '센소지')}, kind: 'dest' }, { dataset: { dropDay: '2', dropType: 'dest', dropDestPeriod: 'morning' } })`);
+    log(nToast() === (i18nDict.ko || {})['place-noop'], "a no-op drop shows 'place-noop' (no silent nothing)", short(nToast()));
+    // 일정 넣기 창의 '🌙 저녁 이후' 선택지: 밤 일정이 없는 날에도 저녁 식사 뒤로 넣고, 그 칸의 항목을 [옮기기]로 열면 미리 골라져 있다
+    const nightBtn = sn.run(`document.querySelector('#destSlots .slot-btn[data-slot="night"]')`);
+    sn.run(`showAddToPlanModal('도쿄 타워', { addType: 'dest', area: '시바', day: 1, slot: 'afternoon' })`);
+    if (nightBtn) nightBtn.click();
+    const slotPicked = JN('pendingAddSlot');
+    sn.element('modalConfirmAdd').click();
+    const towerBlock = nBlocks(1)[nIdx(1, '도쿄 타워')] || '';
+    const towerStart = (/^오후\((\d{2}:\d{2})/.exec(towerBlock) || [])[1] || '';
+    const nightNow = JN(`itinDayLayout(groupItineraryBlocks(findItineraryDay(1).blocks)).night.map(function (g) { return g.place; })`) || [];
+    log(Boolean(nightBtn) && slotPicked === 'night' && towerStart >= '19:30' && nightNow.some((p) => /도쿄 타워/.test(p)) && JN(`el('addToPlanModal').classList.contains('hidden')`) === true,
+      "add modal '🌙 저녁 이후' slot: a day without a night zone gets the place after dinner (19:30~) and it shows in the night zone", short({ slotPicked, towerBlock, nightNow }));
+    const towerMoveBtn = sn.run(`document.querySelector('.itin-move-btn[data-day="1"][data-block-index="${nIdx(1, '도쿄 타워')}"]')`);
+    if (towerMoveBtn) towerMoveBtn.click();
+    log(Boolean(towerMoveBtn) && JN('pendingAddMode') === 'move' && JN('pendingAddSlot') === 'night', "[↔ 옮기기] on a night-zone item opens the modal with '저녁 이후' preselected", short({ mode: JN('pendingAddMode'), slot: JN('pendingAddSlot') }));
+    sn.run('el("memoToast").textContent = ""');
+    sn.element('modalConfirmAdd').click();
+    log(nToast() === (i18nDict.ko || {})['place-noop'] && JN(`el('addToPlanModal').classList.contains('hidden')`) === true, "confirming the same day + '저녁 이후' closes the modal with 'place-noop'", short(nToast()));
+    const nErrs = sn.env.errors.concat(sn.unhandled);
+    log(nErrs.length === 0, 'night-zone move flows raise no errors', short(nErrs, 400));
+  } catch (e) {
+    log(false, 'night zone sandbox', e.stack || e.message);
+  }
 }
 
 // ── Phase 1: 기본(무료) 모드 — 기존 59개 테스트 + 무료 모드·보안 검사 ──
@@ -1241,6 +1402,12 @@ async function phaseFree() {
     log(Array.isArray(plan.json?.itinerary), 'Travel plan has itinerary');
     log(plan.json?.itinerary?.length === 2, 'Itinerary has 2 days');
   } catch (e) { log(false, 'travel-plan', e.message); }
+  try {
+    // 규칙 일정의 저녁: 도쿄 실제 가게는 3곳뿐이라 4일째에 1일째 가게(스시다이)를 되풀이하던 문제 → 그 전에 '찾기' 안내를 쓴다
+    const p4 = await postJson('/api/travel-plan', { city: 'tokyo', theme: 'mixed', days: 4, budget: 'mid', startDate, lang: 'ko' });
+    const dinners = (p4.json?.itinerary || []).map((d) => ((d.blocks || []).find((b) => /^저녁\(/.test(b)) || '').replace(/^저녁\([^)]*\):\s*/, '').replace(/\s*\(.*$/, '')).filter(Boolean);
+    log(p4.status === 200 && dinners.length === 4 && new Set(dinners).size === 4, 'rule plan (Tokyo 4 days): four different dinners (no restaurant repeated before the generic "찾기" entries are used)', short(dinners));
+  } catch (e) { log(false, 'travel-plan 4 days dinners', e.message); }
 
   let planEn = null;
   try {
@@ -1841,7 +2008,7 @@ async function phaseGeocodeDenied() {
 }
 
 // ── Phase 7: OAuth state를 로그인을 시작한 브라우저의 쿠키에 묶기(로그인 CSRF 방지) + AI 오류 응답에서 벤더 원문 빼기 ──
-// 토큰 교환은 가짜 서버가 늘 401로 거절하므로 로그인이 끝나지 않는다(data/users.json에 쓰지 않음).
+// 토큰 교환은 가짜 서버가 늘 401로 거절하므로 로그인이 끝나지 않는다(로그인이 끝나는 경우는 다음 단계 7b, 쓰는 곳은 임시 폴더).
 async function phaseOauthAndAiErrors() {
   section('Phase 7: OAuth state cookie binding, AI error redaction');
   const SECRETS = ['NAVERSECRET-test-2c9d51', 'KAKAOSECRET-test-8e0a37', 'GOOGLESECRET-test-4f6b19', 'GEMKEY-oauth-test-a13e5c'];
@@ -1942,6 +2109,603 @@ async function phaseOauthAndAiErrors() {
   checkNoSecrets('OAuth / AI errors', SECRETS);
   checkNoUnexpectedExternal('OAuth / AI errors');
   checkNoFatal('OAuth / AI errors');
+}
+
+// ── Phase 7b: 서명 쿠키 세션·고정 사용자 id·내 일정(가짜 Supabase)·저장소 장애·파일 저장소·keepalive ──
+// 가짜 OAuth(scenario.oauth = 'ok')로 로그인을 끝까지 하고, users.json은 단계별 임시 TABIMARU_DATA_DIR에만 쓰인다.
+async function phaseSessionsAndStorage() {
+  section('Phase 7b: signed session cookie, stable user id, my-plans on Supabase, storage outage, file store, keepalive');
+  const SB_KEY = 'sb_secret_TESTONLY-sessions-9f3e2a71';
+  const JWT_KEY = 'eyJTESTONLY.legacy-jwt-service-role.c0ffee42';
+  const OAUTH_SECRETS = ['GOOGLESECRET-sess-1a2b3c', 'KAKAOSECRET-sess-4d5e6f', 'NAVERSECRET-sess-7a8b9c'];
+  const oauthEnv = {
+    GOOGLE_OAUTH_CLIENT_ID: 'google-client-sess', GOOGLE_OAUTH_CLIENT_SECRET: OAUTH_SECRETS[0],
+    KAKAO_REST_API_KEY: 'kakao-rest-sess', KAKAO_CLIENT_SECRET: OAUTH_SECRETS[1],
+    NAVER_CLIENT_ID: 'naver-client-sess', NAVER_CLIENT_SECRET: OAUTH_SECRETS[2],
+    TRUST_PROXY: '1'
+  };
+  const SECRETS = [SB_KEY, JWT_KEY, ...OAUTH_SECRETS];
+  const newDataDir = (name) => { const d = path.join(TEST_DATA_ROOT, name); fs.mkdirSync(d, { recursive: true }); return d; };
+  const setCookies = (r) => [].concat(r.headers['set-cookie'] || []);
+  // 서버는 TRUST_PROXY=1로 띄우고 요청마다 다른 X-Forwarded-For를 붙인다(IP당 분당 60회 한도에 걸리지 않게).
+  const call = (urlPath, options = {}) => fetchUrl(urlPath, { ip: nextIntentIp(), ...options });
+  const withCookie = (cookie, extra = {}) => ({ ...extra, headers: { ...(extra.headers || {}), ...(cookie ? { Cookie: cookie } : {}) } });
+  const me = async (cookie) => (await call('/api/auth/me', withCookie(cookie))).json?.user || null;
+  const login = async (provider, profile) => {
+    mock.scenario = { oauth: 'ok', oauthProfile: profile };
+    const s = await call(`/api/auth/${provider}`);
+    let state = '';
+    try { state = String(new URL(String(s.headers.location || '')).searchParams.get('state') || ''); } catch { state = ''; }
+    const cb = await call(`/api/auth/${provider}/callback?code=test-code&state=${encodeURIComponent(state)}`, { headers: { Cookie: `oauth_state=${state}` } });
+    const sidCookie = setCookies(cb).find((c) => c.startsWith('sid=')) || '';
+    const token = sidCookie.split(';')[0].slice(4);
+    return { cb, sidCookie, token, cookie: token ? `sid=${token}` : '' };
+  };
+  const plans = {
+    save: (cookie, body) => call('/api/my-plans/save', withCookie(cookie, { method: 'POST', body })),
+    list: (cookie) => call('/api/my-plans/list', withCookie(cookie)),
+    load: (cookie, id) => call('/api/my-plans/load?id=' + encodeURIComponent(id), withCookie(cookie)),
+    del: (cookie, id) => call('/api/my-plans/delete?id=' + encodeURIComponent(id), withCookie(cookie, { method: 'DELETE' }))
+  };
+  const waitHealth = async (pred, ms = 4000) => {
+    const until = Date.now() + ms;
+    let h = null;
+    while (Date.now() < until) {
+      h = (await call('/api/health', { record: false })).json || {};
+      if (pred(h)) return h;
+      await sleep(100);
+    }
+    return h;
+  };
+  const sbEntries = () => mock.entries('supabase');
+  const rowsByKey = (key) => mock.supabaseRows().filter((r) => r.plan_key === key);
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const SUMMARY_KEYS = 'id,title,cityLabel,startDate,days,theme,savedAt';
+  const ALICE = { id: 'g-alice-1001', name: 'Alice', email: 'alice@example.test', picture: 'https://lh3.googleusercontent.com/a/alice' };
+  const BOB = { id: 'g-bob-2002', name: 'Bob', email: 'bob@example.test', picture: 'https://lh3.googleusercontent.com/a/bob' };
+  const UID_A = stableUid('google', ALICE.id);
+  const UID_B = stableUid('google', BOB.id);
+  const samplePlanBody = (over = {}) => ({
+    title: '도쿄 3일', cityKey: 'tokyo', cityLabel: '도쿄 (NRT)', startDate: futureDate(30), days: 3, theme: 'mixed',
+    data: { itinerary: { itinerary: [{ day: 1, date: futureDate(30), blocks: ['오전(09:00-11:00): 센소지 (아사쿠사)'] }] }, formValues: { city: 'tokyo', budget: 'mid' } },
+    ...over
+  });
+
+  // ── A. Supabase 정상(새 형식 키 sb_secret_…) ──
+  const sbDir = newDataDir('sessions-supabase');
+  const sbEnv = { ...oauthEnv, TABIMARU_DATA_DIR: sbDir, SUPABASE_URL: MOCK + '/supabase', SUPABASE_SERVICE_ROLE_KEY: SB_KEY };
+  mock.reset({ oauth: 'ok' });
+  // 같은 사용자의 "내 일정이 아닌" 행 2개(예: /api/travel-plan/save): 목록에 섞이거나 덮어써지면 안 된다
+  mock.seedSupabase([
+    { plan_key: 'tp-other-row-1', user_label: UID_A, city_key: 'tokyo', source: 'integrated_travel_planner_v1', summary: 'not a my-plan', payload: { x: 1 } },
+    { plan_key: 'my_seeded-tp', user_label: UID_A, city_key: 'osaka', source: 'integrated_travel_planner_v1', summary: 'looks like my_ but is not', payload: { y: 2 } }
+  ]);
+  try { await startServer('sessions-supabase', sbEnv); } catch (e) { log(false, 'Server (sessions + supabase) started', e.message); return; }
+
+  let A = null, B = null, savedA = null;
+  try {
+    // (1) 시작 직후 연결 확인 → /api/health가 처음부터 채워짐. 새 형식 키는 apikey만(Authorization 없음)
+    const h = await waitHealth((x) => x.supabaseReachable !== null && x.supabaseReachable !== undefined);
+    log(h.supabaseConfigured === true && h.supabaseReachable === true && h.supabaseCheck === 'ok' && h.sessionSecretConfigured === true && h.sessionSecretWeak === false && h.loginRestricted === false,
+      "health right after start: supabaseConfigured true, supabaseReachable true + supabaseCheck 'ok' (startup check), sessionSecretConfigured true, sessionSecretWeak false, loginRestricted false",
+      short({ c: h.supabaseConfigured, r: h.supabaseReachable, k: h.supabaseCheck, s: h.sessionSecretConfigured, w: h.sessionSecretWeak, l: h.loginRestricted }));
+    const probe = sbEntries().find((e) => e.method === 'GET' && e.path === '/travel_plans' && e.query === '?select=id&limit=1');
+    log(Boolean(probe) && probe.headers.apikey === SB_KEY && !('authorization' in probe.headers) && !sbEntries().some((e) => e.method === 'HEAD'),
+      'startup check: GET travel_plans?select=id&limit=1 (address + key + table) with the apikey header and no Authorization for an sb_secret_ key',
+      short(probe ? { apikey: probe.headers.apikey === SB_KEY, authorization: probe.headers.authorization ? 'present' : 'absent' } : 'no probe'));
+    log(['sessionSecretConfigured', 'sessionSecretWeak', 'loginRestricted', 'supabaseReachable'].every((k) => typeof h[k] === 'boolean') && !JSON.stringify(h).includes(TEST_SESSION_SECRET) && !JSON.stringify(h).includes(SB_KEY),
+      'health exposes booleans / a status word only (no secret values)');
+
+    // (2) 로그인: 고정 사용자 id, 쿠키 속성·수명 30일, payload 모양
+    A = await login('google', ALICE);
+    const attrs = A.sidCookie.split(';').map((x) => x.trim());
+    const pl = decodeSessionToken(A.token) || {};
+    log(A.cb.status === 302 && A.cb.headers.location === '/' && Boolean(A.token), 'google login with the mock provider: 302 / + sid cookie', short({ status: A.cb.status, loc: A.cb.headers.location }));
+    log(['HttpOnly', 'Path=/', 'SameSite=Lax', `Max-Age=${SESSION_TTL_SEC}`].every((a) => attrs.includes(a)) && !attrs.includes('Secure'),
+      `sid cookie: HttpOnly, Path=/, SameSite=Lax, Max-Age=${SESSION_TTL_SEC} (30 days), no Secure on plain http`, short(attrs.slice(1)));
+    log(pl.v === 1 && pl.uid === UID_A && pl.p === 'google' && pl.n === 'Alice' && pl.img === ALICE.picture && pl.exp - pl.iat === SESSION_TTL_SEC
+      && Object.keys(pl).sort().join(',') === 'exp,iat,img,n,p,uid,v' && A.token.length < 3500 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(A.token),
+      "sid = base64url(JSON {v:1, uid, p, n, img, iat, exp}) + '.' + base64url(HMAC-SHA256); uid = 'u_' + sha256('google:<id>')[0..24]; exp - iat = 30 days", short(pl));
+    log(A.token.split('.')[1] === signSessionPart(A.token.split('.')[0]) && A.token.split('.')[1] !== crypto.createHmac('sha256', TEST_SESSION_SECRET).update(A.token.split('.')[0]).digest('base64url'),
+      "sid signature = HMAC-SHA256(key, payload part) in base64url, key = HMAC(scrypt(SESSION_SECRET, 'tabimaru-sid-v1'), 'allow:' + allowlist) (not the raw secret)");
+    const meA = await me(A.cookie);
+    log(meA && meA.userId === UID_A && meA.provider === 'google' && meA.nickname === 'Alice' && meA.profileImage === ALICE.picture && Object.keys(meA).sort().join(',') === 'nickname,profileImage,provider,userId',
+      '/api/auth/me with the sid cookie -> { userId, provider, nickname, profileImage }', short(meA));
+    const A2 = await login('google', ALICE);
+    B = await login('google', BOB);
+    const kakao = await login('kakao', { id: '987654321', name: '카카오 사용자', picture: 'http://k.kakaocdn.net/dn/abc/img.jpg' });
+    const googleSameNumber = await login('google', { id: '987654321', name: 'G', picture: '' });
+    const naver = await login('naver', { id: 'nv-77', name: '네이버 사용자', picture: 'https://phinf.pstatic.net/a.jpg' });
+    const uidOf = (s) => (decodeSessionToken(s.token) || {}).uid;
+    log(uidOf(A2) === UID_A && uidOf(B) === UID_B && UID_A !== UID_B, 'stable uid: the same Google account logs in twice -> same uid; another account -> different uid', short([uidOf(A2), uidOf(B)]));
+    log(uidOf(kakao) === stableUid('kakao', '987654321') && uidOf(googleSameNumber) === stableUid('google', '987654321') && uidOf(kakao) !== uidOf(googleSameNumber)
+      && uidOf(naver) === stableUid('naver', 'nv-77'),
+      'stable uid is namespaced by provider (kakao:987654321 != google:987654321), naver/kakao numeric ids work', short([uidOf(kakao), uidOf(googleSameNumber), uidOf(naver)]));
+    const noId = await login('google', { id: null, name: 'No Id' });
+    log(noId.cb.headers.location === '/?authError=google' && !noId.token, 'provider profile without an id -> /?authError=google and no sid cookie', short({ loc: noId.cb.headers.location }));
+    const users = JSON.parse(fs.existsSync(path.join(sbDir, 'users.json')) ? fs.readFileSync(path.join(sbDir, 'users.json'), 'utf8') : '[]');
+    const alice = users.filter((u) => u.provider === 'google' && u.providerId === ALICE.id);
+    log(alice.length === 1 && alice[0].uid === UID_A && alice[0].id === UID_A, 'users.json (local record) is written to TABIMARU_DATA_DIR with uid = the stable id, once per account', short(alice));
+
+    // (3) 쿠키 검증 경계: /api/auth/me가 user를 돌려주는지로 본다
+    const forged = sessionPayload();
+    const valid = sessionToken(forged);
+    const [vPart, vSig] = valid.split('.');
+    const tamperedPart = Buffer.from(JSON.stringify({ ...forged, uid: UID_B }), 'utf8').toString('base64url');
+    const flip = (s) => s.slice(0, -1) + (s.slice(-1) === 'A' ? 'B' : 'A');
+    const now = Math.floor(Date.now() / 1000);
+    const oldUuid = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    const oldSig = crypto.createHmac('sha256', TEST_SESSION_SECRET).update(oldUuid).digest('hex').slice(0, 16);
+    const cases = [
+      ['forged with the right secret', `sid=${valid}`, true],
+      ['payload tampered (uid changed, old signature)', `sid=${tamperedPart}.${vSig}`, false],
+      ['signature tampered (last char flipped)', `sid=${vPart}.${flip(vSig)}`, false],
+      ['signed with a different secret', `sid=${sessionToken(forged, 'some-other-secret-value-abcdef0123')}`, false],
+      ['expired (exp in the past)', `sid=${sessionToken(sessionPayload({ iat: now - 7200, exp: now - 10 }))}`, false],
+      ['lifetime longer than 30 days', `sid=${sessionToken(sessionPayload({ exp: now + SESSION_TTL_SEC + 3600 }))}`, false],
+      ['oversized (> 3500 chars, correctly signed)', `sid=${sessionToken(sessionPayload({ n: 'x'.repeat(4000) }))}`, false],
+      ['payload part with non-base64url chars (signed)', `sid=${'bm90*YmFzZTY0'}.${signSessionPart('bm90*YmFzZTY0')}`, false],
+      ['payload is not JSON (signed)', `sid=${sessionTokenFromJson('{not json')}`, false],
+      ['payload is a JSON array (signed)', `sid=${sessionTokenFromJson('[1,2,3]')}`, false],
+      ['payload v:2 (signed)', `sid=${sessionToken(sessionPayload({ v: 2 }))}`, false],
+      ['payload without uid (signed)', `sid=${sessionToken((({ uid, ...rest }) => rest)(sessionPayload()))}`, false],
+      ['uid not in u_<24 hex> form (signed)', `sid=${sessionToken(sessionPayload({ uid: 'admin' }))}`, false],
+      ['unknown provider (signed)', `sid=${sessionToken(sessionPayload({ p: 'github' }))}`, false],
+      ['iat after exp (signed)', `sid=${sessionToken(sessionPayload({ iat: now + 100, exp: now + 50 }))}`, false],
+      ['old format sid=<uuid>.<16 hex HMAC>', `sid=${oldUuid}.${oldSig}`, false],
+      ['three dot-separated parts', `sid=${valid}.extra`, false],
+      ["decoy 'xsid=' cookie only", `xsid=${valid}`, false],
+      ["decoy 'xsid=' before the real sid", `xsid=junk.value; sid=${valid}`, true],
+      ["real sid before a decoy 'xsid='", `sid=${valid}; xsid=junk.value`, true],
+      ['empty sid', 'sid=', false]
+    ];
+    const wrongCases = [];
+    for (const [name, cookie, expectUser] of cases) {
+      const u = await me(cookie);
+      const ok = expectUser ? (u && u.userId === forged.uid) : u === null;
+      if (!ok) wrongCases.push(`${name} -> ${short(u, 80)}`);
+    }
+    log(wrongCases.length === 0, `sid verification: ${cases.length} cases (tampered payload/signature, wrong secret, expired, too long-lived, oversized, bad base64/JSON/array, v:2, missing/bad uid, bad provider, old uuid format, xsid decoy)`, wrongCases.join(' | '));
+    const proto = sessionTokenFromJson(`{"v":1,"uid":"${forged.uid}","p":"google","n":"P","img":"","iat":${now},"exp":${now + 600},"__proto__":{"polluted":"yes"},"constructor":{"prototype":{"polluted":"yes"}},"isAdmin":true}`);
+    const protoMe = await call('/api/auth/me', withCookie(`sid=${proto}`));
+    log(protoMe.json?.user?.userId === forged.uid && Object.keys(protoMe.json.user).sort().join(',') === 'nickname,profileImage,provider,userId' && !/polluted|isAdmin/.test(protoMe.body),
+      'sid payload with __proto__ / constructor / extra keys: only the known fields are copied', short(protoMe.json));
+    const out = await call('/api/auth/logout', withCookie(A.cookie, { method: 'POST' }));
+    const cleared = setCookies(out).find((c) => c.startsWith('sid=')) || '';
+    log(out.status === 200 && /^sid=;/.test(cleared) && /Max-Age=0/.test(cleared) && /Path=\//.test(cleared) && /HttpOnly/.test(cleared), 'logout clears the sid cookie (sid=; Max-Age=0; Path=/; HttpOnly)', short(cleared));
+
+    // (4) 내 일정 CRUD(가짜 Supabase)
+    const noAuth = await Promise.all([plans.list(''), plans.save('', samplePlanBody()), plans.load('', 'x'), plans.del('', 'x')]);
+    log(noAuth.every((r) => r.status === 401), 'my-plans save/list/load/delete without a session -> 401', short(noAuth.map((r) => r.status)));
+    const empty = await plans.list(A.cookie);
+    log(empty.status === 200 && Array.isArray(empty.json?.plans) && empty.json.plans.length === 0, "list for a user with only non-'my-plans' rows -> [] (source filter)", short(empty.json));
+    const s1 = await plans.save(A.cookie, samplePlanBody());
+    savedA = s1.json?.saved || {};
+    log(s1.status === 200 && UUID_RE.test(String(savedA.id)) && savedA.userId === UID_A && savedA.title === '도쿄 3일' && savedA.days === 3 && savedA.data?.formValues?.budget === 'mid' && !Number.isNaN(Date.parse(savedA.savedAt)),
+      'save without id -> 200 { saved: { id (new uuid), userId = session uid, title, …, data, savedAt } }', short(savedA));
+    const rowA = rowsByKey(`my_${savedA.id}`)[0] || {};
+    log(rowA.user_label === UID_A && rowA.source === 'my-plans' && rowA.city_key === 'tokyo' && rowA.city_label === '도쿄 (NRT)' && rowA.theme === 'mixed'
+      && rowA.start_date === futureDate(30) && rowA.days === 3 && rowA.summary === '도쿄 3일' && JSON.stringify(rowA.payload) === JSON.stringify(savedA),
+      "Supabase row: plan_key 'my_'+id, user_label = uid, source 'my-plans', city_key/city_label/theme/start_date/days, summary = title, payload = the plan object", short(rowA, 400));
+    const listed = await plans.list(A.cookie);
+    const item = (listed.json?.plans || [])[0] || {};
+    log(listed.status === 200 && listed.json.plans.length === 1 && Object.keys(item).join(',') === SUMMARY_KEYS && item.id === savedA.id && item.title === '도쿄 3일'
+      && item.cityLabel === '도쿄 (NRT)' && item.startDate === futureDate(30) && item.days === 3 && item.theme === 'mixed' && !Number.isNaN(Date.parse(item.savedAt)),
+      `list -> { plans: [{ ${SUMMARY_KEYS} }] } (same shape as the file store)`, short(listed.json));
+    const loaded = await plans.load(A.cookie, savedA.id);
+    log(loaded.status === 200 && JSON.stringify(loaded.json?.plan) === JSON.stringify(savedA), 'load -> { plan } equal to what was saved', short(loaded.json, 200));
+    const createdAt = rowA.created_at;
+    const s2 = await plans.save(A.cookie, samplePlanBody({ id: savedA.id, title: '도쿄 3일 (수정)' }));
+    const rowsA = rowsByKey(`my_${savedA.id}`);
+    log(s2.status === 200 && s2.json?.saved?.id === savedA.id && rowsA.length === 1 && rowsA[0].summary === '도쿄 3일 (수정)' && rowsA[0].created_at === createdAt && rowsA[0].updated_at > createdAt,
+      'save with the same id overwrites the one row (upsert on plan_key, created_at kept, updated_at moves)', short(rowsA.map((r) => ({ s: r.summary, c: r.created_at, u: r.updated_at }))));
+    const odd = await plans.save(A.cookie, samplePlanBody({ id: 'bad id!/../x', title: '이상한 값', startDate: '2026/10/01', days: 'abc', cityKey: '', theme: '' }));
+    const oddRow = rowsByKey(`my_${odd.json?.saved?.id}`)[0] || {};
+    log(odd.status === 200 && UUID_RE.test(String(odd.json?.saved?.id)) && oddRow.start_date === null && oddRow.days === null && oddRow.city_key === 'unknown' && oddRow.theme === null
+      && oddRow.payload?.startDate === '2026/10/01' && rowsByKey('my_bad id!/../x').length === 0,
+      "unsafe client id -> new uuid; non-ISO startDate -> start_date null (kept in payload); bad days -> null; empty cityKey -> 'unknown'", short(oddRow, 300));
+    const bad31 = await plans.save(A.cookie, samplePlanBody({ title: '2월 30일', startDate: '2026-02-30' }));
+    log(bad31.status === 200 && (rowsByKey(`my_${bad31.json?.saved?.id}`)[0] || {}).start_date === null, "impossible calendar date '2026-02-30' -> start_date null (no Postgres error / 503)");
+    const order = (await plans.list(A.cookie)).json?.plans || [];
+    log(order.length === 3 && order[0].id === bad31.json?.saved?.id && order[2].id === savedA.id, 'list is ordered by updated_at desc (newest first)', short(order.map((p) => p.title)));
+    const seededClash = await plans.save(A.cookie, samplePlanBody({ id: 'seeded-tp', title: 'clash' }));
+    log(seededClash.status === 404 && (rowsByKey('my_seeded-tp')[0] || {}).summary === 'looks like my_ but is not', "save onto an existing non-'my-plans' row with the same plan_key -> 404, row untouched", short(seededClash.json));
+
+    // (5) 다른 사용자(B)는 A의 일정을 보거나 바꾸지 못한다
+    const bList = await plans.list(B.cookie);
+    const bLoad = await plans.load(B.cookie, savedA.id);
+    const bOverwrite = await plans.save(B.cookie, samplePlanBody({ id: savedA.id, title: 'B가 덮어쓰기' }));
+    const bDelete = await plans.del(B.cookie, savedA.id);
+    const afterB = rowsByKey(`my_${savedA.id}`);
+    log(bList.status === 200 && (bList.json?.plans || []).length === 0, "user B's list does not show A's plans", short(bList.json));
+    log(bLoad.status === 404 && !bLoad.body.includes('도쿄 3일'), "user B loading A's plan id -> 404 (no data leaked)", short(bLoad.json));
+    log(bOverwrite.status === 404 && afterB.length === 1 && afterB[0].user_label === UID_A && afterB[0].summary === '도쿄 3일 (수정)', "user B saving with A's plan id -> 404 and A's row is unchanged", short({ status: bOverwrite.status, row: afterB[0] && afterB[0].summary }));
+    log(bDelete.status === 200 && bDelete.json?.deleted === false && afterB.length === 1, "user B deleting A's plan id -> { deleted: false } and the row stays", short(bDelete.json));
+    const bSave = await plans.save(B.cookie, samplePlanBody({ title: 'B의 오사카', cityKey: 'osaka', cityLabel: '오사카 (KIX)' }));
+    const bOwn = (await plans.list(B.cookie)).json?.plans || [];
+    const aOwn = (await plans.list(A.cookie)).json?.plans || [];
+    log(bSave.status === 200 && bOwn.length === 1 && bOwn[0].title === 'B의 오사카' && !aOwn.some((p) => p.title === 'B의 오사카') && aOwn.length === 3, 'each user lists only their own plans', short({ bOwn: bOwn.map((p) => p.title), aOwn: aOwn.map((p) => p.title) }));
+
+    // (6) 요청 모양: 필터 값은 URL 인코딩, load/delete는 plan_key + user_label + source, 헤더는 apikey만
+    const loadReq = sbEntries().find((e) => {
+      const p = new URLSearchParams(e.query);
+      return e.method === 'GET' && p.get('select') === 'payload' && p.get('user_label') === `eq.${UID_A}`;
+    });
+    const q = loadReq ? new URLSearchParams(loadReq.query) : new URLSearchParams();
+    log(Boolean(loadReq) && q.get('plan_key') === `eq.my_${savedA.id}` && q.get('user_label') === `eq.${UID_A}` && q.get('source') === 'eq.my-plans' && q.get('limit') === '1',
+      'load query filters plan_key=eq.my_<id> & user_label=eq.<uid> & source=eq.my-plans (limit 1)', short(loadReq && loadReq.query));
+    const delReq = sbEntries().filter((e) => e.method === 'DELETE').pop();
+    const dq = delReq ? new URLSearchParams(delReq.query) : new URLSearchParams();
+    log(Boolean(delReq) && dq.get('plan_key') === `eq.my_${savedA.id}` && dq.get('user_label') === `eq.${UID_B}` && dq.get('source') === 'eq.my-plans' && delReq.prefer.includes('return=representation'),
+      'delete filters plan_key + user_label + source and asks for return=representation', short(delReq && { q: delReq.query, prefer: delReq.prefer }));
+    const listReq = sbEntries().filter((e) => e.method === 'GET' && /order=updated_at\.desc/.test(e.query)).pop();
+    const lq = listReq ? new URLSearchParams(listReq.query) : new URLSearchParams();
+    log(Boolean(listReq) && lq.get('limit') === '50' && lq.get('source') === 'eq.my-plans' && /^eq\.u_[0-9a-f]{24}$/.test(String(lq.get('user_label'))) && !/payload/.test(String(lq.get('select'))),
+      'list query: user_label + source filters, order=updated_at.desc, limit=50 (= the per-user cap), no payload column selected', short(listReq && listReq.query));
+    const upserts = sbEntries().filter((e) => e.method === 'POST');
+    log(upserts.length > 0 && upserts.every((e) => /on_conflict=plan_key/.test(e.query) && e.prefer.includes('resolution=merge-duplicates')), 'save upserts with on_conflict=plan_key + Prefer resolution=merge-duplicates', short(upserts.map((e) => e.prefer)));
+    const badHeaders = sbEntries().filter((e) => e.headers.apikey !== SB_KEY || 'authorization' in e.headers);
+    log(sbEntries().length > 10 && badHeaders.length === 0, `every Supabase request (${sbEntries().length}) sends apikey = the sb_secret_ key and no Authorization header`, short(badHeaders.map((e) => `${e.method} ${e.path}`)));
+
+    // (7) 삭제
+    const d1 = await plans.del(A.cookie, savedA.id);
+    const d2 = await plans.del(A.cookie, savedA.id);
+    log(d1.json?.deleted === true && d2.json?.deleted === false && rowsByKey(`my_${savedA.id}`).length === 0, 'delete own plan -> { deleted: true } (row gone), again -> { deleted: false }', short([d1.json, d2.json]));
+    const missing = await plans.load(A.cookie, '');
+    const weird = await plans.load(A.cookie, 'a/b?c');
+    log(missing.status === 400 && weird.status === 404, 'load without id -> 400; id outside the safe pattern -> 404', short([missing.status, weird.status]));
+    log(!fs.existsSync(path.join(sbDir, 'saved_plans.json')), 'with Supabase configured, nothing is written to saved_plans.json');
+
+    // (8) keepalive: 진짜 조회(travel_plans?select=id&limit=1)를 10분에 한 번만
+    const kaCount = () => sbEntries().filter((e) => e.method === 'GET' && e.query === '?select=id&limit=1').length;
+    const k0 = kaCount();
+    const ka1 = await call('/api/keepalive');
+    const ka2 = await call('/api/keepalive');
+    log(ka1.status === 200 && ka1.json?.ok === true && ka1.json?.supabase === 'ok' && !Number.isNaN(Date.parse(ka1.json?.checkedAt)) && Object.keys(ka1.json).join(',') === 'ok,supabase,checkedAt'
+      && /no-store/.test(String(ka1.headers['cache-control'] || '')),
+      'GET /api/keepalive -> 200 { ok: true, supabase: "ok", checkedAt } (Cache-Control: no-store)', short(ka1.json));
+    log(kaCount() === k0 + 1 && ka2.json?.checkedAt === ka1.json?.checkedAt && ka2.json?.supabase === 'ok', 'keepalive caches its result: a second call within 10 minutes does not query Supabase again', short({ queries: kaCount() - k0 }));
+    log(!/plan_key|payload|user_label|도쿄/.test(ka1.body), 'keepalive response carries no row data');
+
+    // (9) 개인 일정 응답은 캐시하지 않는다(401·404 포함)
+    const noStore = (r) => /no-store/.test(String(r.headers['cache-control'] || ''));
+    const ns = [await plans.list(A.cookie), await plans.load(A.cookie, 'no-such-plan'), await plans.save(A.cookie, samplePlanBody({ title: 'no-store check' })),
+      await plans.del(A.cookie, 'no-such-plan'), await plans.list(''), await plans.load('', 'x'),
+      await call('/api/travel-plan/list', withCookie(A.cookie)), await call('/api/travel-plan/get?planKey=tp-other-row-1', withCookie(A.cookie))];
+    log(ns.every(noStore) && ns[6].status === 200 && ns[7].status === 200, 'my-plans save/list/load/delete (also 401/404) and travel-plan list/get answer Cache-Control: no-store',
+      short(ns.map((r) => [r.status, r.headers['cache-control'] || null])));
+
+    // (10) Postgres가 받지 않는 글자(NUL, 짝 없는 서로게이트): 저장 전에 고쳐서 저장한다(예전엔 '연결 불가' 503)
+    const nul = await plans.save(A.cookie, samplePlanBody({ title: 'test nul \u0000 title \ud83d', cityLabel: 'Osaka\u0000', data: { note: 'memo\u0000x', ['k\u0000ey']: ['\udc00ok', { deep: 'a\u0000b' }], ok: '😀' } }));
+    const nulId = nul.json?.saved?.id;
+    const nulRow = rowsByKey(`my_${nulId}`)[0] || {};
+    const nd = nulRow.payload?.data || {};
+    log(nul.status === 200 && nulRow.summary === 'test nul  title \uFFFD' && nulRow.city_label === 'Osaka' && nd.note === 'memox' && Array.isArray(nd.key) && nd.key[0] === '\uFFFDok' && nd.key[1]?.deep === 'ab' && nd.ok === '😀'
+      && !JSON.stringify(nulRow).includes('\\u0000'),
+      'save with NUL / lone surrogates in title, labels, data values and keys -> 200; NUL removed, lone surrogates -> U+FFFD, valid emoji kept', short({ status: nul.status, body: nul.json?.reasonCode, summary: nulRow.summary, data: nd }));
+    const nulLoad = await plans.load(A.cookie, nulId);
+    log(nulLoad.status === 200 && nulLoad.json?.plan?.title === 'test nul  title \uFFFD' && nulLoad.json?.plan?.data?.note === 'memox', 'the cleaned plan loads back as saved', short(nulLoad.json?.plan?.title));
+    const tpNul = await call('/api/travel-plan/save', withCookie(A.cookie, { method: 'POST', body: { city: 'tokyo', plan: { city: '도쿄\u0000', summary: 'tp \u0000 nul \udfff', itinerary: [] } } }));
+    const tpRow = mock.supabaseRows().find((r) => r.summary && r.summary.startsWith('tp ')) || {};
+    log(tpNul.status === 200 && tpRow.summary === 'tp  nul \uFFFD' && tpRow.city_label === '도쿄' && tpRow.payload?.summary === 'tp  nul \uFFFD', '/api/travel-plan/save cleans NUL / lone surrogates the same way', short({ status: tpNul.status, row: tpRow.summary }));
+    const deep = await plans.save(A.cookie, samplePlanBody({ title: 'too deep', data: JSON.parse('{"a":'.repeat(80) + '1' + '}'.repeat(80)) }));
+    log(deep.status === 400 && !rowsByKey('my_' + String(deep.json?.saved?.id)).length, 'data nested deeper than 64 levels -> 400 (no crash, nothing stored)', short({ status: deep.status, body: deep.json }));
+
+    // (11) 일정 하나의 크기 상한(400KB)
+    const rowsBefore = mock.supabaseRows().length;
+    const big = await plans.save(A.cookie, samplePlanBody({ title: 'too big', data: { blob: 'x'.repeat(410_000) } }));
+    log(big.status === 413 && big.json?.reasonCode === 'PLAN_TOO_LARGE' && HANGUL_RE.test(String(big.json?.error || '')) && mock.supabaseRows().length === rowsBefore && noStore(big),
+      'a plan over 400 KB -> 413 { reasonCode: PLAN_TOO_LARGE } and nothing is stored', short({ status: big.status, body: big.json }));
+
+    // (12) 사용자당 개수 상한(50): 새 일정은 409, 덮어쓰기는 허용, 목록은 50개 모두 보여 줌(전부 화면에서 지울 수 있음)
+    const CAROL = { id: 'g-carol-5005', name: 'Carol', email: 'carol@example.test', picture: '' };
+    const UID_C = stableUid('google', CAROL.id);
+    mock.seedSupabase(Array.from({ length: 50 }, (_, i) => ({ plan_key: `my_cap-${i + 1}`, user_label: UID_C, city_key: 'tokyo', source: 'my-plans', summary: `cap ${i + 1}`, payload: { id: `cap-${i + 1}`, title: `cap ${i + 1}` } })));
+    const C = await login('google', CAROL);
+    const cRows = () => mock.supabaseRows().filter((r) => r.user_label === UID_C);
+    const over = await plans.save(C.cookie, samplePlanBody({ title: '51번째' }));
+    log(over.status === 409 && over.json?.reasonCode === 'PLAN_LIMIT' && over.json?.limit === 50 && HANGUL_RE.test(String(over.json?.error || '')) && cRows().length === 50,
+      'the 51st new plan of one user -> 409 { reasonCode: PLAN_LIMIT, limit: 50 }, nothing stored', short({ status: over.status, body: over.json, rows: cRows().length }));
+    const capOverwrite = await plans.save(C.cookie, samplePlanBody({ id: 'cap-7', title: 'cap 7 수정' }));
+    log(capOverwrite.status === 200 && cRows().length === 50 && (rowsByKey('my_cap-7')[0] || {}).summary === 'cap 7 수정', 'overwriting one of the 50 (same id) is still allowed at the cap', short({ status: capOverwrite.status }));
+    const cList = await plans.list(C.cookie);
+    log(cList.status === 200 && (cList.json?.plans || []).length === 50, 'the list shows all 50 plans (limit = cap, so every stored plan can be deleted from the UI)', short((cList.json?.plans || []).length));
+    const cDel = await plans.del(C.cookie, 'cap-1');
+    const cAgain = await plans.save(C.cookie, samplePlanBody({ title: '자리 생김' }));
+    log(cDel.json?.deleted === true && cAgain.status === 200 && cRows().length === 50, 'after deleting one, a new plan can be saved again', short({ del: cDel.json, status: cAgain.status }));
+    const tpCap = await call('/api/travel-plan/save', withCookie(C.cookie, { method: 'POST', body: { city: 'tokyo', plan: { city: '도쿄', summary: 'tp cap', itinerary: [] } } }));
+    log(tpCap.status === 409 && tpCap.json?.reasonCode === 'PLAN_LIMIT' && cRows().length === 50, '/api/travel-plan/save has the same per-user cap', short({ status: tpCap.status, body: tpCap.json }));
+
+    // (13) 저장소가 내용을 거절(4xx)하면 '연결 불가'가 아니라 400 INVALID_PLAN, 저장소 상태는 정상 그대로
+    mock.scenario = { supabase: 'reject_post' };
+    const rej = await plans.save(A.cookie, samplePlanBody({ title: 'rejected' }));
+    const tpRej = await call('/api/travel-plan/save', withCookie(A.cookie, { method: 'POST', body: { city: 'tokyo', plan: { city: '도쿄', summary: 'tp rejected', itinerary: [] } } }));
+    const hRej = (await call('/api/health', { record: false })).json || {};
+    mock.scenario = { supabase: 'ok' };
+    log(rej.status === 400 && rej.json?.reasonCode === 'INVALID_PLAN' && HANGUL_RE.test(String(rej.json?.error || '')) && !/22P05|unsupported Unicode/.test(rej.body)
+      && tpRej.status === 400 && tpRej.json?.reasonCode === 'INVALID_PLAN',
+      'Supabase rejecting the content (400 22P05) -> 400 { reasonCode: INVALID_PLAN } on my-plans and travel-plan save (raw error not exposed)', short([rej.status, rej.json, tpRej.status]));
+    log(hRej.supabaseReachable === true && hRej.supabaseCheck === 'ok', 'a content rejection does not mark the storage unreachable in /api/health', short({ r: hRej.supabaseReachable, k: hRej.supabaseCheck }));
+    log(/\[supabase\] 내 일정 save 실패: Supabase error 400/.test(serverLogs()) && /저장소 오류: Supabase error 400/.test(serverLogs()), 'the raw Supabase 400 stays in the server log only');
+  } catch (e) { log(false, 'sessions + supabase phase', e.stack || e.message); }
+  checkNoSecrets('Sessions / Supabase', SECRETS.concat([TEST_SESSION_SECRET]));
+  checkNoUnexpectedExternal('Sessions / Supabase');
+  checkNoFatal('Sessions / Supabase');
+
+  // ── B. 같은 SESSION_SECRET으로 서버를 다시 띄우면 로그인이 그대로, 비밀값을 바꾸면 풀린다 ──
+  try {
+    const cookieB = B && B.cookie;
+    await startServer('sessions-restart', sbEnv);
+    const again = await me(cookieB);
+    const bPlans = await plans.list(cookieB);
+    log(again && again.userId === UID_B && again.nickname === 'Bob', 'after a server restart with the same SESSION_SECRET the sid cookie still logs in (same uid, no server-side store)', short(again));
+    log(bPlans.status === 200 && (bPlans.json?.plans || []).length === 1 && bPlans.json.plans[0].title === 'B의 오사카', "after the restart the user's plans are still listed (Supabase, keyed by the stable uid)", short(bPlans.json));
+    await startServer('sessions-rotated-secret', { ...sbEnv, SESSION_SECRET: 'rotated-test-only-secret-fedcba9876543210' });
+    const rotated = await me(cookieB);
+    const B2 = await login('google', BOB);
+    const plansAfterRotate = await plans.list(B2.cookie);
+    log(rotated === null, 'after rotating SESSION_SECRET the old cookie is logged out', short(rotated));
+    log((decodeSessionToken(B2.token) || {}).uid === UID_B && (plansAfterRotate.json?.plans || []).length === 1, 'logging in again after the rotation gives the same uid, so the saved plans are still there', short(plansAfterRotate.json));
+  } catch (e) { log(false, 'session restart', e.stack || e.message); }
+  checkNoFatal('Sessions restart');
+
+  // ── C. Supabase가 503(일시 중지·복구 중)일 때 + 예전 JWT 키(eyJ…)는 Bearer도 보냄 ──
+  const downDir = newDataDir('sessions-down');
+  mock.reset({ oauth: 'ok', supabase: 'down' });
+  try {
+    await startServer('supabase-down', { ...oauthEnv, TABIMARU_DATA_DIR: downDir, SUPABASE_URL: MOCK + '/supabase', SUPABASE_SERVICE_ROLE_KEY: JWT_KEY });
+    const h = await waitHealth((x) => x.supabaseReachable !== null && x.supabaseReachable !== undefined);
+    log(h.supabaseConfigured === true && h.supabaseReachable === false && h.supabaseCheck === 'unreachable', "Supabase answering 503: health says supabaseConfigured true, supabaseReachable false, supabaseCheck 'unreachable'", short({ c: h.supabaseConfigured, r: h.supabaseReachable, k: h.supabaseCheck }));
+    const probe = sbEntries().find((e) => e.method === 'GET' && e.query === '?select=id&limit=1');
+    log(Boolean(probe) && probe.headers.apikey === JWT_KEY && probe.headers.authorization === `Bearer ${JWT_KEY}`, 'legacy JWT key (eyJ…): apikey + Authorization: Bearer are both sent');
+    const D = await login('google', ALICE);
+    const rs = [await plans.save(D.cookie, samplePlanBody()), await plans.list(D.cookie), await plans.load(D.cookie, 'abc'), await plans.del(D.cookie, 'abc')];
+    log(rs.every((r) => r.status === 503 && r.json?.reasonCode === 'PROVIDER_UNAVAILABLE' && HANGUL_RE.test(String(r.json?.error || ''))),
+      'Supabase unavailable: save/list/load/delete -> 503 { error (Korean), reasonCode: PROVIDER_UNAVAILABLE }', short(rs.map((r) => [r.status, r.json?.reasonCode])));
+    log(rs.every((r) => !r.body.includes(SUPABASE_ERROR_TEXT) && !/mock-supabase|restoring/.test(r.body)), 'the raw Supabase error text never reaches the client');
+    log(!fs.existsSync(path.join(downDir, 'saved_plans.json')), 'Supabase unavailable: the plan is NOT silently written to the local file');
+    const k0 = sbEntries().filter((e) => e.method === 'GET').length;
+    const ka1 = await call('/api/keepalive');
+    const ka1At = Date.now();
+    const ka2 = await call('/api/keepalive');
+    log(ka1.status === 200 && ka1.json?.ok === true && ka1.json?.supabase === 'unreachable' && ka2.json?.checkedAt === ka1.json?.checkedAt
+      && sbEntries().filter((e) => e.method === 'GET').length === k0 + 1, 'keepalive while Supabase is down -> { ok: true, supabase: "unreachable" }; an immediate second call reuses it (no extra query)', short(ka1.json));
+    log(!serverLogs().includes(JWT_KEY), 'server log never contains the Supabase key');
+    // 실패는 15초만 재사용: Supabase가 돌아오면 GitHub Actions의 다음 재시도(30초 뒤)가 실제로 다시 확인해 ok를 받는다
+    mock.scenario = { supabase: 'ok' };
+    await sleep(Math.max(0, 15_500 - (Date.now() - ka1At)));
+    const ka3 = await call('/api/keepalive');
+    const hBack = (await call('/api/health', { record: false })).json || {};
+    log(ka3.json?.supabase === 'ok' && ka3.json?.checkedAt !== ka1.json?.checkedAt && hBack.supabaseReachable === true && hBack.supabaseCheck === 'ok',
+      'a failed keepalive is cached only ~15 s: once Supabase is back, the next retry checks again -> "ok" (health reachable true again)', short({ ka3: ka3.json, r: hBack.supabaseReachable }));
+  } catch (e) { log(false, 'supabase down phase', e.stack || e.message); }
+  checkNoSecrets('Supabase down', SECRETS);
+  checkNoUnexpectedExternal('Supabase down');
+  checkNoFatal('Supabase down');
+
+  // ── C2. 키가 틀렸거나 폐기됨(401 Invalid API key): health가 '정상'으로 보이면 안 된다 ──
+  const authDir = newDataDir('sessions-badkey');
+  mock.reset({ oauth: 'ok', supabase: 'auth' });
+  try {
+    await startServer('supabase-bad-key', { ...oauthEnv, TABIMARU_DATA_DIR: authDir, SUPABASE_URL: MOCK + '/supabase', SUPABASE_SERVICE_ROLE_KEY: SB_KEY });
+    const h = await waitHealth((x) => x.supabaseReachable !== null && x.supabaseReachable !== undefined);
+    log(h.supabaseConfigured === true && h.supabaseReachable === false && h.supabaseCheck === 'auth_error',
+      "wrong / revoked Supabase key (401): health supabaseReachable false, supabaseCheck 'auth_error' (not a false 'reachable')", short({ r: h.supabaseReachable, k: h.supabaseCheck }));
+    const K = await login('google', ALICE);
+    const kl = await plans.list(K.cookie);
+    const ks = await plans.save(K.cookie, samplePlanBody());
+    const kk = await call('/api/keepalive');
+    const h2 = (await call('/api/health', { record: false })).json || {};
+    log(kl.status === 503 && ks.status === 503 && kl.json?.reasonCode === 'PROVIDER_UNAVAILABLE' && ks.json?.reasonCode === 'PROVIDER_UNAVAILABLE' && !fs.existsSync(path.join(authDir, 'saved_plans.json')),
+      'wrong key: my-plans list/save -> 503 PROVIDER_UNAVAILABLE, nothing written to the local file', short([kl.status, ks.status]));
+    log(kk.json?.ok === true && kk.json?.supabase === 'auth_error' && h2.supabaseReachable === false && h2.supabaseCheck === 'auth_error',
+      'wrong key: keepalive -> supabase "auth_error" (the workflow fails), health stays reachable false after it', short({ ka: kk.json, r: h2.supabaseReachable }));
+    log(/\[supabase\] 키가 거부됐습니다/.test(serverLogs()) && !serverLogs().includes(SB_KEY), 'wrong key: the server log says the key was rejected (key value never logged)');
+  } catch (e) { log(false, 'supabase bad key phase', e.stack || e.message); }
+  checkNoSecrets('Supabase bad key', SECRETS);
+  checkNoUnexpectedExternal('Supabase bad key');
+  checkNoFatal('Supabase bad key');
+
+  // ── D. 연결 거부(주소는 있지만 아무도 듣지 않음) + SESSION_SECRET 없음 ──
+  const refusedDir = newDataDir('sessions-refused');
+  mock.reset({ oauth: 'ok' });
+  try {
+    const port = await closedPort();
+    await startServer('supabase-refused', { ...oauthEnv, TABIMARU_DATA_DIR: refusedDir, SUPABASE_URL: `http://127.0.0.1:${port}`, SUPABASE_SERVICE_ROLE_KEY: SB_KEY, SESSION_SECRET: '' });
+    const h = await waitHealth((x) => x.supabaseReachable !== null && x.supabaseReachable !== undefined);
+    log(h.sessionSecretConfigured === false && h.supabaseConfigured === true && h.supabaseReachable === false, 'no SESSION_SECRET -> sessionSecretConfigured false; connection refused -> supabaseReachable false', short({ s: h.sessionSecretConfigured, r: h.supabaseReachable }));
+    log(/\[session\] SESSION_SECRET이 없어/.test(serverLogs()), 'missing SESSION_SECRET is warned in the server log');
+    const R = await login('google', ALICE);
+    const r1 = await plans.save(R.cookie, samplePlanBody());
+    log(Boolean(R.token) && r1.status === 503 && r1.json?.reasonCode === 'PROVIDER_UNAVAILABLE' && !fs.existsSync(path.join(refusedDir, 'saved_plans.json')),
+      'connection refused: save -> 503 PROVIDER_UNAVAILABLE and no file write', short({ status: r1.status, body: r1.json }));
+  } catch (e) { log(false, 'supabase refused phase', e.stack || e.message); }
+  checkNoFatal('Supabase refused');
+
+  // ── E. Supabase 미설정 → 파일 저장소(TABIMARU_DATA_DIR), 예전 users.json id의 일정도 같은 사람 것 ──
+  const fileDir = newDataDir('sessions-file');
+  const LEGACY = { id: 'g-legacy-3003', name: 'Legacy' };
+  const UID_L = stableUid('google', LEGACY.id);
+  fs.writeFileSync(path.join(fileDir, 'users.json'), JSON.stringify([{ id: 'legacy-uuid-0001', provider: 'google', providerId: LEGACY.id, nickname: 'Old', createdAt: '2026-03-01T00:00:00.000Z' }]));
+  fs.writeFileSync(path.join(fileDir, 'saved_plans.json'), JSON.stringify([
+    { id: 'legacy-plan-1', userId: 'legacy-uuid-0001', title: '예전 일정', cityKey: 'kyoto', cityLabel: '교토 (KIX)', startDate: '2026-04-01', days: 2, theme: 'culture', data: {}, savedAt: '2026-03-02T00:00:00.000Z' },
+    { id: 'other-plan', userId: 'someone-else', title: '남의 일정', cityKey: 'tokyo', cityLabel: '도쿄', startDate: '', days: 1, theme: '', data: {}, savedAt: '2026-03-03T00:00:00.000Z' }
+  ]));
+  mock.reset({ oauth: 'ok' });
+  try {
+    await startServer('file-store', { ...oauthEnv, TABIMARU_DATA_DIR: fileDir });
+    const h = (await call('/api/health')).json || {};
+    log(h.supabaseConfigured === false && h.supabaseReachable === null, 'Supabase not configured: health supabaseConfigured false, supabaseReachable null', short({ c: h.supabaseConfigured, r: h.supabaseReachable }));
+    const L = await login('google', LEGACY);
+    const l1 = (await plans.list(L.cookie)).json?.plans || [];
+    log((decodeSessionToken(L.token) || {}).uid === UID_L && l1.length === 1 && l1[0].id === 'legacy-plan-1', "file store: a plan saved under the account's old random id (users.json) is still listed after the switch to stable ids", short(l1));
+    const fs1 = await plans.save(L.cookie, samplePlanBody({ title: '파일 저장' }));
+    const onDisk = JSON.parse(fs.readFileSync(path.join(fileDir, 'saved_plans.json'), 'utf8'));
+    log(fs1.status === 200 && onDisk.some((p) => p.id === fs1.json?.saved?.id && p.userId === UID_L && p.title === '파일 저장'), 'file store: save writes saved_plans.json in TABIMARU_DATA_DIR with userId = stable uid', short(fs1.json?.saved?.id));
+    const l2 = (await plans.list(L.cookie)).json?.plans || [];
+    const fl = await plans.load(L.cookie, 'legacy-plan-1');
+    log(l2.length === 2 && l2[0].title === '파일 저장' && Object.keys(l2[0]).join(',') === SUMMARY_KEYS && fl.status === 200 && fl.json?.plan?.title === '예전 일정', 'file store: list (newest first, same shape) and load work', short(l2.map((p) => p.title)));
+    const FB = await login('google', { id: 'g-filebob-4004', name: 'FileBob' });
+    const fbList = (await plans.list(FB.cookie)).json?.plans || [];
+    const fbLoad = await plans.load(FB.cookie, 'legacy-plan-1');
+    const fbDel = await plans.del(FB.cookie, 'legacy-plan-1');
+    log(fbList.length === 0 && fbLoad.status === 404 && fbDel.json?.deleted === false, "file store: another user cannot list, load or delete the plans", short({ fbList, load: fbLoad.status, del: fbDel.json }));
+    const fd = await plans.del(L.cookie, 'legacy-plan-1');
+    log(fd.json?.deleted === true && !JSON.parse(fs.readFileSync(path.join(fileDir, 'saved_plans.json'), 'utf8')).some((p) => p.id === 'legacy-plan-1')
+      && JSON.parse(fs.readFileSync(path.join(fileDir, 'saved_plans.json'), 'utf8')).some((p) => p.id === 'other-plan'), "file store: delete removes only the owner's plan", short(fd.json));
+    const kaOff = await call('/api/keepalive');
+    log(kaOff.json?.ok === true && kaOff.json?.supabase === 'off' && mock.count('supabase') === 0, 'keepalive without Supabase -> { ok: true, supabase: "off" } and no Supabase call', short(kaOff.json));
+  } catch (e) { log(false, 'file store phase', e.stack || e.message); }
+  checkNoSecrets('File store', OAUTH_SECRETS);
+  checkNoUnexpectedExternal('File store');
+  checkNoFatal('File store');
+
+  // ── F. 로그인 허용 목록(ALLOWED_LOGINS): 목록 밖 계정은 sid를 받지 못하고, 목록을 바꾸면 예전 sid는 끊긴다 ──
+  const allowDir = newDataDir('sessions-allowlist');
+  mock.reset({ oauth: 'ok' });
+  try {
+    await startServer('login-allowlist', { ...oauthEnv, TABIMARU_DATA_DIR: allowDir, ALLOWED_LOGINS: ` ${UID_A.toUpperCase()} , Bob@Example.test, kakao:555, not-an-entry ` });
+    const h = (await call('/api/health')).json || {};
+    log(h.loginRestricted === true, 'ALLOWED_LOGINS set -> health loginRestricted true', short({ l: h.loginRestricted }));
+    const oldB = await me(B && B.cookie);
+    log(oldB === null, 'a sid issued before the allowlist was set (same SESSION_SECRET) is logged out', short(oldB));
+    const fa = await login('google', ALICE);
+    const fb = await login('google', BOB);
+    const fk = await login('kakao', { id: '555', name: '허용 카카오', email: '', picture: '' });
+    log(Boolean(fa.token) && (await me(fa.cookie))?.userId === UID_A && Boolean(fb.token) && (await me(fb.cookie))?.userId === UID_B && Boolean(fk.token),
+      'allowed: by uid (case-insensitive), by provider-verified email (case-insensitive) and by kakao:<id>', short([fa.cb.headers.location, fb.cb.headers.location, fk.cb.headers.location]));
+    const denied = [
+      ['unlisted account', await login('google', { id: 'g-mallory-6006', name: 'Mallory', email: 'mallory@example.test', picture: '' })],
+      ['listed email but not verified by Google', await login('google', { id: 'g-bob-copy-7007', name: 'Bob?', email: 'bob@example.test', emailVerified: false, picture: '' })],
+      ['listed email on Naver (Naver email is not trusted)', await login('naver', { id: 'nv-bob', name: 'Bob N', email: 'bob@example.test', picture: '' })],
+      ['listed email on Kakao but not verified', await login('kakao', { id: '777', name: 'K', email: 'bob@example.test', emailVerified: false, picture: '' })]
+    ];
+    const wrong = denied.filter(([, r]) => !(r.cb.status === 302 && r.cb.headers.location === '/?authError=not_allowed' && !r.token)).map(([n, r]) => `${n}: ${r.cb.headers.location}`);
+    log(wrong.length === 0, `not allowed (${denied.length} cases: unlisted, unverified email, Naver email, unverified Kakao email) -> 302 /?authError=not_allowed and no sid cookie`, wrong.join(' | '));
+    const users = fs.existsSync(path.join(allowDir, 'users.json')) ? JSON.parse(fs.readFileSync(path.join(allowDir, 'users.json'), 'utf8')) : [];
+    log(users.length === 3 && !users.some((u) => /mallory|copy|nv-bob|777/.test(String(u.providerId))), 'rejected accounts are not recorded in users.json', short(users.map((u) => u.providerId)));
+    const logs = serverLogs();
+    log(/\[auth\] 허용 목록\(ALLOWED_LOGINS\)에 없는 google 계정의 로그인을 막았습니다/.test(logs) && /알아볼 수 없는 항목 1개/.test(logs) && !/mallory@example|bob@example/i.test(logs),
+      'rejections and an unreadable allowlist entry are logged without account ids or emails');
+  } catch (e) { log(false, 'login allowlist phase', e.stack || e.message); }
+  checkNoSecrets('Login allowlist', OAUTH_SECRETS);
+  checkNoUnexpectedExternal('Login allowlist');
+  checkNoFatal('Login allowlist');
+
+  // ── G. 약한 SESSION_SECRET은 쓰지 않는다(그 값으로 위조한 sid가 통하지 않음) ──
+  for (const [label, weak] of [['short', 'changeme'], ['few distinct chars', 'ab'.repeat(24)]]) {
+    const weakDir = newDataDir(`sessions-weak-${label.replace(/\W+/g, '-')}`);
+    mock.reset({ oauth: 'ok' });
+    try {
+      await startServer(`weak-secret-${label}`, { ...oauthEnv, TABIMARU_DATA_DIR: weakDir, SESSION_SECRET: weak });
+      const h = (await call('/api/health')).json || {};
+      log(h.sessionSecretConfigured === false && h.sessionSecretWeak === true, `weak SESSION_SECRET (${label}) -> health sessionSecretConfigured false, sessionSecretWeak true`, short({ s: h.sessionSecretConfigured, w: h.sessionSecretWeak }));
+      log(/\[session\] SESSION_SECRET이 너무 짧거나 단순해서 쓰지 않습니다/.test(serverLogs()) && !serverLogs().includes(weak), `weak SESSION_SECRET (${label}) is warned about in the log (value not logged)`);
+      const forgedWeak = sessionToken(sessionPayload({ uid: UID_A }), weak);
+      const fw = await me(`sid=${forgedWeak}`);
+      const W = await login('google', ALICE);
+      log(fw === null && Boolean(W.token) && (await me(W.cookie))?.userId === UID_A, `weak SESSION_SECRET (${label}): a sid forged with that value is rejected; normal login still works (random per-run key)`, short({ forged: fw }));
+    } catch (e) { log(false, `weak secret phase (${label})`, e.stack || e.message); }
+    checkNoFatal(`Weak secret (${label})`);
+  }
+  await stopServer();
+}
+
+// ── 1e. 재시작 뒤에도 로그인 화면 유지 + 저장소 장애 안내(app.js 샌드박스) ──
+async function sandboxStorageTests(htmlCode, appCode, i18nDict) {
+  section('Login survives a server wake-up, storage-unavailable messages (app.js sandbox)');
+  const msg = { ko: (i18nDict.ko || {})['store-unavailable'], en: (i18nDict.en || {})['store-unavailable'], ja: (i18nDict.ja || {})['store-unavailable'] };
+  log(msg.ko === '저장소에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.' && typeof msg.en === 'string' && msg.en.length > 10 && typeof msg.ja === 'string' && !HANGUL_RE.test(msg.ja),
+    "I18N 'store-unavailable' in ko/en/ja", short(msg));
+  const USER = { userId: 'u_0123456789abcdef01234567', provider: 'google', nickname: 'Tester', profileImage: '' };
+  const UNAVAILABLE = { status: 503, body: { error: '일정 저장소에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.', reasonCode: 'PROVIDER_UNAVAILABLE' } };
+  let meCalls = 0;
+  let listCalls = 0;
+  let saveCalls = 0;
+  const sb = createBrowser({
+    html: htmlCode,
+    location: BASE + '/',
+    fetchRoutes: sandboxRoutes({
+      // 서버가 깨어나는 중(502) → 다시 물으면 로그인 사용자
+      '/api/auth/me': () => { meCalls += 1; return meCalls === 1 ? { status: 502, body: { error: 'waking up' } } : { body: { user: USER } }; },
+      '/api/my-plans/list': () => { listCalls += 1; return listCalls === 3 ? { body: { plans: [] } } : UNAVAILABLE; },
+      '/api/my-plans/save': () => { saveCalls += 1; return UNAVAILABLE; },
+      '/api/my-plans/load': UNAVAILABLE,
+      '/api/my-plans/delete': UNAVAILABLE
+    })
+  });
+  const J = (code) => { const s = sb.run(`JSON.stringify(${code})`); return s === undefined ? undefined : JSON.parse(String(s)); };
+  const toast = () => String(sb.element('memoToast')?.textContent || '');
+  try {
+    await sb.boot(appCode, 'public/app.js');
+    await sb.settle(10000);
+    const auth = String(sb.element('authArea')?.innerHTML || '');
+    log(meCalls === 2 && J('currentUser && currentUser.userId') === USER.userId && auth.includes('id="btnMyPlans"') && auth.includes('Tester') && !auth.includes('id="btnLogin"'),
+      '/api/auth/me answering 502 once (server waking up) is retried -> logged-in UI (no false logout)', short({ meCalls, auth: auth.slice(0, 160) }));
+    sb.run('loadMyPlansList()');
+    await sb.settle(5000);
+    log(String(sb.element('myPlansContent')?.innerHTML || '').includes(msg.ko), "my plans list 503 -> panel shows 'store-unavailable'", short(sb.element('myPlansContent')?.innerHTML));
+    sb.run("loadPlanFromServer('plan-1')");
+    await sb.settle(5000);
+    log(toast() === msg.ko, "load 503 -> toast 'store-unavailable'", short(toast()));
+    sb.run('el("memoToast").textContent = ""; var __c503 = confirm; confirm = function () { return true; };');
+    sb.run("deletePlanFromServer('plan-1')");
+    await sb.settle(5000);
+    sb.run('confirm = __c503;');
+    log(toast() === msg.ko, "delete 503 -> toast 'store-unavailable'", short(toast()));
+    // 저장: 목록부터 503이면 저장 창을 닫고 알린다 → 목록이 되면 창이 열리고, 저장 503이면 알린다
+    sb.run('el("memoToast").textContent = ""; currentItineraryData = { itinerary: [{ day: 1, date: "2026-11-20", blocks: ["오전(09:00-11:00): 센소지 (아사쿠사)"] }] };');
+    sb.run('savePlanToServer()');
+    await sb.settle(5000);
+    log(toast() === msg.ko && sb.element('saveModal')?.classList.contains('hidden') && saveCalls === 0, "save: list 503 -> the save modal closes with 'store-unavailable' (no save call)", short({ toast: toast(), saveCalls }));
+    sb.run('el("memoToast").textContent = ""; savePlanToServer()');
+    await sb.settle(5000);
+    const confirmBtn = sb.element('saveConfirmBtn');
+    if (confirmBtn) confirmBtn.click();
+    await sb.settle(5000);
+    log(saveCalls === 1 && toast() === msg.ko, "save: POST /api/my-plans/save 503 -> toast 'store-unavailable' (not the generic save-fail)", short({ saveCalls, toast: toast() }));
+    log(sb.env.errors.concat(sb.unhandled).length === 0, 'storage-unavailable flows raise no errors', short(sb.env.errors.concat(sb.unhandled), 400));
+  } catch (e) { log(false, 'storage sandbox', e.stack || e.message); }
+
+  // 저장소가 이유를 알려 준 저장 실패(개수 상한 409·크기 413·저장할 수 없는 글자 400) → 각 안내. 허용 목록 밖 로그인 → 안내.
+  const keys = ['plan-limit', 'plan-too-large', 'plan-invalid', 'auth-err-not-allowed'];
+  const missing = [];
+  for (const lang of ['ko', 'en', 'ja']) for (const k of keys) { const v = (i18nDict[lang] || {})[k]; if (typeof v !== 'string' || !v.trim() || (lang === 'ja' && HANGUL_RE.test(v)) || (lang === 'en' && HANGUL_RE.test(v))) missing.push(`${lang}:${k}`); }
+  log(missing.length === 0 && /\{n\}/.test(i18nDict.ko['plan-limit'] || '') && /\{n\}/.test(i18nDict.en['plan-limit'] || '') && /\{n\}/.test(i18nDict.ja['plan-limit'] || ''),
+    "I18N ko/en/ja: 'plan-limit' ({n}), 'plan-too-large', 'plan-invalid', 'auth-err-not-allowed'", missing.join(', '));
+  const FAILS = [
+    { status: 409, body: { error: 'x', reasonCode: 'PLAN_LIMIT', limit: 50 }, expect: String((i18nDict.ko || {})['plan-limit'] || '').replace('{n}', '50') },
+    { status: 413, body: { error: 'x', reasonCode: 'PLAN_TOO_LARGE' }, expect: (i18nDict.ko || {})['plan-too-large'] },
+    { status: 400, body: { error: 'x', reasonCode: 'INVALID_PLAN' }, expect: (i18nDict.ko || {})['plan-invalid'] },
+    { status: 500, body: { error: 'x' }, expect: (i18nDict.ko || {})['save-fail'] }
+  ];
+  let failIdx = 0;
+  const sb2 = createBrowser({
+    html: htmlCode,
+    location: BASE + '/?authError=not_allowed',
+    fetchRoutes: sandboxRoutes({
+      '/api/auth/me': { body: { user: USER } },
+      '/api/my-plans/list': { body: { plans: [] } },
+      '/api/my-plans/save': () => FAILS[failIdx] || { body: { saved: {} } }
+    })
+  });
+  const toast2 = () => String(sb2.element('memoToast')?.textContent || '');
+  try {
+    await sb2.boot(appCode, 'public/app.js');
+    await sb2.settle(10000);
+    log(toast2() === (i18nDict.ko || {})['auth-err-not-allowed'], "/?authError=not_allowed -> toast 'auth-err-not-allowed'", short(toast2()));
+    const got = [];
+    for (failIdx = 0; failIdx < FAILS.length; failIdx++) {
+      sb2.run('el("memoToast").textContent = ""; currentItineraryData = { itinerary: [{ day: 1, date: "2026-11-20", blocks: ["오전(09:00-11:00): 센소지 (아사쿠사)"] }] }; savePlanToServer()');
+      await sb2.settle(5000);
+      const btn = sb2.element('saveConfirmBtn');
+      if (btn) btn.click();
+      await sb2.settle(5000);
+      got.push([FAILS[failIdx].status, toast2() === FAILS[failIdx].expect, toast2()]);
+    }
+    log(got.length === FAILS.length && got.every((g) => g[1]), 'save failures: 409 PLAN_LIMIT / 413 PLAN_TOO_LARGE / 400 INVALID_PLAN show their own message (n = 50), other errors the generic save-fail', short(got, 400));
+    log(sb2.env.errors.concat(sb2.unhandled).length === 0, 'save-failure / not-allowed flows raise no errors', short(sb2.env.errors.concat(sb2.unhandled), 400));
+  } catch (e) { log(false, 'save failure sandbox', e.stack || e.message); }
 }
 
 // ── 의도 회귀 표·AI 일정 단계 공용 ──
@@ -2124,6 +2888,9 @@ async function phaseIntentRegression() {
     const koReply = String(ko.json?.reply || '');
     log(/꼭 갈 곳/.test(koReply) && /나라/.test(koReply) && /전체 6일은 그대로/.test(koReply) && /지역별 일정 분배/.test(koReply),
       'reply ko: confirms must-visit, the Nara day-trip substitute, total 6 days and the per-city split', short(koReply, 300));
+    log(/나라는 아직 도시 데이터가 없어/.test(koReply) && !/은\(는\)/.test(koReply), "reply ko uses the right topic particle ('나라는', not '나라은(는)')", short(koReply, 300));
+    const hakone = String((await chat('하코네 1박2일 온천 료칸, 이동은 최소로')).json?.reply || '');
+    log(!/하코네은\(는\)/.test(hakone) && (!/하코네/.test(hakone) || !/은\(는\)/.test(hakone)), "reply ko: no '은(는)' after a Hangul place name (하코네는)", short(hakone, 300));
 
     // (4) 후속 대화(규칙 경로): 이전 해석 + 대화 기록 + '교토 하루 더 늘려줘' → 오사카 유지, 교토 +1, 이전 조건 유지
     const prev = {
@@ -2353,7 +3120,14 @@ async function phaseAiItinerary() {
   checkNoFatal('AI itinerary');
 }
 
+function cleanupTestData() {
+  try { fs.rmSync(TEST_DATA_ROOT, { recursive: true, force: true }); } catch { /* 무시 */ }
+}
+
 function printResults() {
+  // 서버들은 임시 TABIMARU_DATA_DIR만 썼어야 한다(저장소 data/의 실제 사용자·일정 파일은 그대로)
+  log(snapshotDir(REPO_DATA_DIR) === REPO_DATA_BEFORE, 'repo data/ folder is untouched by the test run (servers wrote only to a temp TABIMARU_DATA_DIR)');
+  cleanupTestData();
   console.log('\n=== Test Results ===\n');
   for (const r of results) console.log(r);
   const total = passed + failed;
@@ -2372,5 +3146,6 @@ runTests().catch(async (err) => {
   console.error('Test suite crashed:', err);
   try { await stopServer(); } catch { /* ignore */ }
   try { await mock.stop(); } catch { /* ignore */ }
+  cleanupTestData();
   process.exit(1);
 });

@@ -32,7 +32,9 @@
    - 페이지 제목과 머리글이 "Tabimaru — AI 일본 여행 플래너"다(영어·일본어로 바꾸면 제목도 바뀜). 휴대폰 다크 모드에서는 어두운 화면이 된다.
    - 첫 화면만 열었을 때는 일정·항공·숙소 조회가 일어나지 않는 것이 정상입니다.
    - 정적 파일(html/js/css)은 `Cache-Control: no-cache` + `ETag`라서 배포 직후에도 새 화면을 받습니다(따로 캐시를 비울 필요 없음).
-5. `[session] SESSION_SECRET이 없어…` 경고가 있으면 `SESSION_SECRET`을 넣습니다.
+5. `GET /api/health`의 `sessionSecretConfigured`가 `true`, `sessionSecretWeak`가 `false`인지 봅니다. `sessionSecretConfigured: false`이거나 로그에 `[session] SESSION_SECRET이 없어…` 경고가 있으면 `SESSION_SECRET`을 넣습니다(없으면 재시작할 때마다 로그인이 풀림). `sessionSecretWeak: true`이거나 `[session] SESSION_SECRET이 너무 짧거나 단순해서 쓰지 않습니다` 경고가 있으면 넣어 둔 값이 32자 미만이거나 너무 단순해서 서버가 버린 것이니 아래 3)의 명령으로 만든 값으로 바꿉니다.
+   혼자 쓰는 앱이면 `loginRestricted: true`인지도 봅니다(`ALLOWED_LOGINS`, 3) 참고).
+   Supabase를 쓰면 같은 응답의 `supabaseConfigured: true`, `supabaseReachable: true`, `supabaseCheck: "ok"`(서버 시작 직후 한 번 실제 조회로 확인해 채움)와 `GET /api/keepalive`의 `"supabase":"ok"`도 확인합니다(5번 참고).
 6. 저장소 이름을 바꾼 뒤 처음 배포할 때: Render 서비스 Settings → Build & Deploy의 Repository가 `wsxc94/tabimaru-japan-travel-planner`로 보이는지, push 뒤 자동 배포가 도는지 확인합니다. 연결이 끊겼으면 Repository를 다시 고릅니다. GitHub Actions 탭에서 CI 첫 실행이 초록색인지도 봅니다.
 
 ## 2) Render 서비스
@@ -55,11 +57,23 @@
 
 2026-10-01 화면·의도 개편(주 버튼 하나, 채팅 후속 대화, AI 일정 후처리, 직접 배치, 초안 보관, 다크 모드)은 **새 환경변수가 없습니다.** Render 설정을 바꾸지 않고 배포하면 됩니다.
 
+2026-10-01 로그인·내 일정 영구 저장(서명 쿠키 30일, 고정 사용자 id, "내 일정" → Supabase, `/api/keepalive`)도 새 **필수** 변수는 없습니다. 다만 효과를 보려면 `SESSION_SECRET`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`가 Render에 들어 있어야 합니다(5번). 예전 형식 로그인 쿠키는 배포 뒤 한 번 로그아웃 상태가 되므로 다시 로그인하면 됩니다. `TABIMARU_DATA_DIR`은 로컬용이라 Render에서는 비워 둡니다.
+
+**이번 배포 전에 할 일(권장):**
+
+1. **`SESSION_SECRET`을 새 무작위 값으로 바꿉니다.** 이제는 이 값 하나로 누구의 로그인 쿠키든 만들 수 있으므로(서버에 세션 기록이 없음) 추측할 수 없어야 합니다. 서버는 32자 미만이거나 서로 다른 글자가 10개 미만인 값은 쓰지 않습니다. 어차피 이번 배포로 예전 쿠키가 한 번 로그아웃되므로 지금 바꾸면 추가로 잃는 것이 없습니다.
+   만들기: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"` → 나온 43자를 Render의 `SESSION_SECRET`에 붙여 넣습니다.
+2. **`ALLOWED_LOGINS`에 자기 계정만 넣습니다**(혼자 쓰는 앱). 비워 두면 아무 Google·Kakao·Naver 계정이나 로그인해 Supabase에 일정을 저장할 수 있습니다(사용자당 50개·하나 400KB 상한은 있지만, 계정을 여러 개 만들면 무료 500MB를 채울 수 있음).
+   - 가장 쉬운 방법: Google 계정 이메일을 넣습니다(예: `ALLOWED_LOGINS=me@gmail.com`). Google이 확인한 이메일일 때만 통과합니다. Kakao는 카카오가 확인한 이메일만, Naver 이메일은 보지 않습니다.
+   - 또는 한 번 로그인한 뒤 `https://japanjapantravel.onrender.com/api/auth/me`에 보이는 `userId`(`u_`로 시작)를 넣습니다. 여러 개는 쉼표로 구분합니다(`u_…,me@gmail.com`).
+   - 목록 밖 계정은 로그인 화면으로 돌아가며 "이 앱은 허용된 계정만 로그인할 수 있어요." 안내가 뜹니다. 목록을 바꾸면 모든 기기가 한 번 로그아웃됩니다.
+
 **Gemini 무료 한도는 키 단위로 함께 씁니다.** 로컬 `.env`와 Render에 같은 `GEMINI_API_KEY`를 넣었다면, 로컬에서 시험하거나 `node scripts/prompt-matrix.mjs`(16건 = Gemini 약 32회)를 돌린 만큼 운영의 하루·분당 한도도 줄어듭니다. 한도가 바닥나면 운영 화면은 규칙 기반 일정 + `AI_BUSY` 안내로 바뀝니다(서버는 429·503을 받은 모델을 60초부터 최대 5분까지 쉬게 하고 다음 모델을 씁니다). 시험용 키를 따로 쓰거나, 시험은 몇 건만(`--only`) 돌리세요.
 
 | 구분 | 변수 | 비고 |
 |---|---|---|
-| 권장 | `SESSION_SECRET` | 32바이트 이상 무작위 값. 없으면 재시작 때마다 로그인이 풀림 |
+| 권장 | `SESSION_SECRET` | 32자 이상 무작위 값(만들기: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`). 로그인 쿠키 서명용. 32자 미만이거나 서로 다른 글자가 10개 미만이면 서버가 쓰지 않음(health `sessionSecretWeak: true`). 없거나 약하면 재시작 때마다 로그인이 풀림. 바꾸면 모든 기기가 로그아웃되지만 저장한 일정은 그대로 |
+| 권장 | `ALLOWED_LOGINS` | 로그인할 수 있는 계정(쉼표 구분): Google·Kakao가 확인한 이메일, `u_…`(`/api/auth/me`의 `userId`), `google:<id>` 등. 비우면 누구나 로그인. 위 "이번 배포 전에 할 일" 2번 |
 | 권장 | `PUBLIC_BASE_URL` | `https://japanjapantravel.onrender.com` (CSRF 허용 출처) |
 | 로그인 | `OAUTH_BASE_URL` | 운영 주소와 같은 값. OAuth 콜백 기준 |
 | 로그인 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `KAKAO_REST_API_KEY`, `KAKAO_CLIENT_SECRET` | 없는 공급자의 로그인 버튼은 숨겨지고, 그 주소(`/api/auth/<공급자>`)로 직접 들어오면 `/?authError=<공급자>`로 돌려보냄 |
@@ -71,7 +85,8 @@
 | Google 상한 | `GOOGLE_DAILY_CALL_LIMIT`(기본 30), `GOOGLE_MONTHLY_CALL_LIMIT`(기본 900), `GOOGLE_PHOTO_DAILY_LIMIT`(기본 30), `GOOGLE_PHOTO_MONTHLY_LIMIT`(기본 900) | google 모드에서만 의미가 있음. UTC 기준, 서버 메모리라 재시작하면 0부터 다시 셈 |
 | 진단 | `DIAGNOSTICS_TOKEN` | `/api/ai-diagnostics?probe=1` 실행용. 없으면 probe는 403 |
 | 프록시 | `TRUST_PROXY`, `TRUST_PROXY_HOPS` | Render에서는 `RENDER` 변수가 있어 자동으로 프록시를 믿음. `TRUST_PROXY_HOPS`는 1) 체크리스트 1번을 보고 정함 |
-| 저장소 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | 선택. 5) 참고 |
+| 저장소 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | 권장("내 일정"이 재시작·재배포에도 남음). 5) 참고 |
+| 로컬 폴더 | `TABIMARU_DATA_DIR` | Render에서는 비워 둠(무료 플랜 디스크는 재시작 때 지워짐). 로컬에서 파일 저장 폴더를 바꿀 때만 |
 | 예전 | `GOOGLE_MAPS_API_KEY` | 예전 단일 키. 무료 모드에서는 쓰이지 않고, 브라우저로도 보내지 않음. 이미 공개된 적이 있으니 폐기 후 삭제 권장 |
 
 더 이상 쓰지 않는 변수(지워도 됨): `AMADEUS_API_KEY`, `AMADEUS_API_SECRET`, `AMADEUS_ENV`, `APP_ENV`.
@@ -94,14 +109,40 @@
 
 서버 보호 장치(google 모드): 결제 꺼짐·권한 거부·할당량 초과를 받으면 30분 동안 모든 Google 호출을 건너뜀, 하루·월 호출 상한(UTC 기준, 검색과 사진을 따로 셈), 결과 캐시 12시간, 사진 캐시(메모리 최대 200장·30MB·24시간). 결과 캐시가 Google Maps Platform 약관의 캐시 제한과 맞는지는 켜기 전에 확인하세요.
 
-## 5) Supabase(선택)
+## 5) Supabase("내 일정" 저장소, 권장)
 
-`/api/travel-plan/save · list · get`은 로그인한 사용자의 플랜만 저장·조회합니다(화면에서는 아직 쓰지 않음). 쓰지 않을 거면 `SUPABASE_*`를 비워 두면 되고, 이때 이 경로는 503을 돌려줍니다.
+Render 무료 플랜은 재시작·재배포 때 서버 디스크와 메모리를 지웁니다. 그래서 운영에서는 "내 일정"(`/api/my-plans/save · list · load · delete`)을 Supabase의 `travel_plans` 표에 둡니다(`source = 'my-plans'` 행, `user_label` = 로그인 사용자 id로 자기 일정만). 로그인은 서버에 저장하지 않는 서명 쿠키라 Supabase와 관계없이 재시작 뒤에도 유지되고, 사용자 id는 OAuth 계정(공급자 + 공급자 id)에서 늘 같은 값으로 만들어져 다시 로그인해도 같은 일정이 보입니다.
 
-1. https://supabase.com 에서 프로젝트를 만든다.
-2. SQL Editor에서 `deploy/supabase/schema.sql` 전체를 실행한다(여러 번 실행해도 된다). 테이블 이름(`travel_plans`)은 이름 변경과 관계없이 그대로다.
-3. Project Settings → API에서 `SUPABASE_URL`(프로젝트 주소), `SUPABASE_SERVICE_ROLE_KEY`(service role 키)를 Render 환경변수에 넣는다. service role 키는 서버에서만 쓰고 브라우저에 노출하지 않는다.
-4. 배포 후 `GET /api/health`의 `supabaseConfigured: true`를 확인한다. `supabaseReachable`은 저장 요청을 한 번 처리한 뒤에 채워진다.
+- `SUPABASE_*`를 비워 두면 "내 일정"은 서버의 로컬 파일(`data/saved_plans.json`, 로컬 개발용)에 저장되고, Render에서는 재시작 때 사라집니다.
+- 설정했는데 Supabase에 닿지 않으면(일시 중지·장애·키 오류·표 없음) 저장·목록·불러오기·삭제가 503 `PROVIDER_UNAVAILABLE`이 되고 화면은 "저장소에 연결할 수 없어요. 잠시 후 다시 시도해 주세요."라고 알립니다. 이때 로컬 파일에 몰래 쓰지 않습니다.
+- 저장소가 연결은 되는데 일정 내용을 거절하면(4xx) 400 `INVALID_PLAN`, 화면은 "저장할 수 없는 글자가 들어 있어요…"입니다(NUL·짝 없는 서로게이트는 서버가 미리 정리하므로 보통은 생기지 않음).
+- 상한: 사용자당 50개(넘으면 409 `PLAN_LIMIT`, 같은 일정 덮어쓰기는 허용), 일정 하나 400KB(넘으면 413 `PLAN_TOO_LARGE`). 목록은 50개를 모두 보여 주므로 저장한 일정은 모두 화면에서 지울 수 있습니다.
+- `/api/travel-plan/save · list · get`(화면에서는 쓰지 않음)도 같은 표와 같은 상한을 씁니다.
+
+**처음 설정 / 일시 중지된 프로젝트 살리기**
+
+1. 무료 프로젝트는 7일 동안 활동이 없으면 일시 중지(Paused)됩니다. Supabase 대시보드에서 프로젝트를 열고 **Restore project**(Resume)를 누른 뒤, 상태가 초록색(Healthy)이 될 때까지 몇 분 기다립니다. 일시 중지된 지 오래돼 복구할 수 없으면 새 프로젝트를 만듭니다(주소와 키가 바뀌므로 3번을 다시 함).
+2. SQL Editor에서 `deploy/supabase/schema.sql` 전체를 실행합니다(여러 번 실행해도 됨: 표·트리거·RLS·권한을 있으면 건너뛰거나 다시 맞춤). 테이블 이름(`travel_plans`)은 이름 변경과 관계없이 그대로입니다. 이미 실행한 프로젝트면 다시 할 필요는 없지만, 해도 데이터는 지워지지 않습니다.
+3. Render 환경변수:
+   - `SUPABASE_URL` = Project Settings → Data API(또는 API)의 Project URL(`https://<프로젝트>.supabase.co`).
+   - `SUPABASE_SERVICE_ROLE_KEY` = Project Settings → API Keys의 **secret 키**(`sb_secret_…`, 새 형식). 변수 이름은 예전 그대로지만 새 secret 키를 넣으면 됩니다. 서버는 새 형식 키를 `apikey` 헤더로만 보내고, 예전 JWT 형식 service_role 키(`eyJ…`)일 때만 `Authorization: Bearer`도 붙입니다. **publishable 키(`sb_publishable_…`)나 anon 키는 넣지 마세요**(RLS 때문에 저장이 거부됨). 이 키는 서버에서만 쓰고 브라우저·로그·응답에 나가지 않습니다.
+   - `SESSION_SECRET`도 꼭 넣습니다(32자 이상 무작위 값, 없으면 재시작 때마다 로그인이 풀림).
+4. 배포 후 확인: `GET /api/health`에서 `supabaseConfigured: true`, `supabaseReachable: true`, `supabaseCheck: "ok"`(서버가 뜬 직후 한 번, 그 뒤 10분마다 `travel_plans`를 실제로 한 번 조회해 주소·키·표를 함께 확인), `sessionSecretConfigured: true`. 이어서 `GET /api/keepalive`가 `{"ok":true,"supabase":"ok",…}`인지 봅니다. 아니면 값으로 원인을 압니다(Render 로그의 `[supabase]` 줄에도 같은 안내, 키·주소는 가림):
+
+   | `supabaseCheck` / keepalive `supabase` | 뜻 | 할 일 |
+   |---|---|---|
+   | `auth_error` | 키가 거부됨(401·403): 틀린 키, 폐기·교체된 키, publishable/anon 키 | `SUPABASE_SERVICE_ROLE_KEY`에 지금 쓰는 secret 키(`sb_secret_…`)를 다시 넣음 |
+   | `schema_error` | `travel_plans` 표가 없음(404·`PGRST205`) | 2번(`schema.sql`)을 실행 |
+   | `unreachable` | 연결 실패·시간 초과·5xx | 프로젝트가 일시 중지됐거나 장애. 1번(Restore)부터 |
+5. 화면에서 로그인 → 일정 [💾 저장] → "📂 내 일정"에 보이는지, Supabase Table Editor의 `travel_plans`에 `plan_key`가 `my_`로 시작하는 행이 생겼는지 봅니다.
+
+**일시 중지 막기(keepalive)**
+
+- `.github/workflows/keepalive.yml`이 3일마다(매월 1·4·7…일 03:17 UTC) 운영 `https://japanjapantravel.onrender.com/api/keepalive`를 부릅니다. 서버는 그때 Supabase에 가벼운 조회(`travel_plans`의 `id` 1개)를 실제로 한 번 해서 프로젝트가 활동 중으로 남게 합니다. 성공하면 결과를 10분 동안, 실패하면 15초 동안만 재사용합니다. 그래서 누가 자주 불러도 Supabase 조회는 성공 중 10분에 한 번, 실패 중 분당 4번 이하이고, 일시 장애가 지나가면 워크플로의 다음 재시도(30초 뒤)가 실제로 다시 확인합니다. 응답에는 `ok`·`supabase`·`checkedAt`만 있습니다(비밀값·행 데이터 없음).
+- 워크플로는 비밀값이 필요 없고 권한도 없습니다(`permissions: {}`). Render가 잠들어 있으면 깨어나는 데 50초쯤 걸리므로 90초 제한으로 30초 간격 5번까지 다시 시도하고, 응답이 `"supabase":"ok"`일 때만 성공합니다. 실패하면 GitHub가 저장소 주인에게 메일로 알립니다.
+- 바로 확인하려면 GitHub → **Actions** 탭 → **Supabase keepalive** → **Run workflow**.
+- **주의: 공개 저장소의 예약 실행(schedule)은 저장소에 60일 동안 활동(커밋 등)이 없으면 GitHub가 자동으로 끕니다.** 꺼지면 GitHub가 메일로 알리고, Actions 탭의 이 워크플로 화면에 "This scheduled workflow is disabled…" 안내와 **Enable workflow** 버튼이 생깁니다. 눌러서 다시 켜고 Run workflow로 한 번 돌려 두세요. 오래 손대지 않을 때는 그 전에 커밋을 하나 올려 두어도 됩니다.
+- Render 로그나 대시보드로도 일시 중지 여부를 알 수 있습니다: `/api/health`의 `supabaseReachable: false`, 화면의 "저장소에 연결할 수 없어요" 안내가 보이면 1번부터 다시 합니다.
 
 ## 6) OAuth 콜백 등록
 
@@ -115,7 +156,8 @@
 
 ## 7) 주의
 
-- 로그인 세션은 서버 메모리에, "내 일정"과 사용자 정보는 서버 디스크의 `data/*.json`에 저장됩니다. Render 무료 플랜은 재시작·재배포 때 디스크와 메모리가 초기화되므로 이 데이터는 사라질 수 있습니다.
+- 로그인 세션은 서버에 저장하지 않는 서명 쿠키(`sid`, 30일)라 Render가 재시작해도 같은 `SESSION_SECRET`이면 유지됩니다. "내 일정"은 Supabase를 설정하면 Supabase에 남고, 설정하지 않으면 서버 디스크의 `data/saved_plans.json`이라 Render 무료 플랜에서는 재시작·재배포 때 사라집니다. 로그인 기록 `data/users.json`은 로컬 참고용일 뿐이라 지워져도 상관없습니다(사용자 id는 OAuth 계정에서 다시 계산).
+- 로그아웃은 그 브라우저의 쿠키만 지웁니다(서버에 세션 기록이 없어, 로그아웃 전에 복사된 쿠키는 만료(30일)까지 쓸 수 있음). 쿠키가 새어 나갔다고 생각되거나 모든 기기를 한꺼번에 로그아웃시키려면 `SESSION_SECRET`을 바꿉니다(저장한 일정은 그대로). `ALLOWED_LOGINS`를 바꿔도 모든 기기가 로그아웃됩니다.
 - Rakuten Travel 요청의 Referer/Origin 헤더는 운영 도메인으로 고정되어 있습니다. Rakuten 앱에 등록한 사이트 주소와 같아야 합니다.
 - Rakuten accessKey는 예전 `/api/rakuten-config`로 공개된 적이 있으니 새로 발급해 `RAKUTEN_ACCESS_KEY`를 교체하세요.
 - 날씨(Open-Meteo)와 환율(ExchangeRate-API) 출처는 화면에 표기합니다(날씨 위젯·패널 하단, 환율 칩). Open-Meteo 무료 API는 비상업적 사용 조건이라, 제휴 수익이 생기면 유료 요금제 여부를 다시 판단해야 합니다(README "데이터 출처와 저작자 표시").
