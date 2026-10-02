@@ -99,7 +99,7 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 | 여행지 추천 | 내장 큐레이션 + 위키미디어 사진·좌표 (`assets/place-images.json`). 장소 사진이 없으면 도시 대표 사진 | `PLACES_PROVIDER=google`이면 Google Places(New). 실패하면 무료 데이터로 대신함 |
 | 일정 생성 | 버튼을 누르면 Gemini → OpenAI 순서로 AI 일정 | AI 키가 없거나 응답이 잘리거나 형식이 틀리면 규칙 기반 일정 |
 | AI 조건 채팅 | Gemini → OpenAI | 규칙 기반 해석 |
-| 맛집 | 내장 큐레이션 + 음식 장르 예시 사진 | google 모드면 Google Places(New), 영업시간 표시 |
+| 맛집 | `HOTPEPPER_API_KEY`가 있으면 ホットペッパー(도시 중심 3km, 가게 이름·장르·예산·사진·가게 페이지, 장르를 고르지 않으면 장르를 섞어 30곳), 없으면 내장 큐레이션 + 음식 장르 예시 사진 | google 모드면 Google Places(New), 영업시간 표시 |
 | 지도 | OpenStreetMap + Leaflet 1.9.4 | `MAP_PROVIDER=google` + 브라우저 키면 Google Maps JavaScript API |
 | 항공권 | Travelpayouts 캐시 가격(요청 날짜가 비면 ±7일, 화면에 "다른 날짜" 표시) | 토큰이 없거나 결과가 없으면 "예시 데이터"로 표시 |
 | 숙소 | Rakuten Travel(좌표 기반, 62개 도시). 날짜 조건 결과가 없으면 최저가 목록("날짜 미확인 최저가" 표시) | 키가 없거나 결과가 없으면 "예시 데이터"로 표시 |
@@ -248,6 +248,7 @@ Gemini 무료 한도는 모델마다 하루 약 20회이고 키가 아니라 프
 | [ExchangeRate-API](https://www.exchangerate-api.com/) (`open.er-api.com`) | 환율(1순위) | 공개 엔드포인트는 출처 표기 필요, 하루 1회 갱신, 받은 환율을 다른 곳에 다시 배포하는 것은 금지 | 환율 칩 안에 "Rates By Exchange Rate API" 링크(ko/en/ja) |
 | Frankfurter (`api.frankfurter.dev/v2`, `providers=ecb`) | 환율(2순위) | 유럽중앙은행(ECB) 기준 환율만 받음(v2 기본값은 여러 기관 값을 섞어서 ECB로 고정), 표기 의무 없음 | — |
 | [Rakuten Web Service](https://webservice.rakuten.co.jp/guide/credit) | 숙소(Rakuten Travel) | API를 쓰는 앱은 크레딧 배지 필수, 제공된 HTML을 고치지 말 것(어기면 API 사용이 막힐 수 있음) | 숙소 결과 아래 "Supported by Rakuten Developers" 링크(제공 HTML 그대로) |
+| [ホットペッパー グルメ Webサービス](https://webservice.recruit.co.jp/) | 맛집(키가 있을 때) | 리크루트 Web 서비스 이용 규약: 리크루트 제공 표시, 캐시는 24시간 안에 갱신(서버는 6시간), 데이터를 고치지 않음(가게 이름·장르·예산은 원문), API로 수익을 내지 않음 | 맛집 목록 아래 "Powered by ホットペッパー Webサービス" 링크, 카드마다 [🍽 가게 정보] |
 | Travelpayouts(Aviasales), Rakuten Travel | 항공 캐시 가격, 숙소 | 각 제휴 약관 | 예시 데이터에는 "예시" 표시가 붙고 일정에 넣을 수 없음 |
 
 - 서버가 무료 공개 API(Open-Meteo, 환율)를 부를 때는 `User-Agent: TabimaruBot/0.1 (+https://github.com/wsxc94/tabimaru-japan-travel-planner)`을 보냅니다. 날씨는 좌표별 30분, 환율은 12시간 동안 캐시합니다.
@@ -284,8 +285,8 @@ npm test                  # = node test_all.js
 - 브랜드 검사: `/api/health`의 `app`이 `tabimaru`, 페이지 제목·매니페스트 이름이 Tabimaru인지, 언어를 바꾸면 제목도 바뀌는지, 외부 호출의 User-Agent가 `TabimaruBot/0.1`인지 봅니다. 도메인에 묶인 값(운영 주소, Render 서비스 이름, OAuth 콜백 경로, `sid` 쿠키, localStorage 키, 매니페스트 `start_url`)이 그대로인지도 봅니다.
 - 첫 화면은 `tests/support/browser-sandbox.js`로 `app.js`를 실제로 부팅해, 유료 API를 부르지 않는지 확인합니다. 이어서 [일정 만들기]를 두 번 눌러도 일정 1회 + 항공·맛집·숙소 각 1회만 부르는지, 카드에 실제 `<img>`와 위키미디어 출처가 붙는지, Leaflet이 일정이 생긴 뒤에만 SRI와 함께 로드되는지, 빈 일정에 안내 문구가 나오는지도 봅니다. 사진·출처 표시 함수(`safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`)와 추천·맛집 카드에는 악성 값(`javascript:`·`data:` 주소, 비슷한 호스트, `/\`·`//` 우회 주소, 따옴표·HTML이 든 이름과 저작자)을 넣습니다. 그래도 사진은 Commons나 `/api/place-photo`, 출처 링크는 Commons 파일 페이지나 Google 기여자 페이지만 남고, 나머지 값은 모두 이스케이프되는지 봅니다.
 - 그 밖에 응답에 키가 섞이지 않는지, 날씨 응답이 날짜·숫자만 담는지, CSRF 출처 검사, 긴급 전화번호 표시 = `tel:` 링크, CSS 변수 자기참조, CSS 중복 사본·키보드 포커스 링·다크 모드 토큰, 사전 누락·중복 키·코드가 쓰는 키(`t('…')`, `data-i18n`)의 ko/en/ja 존재, `index.html` 기본 글자 = ko 사전, `alert(`·`prompt(` 없음, localStorage 새 키는 `tabimaru.draft.v1` 하나, `render.yaml`·`.env.example`·README의 환경변수 목록과 기본값 누락도 검사합니다.
-- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-02 기준 787개 검사가 모두 통과합니다(40초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간, 8초는 Gemini 모델 체인의 시간 예산 검사).
-- 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`oauth`·`session`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
+- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-03 기준 815개 검사가 모두 통과합니다(40초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간, 8초는 Gemini 모델 체인의 시간 예산 검사).
+- 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`hotpepper`·`oauth`·`session`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
 - GitHub Actions(`.github/workflows/ci.yml`)가 push와 pull request마다 Node 20으로 `npm test`를 돌립니다. `.github/workflows/keepalive.yml`은 테스트가 아니라 3일마다 운영 `/api/keepalive`를 부르는 예약 작업입니다(정적 검사로 내용만 확인).
 
 수동 점검(개발용, CI 제외): `node _test_api.js`는 로컬 서버만 확인합니다. `node _test_api.js --google`을 붙이면 Google Places·Geocoding을 한 번씩 실제로 호출하므로 과금될 수 있습니다. `node scripts/prompt-matrix.mjs --base http://127.0.0.1:3000`은 실행 중인 서버에 대표 요청 16개를 보내 해석과 날짜별 일정을 표로 보여 줍니다(실제 Gemini 약 32회, 무료 한도를 씀). 화면 손가락 끌기 같은 브라우저 점검 순서는 [ARCHITECTURE.md 14](ARCHITECTURE.md#14-수동-점검-체크리스트)에 있습니다.
@@ -324,6 +325,7 @@ npm test                  # = node test_all.js
 | `TRAVELPAYOUTS_TOKEN` | — | 항공권 캐시 가격(Travelpayouts Data API) |
 | `RAKUTEN_APP_ID` | — | Rakuten Travel 앱 ID |
 | `RAKUTEN_ACCESS_KEY` | — | Rakuten Travel accessKey |
+| `HOTPEPPER_API_KEY` | — | ホットペッパー グルメサーチAPI 키(무료, [webservice.recruit.co.jp](https://webservice.recruit.co.jp)에서 메일로 신청). 있으면 무료 모드의 맛집 검색(최대 30곳)·추천 맛집(최대 20곳)이 도시 중심 3km 안 실제 가게. 없거나 실패하면 내장 맛집 목록. `/api/health`의 `hotpepperConfigured` |
 | `FX_USD_KRW` | — | 실시간 환율 조회가 모두 실패할 때 쓰는 고정값(둘 다 설정해야 `env`로 표시) |
 | `FX_JPY_KRW` | — | 위와 같음(엔→원) |
 | `SESSION_SECRET` | 실행마다 임의 값 | 로그인 쿠키(`sid`, 30일) 서명값. **32자 이상 + 서로 다른 글자 10개 이상**이어야 쓰고, 그보다 약하면 버리고 임의 값을 씀(경고 로그, health `sessionSecretWeak: true`). 만들기: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. 없거나 약하면 재시작 때 로그인이 풀림. 바꾸면 모든 기기가 로그아웃되지만 저장한 일정은 그대로(사용자 id는 이 값과 무관) |

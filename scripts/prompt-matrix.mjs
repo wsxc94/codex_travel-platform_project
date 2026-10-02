@@ -16,10 +16,11 @@
  *   node scripts/prompt-matrix.mjs                         (기본 http://127.0.0.1:3000, 전부)
  *   node scripts/prompt-matrix.mjs --base http://127.0.0.1:3000 --only P01,P14 --gap 5000
  *   node scripts/prompt-matrix.mjs --json out.json          (원본 응답도 파일로 저장)
+ *   node scripts/prompt-matrix.mjs --prompts my.json        (위 CASES 대신 파일의 요청: [{ "id", "prompt", "lang"?, "followups"? }])
  *
  * 서버는 미리 띄워 둔다(예: npm start). 이 스크립트를 돌리는 동안에만 AI를 부른다(1건 = Gemini 호출 약 2회, 후속 대화는 차례마다 2회).
  */
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 const CASES = [
   { id: 'P01', prompt: '오사카 3박 4일, 유니버설 스튜디오는 하루 통째로, 도톤보리는 저녁에 꼭 가고 싶어' },
@@ -175,7 +176,9 @@ function printCase(r) {
   });
 }
 
-const list = ONLY.length ? CASES.filter((c) => ONLY.includes(c.id)) : CASES;
+const PROMPTS_FILE = arg('prompts', '');
+const SOURCE_CASES = PROMPTS_FILE ? JSON.parse(readFileSync(PROMPTS_FILE, 'utf8')) : CASES;
+const list = ONLY.length ? SOURCE_CASES.filter((c) => ONLY.includes(c.id)) : SOURCE_CASES;
 console.log(`Tabimaru 프롬프트 점검표 — ${BASE}, ${list.length}건, 호출 간격 ${GAP_MS}ms`);
 const all = [];
 for (let i = 0; i < list.length; i += 1) {

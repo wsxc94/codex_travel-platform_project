@@ -2674,6 +2674,9 @@ button[disabled] {
 }
 /* 외부 데이터 출처 표기(Open-Meteo 날씨 CC BY 4.0, ExchangeRate-API 환율) */
 .data-credit { margin-top: 8px; font-size: 12px; line-height: 1.4; color: var(--fg-3); text-align: right; }
+/* 카드 격자(.cards) 안의 크레딧은 한 줄 전체를 쓴다(핫페퍼 맛집 목록 아래) */
+.cards > .data-credit { grid-column: 1 / -1; }
+.food-budget { font-size: 12px; color: var(--fg-3); }
 .data-credit a,
 .fx-credit { color: var(--fg-3); text-decoration: none; }
 .data-credit a:hover, .data-credit a:focus-visible,

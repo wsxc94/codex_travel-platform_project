@@ -7,7 +7,8 @@
  *
  * - The curated data in server.js stays first: CITY_DATA highlights, MUST_ATTRACTIONS and EXTRA_PLACES
  *   (read without running the server, like scripts/build-place-images.js). A city only gets as many
- *   generated places as it lacks to reach TARGET_HALF_DAY half-day sights; tokyo needs none.
+ *   generated places as it lacks to reach TARGET_HALF_DAY (30) half-day sights on the recommendation cards
+ *   (CITY_DATA highlights + generated; MUST_ATTRACTIONS and hand-made EXTRA_PLACES only de-duplicate).
  * - Candidates: Wikidata items within the city's radius (SPARQL wikibase:around the server's
  *   CITY_CENTER_COORDS), in Japan, with coordinates, a Japanese label and a sight class (temple,
  *   shrine, castle, museum, park, garden, observation deck, onsen, aquarium, scenic spot, market,
@@ -60,7 +61,9 @@ const ROOT = path.resolve(__dirname, '..');
 const FILE_VERSION = 1;
 const MIN_INTERVAL_MS = 1000; // Wikidata / Wikipedia / Commons: at most one request per second
 const UPLOAD_INTERVAL_MS = 1500;
-const TARGET_HALF_DAY = 12; // curated + generated half-day sights per city
+// Half-day sights shown per city: CITY_DATA highlights + generated places. The server shows at most 30 recommendations
+// (recommendDestinations), so every city gets up to 30 where Wikidata has enough real sights (2026-10-02: was 12).
+const TARGET_HALF_DAY = 30;
 const MIN_SIGHTS = 9; // below this a city is marked "few" (honest note instead of filler)
 const DEFAULT_RADIUS_KM = 20;
 const SITELINK_STEPS = [8, 3, 1]; // SPARQL threshold, lowered while a city still lacks candidates
@@ -445,12 +448,13 @@ function curatedFor(cityKey, city, mustAttractions, extraPlaces, images) {
     if (hasCoord && m.labels && m.labels.ja) jaNames.push({ key: nameKey(m.labels.ja), coord: { lat: m.lat, lng: m.lng } });
   };
   const highlightNames = new Set();
+  let shown = 0; // half-day highlights: the curated places the recommendation cards show (with the generated ones)
   for (const h of city.highlights || []) {
     if (!h || !h.name) continue;
     highlightNames.add(nameKey(h.name));
     addName(h.name);
     addMedia(h.name);
-    if (!h.fullDay && !h.dayTrip) halfDay += 1;
+    if (!h.fullDay && !h.dayTrip) { halfDay += 1; shown += 1; }
   }
   for (const m of mustAttractions) {
     if (m.cityKey !== cityKey) continue;
@@ -468,7 +472,7 @@ function curatedFor(cityKey, city, mustAttractions, extraPlaces, images) {
     }
     halfDay += 1;
   }
-  return { names, qids, coords, jaNames, halfDay };
+  return { names, qids, coords, jaNames, halfDay, shown };
 }
 
 // ---------------------------------------------------------------------------
@@ -574,7 +578,8 @@ async function main() {
     const curated = curatedFor(cityKey, city, mustAttractions, extraPlaces, images);
     // the Wikidata items of reviewed curated names (MEDIA_ITEMS) are curated too
     for (const [key, item] of Object.entries(MEDIA_ITEMS)) if (key.startsWith(`${cityKey}|`)) curated.qids.add(item.qid);
-    const need = Math.max(0, TARGET_HALF_DAY - curated.halfDay);
+    // the cards show highlights + generated places (not MUST_ATTRACTIONS / hand-made EXTRA_PLACES), so fill up to the target from those
+    const need = Math.max(0, TARGET_HALF_DAY - curated.shown);
     const cityJa = (cityNameI18n[city.label] || [])[1] || city.nameJa || '';
     const chosen = [];
     const accepted = [];

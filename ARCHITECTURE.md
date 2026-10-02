@@ -268,7 +268,7 @@ Amadeus 경로는 테스트 서버 주소가 사라져 삭제했다(`AMADEUS_*` 
 ### 4.5 맛집
 | Method | Path | 설명 |
 |--------|------|------|
-| GET | `/api/foods` | `?city=osaka&genre=라멘&budget=mid&lang=ko`. 무료 모드는 `tabelogStyleFoods()`(내장 큐레이션, `sourceInfo` curated). google 모드는 `fetchFoodPlacesForCity()`(쿼리 2개), 실패하면 큐레이션 + `warning`(짧은 한국어) |
+| GET | `/api/foods` | `?city=osaka&genre=라멘&budget=mid&lang=ko`. 무료 모드 + `HOTPEPPER_API_KEY`면 `fetchHotpepperShops()`(도시 중심 `range=5` 3km, `order=4`, 장르가 있으면 `keyword`=일본어 장르·`count=30`, 없으면 `count=100`을 받아 한 장르 30%(최소 3곳)까지 먼저 고르고 노래방·파티(G011) 제외, 6시간 캐시, `sourceInfo` live/hotpepper, 실패하면 큐레이션 + `fallback`/`HOTPEPPER_KEY_INVALID`·`HOTPEPPER_ERROR`). 가게 카드(`normalizeHotpepperShop()`): 이름·예산·지역·영업시간은 원문, 장르는 코드별 ko/en 표기(일본어 화면은 원문), 사진은 https `*.hotp.jp`만, 가게 페이지는 https `*.hotpepper.jp`만, 지도는 좌표 핀. 키 없는 무료 모드는 `tabelogStyleFoods()`(내장 큐레이션, `sourceInfo` curated). google 모드는 `fetchFoodPlacesForCity()`(쿼리 2개), 실패하면 큐레이션 + `warning`(짧은 한국어) |
 
 ### 4.6 저장
 | Method | Path | 설명 |
@@ -685,7 +685,7 @@ POST /api/flights
 - **로그인 유지·저장소 장애 안내(샌드박스, `sandboxStorageTests()`)**: `/api/auth/me`가 한 번 502(서버가 깨어나는 중)여도 다시 물어 로그인 화면(내 일정 버튼·닉네임)이 나오는지, 내 일정 목록·불러오기·삭제·저장(목록이 503이면 저장 창을 닫음, 저장 POST가 503이면 안내)이 503일 때 `store-unavailable`("저장소에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.", en/ja 포함)을 보여 주는지 본다. 저장 POST가 409 `PLAN_LIMIT`·413 `PLAN_TOO_LARGE`·400 `INVALID_PLAN`이면 `plan-limit`(`{n}` = 50)·`plan-too-large`·`plan-invalid`, 그 밖에는 `save-fail`, `/?authError=not_allowed`면 `auth-err-not-allowed`가 뜨는지도 본다.
 - **가짜 Supabase**(`tests/support/mock-vendor.js`, `<mock>/supabase/rest/v1`): `travel_plans` 한 표의 PostgREST 흉내. GET(`select` 열 목록·`eq` 필터·`order`·`limit`), POST(`on_conflict=plan_key` + `resolution=merge-duplicates`, `return=representation|minimal`, 열 검사: 모르는 열 400, `city_key`·`payload` not null, `start_date` 날짜, `days` 정수, 실제 Postgres처럼 NUL이 든 글자 400 `22P05`·짝 없는 서로게이트 400 `22P02`), DELETE(필터 필수), HEAD/GET 루트. 그 밖의 연산자·열·경로는 `unknownMockRoute`로 기록되어 실패한다. `scenario.supabase`: `'down'` 모든 요청에 503 + 원문(`SUPABASE_ERROR_TEXT`), `'auth'` 모든 요청에 401 Invalid API key, `'reject_post'` POST만 400 `22P05`. 가짜 OAuth 프로필의 `emailVerified`(기본 true)가 Google `verified_email`·Kakao `is_email_verified`로 나간다. `mock.supabaseRows()`·`mock.seedSupabase()`로 표를 보고 미리 채운다.
 - 각 단계 끝에서 모든 응답 본문·헤더에 서버 키·토큰이 없는지, 서버 로그에 크래시가 없는지 확인한다.
-- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`oauth`·`session`·`live`·`free`). `npm test`·CI는 늘 전체(2026-10-02 기준 787개).
+- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`hotpepper`·`oauth`·`session`·`live`·`free`). `npm test`·CI는 늘 전체(2026-10-03 기준 815개).
 - CI: `.github/workflows/ci.yml`(push·PR, Node 20). `.github/workflows/keepalive.yml`(3일마다 운영 `/api/keepalive`)은 정적 검사로 내용(cron `17 3 */3 * *`, `workflow_dispatch`, `permissions: {}`, 5번 재시도, `"supabase":"ok"`일 때만 성공, 비밀값 없음)만 확인한다.
 
 ---
@@ -759,6 +759,8 @@ POST /api/flights
 | 2026-10-02 | **AI 일정 전국 점검 반영**: 62개 도시 말로 찾기(일본어·영어·표기 변형·더 긴 이름 우선·짧은 장소 이름), 장소만 말하면 그 장소의 도시, AI 해석의 '데이터 없음' 바로잡기, 먼 도시 이동은 비행기, 도시 주변 실제 명소 한국어 이름(`scripts/ja-names.js`)·이름 겹침 구분·검토로 뺀 곳·중복 합치기, AI가 바꿔 적은 후보 이름 되돌리기(`namesRestored`)·지어낸 곳 빼기·'자유 식사' 바꾸기, 프롬프트(이름 그대로 복사·식사는 foods에서), AI 후보 상한 하루 3곳, 테스트 729개 |
 | 2026-10-02 | **외부 서비스 규정 정비**(docs/api-review-2026-10-02.md 0번): Rakuten 크레딧 배지(제공 HTML 그대로, 숙소 결과 아래), OSM 타일 주소에서 `{s}` 서브도메인 제거, Frankfurter를 v2(`api.frankfurter.dev/v2/rates`, `providers=ecb`)로 교체 |
 | 2026-10-02 | **Groq 무료 연결**(같은 문서 1번): OpenAI 호환 경로에 `OPENAI_BASE_URL`·`GROQ_API_KEY`(키는 주소에 맞는 것만 보냄)·`OPENAI_FALLBACK_MODELS`(모델 체인 `callOpenAiResponses()`, 40초 예산, 잘림·형식·날짜 수 부족이면 다음 모델)·`OPENAI_MAX_OUTPUT_TOKENS`·`OPENAI_REASONING_EFFORT`·`AI_CHAT_PROVIDER_ORDER`, 지난 대화를 문자열 content로, health·diagnostics 필드, 가짜 서버의 Groq·OpenAI 흉내. 테스트 782개 |
+| 2026-10-02 | **ホットペッパー 맛집**: `HOTPEPPER_API_KEY`가 있으면 무료 모드의 맛집 검색(30곳)·일정 추천 맛집(경로 도시 최대 3곳 섞어 20곳)이 실제 가게. 장르 섞기, 6시간 캐시, 원문 표시, 크레딧("Powered by ホットペッパー Webサービス"), 사진·링크 허용 목록(`IMAGE_URL_RULES.food`, `safeHotpepperUrl()`), health `hotpepperConfigured`. **여행지 확장 준비**: `scripts/build-city-places.js` 목표 12 → 30(카드에 보이는 highlights 기준으로 모자란 만큼, `assets/city-places.json` 재생성·이름 검토는 다음 작업), 탐색 탭 30곳 + [더보기] 10곳씩. **제외 칩 버그**: 도시 주변 실제 명소의 별칭 중 다른 도시 큐레이션 이름과 같은 것은 버림(교토 '기요미즈데라는 빼고'에 '하나마키 기요미즈데라'가 끼던 문제), 의도 표 `excludedOnly` |
+| 2026-10-03 | **여러 도시 일정**: '1박2일로 도쿄 오사카 후쿠오카'·'2박3일 도쿄 갔다가 오키나와'처럼 전체 기간이 첫 도시 옆에 있으면 그 도시의 일수로 읽혀 나머지 도시가 말없이 빠지던 문제(`isWholeTripRegionPlan()`: 도시가 여럿인데 한 도시가 전체 기간을 다 가져가는 분배는 규칙·AI 해석과 `allocateDaysByCities()`에서 버림). 일수보다 도시가 많으면 앞의 도시부터 하루씩 넣고, 채팅 답장(`tooManyCities`)·일정 팁 맨 앞(`droppedCities`, 필요한 일수 n·권장 2n-1)·`itineraryInfo.droppedCities`로 알린다(요청한 경로 도시만 셈). 규칙 해석의 경로 도시는 메시지에 나온 순서. `scripts/prompt-matrix.mjs --prompts <file>`. 테스트 815개 |
 | 2026-10-02 | **교통비 AI 제거**(같은 문서 2번): `calculateRouteCost()`가 Gemini를 부르지 않고 거리로 추정(모든 구간 `estimated: true`, 화면 "예상 합계"·안내), 구간마다 Google 지도 대중교통 링크(`mapsUrl`, `safeMapsDirUrl()` 허용 목록), 일본어 도시 이름은 `CITY_NAME_I18N`에서도 찾음. 테스트 787개 |
 
 ---

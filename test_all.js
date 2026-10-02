@@ -408,7 +408,7 @@ async function runTests() {
     const start = appCode.indexOf('var I18N = {');
     const dict = vm.runInNewContext('(' + extractBalanced(appCode, appCode.indexOf('{', start)) + ')', {});
     if (only.has('sandbox')) { await sandboxSchedulingTests(htmlCode, appCode, dict); await sandboxStorageTests(htmlCode, appCode, dict); }
-    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, chain: phaseGeminiChain, openai: phaseOpenAiCompat, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree };
+    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, chain: phaseGeminiChain, openai: phaseOpenAiCompat, hotpepper: phaseHotpepper, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree };
     const chosen = Object.keys(phases).filter((k) => only.has(k));
     if (chosen.length) {
       await mock.start();
@@ -877,6 +877,27 @@ async function runTests() {
       log(false, 'route cost links (sandbox)', e.message);
     }
 
+    // 핫페퍼 맛집 카드: imgfp.hotp.jp(https) 사진, hotpepper.jp(https) 가게 링크, 예산, 목록 아래 크레딧. 악성 값은 막는다.
+    try {
+      const good = { name: 'テスト店 1号', genre: '이자카야', area: 'テスト駅前', budget: '3001～4000円', source: 'hotpepper', aiFit: 90, lat: 35.68, lng: 139.76,
+        photoUrl: 'https://imgfp.hotp.jp/IMGH/00/00/P00000/P00000_238.jpg', detailUrl: 'https://www.hotpepper.jp/strJ100000/?vos=test', mapUrl: 'https://www.google.com/maps/search/?api=1&query=35.68%2C139.76' };
+      const bad = { ...good, name: '<img src=x onerror=alert(1)>店', photoUrl: 'https://imgfp.hotp.jp.evil.example/x.jpg', detailUrl: 'javascript:alert(1)' };
+      const badHttp = { ...good, name: 'http 사진', photoUrl: 'http://imgfp.hotp.jp/IMGH/x.jpg', detailUrl: 'https://www.hotpepper.jp.evil.example/str/' };
+      osmBrowser.run(`renderCards('foodCards', ${JSON.stringify([good, bad, badHttp])}, 'food')`);
+      const fh = String(osmBrowser.element('foodCards')?.innerHTML || '');
+      const imgs = [...fh.matchAll(/<img[^>]*src="([^"]*)"/g)].map((m) => m[1]);
+      const hrefs = [...fh.matchAll(/href="([^"]*)"/g)].map((m) => m[1].replace(/&amp;/g, '&'));
+      log(imgs.length === 1 && imgs[0] === good.photoUrl && hrefs.filter((h) => /hotpepper\.jp/.test(h)).length === 1 && hrefs.includes(good.detailUrl)
+        && !/<img src=x|javascript:|evil\.example/.test(fh) && fh.includes('&lt;img src=x onerror'),
+        'Hot Pepper cards: only https imgfp.hotp.jp photos and https www.hotpepper.jp shop links render; hostile photo/link values dropped, names escaped', short({ imgs, hrefs }));
+      log(fh.includes('Powered by ホットペッパー Webサービス') && hrefs.includes('https://webservice.recruit.co.jp/') && fh.includes('예산 3001～4000円') && fh.includes('🍽 가게 정보'),
+        'Hot Pepper cards: budget row, [🍽 가게 정보] link and the "Powered by ホットペッパー Webサービス" credit under the list', short(fh.slice(-400)));
+      osmBrowser.run(`renderCards('foodCards', ${JSON.stringify([{ name: '스시다이', genre: '스시', area: '츠키지', aiFit: 80, mapUrl: 'https://www.google.com/maps' }])}, 'food')`);
+      log(!String(osmBrowser.element('foodCards')?.innerHTML || '').includes('ホットペッパー'), 'curated food cards: no Hot Pepper credit');
+    } catch (e) {
+      log(false, 'Hot Pepper cards (sandbox)', e.message);
+    }
+
     // 사진·출처 표시: 악성 주소와 HTML이 든 값은 허용 목록(safeImageUrl·safeCreditUrl)과 escapeHtml로 막혀야 한다.
     // 주소를 URL로 해석하지 않고 글자 모양만 보는 검사로 되돌리면 아래 우회 주소('/\', '//', userinfo 등)가 통과해 실패한다.
     try {
@@ -985,6 +1006,7 @@ async function runTests() {
     await phaseAiItinerary();
     await phaseGeminiChain();
     await phaseOpenAiCompat();
+    await phaseHotpepper();
   } finally {
     await stopServer();
     await mock.stop();
@@ -3106,7 +3128,8 @@ const USJ = '유니버셜 스튜디오 재팬';
 
 // 감사 ID별 프롬프트와 기대값(SV-04: Gemini가 한도로 실패할 때 실제로 쓰이는 규칙 해석기).
 // 기대값 키: days · md('MM-DD' 또는 목록, 연도는 올해/내년이고 오늘 이후) · month · keepStart(폼 출발일 유지) · city · theme · notTheme · budget
-//           · prefs(참이어야 하는 조건) · maxPlaces · wanted(모두 포함) · noWanted(정규식) · excluded · unsupported(정확히 같은 목록)
+//           · prefs(참이어야 하는 조건) · maxPlaces · wanted(모두 포함) · noWanted(정규식) · excluded(모두 포함) · excludedOnly(정확히 이것만, 순서 무관)
+//           · unsupported(정확히 같은 목록)
 //           · route(모두 포함) · food(정규식) · arrival · departure · startTime
 // ai_live = 실제 Gemini로 돌린 P01-P16·X1-X3, ai_code = 코드 검수 P01-P19(probe1 P01-P16 + 날짜 경계 P17-P19), SV-04 = 정규식 보정 표.
 const INTENT_CASES = [
@@ -3169,9 +3192,10 @@ const INTENT_CASES = [
   ['SV-04 two-cities', '도쿄 3일 오사카 2일', {}, { city: 'tokyo', days: 5, route: ['도쿄', '오사카'], unsupported: [] }],
   ['SV-04 focus-word-days', '오사카 쇼핑 위주 2일', {}, { city: 'osaka', days: 2, theme: 'shopping', unsupported: [] }],
   // 2026-10-01 점검(여러 프롬프트): 'A랑 B는 빼고' 목록 부정, 음식·시간 낱말이 장소가 되지 않음, 영어/일본어 must·skip·시작 시각
-  ['S2 N01 list-negation', '11월 20일부터 교토 3일, 기요미즈데라랑 쇼핑은 빼고 후시미 이나리는 꼭 가고, 하루 2곳만 여유롭게, 아침 11시 이후 시작', {}, { city: 'kyoto', days: 3, md: '11-20', wanted: ['후시미 이나리'], excluded: ['기요미즈데라'], noWanted: /기요미즈|쇼핑/, prefs: ['removeShopping', 'lateStart'], maxPlaces: 2, startTime: '11:00' }],
+  ['S2 N01 list-negation', '11월 20일부터 교토 3일, 기요미즈데라랑 쇼핑은 빼고 후시미 이나리는 꼭 가고, 하루 2곳만 여유롭게, 아침 11시 이후 시작', {}, { city: 'kyoto', days: 3, md: '11-20', wanted: ['후시미 이나리'], excluded: ['기요미즈데라'], excludedOnly: ['기요미즈데라'], noWanted: /기요미즈|쇼핑/, prefs: ['removeShopping', 'lateStart'], maxPlaces: 2, startTime: '11:00' }],
   ['S2 A01 two-excluded', '도쿄 3일, 디즈니랜드랑 디즈니씨는 빼고 시부야 스카이는 꼭', {}, { city: 'tokyo', days: 3, wanted: ['시부야 스카이'], excluded: ['도쿄 디즈니랜드', '도쿄 디즈니씨'], noWanted: /디즈니/ }],
-  ['S2 N04 comma-excluded', '교토 3일, 금각사, 기요미즈데라는 빼고 은각사는 꼭', {}, { city: 'kyoto', days: 3, wanted: ['은각사'], excluded: ['금각사', '기요미즈데라'], noWanted: /금각사|기요미즈/ }],
+  ['S2 N04 comma-excluded', '교토 3일, 금각사, 기요미즈데라는 빼고 은각사는 꼭', {}, { city: 'kyoto', days: 3, wanted: ['은각사'], excluded: ['금각사', '기요미즈데라'], excludedOnly: ['금각사', '기요미즈데라'], noWanted: /금각사|기요미즈/ }],
+  ['S3 hanamaki-own-temple', '하나마키 2일, 하나마키 기요미즈데라 꼭 가고 싶어', {}, { city: 'hanamaki', days: 2, wanted: ['하나마키 기요미즈데라'] }],
   ['S2 N02 food-not-place', '오사카 2박3일, 유니버설은 말고 나라 당일치기 하루 넣어주고 마지막 날은 오후 3시 비행기야. 저녁엔 꼭 오코노미야키', {}, { city: 'osaka', days: 3, wanted: ['나라 공원·도다이지'], excluded: [USJ], noWanted: /저녁|오코노미야키|유니버/, food: /오코노미야키/, departure: '15:00' }],
   ['S2 P16 money-not-place', '오사카 3박4일 저예산, 무료 명소 위주로 1인 50만원', {}, { city: 'osaka', days: 4, budget: 'low', prefs: ['lowBudget'], noWanted: /명소|만원|1인/, unsupported: [] }],
   ['S2 E01 en skip/must/start', 'Kyoto 3 days, skip Kiyomizu-dera, must see Fushimi Inari, start at 11am', { lang: 'en' }, { city: 'kyoto', days: 3, wanted: ['후시미 이나리'], excluded: ['기요미즈데라'], startTime: '11:00' }],
@@ -3228,6 +3252,7 @@ function intentMismatches(p, exp, ctx) {
   for (const w of exp.wanted || []) if (!has(p.wantedPlaces, w)) out.push(`wantedPlaces=${short(p.wantedPlaces, 120)} (missing ${w})`);
   if (exp.noWanted && (p.wantedPlaces || []).some((w) => exp.noWanted.test(w))) out.push(`wantedPlaces=${short(p.wantedPlaces, 120)} (must not match ${exp.noWanted})`);
   for (const x of exp.excluded || []) if (!has(p.excludedPlaces, x)) out.push(`excludedPlaces=${short(p.excludedPlaces, 120)} (missing ${x})`);
+  if (exp.excludedOnly && JSON.stringify([...(p.excludedPlaces || [])].sort()) !== JSON.stringify([...exp.excludedOnly].sort())) out.push(`excludedPlaces=${short(p.excludedPlaces, 120)} (want exactly ${short(exp.excludedOnly)})`);
   if (exp.unsupported && JSON.stringify(p.unsupportedPlaces || []) !== JSON.stringify(exp.unsupported)) out.push(`unsupportedPlaces=${short(p.unsupportedPlaces)} (want ${short(exp.unsupported)})`);
   for (const c of exp.route || []) if (!has(p.routeCities, c)) out.push(`routeCities=${short(p.routeCities)} (missing ${c})`);
   if (exp.food && !exp.food.test(String(p.foodKeyword || ''))) out.push(`foodKeyword=${p.foodKeyword} (want ${exp.food})`);
@@ -3379,6 +3404,36 @@ async function phaseIntentRegression() {
     const followGem = mock.entries('gemini').filter((e) => !e.isItinerary).pop() || {};
     log(/Previous conversation:/.test(String(followGem.prompt || '')) && /Previously parsed conditions/.test(String(followGem.prompt || '')),
       'follow-up Gemini prompt includes the previous conversation and prevParsed');
+    // 여러 도시: 전체 기간이 첫 도시의 일수로 읽히지 않고(나머지 도시가 말없이 빠지던 문제), 일수보다 도시가 많으면 답장·일정에서 알린다
+    mock.reset({ gemini: 'error400' });
+    const planOf = (parsed) => postJson('/api/travel-plan', { city: parsed.cityKey, theme: 'mixed', days: parsed.days, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: false,
+      _routeCities: parsed.routeCities, _regionDayPlan: parsed.regionDayPlan }, { ip: nextIntentIp() });
+    const m3 = await chat('1박2일로 도쿄 오사카 후쿠오카까지 가고 싶어');
+    const p3 = m3.json?.parsed || {};
+    const plan3 = await planOf(p3);
+    const days3 = plan3.json?.itinerary || [];
+    log(JSON.stringify(p3.routeCities) === JSON.stringify(['도쿄', '오사카', '후쿠오카']) && (p3.regionDayPlan || []).length === 0 && p3.days === 2
+      && /후쿠오카를 빼고/.test(String(m3.json?.reply || '')) && !/지역별 일정 분배/.test(String(m3.json?.reply || '')),
+      "'1박2일로 도쿄 오사카 후쿠오카': the whole-trip length is not read as '도쿄 2일'; the reply says 후쿠오카 is left out", short({ route: p3.routeCities, region: p3.regionDayPlan, reply: m3.json?.reply }, 400));
+    log(days3.length === 2 && /도시 이동: 도쿄 -> 오사카/.test((days3[1]?.blocks || []).join(' ')) && JSON.stringify(plan3.json?.itineraryInfo?.droppedCities) === JSON.stringify(['후쿠오카'])
+      && /^넣지 못한 도시: 후쿠오카\. 2일 일정으로는 도시 3곳/.test(String((plan3.json?.tips || [])[0] || '')),
+      'plan: day 2 moves to 오사카, itineraryInfo.droppedCities = [후쿠오카] and the first tip says so (3 days minimum, about 5)', short({ d2: days3[1]?.blocks?.[0], dropped: plan3.json?.itineraryInfo?.droppedCities, tip: (plan3.json?.tips || [])[0] }, 400));
+    for (const [msg, want] of [['2박3일 도쿄 갔다가 오키나와 가고 싶어', '오키나와'], ['3박4일로 삿포로, 오타루, 하코다테 다 보고 싶어', '하코다테']]) {
+      const r = await chat(msg);
+      const pr = r.json?.parsed || {};
+      const pl = await planOf(pr);
+      const blocks = (pl.json?.itinerary || []).flatMap((d) => d.blocks || []).join(' ');
+      log((pr.regionDayPlan || []).length === 0 && new RegExp(`도시 이동: [^·]*-> ${want}`).test(blocks) && !(pl.json?.itineraryInfo?.droppedCities || []).length,
+        `'${msg}': ${want} gets days with a transfer line (no longer dropped silently)`, short({ region: pr.regionDayPlan, dropped: pl.json?.itineraryInfo?.droppedCities, blocks: blocks.slice(0, 200) }, 400));
+    }
+    const m2 = await chat('7박 8일 일정인데 구마모토에서 가고시마, 미야자키까지 가고 싶어');
+    log(JSON.stringify(m2.json?.parsed?.routeCities) === JSON.stringify(['구마모토', '가고시마', '미야자키']),
+      "rule route follows the message order ('구마모토에서 가고시마, 미야자키까지')", short(m2.json?.parsed?.routeCities));
+    const ok2 = await chat('5박6일 일정인데 오사카 갔다가 교토 가고 싶어');
+    const okPlan = await planOf(ok2.json?.parsed || {});
+    log(!(okPlan.json?.itineraryInfo?.droppedCities || []).length && !/넣지 못한 도시/.test((okPlan.json?.tips || []).join(' ')) && !/빼고 짤게요/.test(String(ok2.json?.reply || '')),
+      "'5박6일 오사카 갔다가 교토': no left-out notice when the days are enough", short(okPlan.json?.tips));
+
     // 입력 검증
     const badHistory = await chat('도쿄', { body: { history: 'not-an-array' } });
     const bigPrev = await chat('도쿄', { body: { prevParsed: { note: 'x'.repeat(5000) }, history } });
@@ -3770,6 +3825,100 @@ async function phaseOpenAiCompat() {
   checkNoSecrets('OpenAI-compatible (config)', [SK, GSK]);
   checkNoUnexpectedExternal('OpenAI-compatible (config)');
   checkNoFatal('OpenAI-compatible (config)');
+}
+
+// ── ホットペッパー 맛집(무료 모드 + HOTPEPPER_API_KEY): 요청 형식, 장르 섞기, 캐시, 일정 추천 맛집, 악성 데이터, 키 오류, 키 없음 ──
+// 서버는 진짜 주소(webservice.recruit.co.jp)를 부르고 net-guard가 가짜 서버로 돌린다.
+async function phaseHotpepper() {
+  section('Hot Pepper restaurants (free mode + HOTPEPPER_API_KEY): request, genre mix, cache, plan foods, hostile data, key error, no key');
+  const HPKEY = 'hpkey-test-only-7f3a91c2';
+  const hp = () => mock.entries('hotpepper');
+  const foods = (q) => fetchUrl(`/api/foods?${q}`, { ip: nextIntentIp() });
+  const center = (ck) => {
+    const src = read('server.js');
+    const table = src.slice(src.indexOf('const CITY_CENTER_COORDS = {'));
+    const m = new RegExp(`\\b${ck}:\\s*\\{\\s*lat:\\s*([\\d.]+),\\s*lng:\\s*([\\d.]+)`).exec(table);
+    return m ? { lat: Number(m[1]).toFixed(6), lng: Number(m[2]).toFixed(6) } : null;
+  };
+
+  mock.reset({ hotpepper: 'ok' });
+  try {
+    await startServer('hotpepper', { HOTPEPPER_API_KEY: HPKEY, TRUST_PROXY: '1' });
+    const health = (await fetchUrl('/api/health', { record: false })).json || {};
+    log(health.hotpepperConfigured === true && !JSON.stringify(health).includes(HPKEY), 'health: hotpepperConfigured true (no key value)');
+
+    // 장르 없음: 100곳을 받아 장르를 섞어 30곳, 노래방·파티(G011) 제외
+    const r1 = await foods('city=tokyo&lang=ko');
+    const l1 = r1.json?.list || [];
+    const q1 = hp()[0]?.params || {};
+    const c = center('tokyo');
+    log(r1.status === 200 && r1.json?.source === 'hotpepper' && r1.json?.sourceInfo?.kind === 'live' && r1.json?.sourceInfo?.provider === 'hotpepper' && l1.length === 30,
+      'GET /api/foods (tokyo): 30 real shops from Hot Pepper, sourceInfo live/hotpepper', short({ status: r1.status, src: r1.json?.source, info: r1.json?.sourceInfo, n: l1.length }));
+    log(q1.key === HPKEY && q1.format === 'json' && q1.range === '5' && q1.order === '4' && q1.count === '100' && !('keyword' in q1) && Boolean(c) && q1.lat === c.lat && q1.lng === c.lng,
+      'Hot Pepper request: key, format=json, range=5 (3 km), order=4, count=100 (no genre), lat/lng = the city center', short({ ...q1, key: q1.key ? '(set)' : '' }));
+    const izakaya = l1.filter((x) => x.genre === '이자카야').length;
+    log(l1.every((x) => x.genre !== '노래방·파티') && izakaya <= 9 && new Set(l1.map((x) => x.genre)).size >= 5,
+      `no genre chosen: karaoke/party (G011) left out, one genre at most 30% (izakaya ${izakaya}/30), at least 5 genres`, short([...new Set(l1.map((x) => x.genre))]));
+    const s0 = l1[0] || {};
+    log(/^테스트店|^テスト店/.test(s0.name) && s0.source === 'hotpepper' && s0.budget === '3001～4000円' && s0.area === 'テスト駅前' && /^https:\/\/imgfp\.hotp\.jp\//.test(s0.photoUrl || '')
+      && /^https:\/\/www\.hotpepper\.jp\//.test(s0.detailUrl || '') && /^https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=/.test(s0.mapUrl || '') && Number.isFinite(s0.lat) && Number.isFinite(s0.lng),
+      'shop card: name / budget / area as given (not translated), https Hot Pepper photo + shop page, Google Maps pin link, coordinates', short(s0, 400));
+    // 장르(라멘) → keyword=ラーメン, count=30
+    const r2 = await foods(`city=tokyo&genre=${encodeURIComponent('라멘')}&lang=ko`);
+    const q2 = hp()[1]?.params || {};
+    log(r2.json?.source === 'hotpepper' && (r2.json?.list || []).length === 30 && q2.keyword === 'ラーメン' && q2.count === '30',
+      "genre '라멘' -> keyword=ラーメン, count=30", short({ keyword: q2.keyword, count: q2.count, n: (r2.json?.list || []).length }));
+    // 캐시: 같은 조건은 다시 부르지 않는다(24시간 규칙보다 짧은 6시간)
+    const before = hp().length;
+    await foods('city=tokyo&lang=ko');
+    log(hp().length === before, 'the same search again is served from the cache (no second Hot Pepper call)', `${before} -> ${hp().length}`);
+    // 영어 화면: 장르는 영어 표기, 가게 이름은 원문
+    const r3 = await foods('city=osaka&lang=en');
+    const l3 = r3.json?.list || [];
+    log(l3.length === 30 && l3.some((x) => x.genre === 'Izakaya') && l3.every((x) => /テスト店/.test(x.name)), 'English screen: genre label in English, shop names unchanged', short(l3.slice(0, 2).map((x) => [x.name, x.genre])));
+
+    // 일정 결과의 추천 맛집: 경로 도시마다 가게를 받아 최대 20곳, foodsInfo live/hotpepper
+    const plan = await postJson('/api/travel-plan', { city: 'kyoto', theme: 'mixed', days: 2, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: false }, { ip: nextIntentIp() });
+    const rf = plan.json?.recommendedFoods || [];
+    log(plan.status === 200 && rf.length === 20 && rf.every((x) => x.source === 'hotpepper') && plan.json?.foodsInfo?.kind === 'live' && plan.json?.foodsInfo?.provider === 'hotpepper',
+      'travel-plan recommendedFoods: 20 Hot Pepper shops, foodsInfo live/hotpepper', short({ n: rf.length, info: plan.json?.foodsInfo }));
+
+    // 악성 데이터: http·다른 호스트 사진, javascript: 가게 주소, 일본 밖 좌표, 같은 이름은 거른다(이름 속 HTML은 화면이 이스케이프)
+    mock.reset({ hotpepper: 'hostile' });
+    const r4 = await foods('city=fukuoka&lang=ko');
+    const l4 = r4.json?.list || [];
+    const photos = l4.map((x) => x.photoUrl).filter(Boolean);
+    const links = l4.map((x) => x.detailUrl).filter(Boolean);
+    log(r4.json?.source === 'hotpepper' && photos.every((u) => /^https:\/\/imgfp\.hotp\.jp\//.test(u)) && links.every((u) => /^https:\/\/www\.hotpepper\.jp\//.test(u))
+      && !l4.some((x) => !(x.lat >= 20 && x.lat <= 46.5)) && new Set(l4.map((x) => x.name)).size === l4.length && l4[0]?.photoUrl === null && !l4[0]?.detailUrl,
+      'hostile Hot Pepper data: only https imgfp.hotp.jp photos and https www.hotpepper.jp links survive, shops outside Japan and duplicate names dropped', short(l4.slice(0, 3).map((x) => [x.name, x.photoUrl, x.detailUrl])));
+
+    // 키 오류(results.error 2000): 내장 맛집 목록 + 이유, 로그에 키 없음
+    mock.reset({ hotpepper: 'key_invalid' });
+    const r5 = await foods('city=sapporo&lang=ko');
+    const logs = serverLogs();
+    log(r5.status === 200 && r5.json?.source === 'tabelog_style_curated' && r5.json?.sourceInfo?.kind === 'fallback' && r5.json?.sourceInfo?.reasonCode === 'HOTPEPPER_KEY_INVALID'
+      && /\[hotpepper\] API 오류 2000/.test(logs) && !logs.includes(HPKEY),
+      'Hot Pepper key error (code 2000) -> curated list, sourceInfo fallback/HOTPEPPER_KEY_INVALID, log without the key', short({ src: r5.json?.source, info: r5.json?.sourceInfo }));
+    mock.reset({ hotpepper: 'http500' });
+    const r6 = await foods('city=nagoya&lang=ko');
+    log(r6.json?.source === 'tabelog_style_curated' && r6.json?.sourceInfo?.reasonCode === 'HOTPEPPER_ERROR', 'Hot Pepper HTTP 500 -> curated list, HOTPEPPER_ERROR', short(r6.json?.sourceInfo));
+  } catch (e) { log(false, 'Hot Pepper', e.stack || e.message); }
+  checkNoSecrets('Hot Pepper', [HPKEY]);
+  checkNoUnexpectedExternal('Hot Pepper');
+  checkNoFatal('Hot Pepper');
+
+  // 키가 없으면(기본 무료 모드) 한 번도 부르지 않는다
+  mock.reset({ hotpepper: 'ok' });
+  try {
+    await startServer('hotpepper-off', { TRUST_PROXY: '1' });
+    const r = await foods('city=tokyo&lang=ko');
+    const plan = await postJson('/api/travel-plan', { city: 'osaka', theme: 'mixed', days: 2, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: false }, { ip: nextIntentIp() });
+    log(hp().length === 0 && r.json?.source === 'tabelog_style_curated' && r.json?.sourceInfo?.kind === 'curated' && plan.json?.foodsInfo?.kind === 'curated'
+      && (await fetchUrl('/api/health', { record: false })).json?.hotpepperConfigured === false,
+      'no HOTPEPPER_API_KEY: zero Hot Pepper calls, curated foods as before (sourceInfo curated)', short({ calls: hp().length, src: r.json?.source }));
+  } catch (e) { log(false, 'Hot Pepper off', e.stack || e.message); }
+  checkNoFatal('Hot Pepper off');
 }
 
 const GEMINI_DEFAULT_CHAIN = ['gemini-2.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-flash-latest'];

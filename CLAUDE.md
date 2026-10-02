@@ -32,6 +32,7 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
    - 사진은 위키미디어 Commons의 자유 라이선스만 쓰고, 저작자·라이선스를 함께 표시한다.
    - 도시 명소는 위키데이터 QID와 좌표가 있는 것만 넣는다(`scripts/build-city-places.js`).
    - Google Places 결과를 OSM 지도 위에 표시하지 않는다(Google 약관).
+   - ホットペッパー 맛집(`HOTPEPPER_API_KEY`)은 가게 이름·예산 등을 원문 그대로 보여 주고, 목록 아래 "Powered by ホットペッパー Webサービス" 크레딧을 둔다. 캐시는 24시간 안에 갱신하고(서버는 6시간), AI 일정 문장에 섞지 않는다.
 8. **커밋 규칙**
    - "Co-Authored-By: Claude"나 "Generated with Claude Code" 줄을 넣지 않는다.
    - 작성자는 저장소 로컬 git 설정을 그대로 쓴다.
@@ -41,7 +42,7 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
 
 1. 고친 JS 파일마다 `node --check server.js`, `node --check public/app.js`로 구문을 검사한다.
 2. `npm test`(= `node test_all.js`)로 전체 테스트를 돌린다.
-   - 2026-10-02 기준 787개가 모두 통과하는 것이 정상이다.
+   - 2026-10-03 기준 815개가 모두 통과하는 것이 정상이다.
    - 외부 패키지가 없어 `npm install`은 필요 없다. Node 20 이상이 필요하다.
    - 실제 네트워크와 `.env` 값을 쓰지 않는다(가짜 벤더 서버, 네트워크 차단).
    - 포트 13581·3205가 비어 있어야 한다.
@@ -70,6 +71,8 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
   - `&&` 대신 `;`를 쓴다.
   - 경로에 한글이 있으면 Bash 도구가 실패할 수 있으니 PowerShell을 쓴다.
   - 커밋 메시지는 UTF-8 파일로 만들어 `git commit -F`로 넣는다.
+  - `curl`에 한국어를 인자로 넣으면 글자가 깨진 채 전송된다. 요청 본문은 UTF-8 파일로 만들어 `--data-binary @파일`로 보낸다.
+  - 작업 폴더에서 `.env.example`·`scripts/*.mjs`는 CRLF, 나머지(.js·.md·.yaml·.html·.css)는 LF다(`.gitattributes`). 스크립트로 고칠 때 줄바꿈을 맞춘다.
 
 ## AI 한도와 키 (실측)
 
@@ -83,6 +86,8 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
   - Groq 키를 `OPENAI_API_KEY`에 넣지 않는다. 넣으면 서버가 api.openai.com에 보내지 않고 경고만 남긴다(OpenAI 키도 Groq로 보내지 않는다).
   - 어느 키를 쓰는지는 `/api/health`의 `ai.openaiKeySource`, 모델 순서는 `ai.openaiModelChain`이다.
   - Render 설정값(대체 모델·출력 상한·reasoning·채팅 순서)은 README "Groq 무료 연결"에 있다.
+  - Groq 무료는 모델마다 분당 8천 토큰이라, 채팅 해석(약 3.6천) 직후 일정(약 7천)을 같은 모델로 부르면 429가 난다. 그래서 일정은 Gemini가 먼저다(2026-10-02 같은 요청 5개 비교: 품질은 비슷, Groq만 쓰면 5건 중 3건이 한도에 걸림).
+  - Groq로 실제 점검할 때는 `prompt-matrix.mjs --gap 25000`처럼 간격을 둔다. 이렇게 하면 Gemini 한도는 쓰지 않는다(로컬 서버를 `GEMINI_API_KEY=` 빈 값으로 띄움).
 - **로컬 `.env`의 Supabase는 운영과 같은 프로젝트다.** 로컬에서 저장한 일정도 운영 표에 들어간다. 파일 저장 위치만 바꾸려면 `TABIMARU_DATA_DIR`을 쓴다.
 
 ## 배포 후 확인

@@ -30,6 +30,9 @@
  *                  | 'incomplete' (status incomplete, max_output_tokens) | 'bad_json' (JSON이 아닌 글) | 'short_days' (일정 날짜가 하나 모자람)
  *                  채팅 해석에는 chatScenarioJson('ok'면 'chat_ok')을, 일정에는 geminiItinerary와 같은 일정을 낸다.
  *   openaiModels:  { [모델 이름]: 위 openai 값 } — 그 모델에만 다른 시나리오
+ *   hotpepper:     ホットペッパー グルメサーチAPI(webservice.recruit.co.jp, net-guard가 돌려보냄)
+ *                  'ok' | 'key_invalid'(results.error code 2000) | 'empty'(가게 0곳) | 'http500' | 'hostile'(http·다른 호스트 사진,
+ *                  javascript: 가게 주소, HTML이 든 이름, 일본 밖 좌표, 같은 이름 두 번이 섞임)
  *
  *   oauth:         'refuse'(기본) | 'ok'
  *   supabase:      'ok' | 'down' (모든 Supabase 요청에 503 + 원문 SUPABASE_ERROR_TEXT)
@@ -260,6 +263,25 @@ function openAiResponse(model, text, status = 'completed', incompleteReason = ''
   };
 }
 
+// ホットペッパー 가짜 가게 목록: 실제 응답 모양(2026-10-02 실측: lat/lng 숫자, genre {code,name,catch}, budget {code,name,average},
+// photo.pc {l,m,s} https imgfp.hotp.jp, urls.pc https www.hotpepper.jp). 장르는 이자카야가 절반이고 노래방·파티(G011)가 섞인다.
+const HOTPEPPER_GENRES = [['G001', '居酒屋'], ['G001', '居酒屋'], ['G004', '和食'], ['G001', '居酒屋'], ['G007', '中華'], ['G013', 'ラーメン'],
+  ['G001', '居酒屋'], ['G014', 'カフェ・スイーツ'], ['G011', 'カラオケ・パーティ'], ['G008', '焼肉・ホルモン']];
+function hotpepperShops(lat, lng, count, keyword) {
+  return Array.from({ length: count }, (_, i) => {
+    const [code, name] = HOTPEPPER_GENRES[i % HOTPEPPER_GENRES.length];
+    const id = `J${String(100000 + i)}`;
+    return {
+      id, name: `${keyword ? keyword + ' ' : ''}テスト店 ${i + 1}号`, name_kana: 'てすとてん',
+      address: `東京都テスト区${i + 1}-1`, station_name: 'テスト', lat: Number(lat) + i * 0.0005, lng: Number(lng) - i * 0.0005,
+      genre: { code, name, catch: '' }, budget: { code: 'B003', name: '3001～4000円', average: 'ディナー：3500円' },
+      small_area: { code: 'X001', name: 'テスト駅前' }, open: '月～日: 11:00～23:00', access: 'テスト駅徒歩3分',
+      photo: { pc: { l: `https://imgfp.hotp.jp/IMGH/00/00/P0000${i}/P0000${i}_238.jpg`, m: `https://imgfp.hotp.jp/IMGH/00/00/P0000${i}/P0000${i}_168.jpg`, s: '' } },
+      urls: { pc: `https://www.hotpepper.jp/str${id}/?vos=test` }
+    };
+  });
+}
+
 function geminiResponse(text, finishReason, usageExtra = {}) {
   return {
     candidates: [{ content: { role: 'model', parts: [{ text }] }, finishReason, index: 0 }],
@@ -307,7 +329,7 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
 
   function reset(scenario = {}) {
     state.log.length = 0;
-    state.scenario = { places: 'ok', geocode: 'ok', directions: 'ok', gemini: 'ok', travelpayouts: 'ok', weather: 'ok', fx: 'ok', openai: 'ok', oauth: 'refuse', supabase: 'ok', ...scenario };
+    state.scenario = { places: 'ok', geocode: 'ok', directions: 'ok', gemini: 'ok', travelpayouts: 'ok', weather: 'ok', fx: 'ok', openai: 'ok', hotpepper: 'ok', oauth: 'refuse', supabase: 'ok', ...scenario };
     state.db = { rows: [], lastTs: 0, seq: 0 };
   }
   reset();
@@ -497,6 +519,25 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
           return sendJson(res, 404, { error: 'mock: unknown oauth endpoint' });
         }
         return sendJson(res, 401, { error: 'invalid_client', error_description: 'mock: token exchange refused (test)' });
+      }
+      // ホットペッパー グルメサーチAPI(키는 쿼리 key=…로 온다: 기록은 하되 응답·로그에 나오면 테스트가 실패로 본다)
+      if (extHost === 'webservice.recruit.co.jp' && extPath === '/hotpepper/gourmet/v1/') {
+        const q = url.searchParams;
+        record({ kind: 'hotpepper', host: extHost, path: extPath, query: url.search, params: Object.fromEntries(q.entries()), method: req.method, headers });
+        if (sc.hotpepper === 'http500') return sendJson(res, 500, { error: 'mock failure' });
+        if (sc.hotpepper === 'key_invalid') return sendJson(res, 200, { results: { api_version: '1.30', error: [{ code: 2000, message: 'APIキーが正しくありません' }] } });
+        const count = Math.min(100, Number(q.get('count')) || 10);
+        let shop = sc.hotpepper === 'empty' ? [] : hotpepperShops(q.get('lat'), q.get('lng'), count, q.get('keyword') || '');
+        if (sc.hotpepper === 'hostile') {
+          shop = [
+            { ...shop[0], name: '<img src=x onerror=alert(1)>店', photo: { pc: { l: 'http://imgfp.hotp.jp/IMGH/http.jpg' } }, urls: { pc: 'javascript:alert(1)' } },
+            { ...shop[1], photo: { pc: { l: 'https://imgfp.hotp.jp.evil.example/x.jpg' } }, urls: { pc: 'https://www.hotpepper.jp.evil.example/str/' } },
+            { ...shop[2], lat: 0, lng: 0 },
+            { ...shop[3], name: shop[4].name },
+            ...shop.slice(4)
+          ];
+        }
+        return sendJson(res, 200, { results: { api_version: '1.30', results_available: shop.length, results_returned: String(shop.length), results_start: 1, shop } });
       }
       // OpenAI 호환 공급자(진짜 주소 그대로 설정한 서버): Groq는 /openai/v1/…, OpenAI는 /v1/…
       const oaPrefix = extHost === 'api.groq.com' ? '/openai/v1' : (extHost === 'api.openai.com' ? '/v1' : '');

@@ -1462,9 +1462,23 @@ function loadCityPlaces() {
 
 const CITY_PLACES = loadCityPlaces();
 
+// 도시 주변 실제 명소의 별칭(예전 이름) 중 다른 도시의 큐레이션 이름과 같은 것은 버린다.
+// 하나마키 '하나마키 기요미즈데라'의 별칭 '기요미즈데라'·'清水寺'가 남아 있으면 교토 여행의 "기요미즈데라는 빼고"가
+// 하나마키 절까지 제외 목록에 넣는다(2026-10-02). 이름 찾기용 이름(generatedMatchNames)은 따로 거른다.
+const CURATED_NAME_OWNERS = (() => {
+  const owners = new Map(); // 이름 키 → Set(cityKey)
+  const add = (label, ck) => { const k = cityPlaceKey(label); if (!k) return; if (!owners.has(k)) owners.set(k, new Set()); owners.get(k).add(ck); };
+  for (const m of MUST_ATTRACTIONS) [m.name, ...(m.aliases || [])].forEach((a) => add(a, m.cityKey));
+  for (const [ck, c] of Object.entries(CITY_DATA)) for (const h of c.highlights || []) add(h.name, ck);
+  for (const e of EXTRA_PLACES) [e.name, e.en, e.ja, ...(e.aliases || [])].forEach((a) => add(a, e.cityKey));
+  return owners;
+})();
+const ownedByOtherCity = (label, ck) => [...(CURATED_NAME_OWNERS.get(cityPlaceKey(label)) || [])].some((owner) => owner !== ck);
+
 // 도시마다: 이미 있는 이름(큐레이션 명소·대표 명소·추가 명소)과 겹치지 않는 것만 EXTRA_PLACES에 붙이고,
 // 도시 명소(highlights)가 3곳보다 적으면 앞쪽(하루짜리가 아닌) 명소로 채운다.
 for (const [ck, c] of CITY_PLACES.cities) {
+  for (const p of c.places) if (Array.isArray(p.aliases)) p.aliases = p.aliases.filter((a) => !ownedByOtherCity(a, ck));
   const city = CITY_DATA[ck];
   const taken = new Set([
     ...(city.highlights || []).map((h) => h.name),
@@ -3224,12 +3238,25 @@ function normalizeRegionDayPlan(rawPlan, fallback = []) {
   return out;
 }
 
+// 도시가 여럿인데 지역별 일수가 한 도시뿐이고 전체 기간을 다 덮으면 그것은 도시별 일수가 아니라 전체 기간이다
+// ("1박2일로 도쿄 오사카 후쿠오카" → '도쿄 2일', "2박3일 도쿄 갔다가 오키나와" → '도쿄 3일'). 그대로 쓰면 나머지 도시가 말없이 빠진다.
+function isWholeTripRegionPlan(plan, routeCount, days) {
+  if (!Array.isArray(plan) || plan.length !== 1 || !(routeCount > 1)) return false;
+  const only = plan[0] || {};
+  const n = Number(only.days) || 0;
+  return (only.unit === 'night' ? n + 1 : n) >= (Number(days) || 1);
+}
+
 function allocateDaysByCities(routeCities, picks, totalDays, regionDayPlan = []) {
   const days = Math.max(1, Number(totalDays) || 1);
   if (!Array.isArray(routeCities) || routeCities.length === 0) return new Array(days).fill('');
   if (routeCities.length === 1) return routeCities.flatMap((c) => new Array(days).fill(c));
 
-  const normalizedPlan = normalizeRegionDayPlan(regionDayPlan, []);
+  let normalizedPlan = normalizeRegionDayPlan(regionDayPlan, []);
+  // "1박2일로 도쿄 오사카 후쿠오카", "2박3일 도쿄 갔다가 오키나와": 전체 기간이 첫 도시 옆에 있어 '도쿄 2일'로 읽힌 분배.
+  // 도시가 여럿인데 한 도시가 전체 기간을 다 가져가면 그 분배는 쓰지 않는다(나머지 도시가 말없이 빠지던 문제, 2026-10-03).
+  const distinctRoute = new Set(routeCities.map((c) => String(c || '').trim()).filter(Boolean));
+  if (isWholeTripRegionPlan(normalizedPlan, distinctRoute.size, days)) normalizedPlan = [];
   if (normalizedPlan.length > 0) {
     const route = Array.from(new Set([
       ...routeCities.map((c) => String(c || '').trim()).filter(Boolean),
@@ -3447,7 +3474,12 @@ function parseTravelChatInput(payload = {}) {
   if (specialPrefs.cheapFlightPriority && inferredCityKeys.length === 0) {
     inferredCityKeys = ['osaka', 'fukuoka', 'tokyo'];
   }
-  const routeCityKeys = Array.from(new Set([cityKey, ...mustMatches.map((m) => m.cityKey), ...inferredCityKeys])).filter((k) => CITY_DATA[k]);
+  // 주 도시 다음은 메시지에 처음 나온 위치 순서(도시 이름을 찾는 방법이 여러 가지라 합친 순서는 데이터 순서였다, 2026-10-03)
+  const mentionAt = new Map(detectCityMentionsDetailed(cityText).map((h) => [h.key, h.idx]));
+  const atOf = (k) => (mentionAt.has(k) ? mentionAt.get(k) : Number.MAX_SAFE_INTEGER);
+  const restKeys = Array.from(new Set([...mustMatches.map((m) => m.cityKey), ...inferredCityKeys])).filter((k) => k !== cityKey);
+  const routeCityKeys = [cityKey, ...restKeys.map((k, i) => ({ k, i })).sort((a, b) => (atOf(a.k) - atOf(b.k)) || (a.i - b.i)).map((x) => x.k)]
+    .filter((k) => CITY_DATA[k]);
   const routeCities = routeCityKeys.map((k) => CITY_DATA[k]?.label || k);
   const explicitRouteKeys = Array.from(new Set([cityFromMessage, ...mustMatches.map((m) => m.cityKey), ...mentionedCityKeys].filter((k) => k && CITY_DATA[k])));
   const regionDayPlan = normalizeRegionDayPlan(extractRegionDayPlanFromText(positive, cityKey), []);
@@ -3513,7 +3545,7 @@ function parseTravelChatInput(payload = {}) {
     unsupportedPlaces,
     foodKeyword: parseFoodKeywordFromText(positive),
     routeCities,
-    regionDayPlan,
+    regionDayPlan: isWholeTripRegionPlan(regionDayPlan, routeCities.length, finalDays) ? [] : regionDayPlan,
     specialPrefs,
     arrivalTime: specialPrefs.arrivalTime || '',
     departureTime: specialPrefs.departureTime || '',
@@ -3583,6 +3615,7 @@ const CHAT_REPLY_TEXT = {
   ko: {
     setTrip: (city, days, date) => `${city} ${days}일 여행으로 맞췄어요 (출발 ${date}).`,
     assumedDays: (days) => ` 일수는 말씀이 없어 ${days}일로 잡았어요.`,
+    tooManyCities: (dropped, days, n) => `${days}일로는 도시 ${n}곳을 다 돌기 어려워 ${dropped}${koObjectParticle(dropped)} 빼고 짤게요. 모두 가려면 일수를 ${n}일 이상으로 늘려 주세요.`,
     must: (list) => `꼭 갈 곳: ${list}`,
     excluded: (list) => `제외: ${list}`,
     theme: (label) => `테마: ${label}`,
@@ -3609,6 +3642,7 @@ const CHAT_REPLY_TEXT = {
   en: {
     setTrip: (city, days, date) => `Set to a ${days}-day trip to ${city} (from ${date}).`,
     assumedDays: (days) => ` No trip length was given, so I used ${days} days.`,
+    tooManyCities: (dropped, days, n) => `${days} day(s) is too short for ${n} cities, so I'll leave out ${dropped}. Make it ${n} days or more to include them all.`,
     must: (list) => `Must-visit: ${list}`,
     excluded: (list) => `Excluded: ${list}`,
     theme: (label) => `Theme: ${label}`,
@@ -3634,6 +3668,7 @@ const CHAT_REPLY_TEXT = {
   ja: {
     setTrip: (city, days, date) => `${city}${days}日間の旅に設定しました（${date}出発）。`,
     assumedDays: (days) => `日数の指定がないため${days}日間にしました。`,
+    tooManyCities: (dropped, days, n) => `${days}日間で${n}都市すべては回れないため、${dropped}を外して作ります。すべて入れるには${n}日以上にしてください。`,
     must: (list) => `必ず行く場所：${list}`,
     excluded: (list) => `除外：${list}`,
     theme: (label) => `テーマ：${label}`,
@@ -3701,6 +3736,8 @@ function buildTravelChatReply(parsed, lang = 'ko') {
   const cityText = routeLabels.length > 1 ? routeLabels.map((c) => cityLabelForLang(c, L)).join(L === 'ja' ? '・' : ' · ') : mainCity;
   const days = clamp(Number(p.days) || 1, 1, 10);
   lines.push(T.setTrip(cityText, days, p.startDate || '') + (p._daysExplicit === false ? T.assumedDays(days) : ''));
+  // 일수보다 도시가 많으면(1박2일에 세 도시) 뒤쪽 도시는 일정에 못 넣는다고 미리 알린다(날짜 배분은 앞의 도시부터 하루씩)
+  if (routeLabels.length > days) lines.push(T.tooManyCities(routeLabels.slice(days).map((c) => cityLabelForLang(c, L)).join(T.sep), days, routeLabels.length));
   const wanted = (p.wantedPlaces || []).filter(Boolean).map((w) => localizePlaceLabel(w, cityKeys, L));
   if (wanted.length) lines.push(T.must(wanted.join(T.sep)));
   const excluded = (p.excludedPlaces || []).filter(Boolean).map((w) => localizePlaceLabel(w, cityKeys, L));
@@ -4107,7 +4144,7 @@ function normalizeTravelChatParsed(candidate, fallback, opts = {}) {
     unsupportedPlaces: unsupportedPlaces.slice(0, 5),
     foodKeyword,
     routeCities,
-    regionDayPlan,
+    regionDayPlan: isWholeTripRegionPlan(regionDayPlan, routeCities.length, days) ? [] : regionDayPlan,
     specialPrefs,
     arrivalTime,
     departureTime,
@@ -5869,7 +5906,8 @@ const RULE_PLAN_TEXT = {
       firstTimeJapan: '일본 첫 여행 기준으로 대표 명소를 우선 반영',
       multiCity: (list) => `다중 도시 일정: ${list.join(' -> ')} 순서로 동선을 구성`,
       freeTime: '추천할 장소를 모두 배치해 남는 시간은 자유 일정으로 두었어요',
-      fewSights: (city, n) => `${city}${koTopicParticle(city)} 작은 지역이라 앱 데이터에 있는 명소가 ${n}곳뿐이에요. 다른 도시 장소로 채우지 않고 남는 시간은 자유 일정으로 두었어요`
+      fewSights: (city, n) => `${city}${koTopicParticle(city)} 작은 지역이라 앱 데이터에 있는 명소가 ${n}곳뿐이에요. 다른 도시 장소로 채우지 않고 남는 시간은 자유 일정으로 두었어요`,
+      droppedCities: (dropped, days, n, rec) => `넣지 못한 도시: ${dropped}. ${days}일 일정으로는 도시 ${n}곳을 모두 넣을 수 없어 앞의 도시부터 하루씩 넣었어요. 모두 가려면 ${n}일 이상, 이동 시간까지 생각하면 ${rec}일 정도가 좋아요`
     }
   },
   en: {
@@ -5903,7 +5941,8 @@ const RULE_PLAN_TEXT = {
       firstTimeJapan: 'Classic sights first for a first trip to Japan',
       multiCity: (list) => `Multi-city trip: ${list.join(' -> ')}`,
       freeTime: 'All suggested places are scheduled; remaining slots are left as free time',
-      fewSights: (city, n) => `${city} is a small area: the app knows only ${n} sights there. Remaining time is left free instead of filling it with places from other cities`
+      fewSights: (city, n) => `${city} is a small area: the app knows only ${n} sights there. Remaining time is left free instead of filling it with places from other cities`,
+      droppedCities: (dropped, days, n, rec) => `Left out: ${dropped}. A ${days}-day trip cannot cover all ${n} cities, so the first cities got a day each. Seeing all of them needs at least ${n} days, about ${rec} with travel time`
     }
   },
   ja: {
@@ -5937,7 +5976,8 @@ const RULE_PLAN_TEXT = {
       firstTimeJapan: '初めての日本旅行向けに定番スポットを優先',
       multiCity: (list) => `複数都市の旅程：${list.join(' -> ')}の順`,
       freeTime: 'おすすめの場所をすべて配置し、残りの時間は自由時間にしました',
-      fewSights: (city, n) => `${city}は小さな地域のため、アプリのデータにある名所は${n}か所だけです。ほかの都市の場所で埋めず、残りの時間は自由時間にしました`
+      fewSights: (city, n) => `${city}は小さな地域のため、アプリのデータにある名所は${n}か所だけです。ほかの都市の場所で埋めず、残りの時間は自由時間にしました`,
+      droppedCities: (dropped, days, n, rec) => `入れられなかった都市: ${dropped}。${days}日間では${n}都市すべては回れないため、先の都市から1日ずつ入れました。すべて回るには${n}日以上、移動時間を考えると${rec}日ほどがおすすめです`
     }
   }
 };
@@ -9597,6 +9637,10 @@ async function buildTravelPlan(rawPayload) {
   const startDate = itineraryStartDate(payload);
   const routeLabels = deriveRouteCities(payload, aiPicks, cityLabel);
   const daySeq = routeLabels.length > 1 ? allocateDaysByCities(routeLabels, aiPicks, tripDays, payload._regionDayPlan) : [];
+  // 일수보다 도시가 많아 날짜 배분에서 빠진 경로 도시(일정 팁 맨 앞과 itineraryInfo.droppedCities로 알린다)
+  // (후보 장소의 도시가 아니라 요청이 말한 경로 도시·지역별 일수의 도시만 본다: 말하지 않은 도시를 '못 넣었다'고 하지 않게)
+  const requestedRoute = deriveRouteCities({ _routeCities: payload._routeCities, _regionDayPlan: payload._regionDayPlan }, [], cityLabel);
+  const droppedCities = routeLabels.length > 1 ? requestedRoute.filter((c) => routeLabels.includes(c) && !daySeq.includes(c)) : [];
   const dayPlan = daySeq.length > 1 && new Set(daySeq).size > 1
     ? daySeq.map((c, i) => ({ day: i + 1, date: getDateOffset(startDate, i), city: c, ...(i > 0 && daySeq[i - 1] !== c ? { transferFrom: daySeq[i - 1] } : {}) }))
     : [];
@@ -9729,13 +9773,30 @@ async function buildTravelPlan(rawPayload) {
       console.warn('[foods] 추천 맛집 조회 실패:', redactGoogleKey(err?.message || err));
     }
   }
+  // 무료 모드 + HOTPEPPER_API_KEY: 경로 도시(최대 3곳)마다 도시 중심 3km 안 가게를 번갈아 섞어 최대 20곳
+  let foodsLiveProvider = 'google_places';
+  if (!GOOGLE_PLACES_ENABLED && HOTPEPPER_API_KEY) {
+    const hpLists = await Promise.all(foodCityKeys.slice(0, 3).map((ck) => fetchHotpepperShops(ck, { count: 20, lang })));
+    const longest = hpLists.reduce((m, l) => Math.max(m, l.shops.length), 0);
+    const seenHp = new Set();
+    for (let i = 0; i < longest && recommendedFoods.length < 20; i += 1) {
+      for (const l of hpLists) {
+        const f = l.shops[i];
+        if (!f || seenHp.has(f.name) || recommendedFoods.length >= 20) continue;
+        seenHp.add(f.name);
+        recommendedFoods.push(f);
+      }
+    }
+    if (recommendedFoods.length) foodsLiveProvider = 'hotpepper';
+    else foodsReason = hpLists.find((l) => l.reasonCode)?.reasonCode || 'NO_RESULTS';
+  }
   let foodsInfo;
   if (recommendedFoods.length > 0) {
-    foodsInfo = sourceInfo('live', 'google_places');
+    foodsInfo = sourceInfo('live', foodsLiveProvider);
   } else {
     // 내장 큐레이션 맛집 (도시별로 섞어서 최대 12곳)
     recommendedFoods = curatedFoodsForCities(foodCityKeys, payload.budget, lang, 12);
-    foodsInfo = GOOGLE_PLACES_ENABLED
+    foodsInfo = (GOOGLE_PLACES_ENABLED || HOTPEPPER_API_KEY)
       ? sourceInfo('fallback', 'curated', foodsReason || 'NO_RESULTS')
       : sourceInfo('curated', 'curated');
   }
@@ -9744,6 +9805,14 @@ async function buildTravelPlan(rawPayload) {
   const withCoords = attachItineraryCoordinates(it.itinerary, [...mergedRecommendations, ...picksForItinerary, ...aiPicks], foodCityKeys);
   // 도시 주변 명소가 적은 곳(작은 섬, assets/city-places.json few): 다른 도시 장소로 채우지 않았다고 팁 맨 앞에 알린다(규칙·AI 일정 모두)
   const tips = Array.isArray(it.tips) ? [...it.tips] : [];
+  // 일수가 모자라 넣지 못한 경로 도시(1박2일에 도쿄·오사카·후쿠오카): 말없이 빼지 않고 맨 앞에 알린다(규칙·AI 일정 모두 같은 배분)
+  if (droppedCities.length) {
+    itineraryInfo.droppedCities = droppedCities;
+    const RT = (RULE_PLAN_TEXT[lang] || RULE_PLAN_TEXT.ko).tips;
+    const sep = lang === 'ja' ? '・' : (lang === 'en' ? ', ' : '·');
+    const asked = requestedRoute.filter((c) => routeLabels.includes(c)).length;
+    tips.unshift(RT.droppedCities(droppedCities.map((c) => cityLabelForLang(c, lang)).join(sep), tripDays, asked, asked * 2 - 1));
+  }
   if (cityHasFewSights(key) && routeCityKeys.length === 1) {
     const sightCount = new Set(curatedCityPool(key, 'ko').filter((p) => !allDayPlaceKind(p, key)).map((p) => placeNameKey(p.name))).size;
     const fewTip = (RULE_PLAN_TEXT[lang] || RULE_PLAN_TEXT.ko).tips.fewSights(localizedCityName(key, lang), sightCount);
@@ -10988,6 +11057,137 @@ async function fetchPlacesWithGoogle(query, lat, lng, genre, budget, queryOverri
   });
 }
 
+// ── ホットペッパー グルメサーチAPI(무료 모드의 실제 맛집): HOTPEPPER_API_KEY가 있으면 도시 중심 3km 안 가게를 받는다 ──
+// 리크루트 Web 서비스 이용 규약: 리크루트가 제공한 정보라고 표시한다(화면 "Powered by ホットペッパー Webサービス"),
+// 캐시는 24시간 안에 갱신한다(여기서는 6시간), 가게 이름·장르·예산 등은 고치지 않고 원문 그대로 보여 준다, 수익을 내지 않는다.
+// 키를 URL 쿼리로만 받는 API라 요청 주소는 로그에 남기지 않는다. 키가 없으면 한 번도 부르지 않는다.
+const HOTPEPPER_API_KEY = envValue('HOTPEPPER_API_KEY');
+const HOTPEPPER_ENDPOINT = 'https://webservice.recruit.co.jp/hotpepper/gourmet/v1/';
+const HOTPEPPER_CACHE_TTL_MS = 6 * 60 * 60_000;
+const HOTPEPPER_CACHE_MAX = 300;
+const _hotpepperCache = new Map(); // `${lat},${lng}|${keyword}|${count}` → { at, shops }
+// 핫페퍼 장르 코드 → 화면 장르 이름(ko/en). 일본어 화면은 원문 장르 이름을 그대로 쓴다. 모르는 코드도 원문.
+const HOTPEPPER_GENRE_I18N = {
+  G001: { ko: '이자카야', en: 'Izakaya' }, G002: { ko: '다이닝 바', en: 'Dining bar' }, G003: { ko: '창작 요리', en: 'Creative cuisine' },
+  G004: { ko: '일식', en: 'Japanese' }, G005: { ko: '양식', en: 'Western' }, G006: { ko: '이탈리안·프렌치', en: 'Italian / French' },
+  G007: { ko: '중식', en: 'Chinese' }, G008: { ko: '야키니쿠·호르몬', en: 'Yakiniku' }, G017: { ko: '한식', en: 'Korean' },
+  G009: { ko: '아시아·에스닉', en: 'Asian / Ethnic' }, G010: { ko: '세계 요리', en: 'International' }, G011: { ko: '노래방·파티', en: 'Karaoke / Party' },
+  G012: { ko: '바·칵테일', en: 'Bar' }, G013: { ko: '라멘', en: 'Ramen' }, G016: { ko: '오코노미야키·몬자', en: 'Okonomiyaki / Monja' },
+  G014: { ko: '카페·디저트', en: 'Cafe / Sweets' }, G015: { ko: '기타', en: 'Other' }
+};
+
+// 가게 하나 → 맛집 카드. 이름·장르·지역·예산·영업시간은 원문(가게 이름을 번역하거나 고치지 않는다).
+function normalizeHotpepperShop(shop, cityKey, idx, lang) {
+  if (!shop || typeof shop !== 'object') return null;
+  const str = (v, max) => String(v === undefined || v === null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max);
+  const name = str(shop.name, 80);
+  const lat = Number(shop.lat);
+  const lng = Number(shop.lng);
+  if (!name || !(lat >= 20 && lat <= 46.5) || !(lng >= 122 && lng <= 154.5)) return null;
+  // 사진은 핫페퍼 이미지 서버(https)만, 가게 페이지는 hotpepper.jp(https)만
+  const httpsOn = (u, hosts) => {
+    try {
+      const x = new URL(str(u, 500));
+      return x.protocol === 'https:' && hosts.some((h) => x.hostname === h || x.hostname.endsWith(`.${h}`)) ? x.href : '';
+    } catch { return ''; }
+  };
+  const photoUrl = httpsOn(shop.photo?.pc?.l || shop.photo?.pc?.m || '', ['hotp.jp']);
+  const detailUrl = httpsOn(shop.urls?.pc || '', ['hotpepper.jp']);
+  const genreOriginal = str(shop.genre?.name, 40);
+  const genreLabel = lang === 'ja' ? genreOriginal : (HOTPEPPER_GENRE_I18N[str(shop.genre?.code, 8)]?.[lang === 'en' ? 'en' : 'ko'] || genreOriginal);
+  return {
+    name,
+    genre: genreLabel,
+    ...(genreLabel !== genreOriginal && genreOriginal ? { genreOriginal } : {}),
+    area: str(shop.small_area?.name || shop.middle_area?.name || shop.station_name, 40),
+    address: str(shop.address, 120),
+    budget: str(shop.budget?.name, 40),
+    openText: str(shop.open, 200),
+    access: str(shop.access, 160),
+    city: CITY_DATA[cityKey]?.label || '',
+    score: null,
+    priceLevel: null,
+    // 핫페퍼 추천 순서(order=4)를 그대로 점수로 쓴다
+    aiFit: Math.max(60, 92 - idx),
+    lat: Math.round(lat * 1e6) / 1e6,
+    lng: Math.round(lng * 1e6) / 1e6,
+    mapUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lng}`)}`,
+    ...(detailUrl ? { detailUrl } : {}),
+    photoUrl: photoUrl || null,
+    photoCredit: null,
+    source: 'hotpepper'
+  };
+}
+
+// 도시(또는 opts.center) 주변 가게. 결과: { shops, reasonCode }(reasonCode: null | NO_RESULTS | HOTPEPPER_KEY_INVALID | HOTPEPPER_ERROR)
+async function fetchHotpepperShops(cityKey, opts = {}) {
+  if (!HOTPEPPER_API_KEY) return { shops: [], reasonCode: 'HOTPEPPER_KEY_MISSING' };
+  const center = opts.center && hasLatLng(opts.center) ? { lat: Number(opts.center.lat), lng: Number(opts.center.lng) } : resolveCityCenter(cityKey);
+  if (!center) return { shops: [], reasonCode: 'NO_RESULTS' };
+  const lang = normalizeLang(opts.lang);
+  // 장르: '라멘'·'ramen' → 'ラーメン'(FOOD_GENRE_I18N 일본어). 여러 장르면 첫 장르만.
+  const firstGenre = String(opts.genre || '').split(/\s*(?:[,，、·&/]|이랑|하고|\band\b|랑)\s*/i).map((g) => g.trim()).filter(Boolean)[0] || '';
+  const canon = canonicalFoodGenre(firstGenre);
+  const keyword = canon ? String(FOOD_GENRE_I18N[canon]?.ja || canon).slice(0, 30) : '';
+  const count = Math.max(1, Math.min(100, Math.round(Number(opts.count) || 30)));
+  // 장르를 고르지 않으면 추천 순서 앞쪽이 거의 이자카야라서, 100곳을 받아 장르를 골고루 섞어 count곳을 고른다(요청은 한 번).
+  const fetchCount = keyword ? count : 100;
+  const params = new URLSearchParams({
+    key: HOTPEPPER_API_KEY, lat: center.lat.toFixed(6), lng: center.lng.toFixed(6), range: '5', order: '4', count: String(fetchCount), format: 'json'
+  });
+  if (keyword) params.set('keyword', keyword);
+  const cacheKey = `${params.get('lat')},${params.get('lng')}|${keyword}|${count}|${lang}`;
+  const hit = _hotpepperCache.get(cacheKey);
+  if (hit && (Date.now() - hit.at) < HOTPEPPER_CACHE_TTL_MS) return { shops: hit.shops, reasonCode: hit.shops.length ? null : 'NO_RESULTS' };
+  let data;
+  try {
+    const res = await fetchWithTimeout(`${HOTPEPPER_ENDPOINT}?${params}`, { headers: { 'User-Agent': OUTBOUND_USER_AGENT } }, 8000);
+    if (!res.ok) {
+      warnThrottled(`hotpepper:http${res.status}`, `[hotpepper] HTTP ${res.status} → 내장 맛집 목록`);
+      return { shops: [], reasonCode: 'HOTPEPPER_ERROR' };
+    }
+    data = await res.json();
+  } catch (err) {
+    // 오류 문장에 요청 주소(키)가 섞이지 않게 원인 코드만 남긴다
+    const why = /timeout/i.test(String(err?.message || '')) ? 'timeout' : (err?.cause?.code || err?.name || 'network');
+    warnThrottled('hotpepper:fetch', `[hotpepper] 조회 실패(${why}) → 내장 맛집 목록`);
+    return { shops: [], reasonCode: 'HOTPEPPER_ERROR' };
+  }
+  const r = data?.results || {};
+  if (Array.isArray(r.error) && r.error.length) {
+    const code = Number(r.error[0]?.code) || 0;
+    warnThrottled(`hotpepper:api${code}`, `[hotpepper] API 오류 ${code}: ${String(r.error[0]?.message || '').slice(0, 80)} → 내장 맛집 목록`);
+    return { shops: [], reasonCode: code === 2000 ? 'HOTPEPPER_KEY_INVALID' : 'HOTPEPPER_ERROR' };
+  }
+  const seen = new Set();
+  const all = [];
+  for (const shop of Array.isArray(r.shop) ? r.shop : []) {
+    // 장르를 고르지 않았을 때 노래방·파티(G011)는 여행 맛집 목록에서 뺀다
+    if (!keyword && String(shop?.genre?.code || '') === 'G011') continue;
+    const card = normalizeHotpepperShop(shop, cityKey, all.length, lang);
+    if (!card || seen.has(card.name)) continue;
+    seen.add(card.name);
+    all.push({ card, genre: String(shop?.genre?.code || '') });
+  }
+  let picked = all;
+  if (!keyword) {
+    // 추천 순서는 지키되 한 장르는 count의 30%(최소 3곳)까지 먼저 고르고, 모자라면 남은 가게로 채운다
+    const cap = Math.max(3, Math.ceil(count * 0.3));
+    const perGenre = new Map();
+    const first = [];
+    const rest = [];
+    for (const x of all) {
+      const n = perGenre.get(x.genre) || 0;
+      if (n < cap) { first.push(x); perGenre.set(x.genre, n + 1); } else rest.push(x);
+    }
+    picked = [...first, ...rest];
+  }
+  const shops = picked.slice(0, count).map((x, i) => ({ ...x.card, aiFit: Math.max(60, 92 - i) }));
+  _hotpepperCache.set(cacheKey, { at: Date.now(), shops });
+  while (_hotpepperCache.size > HOTPEPPER_CACHE_MAX) _hotpepperCache.delete(_hotpepperCache.keys().next().value);
+  return { shops, reasonCode: shops.length ? null : 'NO_RESULTS' };
+}
+
 async function fetchFoodPlacesForCity(query, lat, lng, genre, budget, lang) {
   const cleanGenre = String(genre || '').trim();
   const tokenQueries = genreTokens(cleanGenre);
@@ -11977,6 +12177,8 @@ async function handleApi(req, res, parsedUrl) {
         app: APP_ID,
         brand: APP_BRAND,
         providers: diagnostics.modes,
+        // 무료 모드의 맛집에 핫페퍼(HOTPEPPER_API_KEY)를 쓰는지(값은 내보내지 않음)
+        hotpepperConfigured: Boolean(HOTPEPPER_API_KEY),
         supabaseConfigured: hasSupabase(),
         // 마지막 확인 결과(서버 시작 직후·10분마다·저장소 요청 때 갱신, 아직 확인 전이면 null). 설정이 없으면 null.
         // 확인 = 실제 조회(travel_plans?select=id&limit=1)라 주소·키·표가 모두 맞아야 true다.
@@ -12325,6 +12527,17 @@ async function handleApi(req, res, parsedUrl) {
           sourceInfo: sourceInfo('fallback', 'curated', reasonCode),
           warning: classifyGooglePlacesFailure(reasonCode)
         });
+      }
+
+      // 무료 모드 + HOTPEPPER_API_KEY: 도시 중심 3km 안 실제 가게(최대 30곳). 없거나 실패하면 내장 맛집 목록.
+      if (HOTPEPPER_API_KEY) {
+        const hpCity = cityKeyByInput(payload.city);
+        const hp = await fetchHotpepperShops(hpCity, { genre: payload.genre, count: 30, lang: payload.lang });
+        if (hp.shops.length) {
+          return sendJson(res, 200, { source: 'hotpepper', sourceInfo: sourceInfo('live', 'hotpepper'), city: CITY_DATA[hpCity]?.label || payload.city, list: hp.shops });
+        }
+        const curatedHp = tabelogStyleFoods(payload);
+        return sendJson(res, 200, { ...curatedHp, sourceInfo: sourceInfo('fallback', 'curated', hp.reasonCode || curatedHp.reasonCode || null) });
       }
 
       const curated = tabelogStyleFoods(payload);

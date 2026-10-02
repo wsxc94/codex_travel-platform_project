@@ -80,6 +80,9 @@ services:
         sync: false
       - key: RAKUTEN_ACCESS_KEY
         sync: false
+      # 맛집: ホットペッパー グルメサーチAPI 키(무료, 메일로 신청). 있으면 무료 모드 맛집이 도시 중심 3km 안 실제 가게가 된다.
+      - key: HOTPEPPER_API_KEY
+        sync: false
       # ── 환율 고정값(실시간 조회가 실패할 때만) ──
       - key: FX_USD_KRW
         sync: false

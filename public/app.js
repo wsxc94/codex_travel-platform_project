@@ -817,11 +817,13 @@ var IMAGE_URL_RULES = {
   },
   // 숙소 사진: 라쿠텐 트래블 이미지 서버
   stay: function(u) { return u.protocol === 'https:' && hostMatches(u.hostname, ['rakuten.co.jp', 'r10s.jp']); },
+  // 맛집 사진: 장소 사진 규칙 + 핫페퍼 이미지 서버(imgfp.hotp.jp, https)
+  food: function(u) { return IMAGE_URL_RULES.place(u) || (u.protocol === 'https:' && hostMatches(u.hostname, ['hotp.jp'])); },
   // 로그인 프로필 사진: 소셜 로그인(네이버·카카오·Google)이 준 https 주소
   avatar: function(u) { return u.protocol === 'https:'; }
 };
 
-// kind: 'place'(기본) | 'stay' | 'avatar'. 허용되지 않으면 ''(사진 없이 글자 타일 등으로 표시).
+// kind: 'place'(기본) | 'stay' | 'food' | 'avatar'. 허용되지 않으면 ''(사진 없이 글자 타일 등으로 표시).
 function safeImageUrl(url, kind) {
   var s = String(url || '').trim();
   // 카카오 프로필 사진은 http 주소로 오기도 해서 https로 바꿔 쓴다.
@@ -860,9 +862,10 @@ function cityNameByKey(key) {
 }
 
 // 사진 칸: 실제 <img>로 그리고, 불러오기에 실패하면 첫 글자 타일로 바꾼다(아래 error 리스너).
-function cardPhoto(url, name, credit) {
+// kind: safeImageUrl의 사진 종류(기본 'place', 맛집 카드는 'food')
+function cardPhoto(url, name, credit, kind) {
   var letter = String(name || '?').trim().charAt(0) || '?';
-  var src = safeImageUrl(url);
+  var src = safeImageUrl(url, kind);
   if (src) {
     // 도시 대표·음식 예시 사진은 대체 텍스트에도 그 사실을 적는다.
     var scopeLabel = photoScopeLabel(credit);
@@ -1159,10 +1162,11 @@ function renderCards(targetId, items, mode) {
 
     return `<article class="card">
       <div class="card-layout">
-        ${cardPhoto(x.photoUrl, x.name, x.photoCredit)}
+        ${cardPhoto(x.photoUrl, x.name, x.photoCredit, 'food')}
         <div class="card-body">
           <h4>${escapeHtml(x.name)}</h4>
           <div class="card-info-row">${escapeHtml(x.genre || '')} · ${escapeHtml(x.area || '')}</div>
+          ${hotpepperBudgetHtml(x)}
           <div class="card-scores">${aiScoreBadge(x.aiFit)} ${starRating(x.score)} ${priceYen(x.priceLevel)}</div>
           ${photoCreditHtml(x.photoCredit, x.photoUrl)}
         </div>
@@ -1171,9 +1175,10 @@ function renderCards(targetId, items, mode) {
         <button type="button" class="add-to-plan-btn" data-add-type="food" data-add-index="${index}" data-add-source="foodSearch">${escapeHtml(t('add-to-plan'))}</button>
         ${targetId === 'foodCards' ? `<button type="button" class="promote-to-rec-btn" data-promote-type="food" data-promote-index="${index}" data-promote-source="foodSearch">${escapeHtml(t('promote-food'))}</button>` : ''}
         <a href="${escapeHtml(safeLinkUrl(x.mapUrl) || '#')}" target="_blank" rel="noreferrer">${escapeHtml(t('map-link'))}</a>
+        ${hotpepperLinkHtml(x)}
       </div>
     </article>`;
-  }).join('');
+  }).join('') + (mode === 'food' ? hotpepperCreditHtml(items) : '');
 }
 
 function getFlightCardsPerRow() {
@@ -2207,8 +2212,27 @@ var INFO_KINDS = ['live', 'ai', 'curated', 'fallback', 'mock', 'rule'];
 var INFO_FIELD_BY_SECTION = { dest: 'recommendationInfo', itinerary: 'itineraryInfo', foods: 'foodsInfo', chat: 'sourceInfo' };
 var PROVIDER_NAMES = {
   travelpayouts: 'Travelpayouts', rakuten: 'Rakuten Travel', google: 'Google Places', google_places: 'Google Places',
-  gemini: 'Gemini', openai: 'OpenAI', wikimedia: 'Wikimedia Commons'
+  gemini: 'Gemini', openai: 'OpenAI', wikimedia: 'Wikimedia Commons', hotpepper: 'ホットペッパーグルメ'
 };
+
+// 핫페퍼 가게 페이지 링크: https://www.hotpepper.jp/… 만
+function safeHotpepperUrl(url) {
+  var u = parseSafeUrl(url);
+  return u && u.protocol === 'https:' && hostMatches(u.hostname, ['hotpepper.jp']) ? u.href : '';
+}
+
+// 핫페퍼 가게 카드의 덧붙임(예산·가게 페이지 링크)과 목록 아래 크레딧(리크루트 Web 서비스 이용 규약: 리크루트 제공 표시)
+function hotpepperBudgetHtml(x) {
+  return x && x.source === 'hotpepper' && x.budget ? '<div class="card-info-row food-budget">' + escapeHtml(t('food-budget') + ' ' + x.budget) + '</div>' : '';
+}
+function hotpepperLinkHtml(x) {
+  var href = x && x.source === 'hotpepper' ? safeHotpepperUrl(x.detailUrl) : '';
+  return href ? '<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(t('hotpepper-link')) + '</a>' : '';
+}
+function hotpepperCreditHtml(items) {
+  if (!(items || []).some(function(x) { return x && x.source === 'hotpepper'; })) return '';
+  return '<div class="data-credit hotpepper-credit"><a href="https://webservice.recruit.co.jp/" target="_blank" rel="noopener noreferrer">Powered by ホットペッパー Webサービス</a></div>';
+}
 
 var SOURCE_TEXT = {
   ko: {
@@ -2235,6 +2259,7 @@ var SOURCE_TEXT = {
       AI_INVALID_OUTPUT: 'AI 응답 형식이 맞지 않아', AI_ERROR: 'AI 응답에 문제가 있어', AI_BUSY: 'AI 사용량이 잠시 몰려',
       AI_DAILY_LIMIT: '오늘 AI 무료 사용량을 다 써서',
       PROVIDER_UNAVAILABLE: '실시간 조회 서비스에 연결할 수 없어', NO_LIVE_DATA: '이 조건의 실시간 데이터가 없어',
+      HOTPEPPER_KEY_INVALID: '맛집 검색 서비스 키가 맞지 않아', HOTPEPPER_ERROR: '맛집 검색 서비스 응답에 문제가 있어',
       _default: '일시적인 문제로'
     },
     join: function(cause, cons) { return cause + ' ' + cons; },
@@ -2266,6 +2291,7 @@ var SOURCE_TEXT = {
       AI_INVALID_OUTPUT: 'AI response was malformed', AI_ERROR: 'AI service error', AI_BUSY: 'AI is busy right now',
       AI_DAILY_LIMIT: "today's free AI quota is used up",
       PROVIDER_UNAVAILABLE: 'live service unavailable', NO_LIVE_DATA: 'no live data for these conditions',
+      HOTPEPPER_KEY_INVALID: 'restaurant search key is invalid', HOTPEPPER_ERROR: 'restaurant search service error',
       _default: 'temporary issue'
     },
     join: function(cause, cons) { return cons + ' (' + cause + ').'; },
@@ -2297,6 +2323,7 @@ var SOURCE_TEXT = {
       AI_INVALID_OUTPUT: 'AIの応答形式が正しくありません', AI_ERROR: 'AIサービスのエラー', AI_BUSY: 'AIが混雑しているため',
       AI_DAILY_LIMIT: '本日のAI無料利用枠を使い切ったため',
       PROVIDER_UNAVAILABLE: 'リアルタイム照会に接続できません', NO_LIVE_DATA: 'この条件のリアルタイムデータなし',
+      HOTPEPPER_KEY_INVALID: 'グルメ検索のキーが無効', HOTPEPPER_ERROR: 'グルメ検索サービスのエラー',
       _default: '一時的な問題'
     },
     join: function(cause, cons) { return cons + '（' + cause + '）。'; },
@@ -2458,7 +2485,8 @@ function toRecFood(food) {
     photoUrl: food.photoUrl || null, photoCredit: food.photoCredit || null,
     aiScore: food.aiFit || 70, aiFit: food.aiFit || 70,
     lat: food.lat != null ? food.lat : null, lng: food.lng != null ? food.lng : null,
-    openNow: food.openNow, todayHours: food.todayHours
+    openNow: food.openNow, todayHours: food.todayHours,
+    source: food.source || undefined, budget: food.budget || undefined, detailUrl: food.detailUrl || undefined
   };
 }
 
@@ -3680,10 +3708,11 @@ function renderRecFoodCards(items) {
   target.innerHTML = items.map(function(x, index) {
     return '<article class="card" draggable="true" data-drag-type="food" data-drag-index="' + index + '">' +
       '<div class="card-layout">' +
-        cardPhoto(x.photoUrl, x.name, x.photoCredit) +
+        cardPhoto(x.photoUrl, x.name, x.photoCredit, 'food') +
         '<div class="card-body">' +
           '<h4>' + escapeHtml(x.name) + '</h4>' +
           '<div class="card-info-row">' + escapeHtml(x.genre || '') + ' \u00B7 ' + escapeHtml(x.area || '') + '</div>' +
+          hotpepperBudgetHtml(x) +
           '<div class="card-scores">' + aiScoreBadge(x.aiFit) + starRating(x.score) + priceYen(x.priceLevel) + '</div>' +
         openStatusBadge(x) +
         photoCreditHtml(x.photoCredit, x.photoUrl) +
@@ -3694,21 +3723,46 @@ function renderRecFoodCards(items) {
       '<div class="link-row">' +
       '<button type="button" class="add-to-plan-btn" data-add-type="food" data-add-index="' + index + '" data-add-source="recFood">' + escapeHtml(t('add-to-plan')) + '</button>' +
       '<a href="' + escapeHtml(safeLinkUrl(x.mapUrl) || '#') + '" target="_blank" rel="noreferrer">' + escapeHtml(t('map-link')) + '</a>' +
+      hotpepperLinkHtml(x) +
       '<button type="button" class="rec-delete-btn" data-delete-type="food" data-delete-index="' + index + '" aria-label="' + escapeHtml(t('aria-hide-pick')) + '" title="' + escapeHtml(t('aria-hide-pick')) + '">\u2715</button></div>' +
     '</article>';
-  }).join('');
+  }).join('') + hotpepperCreditHtml(items);
 }
 
-function renderDestSearchCards(items) {
+// 탐색 > 여행지: 서버는 최대 DEST_SEARCH_LIMIT곳을 주고, 화면은 DEST_SEARCH_PAGE곳씩 [더보기]로 늘린다.
+// 카드의 [일정에 넣기]·[추천에 추가]는 latestDestSearchList의 순번을 쓰므로 앞에서부터 잘라 순번을 그대로 둔다.
+var DEST_SEARCH_LIMIT = 30;
+var DEST_SEARCH_PAGE = 10;
+var visibleDestSearchCount = 0;
+
+function ensureDestMoreButton() {
+  var btn = el('btnDestMore');
+  if (btn) return btn;
+  var cards = el('destSearchCards');
+  if (!cards || typeof cards.insertAdjacentHTML !== 'function') return null;
+  cards.insertAdjacentHTML('afterend', '<div class="more-wrap"><button id="btnDestMore" type="button" class="more-btn hidden" data-i18n="btn-more">' + escapeHtml(t('btn-more')) + '</button></div>');
+  return el('btnDestMore');
+}
+
+function setDestMoreVisible(show) {
+  var btn = show ? ensureDestMoreButton() : el('btnDestMore');
+  if (btn) btn.classList.toggle('hidden', !show);
+}
+
+// reset: 새 검색 결과면 처음 DEST_SEARCH_PAGE곳으로 되돌린다(언어 변경 등 다시 그리기는 지금 펼친 만큼 유지).
+function renderDestSearchCards(items, reset) {
   var target = el('destSearchCards');
   if (!target) return;
   items = items || [];
   latestDestSearchList = items;
+  if (reset || !visibleDestSearchCount) visibleDestSearchCount = DEST_SEARCH_PAGE;
   if (items.length === 0) {
     target.innerHTML = '<div class="card">' + escapeHtml(t('no-results')) + '</div>';
+    setDestMoreVisible(false);
     return;
   }
-  target.innerHTML = items.map(function(x, index) {
+  setDestMoreVisible(visibleDestSearchCount < items.length);
+  target.innerHTML = items.slice(0, visibleDestSearchCount).map(function(x, index) {
     return '<article class="card">' +
       '<div class="card-layout">' +
         cardPhoto(x.photoUrl, x.name, x.photoCredit) +
@@ -3727,6 +3781,12 @@ function renderDestSearchCards(items) {
     '</article>';
   }).join('');
 }
+
+document.addEventListener('click', function(e) {
+  if (!e.target || !e.target.closest || !e.target.closest('#btnDestMore')) return;
+  visibleDestSearchCount += DEST_SEARCH_PAGE;
+  renderDestSearchCards(latestDestSearchList);
+});
 
 el('destCards')?.addEventListener('click', (event) => {
   const delBtn = event.target.closest('.rec-delete-btn');
@@ -4868,18 +4928,19 @@ async function searchDestinations() {
       city: el('destSearchCity').value,
       theme: el('destSearchTheme').value,
       budget: currentBudgetTier(),
-      limit: 10,
+      limit: DEST_SEARCH_LIMIT,
       lang: currentLang
     };
     var data = await postJson('/api/dest-search', payload);
     if (seq !== destSearchSeq) return;
-    renderDestSearchCards(data.destinations || []);
+    renderDestSearchCards(data.destinations || [], true);
     renderSourceNote('destSearchSourceNote', 'destSearch', sectionInfo('destSearch', data));
     recordSearchHistory('dest', { city: payload.city, theme: payload.theme });
   } catch (err) {
     if (seq !== destSearchSeq) return;
     var cards = el('destSearchCards');
     if (cards) cards.innerHTML = '<div class="card">' + escapeHtml(friendlyError(err)) + '</div>';
+    setDestMoreVisible(false);
   } finally {
     if (seq === destSearchSeq) setLoading('btnDestSearch', false);
   }
@@ -5229,6 +5290,7 @@ function renderInitialEmptyStates() {
   if (el('flightCards')) el('flightCards').innerHTML = emptyCard('empty-flights');
   if (el('stayCards')) el('stayCards').innerHTML = emptyCard('empty-stays');
   if (el('destSearchCards')) el('destSearchCards').innerHTML = emptyCard('empty-search');
+  setDestMoreVisible(false);
   if (el('foodCards')) el('foodCards').innerHTML = emptyCard('empty-search');
 }
 
@@ -7681,6 +7743,8 @@ var I18N = {
     'free-label': '무료',
     'source-dist-est': '📏 거리 기반 추정치',
     'route-open-maps': '🗺 대중교통 경로',
+    'hotpepper-link': '🍽 가게 정보',
+    'food-budget': '예산',
     'route-maps-hint': '요금과 시간은 거리로 어림한 값이에요. 실제 경로와 요금은 구간마다 [🗺 대중교통 경로]를 눌러 Google 지도에서 확인하세요.',
     'source-google-route': '🗺 Google 경로 정보',
     'err-input': '입력값을 확인해 주세요.',
@@ -8207,6 +8271,8 @@ var I18N = {
     'free-label': 'Free',
     'source-dist-est': '📏 Distance-based estimate',
     'route-open-maps': '🗺 Transit route',
+    'hotpepper-link': '🍽 Shop page',
+    'food-budget': 'Budget',
     'route-maps-hint': 'Fares and times are rough estimates from distance. Tap [🗺 Transit route] on each leg to check the real route and fare in Google Maps.',
     'source-google-route': '🗺 Google route data',
     'err-input': 'Please check what you entered.',
@@ -8744,6 +8810,8 @@ var I18N = {
     'free-label': '無料',
     'source-dist-est': '📏 距離に基づく推定',
     'route-open-maps': '🗺 乗換案内',
+    'hotpepper-link': '🍽 店舗ページ',
+    'food-budget': '予算',
     'route-maps-hint': '料金と時間は距離からの概算です。実際の経路と運賃は各区間の［🗺 乗換案内］からGoogleマップで確認してください。',
     'source-google-route': '🗺 Google経路情報',
     'err-input': '入力内容を確認してください。',
