@@ -11,3 +11,6 @@ build/
 
 # User data (OAuth sessions, saved plans)
 data/
+
+# 로컬 전용 Claude Code 설정(PC마다 다름)
+.claude/settings.local.json

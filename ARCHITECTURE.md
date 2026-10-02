@@ -58,6 +58,7 @@ project-root/
   .github/workflows/ci.yml    # CI(push·PR마다 npm test, Node 20)
   .github/workflows/keepalive.yml  # 3일마다 운영 /api/keepalive(Supabase 무료 프로젝트 일시 중지 방지, 비밀값 없음)
   .env.example                # 환경변수 예시
+  CLAUDE.md                   # AI 어시스턴트 작업 규칙(바꾸면 안 되는 값, 수정 후 확인 절차)
   render.yaml                 # Render 설정(환경변수 이름 목록)
   data/                       # 로컬 파일 저장(users.json, Supabase가 없을 때의 saved_plans.json). Git 제외, TABIMARU_DATA_DIR로 바꿈
 ```
@@ -679,7 +680,7 @@ POST /api/flights
 - **로그인 유지·저장소 장애 안내(샌드박스, `sandboxStorageTests()`)**: `/api/auth/me`가 한 번 502(서버가 깨어나는 중)여도 다시 물어 로그인 화면(내 일정 버튼·닉네임)이 나오는지, 내 일정 목록·불러오기·삭제·저장(목록이 503이면 저장 창을 닫음, 저장 POST가 503이면 안내)이 503일 때 `store-unavailable`("저장소에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.", en/ja 포함)을 보여 주는지 본다. 저장 POST가 409 `PLAN_LIMIT`·413 `PLAN_TOO_LARGE`·400 `INVALID_PLAN`이면 `plan-limit`(`{n}` = 50)·`plan-too-large`·`plan-invalid`, 그 밖에는 `save-fail`, `/?authError=not_allowed`면 `auth-err-not-allowed`가 뜨는지도 본다.
 - **가짜 Supabase**(`tests/support/mock-vendor.js`, `<mock>/supabase/rest/v1`): `travel_plans` 한 표의 PostgREST 흉내. GET(`select` 열 목록·`eq` 필터·`order`·`limit`), POST(`on_conflict=plan_key` + `resolution=merge-duplicates`, `return=representation|minimal`, 열 검사: 모르는 열 400, `city_key`·`payload` not null, `start_date` 날짜, `days` 정수, 실제 Postgres처럼 NUL이 든 글자 400 `22P05`·짝 없는 서로게이트 400 `22P02`), DELETE(필터 필수), HEAD/GET 루트. 그 밖의 연산자·열·경로는 `unknownMockRoute`로 기록되어 실패한다. `scenario.supabase`: `'down'` 모든 요청에 503 + 원문(`SUPABASE_ERROR_TEXT`), `'auth'` 모든 요청에 401 Invalid API key, `'reject_post'` POST만 400 `22P05`. 가짜 OAuth 프로필의 `emailVerified`(기본 true)가 Google `verified_email`·Kakao `is_email_verified`로 나간다. `mock.supabaseRows()`·`mock.seedSupabase()`로 표를 보고 미리 채운다.
 - 각 단계 끝에서 모든 응답 본문·헤더에 서버 키·토큰이 없는지, 서버 로그에 크래시가 없는지 확인한다.
-- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`oauth`·`session`·`live`·`free`). `npm test`·CI는 늘 전체(2026-10-02 기준 729개).
+- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`oauth`·`session`·`live`·`free`). `npm test`·CI는 늘 전체(2026-10-02 기준 738개).
 - CI: `.github/workflows/ci.yml`(push·PR, Node 20). `.github/workflows/keepalive.yml`(3일마다 운영 `/api/keepalive`)은 정적 검사로 내용(cron `17 3 */3 * *`, `workflow_dispatch`, `permissions: {}`, 5번 재시도, `"supabase":"ok"`일 때만 성공, 비밀값 없음)만 확인한다.
 
 ---
