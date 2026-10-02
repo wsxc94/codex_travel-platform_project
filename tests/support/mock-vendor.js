@@ -16,7 +16,7 @@
  *                  | 'error429_daily' (모든 호출에 429 + PerDay quotaId: 하루 무료 한도 소진)
  *                  채팅 해석(일정이 아닌 요청)용: 'chat_ok' | 'chat_shopping_neg' | 'chat_sapporo' | 'chat_noisy' | 'chat_place_unknown' (그 밖에는 '{}')
  *                  일정용(ITINERARY_SCENARIOS): 'evening_sight' | 'lunch_food_in_afternoon' | 'allday_halfslot' | 'missing_must'
- *                  | 'lunch_repeat' | 'wrong_city_day' | 'invented_place' | 'disney_day' | 'renamed_places' (그 밖에는 'ok' 일정)
+ *                  | 'lunch_repeat' | 'wrong_city_day' | 'invented_place' | 'disney_day' | 'renamed_places' | 'late_lunch' (그 밖에는 'ok' 일정)
  *                  일정 요청 판별: generationConfig.responseSchema.properties.itinerary 가 있으면 일정(채팅 해석도 responseSchema를 보낸다).
  *                  모델 체인 시험용: 'error404'(모델 종료 no longer available) | 'max_tokens_thoughts'(생각 토큰이 한도를 다 써서 MAX_TOKENS)
  *                  | 'error400_thinking_budget'(thinkingConfig.thinkingBudget이 있으면 400 INVALID_ARGUMENT, 없으면 'chat_ok'처럼 정상)
@@ -189,6 +189,8 @@ const ITINERARY_SCENARIOS = {
   allday_halfslot: () => ['오전(09:00-11:00): 유니버셜 스튜디오 재팬 (오사카)', '오후(13:00-15:00): 오사카성 (주오구)', '저녁(18:00-19:30): 쿠시카츠 다루마 (신세카이)'],
   // 꼭 갈 곳(mustVisit)을 빼먹은 일정 → 서버가 넣어야 한다
   missing_must: () => ['오전(09:00-11:00): 센소지 (아사쿠사)', '오후(13:00-15:00): 메이지 신궁 (하라주쿠)'],
+  // 15:00에 시작하는 점심 + 18:00 저녁(실측 10-02 후쿠오카 2일차) → 점심은 점심으로 남고 저녁이 둘이 되지 않는다
+  late_lunch: () => ['오전(10:00-12:00): 오호리 공원 (텐진)', '오후(12:30-14:30): 후쿠오카 타워 (모모치)', '점심(15:00-16:00): 하카타 라멘 (하카타)', '저녁(18:00-19:30): 모츠나베 (텐진)'],
   // 매일 같은 '점심 식사' → 식사는 반복 정리 대상이 아니다(매일 남는다)
   lunch_repeat: (i) => [i === 0 ? '오전(09:00-11:00): 오사카성 (주오구)' : '오전(09:00-11:00): 우메다 스카이 빌딩 (우메다)', '점심(12:00-13:00): 점심 식사 (난바)', '오후(14:00-16:00): 도톤보리 (난바)'],
   // 오사카 날(1일차)에 교토 명소

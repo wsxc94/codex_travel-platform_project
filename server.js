@@ -1493,7 +1493,7 @@ function cityOfNamedPlace(text) {
 }
 
 // 장소 이름 속 다른 도시 이름·랜드마크는 도시로 보지 않도록 지운 글('Matsumoto Seicho Memorial Museum'(기타큐슈)의 'Matsumoto',
-// '홋카이도 오비히로 미술관'의 '홋카이도'(삿포로), '하나마키 기요미즈데라'의 '기요미즈'(교토)). 그 장소 도시의 이름은 남긴다.
+// '홋카이도립 오비히로 미술관'의 '홋카이도'(삿포로), '하나마키 기요미즈데라'의 '기요미즈'(교토)). 그 장소 도시의 이름은 남긴다.
 function maskOtherCityPlaceNames(text) {
   const raw = String(text || '');
   const cityHits = cityMentionHits(raw, { landmarks: true });
@@ -2343,17 +2343,40 @@ function isNameNegatedIn(lower, nameLower) {
   return new RegExp(`\\b(?:no|without|skip|except|avoid|exclude)\\s+(?:the\\s+)?[a-z0-9'’ .-]{2,40}?\\s+(?:and|or|nor)\\s+(?:the\\s+)?${esc}${tail}`, 'i').test(lower);
 }
 
+// 로마자 장소 이름 속 일본어 조사 no('Nagori no Matsubara' = なごりの松原)는 영어 부정 "no X"가 아니다
+let ROMAJI_NO_LABELS = null;
+function romajiNoLabels() {
+  if (!ROMAJI_NO_LABELS) {
+    const set = new Set();
+    const add = (l) => { const s = String(l || '').toLowerCase().trim(); if (/[a-z]\s+no\s+[a-z]/.test(s)) set.add(s); };
+    for (const e of EXTRA_PLACES) [e.en, ...(e.aliases || [])].forEach(add);
+    for (const m of MUST_ATTRACTIONS) (m.aliases || []).forEach(add);
+    for (const v of Object.values(CURATED_PLACE_I18N)) add(v.en);
+    ROMAJI_NO_LABELS = [...set];
+  }
+  return ROMAJI_NO_LABELS;
+}
+// 영어 부정 구절 [{ text, index }] — 그런 이름 속의 no로 시작하는 것은 뺀다
+function enNegatedMatches(text) {
+  const raw = String(text || '');
+  const lower = raw.toLowerCase();
+  const spans = /\bno\s/.test(lower) ? romajiNoLabels().flatMap((l) => aliasHitPositions(lower, l).map((i) => [i, i + l.length])) : [];
+  return [...raw.matchAll(EN_NEGATED_PHRASE_RE)].filter((m) => !spans.some(([a, b]) => m.index > a && m.index < b)).map((m) => ({ text: m[0], index: m.index }));
+}
+
 function negatedPhrases(text) {
   const raw = String(text || '');
   const out = [];
   for (const m of raw.matchAll(NEGATED_PHRASE_RE)) out.push(m[0]);
-  for (const m of raw.matchAll(EN_NEGATED_PHRASE_RE)) out.push(m[0]);
+  for (const m of enNegatedMatches(raw)) out.push(m.text);
   return out;
 }
 
 // 부정된 구절을 지운 글(테마·가고 싶은 곳 판정용)
 function stripNegatedPhrases(text) {
-  return String(text || '').replace(NEGATED_PHRASE_RE, ' ').replace(EN_NEGATED_PHRASE_RE, ' ');
+  let out = String(text || '').replace(NEGATED_PHRASE_RE, ' ');
+  for (const m of enNegatedMatches(out).reverse()) out = `${out.slice(0, m.index)} ${out.slice(m.index + m.text.length)}`;
+  return out;
 }
 
 // 대표 명소 별칭 바로 뒤에 부정 꼬리가 붙었거나(디즈니랜드는 빼고) 앞에 no/skip/without이 있으면 제외 대상.
@@ -2726,7 +2749,25 @@ function extractWantedPlacesFromMessage(text, cityKey, routeKeys = []) {
   // 도시 주변 실제 명소(generated)는 그 도시가 경로(이 도시·함께 말한 도시)에 있을 때만: 다른 도시의 같은 이름 장소로
   // 갈 수 없는 '도시 이동' 날을 만들지 않는다(도시가 없는 글은 parseTravelChatInput이 먼저 그 장소의 도시로 정한다).
   const routeSet = new Set([cityKey, ...(routeKeys || [])].filter(Boolean));
-  for (const e of matchExtraPlaces(raw, [cityKey])) {
+  // 큐레이션 명소(이 도시 명소·찾은 대표 명소)의 이름이 걸친 도시 주변 실제 명소는 그 명소의 말이 아니다:
+  // '旭川旭山動物園'의 '旭川旭山'(산, 아사히카와 아사히산)은 '旭山動物園'(아사히야마 동물원)과 겹친다. 큐레이션 이름을 통째로
+  // 품은 긴 이름('구시로 이쓰쿠시마 신사' ⊃ '이쓰쿠시마 신사')은 그대로 그 장소다(maskMustInsidePlaceNames).
+  const curatedSpans = [];
+  const addSpans = (label) => {
+    const l = String(label || '').toLowerCase().trim();
+    if (l.length >= 2) for (const idx of aliasHitPositions(lower, l)) curatedSpans.push([idx, idx + l.length]);
+  };
+  city.highlights.forEach((h) => {
+    if (h.generated) return;
+    const media = placeMediaFor(cityKey, h.name);
+    const i18n = CURATED_PLACE_I18N[`${cityKey}|${h.name}`] || {};
+    [h.name, i18n.en, i18n.ja, media?.labels?.en, media?.labels?.ja].forEach(addSpans);
+  });
+  mustMatched.forEach((m) => [m.name, ...(m.aliases || [])].forEach(addSpans));
+  const crossesCurated = (h) => curatedSpans.some(([s, e]) => s < h.idx + h.len && h.idx < e && (s < h.idx || e > h.idx + h.len));
+  const extraHits = extraPlaceHits(raw).filter((h) => !(h.place.generated && crossesCurated(h))).map((h) => h.place)
+    .sort((a, b) => Number(b.cityKey === cityKey) - Number(a.cityKey === cityKey));
+  for (const e of extraHits) {
     if (e.generated && !routeSet.has(e.cityKey)) continue;
     const specific = routeSet.has(e.cityKey) || extraPlaceMatchLabels(e).some((a) => a && String(a).length >= 4 && aliasInText(lower, String(a).toLowerCase()));
     if (specific && !hits.includes(e.name)) hits.push(e.name);
@@ -2754,6 +2795,36 @@ const MUST_GO_STOP_WORDS = new Set(['저녁', '아침', '점심', '오전', '오
 // 낱말 끝 조사('도톤보리는', '저녁엔', '오사카에서는')
 const MUST_GO_PARTICLE_RE = /(이랑|랑|은요|는요|에서는|에서|에는|에도|엔|은|는|을|를|에|도)$/;
 
+// 시설 낱말(이름의 끝에 오는 일반 낱말): 이 낱말로 끝나는 여러 낱말은 한 장소 이름이고, 이 낱말 하나만으로는 장소가 아니다
+const MUST_GO_FACILITY_TAIL_RE = /^(?:박물관|미술관|기념관|문학관|자료관|사료관|과학관|역사관|향토관|전시관|공원|정원|식물원|동물원|수족관|신사|신궁|온천|폭포|호수|해변|해안|해수욕장|유적|고분|전망대|동굴|협곡|계곡|습원|고원|성당|교회|대교)$/;
+const mustGoWordOk = (w, tok) => Boolean(tok) && tok.length >= 2 && !MUST_GO_STOP_WORDS.has(tok) && !MUST_GO_STOP_WORDS.has(w)
+  && isMeaningfulPlaceKeyword(tok) && !isFoodWord(tok) && !/^(가고|보고|하고|싶어|싶다|가요|갈|들러|넣어)/.test(tok);
+// '꼭' 앞 낱말들 → 꼭 갈 곳 낱말. 데이터에 있는 여러 낱말 이름('도쿄 타워', 예전 이름 '쇼지 우에다 사진 박물관')은 통째로,
+// 남은 낱말이 시설 낱말로 끝나면('가나다 라마바 사진 박물관') 그것도 한 이름으로 둔다 — 낱말 조각('가나다'·'박물관')을 장소로
+// 넣지 않는다. 그 밖의 낱말은 하나씩("아키하바라 이케부쿠로 나카노는 꼭").
+function mustGoPhraseTokens(phrase) {
+  const items = String(phrase || '').trim().split(/\s+/).filter(Boolean).map((w) => ({ w, tok: w.replace(MUST_GO_PARTICLE_RE, '').trim() }));
+  const joined = (list) => list.map((x) => x.tok).join(' ');
+  const segs = []; // { name } | { words }
+  for (let i = 0; i < items.length;) {
+    let j = items.length;
+    while (j >= i + 2 && !isKnownPlaceName(joined(items.slice(i, j)))) j -= 1;
+    if (j >= i + 2) { segs.push({ name: joined(items.slice(i, j)) }); i = j; continue; }
+    const last = segs[segs.length - 1];
+    if (last && last.words) last.words.push(items[i]); else segs.push({ words: [items[i]] });
+    i += 1;
+  }
+  const out = [];
+  for (const s of segs) {
+    if (s.name) { out.push(s.name); continue; }
+    const first = s.words.findIndex((x) => mustGoWordOk(x.w, x.tok));
+    const tail = s.words[s.words.length - 1];
+    if (first >= 0 && first < s.words.length - 1 && MUST_GO_FACILITY_TAIL_RE.test(tail.tok)) { out.push(joined(s.words.slice(first))); continue; }
+    for (const x of s.words) if (mustGoWordOk(x.w, x.tok) && !MUST_GO_FACILITY_TAIL_RE.test(x.tok)) out.push(x.tok);
+  }
+  return out;
+}
+
 // 꼭 가고 싶다고 한 낱말: 한국어 '꼭/필수/반드시/무조건' 앞의 낱말(최대 4개), 영어 "must see/visit X", 일본어 "Xは必ず行きたい".
 // 뒤가 '먹'이거나 음식 이름이면("저녁엔 꼭 오코노미야키") 먹고 싶은 것이라 장소로 보지 않는다.
 function mustGoTokensFromText(text) {
@@ -2765,12 +2836,7 @@ function mustGoTokensFromText(text) {
   while ((m = re.exec(raw)) !== null) {
     const after = raw.slice(m.index + m[0].length, m.index + m[0].length + 20);
     if (/^\s*(?:먹|마시|맛보)/.test(after) || FOOD_START_RE.test(after)) continue;
-    for (const w of m[1].trim().split(/\s+/)) {
-      const tok = w.replace(MUST_GO_PARTICLE_RE, '').trim();
-      if (!tok || tok.length < 2 || MUST_GO_STOP_WORDS.has(tok) || MUST_GO_STOP_WORDS.has(w) || !isMeaningfulPlaceKeyword(tok) || isFoodWord(tok)) continue;
-      if (/^(가고|보고|하고|싶어|싶다|가요|갈|들러|넣어)/.test(tok)) continue;
-      push(tok);
-    }
+    mustGoPhraseTokens(m[1]).forEach(push);
   }
   // 영어: "must see Kaiyukan aquarium", "must visit teamLab Planets", "want to visit Nijo Castle"
   const enRe = /\b(?:must[-\s]+(?:visit|see|go\s+to|do)|have\s+to\s+(?:visit|see|go\s+to)|(?:really\s+)?want\s+to\s+(?:visit|see|go\s+to)|would\s+(?:love|like)\s+to\s+(?:visit|see|go\s+to)|definitely\s+(?:visit|see|go\s+to)|don'?t\s+want\s+to\s+miss)\s+(?:the\s+)?([A-Za-z][A-Za-z0-9'’.&-]*(?:\s+[A-Za-z0-9][A-Za-z0-9'’.&-]*){0,4})/gi;
@@ -5499,6 +5565,8 @@ const CURATED_PLACE_I18N = {
   'izumo|신지호 석양': { en: 'Lake Shinji sunset', ja: '宍道湖の夕日' },
   'kagoshima|이부스키 모래찜': { en: 'Ibusuki sand bath', ja: '指宿の砂むし温泉' },
   'asahikawa|후라노 라벤더밭': { en: 'Furano lavender fields', ja: '富良野のラベンダー畑' },
+  // 위키데이터 정식 이름(旭川市旭山動物園)보다 널리 쓰는 이름: '旭川旭山動物園'·'旭山動物園'이 이 동물원이다
+  'asahikawa|아사히야마 동물원': { en: 'Asahiyama Zoo', ja: '旭山動物園' },
   'yakushima|조몬스기 트레일': { en: 'Jōmon Sugi trail', ja: '縄文杉トレッキング' },
   'yonaguni|일본 최서단 기념비': { en: 'Westernmost Point of Japan monument', ja: '日本最西端の碑' },
   'yonaguni|해저 지형 다이빙': { en: 'Yonaguni Monument dive', ja: '与那国島海底地形ダイビング' },
@@ -6202,6 +6270,8 @@ const CITY_NAME_I18N = {
 // 다른 낱말과 겹치는 표기는 넣지 않는다: '石垣'(돌담) 대신 '石垣島'·'石垣市', '코치'(코치·coach), '山口'(성씨) 대신 '山口県'·'山口市'.
 const CITY_ALIAS_SKIP = new Set(['石垣', '코치']);
 const CITY_EXTRA_ALIASES = {
+  // 장음을 적은 표기(新潟 にいがた: 표기법은 '니가타', 예전 장소 이름 '니이가타 현립 식물원' 등)
+  niigata: ['니이가타'],
   okinawa: ['나하', 'naha', '那覇'],
   nanki_shirahama: ['시라하마', '난키시라하마', 'shirahama', 'nanki shirahama', 'nanki-shirahama', '白浜', '南紀'],
   kitakyushu: ['기타규슈', '키타규슈', '고쿠라', 'kokura', '小倉', 'kita-kyushu', 'kita kyushu', 'kitakyūshū'],
@@ -8087,10 +8157,20 @@ function postProcessItinerary(itinerary, opts = {}) {
         d.items = d.items.filter((b) => !isSightBlock(b) || keep.has(b));
         stats.trimmed += sights.length - keep.size;
       }
-      // (f-5) 밀린 블록의 시간대 토큰을 시각에 맞춘다(관광: 12시 기준 오전/오후, 식사: 15시 기준 점심/저녁)
+      // (f-5) 밀린 블록의 시간대 토큰을 시각에 맞춘다(관광: 12시 기준 오전/오후, 식사: (b)(c)와 같은 기준 — 점심은 16시부터 저녁,
+      // 저녁은 15시 전이면 점심). 그날 이미 있는 식사 칸으로는 바꾸지 않는다: 15:00 점심을 저녁으로 바꿔 점심이 비고 저녁이 둘이
+      // 되지 않게(실측 10-02 후쿠오카 2일차 '점심(15:00-16:00)' + '저녁(18:00-19:30)').
       for (const b of d.items) {
         if (b.plain || b.period === '종일' || b.period === '아침') continue;
-        const want = MEAL_PERIODS.has(b.period) ? (b.start < 15 * 60 ? '점심' : '저녁') : (b.start < 12 * 60 ? '오전' : '오후');
+        let want;
+        if (MEAL_PERIODS.has(b.period)) {
+          want = b.period;
+          if (b.period === '점심' && b.start >= 16 * 60) want = '저녁';
+          else if (b.period === '저녁' && b.start < 15 * 60) want = '점심';
+          if (want !== b.period && d.items.some((x) => x !== b && !x.plain && x.period === want)) want = b.period;
+        } else {
+          want = b.start < 12 * 60 ? '오전' : '오후';
+        }
         if (want !== b.period) b.period = want;
       }
     });

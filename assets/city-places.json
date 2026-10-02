@@ -1,13 +1,13 @@
 {
  "version": 1,
- "generatedAt": "2026-10-01T17:11:57.146Z",
+ "generatedAt": "2026-10-02T09:27:04.708Z",
  "source": {
   "data": "Wikidata (CC0): items with coordinates near each city, query.wikidata.org wikibase:around; labels from Wikidata / Wikipedia titles",
   "photos": "Wikimedia Commons, free licenses only (credit: artist, license, filePage)",
   "script": "scripts/build-city-places.js",
   "targetHalfDay": 12,
   "minSights": 9,
-  "notes": "name = Korean name: nameFrom fix (looked at by hand), kowiki (Korean Wikipedia title), ko (Wikidata label), translit (Japanese reading or Hepburn English label written in Korean by scripts/ja-names.js), or ja (the Japanese label, when none of these exists); en falls back to the Hepburn kana reading, then ja. A name used by another city (or one Wikidata needs a qualifier for) has the area in front. Places lie within radiusKm of center (or of an extraCenters circle). distKm = distance to center. few = fewer than minSights half-day sights exist near the city (the app says so instead of borrowing places from other cities)."
+  "notes": "name = Korean name: nameFrom fix (looked at by hand), kowiki (Korean Wikipedia title), ko (Wikidata label), translit (Japanese reading or Hepburn English label written in Korean by scripts/ja-names.js), or ja (the Japanese label, when none of these exists); en falls back to the Hepburn kana reading, then ja. A name used by another city (or one Wikidata needs a qualifier for) has the area in front. aliases = names to find the place by, never shown: the name without the area in front, another spelling the app uses for a word (다이샤/타이샤), and names shown before a renaming (saved plans keep them). Places lie within radiusKm of center (or of an extraCenters circle). distKm = distance to center. few = fewer than minSights half-day sights exist near the city (the app says so instead of borrowing places from other cities)."
  },
  "cities": {
   "akita": {
@@ -109,10 +109,13 @@
      "artist": "掬茶"
     },
     {
-     "name": "사타케 역사 박물관",
+     "name": "사타케 사료관",
      "nameFrom": "translit",
      "en": "Satake Historical Museum",
      "ja": "秋田市立佐竹史料館",
+     "aliases": [
+      "사타케 역사 박물관"
+     ],
      "wikidata": "Q11595319",
      "lat": 39.71997,
      "lng": 140.12474,
@@ -198,10 +201,13 @@
      "artist": "掬茶"
     },
     {
-     "name": "아키타 아카렌가 박물관",
+     "name": "아키타 아카렌가 향토관",
      "nameFrom": "translit",
      "en": "Akita Akarenga Museum",
      "ja": "秋田市立赤れんが郷土館",
+     "aliases": [
+      "아키타 아카렌가 박물관"
+     ],
      "wikidata": "Q11595345",
      "lat": 39.71669,
      "lng": 140.11564,
@@ -299,10 +305,13 @@
      "artist": "Ubuhouse"
     },
     {
-     "name": "아마미 공원",
-     "nameFrom": "translit",
+     "name": "아마미 파크",
+     "nameFrom": "fix",
      "en": "Amami Park",
      "ja": "奄美パーク",
+     "aliases": [
+      "아마미 공원"
+     ],
      "wikidata": "Q11444846",
      "lat": 28.41667,
      "lng": 129.69444,
@@ -366,10 +375,13 @@
      "artist": "Kireinakokoro"
     },
     {
-     "name": "고미나토후와가네쿠 유적",
+     "name": "고미나토 후와가네쿠 유적",
      "nameFrom": "translit",
      "en": "Kominato-Fuwaganeku Site",
      "ja": "小湊フワガネク遺跡",
+     "aliases": [
+      "고미나토후와가네쿠 유적"
+     ],
      "wikidata": "Q109363815",
      "lat": 28.32389,
      "lng": 129.53056,
@@ -476,10 +488,13 @@
      "artist": ""
     },
     {
-     "name": "유완산",
+     "name": "유완다케",
      "nameFrom": "translit",
      "en": "Mount Yuwan",
      "ja": "湯湾岳",
+     "aliases": [
+      "유완산"
+     ],
      "wikidata": "Q31685573",
      "lat": 28.29599,
      "lng": 129.32103,
@@ -618,10 +633,13 @@
      "artist": "D-Chillz"
     },
     {
-     "name": "아오모리 현립 박물관",
+     "name": "아오모리 현립 향토관",
      "nameFrom": "translit",
      "en": "Aomori Prefectural Museum",
      "ja": "青森県立郷土館",
+     "aliases": [
+      "아오모리 현립 박물관"
+     ],
      "wikidata": "Q11662265",
      "lat": 40.82728,
      "lng": 140.74866,
@@ -682,10 +700,13 @@
      "artist": "Angaurits"
     },
     {
-     "name": "무나카타 시코 기념 미술관",
+     "name": "무나카타 시코 기념관",
      "nameFrom": "translit",
      "en": "Munakata Shikō Memorial Museum of Art",
      "ja": "棟方志功記念館",
+     "aliases": [
+      "무나카타 시코 기념 미술관"
+     ],
      "wikidata": "Q11539040",
      "lat": 40.81944,
      "lng": 140.76,
@@ -758,10 +779,13 @@
      "artist": "ほくなん"
     },
     {
-     "name": "야스시 이노우에 기념관",
-     "nameFrom": "translit",
+     "name": "이노우에 야스시 기념관",
+     "nameFrom": "fix",
      "en": "Yasushi Inoue Memorial Hall",
      "ja": "井上靖記念館",
+     "aliases": [
+      "야스시 이노우에 기념관"
+     ],
      "wikidata": "Q11373285",
      "lat": 43.80522,
      "lng": 142.36361,
@@ -847,10 +871,13 @@
      "artist": "Shoyuramen"
     },
     {
-     "name": "미우라 아야코 문학관",
+     "name": "미우라 아야코 기념 문학관",
      "nameFrom": "translit",
      "en": "Miura Ayako Literature Museum",
      "ja": "三浦綾子記念文学館",
+     "aliases": [
+      "미우라 아야코 문학관"
+     ],
      "wikidata": "Q11356532",
      "lat": 43.75358,
      "lng": 142.34783,
@@ -1200,10 +1227,13 @@
      "imageNote": "bath photo not reviewed"
     },
     {
-     "name": "이이노 UFO 박물관",
+     "name": "이노 UFO 박물관",
      "nameFrom": "translit",
      "en": "Iino UFO Museum",
      "ja": "福島市飯野UFOふれあい館",
+     "aliases": [
+      "이이노 UFO 박물관"
+     ],
      "wikidata": "Q11593098",
      "lat": 37.68772,
      "lng": 140.53411,
@@ -1241,10 +1271,13 @@
      "artist": "上条ジョー"
     },
     {
-     "name": "아즈마코후지산",
+     "name": "아즈마코후지",
      "nameFrom": "translit",
      "en": "Mount Azuma-kofuji",
      "ja": "吾妻小富士",
+     "aliases": [
+      "아즈마코후지산"
+     ],
      "wikidata": "Q718441",
      "lat": 37.73,
      "lng": 140.25,
@@ -1410,10 +1443,13 @@
      "imageNote": "bath photo not reviewed"
     },
     {
-     "name": "시노리관",
-     "nameFrom": "ko",
+     "name": "시노리다테",
+     "nameFrom": "fix",
      "en": "Shinoridate",
      "ja": "志苔館",
+     "aliases": [
+      "시노리관"
+     ],
      "wikidata": "Q11491132",
      "lat": 41.76572,
      "lng": 140.82239,
@@ -1454,10 +1490,13 @@
      "artist": "663highland"
     },
     {
-     "name": "요코쓰산",
+     "name": "요코쓰다케",
      "nameFrom": "translit",
      "en": "Mount Yokotsu",
      "ja": "横津岳",
+     "aliases": [
+      "요코쓰산"
+     ],
      "wikidata": "Q11542816",
      "lat": 41.93778,
      "lng": 140.77139,
@@ -1488,10 +1527,13 @@
    "few": false,
    "places": [
     {
-     "name": "텐쇼치",
-     "nameFrom": "ko",
+     "name": "덴쇼치",
+     "nameFrom": "fix",
      "en": "Tenshōchi",
      "ja": "北上市立公園展勝地",
+     "aliases": [
+      "텐쇼치"
+     ],
      "wikidata": "Q11400854",
      "lat": 39.28099,
      "lng": 141.12925,
@@ -1622,10 +1664,13 @@
      "artist": "小池 隆"
     },
     {
-     "name": "하나마키 니이산",
+     "name": "하나마키 니산",
      "nameFrom": "translit",
      "en": "Hanamaki Mount Nii",
      "ja": "花巻新山",
+     "aliases": [
+      "하나마키 니이산"
+     ],
      "wikidata": "Q11501987",
      "lat": 39.53797,
      "lng": 141.08469,
@@ -1644,10 +1689,13 @@
      "artist": "カスタヌー"
     },
     {
-     "name": "사쿠라 지진칸",
-     "nameFrom": "translit",
+     "name": "사쿠라치진관",
+     "nameFrom": "fix",
      "en": "Sakura Chijinkan",
      "ja": "桜地人館",
+     "aliases": [
+      "사쿠라 지진칸"
+     ],
      "wikidata": "Q11537943",
      "lat": 39.37561,
      "lng": 141.12614,
@@ -1783,7 +1831,7 @@
      "category": "정원",
      "stayMin": 75,
      "bestTime": "09:30-11:00",
-     "area": "나카 구",
+     "area": "나카구",
      "areaEn": "Naka-ku",
      "areaJa": "中区",
      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/14/Hiroshima_Shukkei-en_Pond.jpg/500px-Hiroshima_Shukkei-en_Pond.jpg",
@@ -1880,10 +1928,13 @@
      "artist": "スゥ"
     },
     {
-     "name": "히로시마 시 식물 공원",
-     "nameFrom": "ko",
+     "name": "히로시마시 식물 공원",
+     "nameFrom": "fix",
      "en": "Hiroshima Botanical Garden",
      "ja": "広島市植物公園",
+     "aliases": [
+      "히로시마 시 식물 공원"
+     ],
      "wikidata": "Q63203",
      "lat": 34.39192,
      "lng": 132.34694,
@@ -2004,8 +2055,11 @@
     {
      "name": "아이키 신사",
      "nameFrom": "translit",
-     "en": "Iwama Dōjō",
+     "en": "Aiki Shrine",
      "ja": "合氣神社",
+     "aliases": [
+      "Iwama Dōjō"
+     ],
      "wikidata": "Q2827917",
      "lat": 36.29422,
      "lng": 140.28136,
@@ -2047,10 +2101,13 @@
      "artist": "Kiku-zou"
     },
     {
-     "name": "이바라키 현립 역사 박물관",
+     "name": "이바라키 현립 역사관",
      "nameFrom": "translit",
      "en": "Ibaraki Prefectural Museum of History",
      "ja": "茨城県立歴史館",
+     "aliases": [
+      "이바라키 현립 역사 박물관"
+     ],
      "wikidata": "Q4676321",
      "lat": 36.37917,
      "lng": 140.45,
@@ -2196,10 +2253,13 @@
      "artist": "Torbenbrinker"
     },
     {
-     "name": "오모토산",
+     "name": "오모토다케",
      "nameFrom": "translit",
      "en": "Mount Omoto",
      "ja": "於茂登岳",
+     "aliases": [
+      "오모토산"
+     ],
      "wikidata": "Q4521182",
      "lat": 24.42722,
      "lng": 124.18333,
@@ -2305,10 +2365,13 @@
      "artist": "松岡明芳"
     },
     {
-     "name": "후루스토바루성",
+     "name": "후루스토바루 유적",
      "nameFrom": "translit",
      "en": "Furusutobaru Castle",
      "ja": "フルスト原遺跡",
+     "aliases": [
+      "후루스토바루성"
+     ],
      "wikidata": "Q11333899",
      "lat": 24.35048,
      "lng": 124.1955,
@@ -2449,10 +2512,13 @@
      "artist": "OS6"
     },
     {
-     "name": "아타다지마",
-     "nameFrom": "translit",
+     "name": "아타타섬",
+     "nameFrom": "fix",
      "en": "Atadajima",
      "ja": "阿多田島",
+     "aliases": [
+      "아타다지마"
+     ],
      "wikidata": "Q11657359",
      "lat": 34.19167,
      "lng": 132.30556,
@@ -2571,10 +2637,13 @@
    "few": false,
    "places": [
     {
-     "name": "시마네 고대 이즈모 박물관",
+     "name": "시마네 고대 이즈모 역사 박물관",
      "nameFrom": "translit",
      "en": "Shimane Museum of Ancient Izumo",
      "ja": "島根県立古代出雲歴史博物館",
+     "aliases": [
+      "시마네 고대 이즈모 박물관"
+     ],
      "wikidata": "Q4802099",
      "lat": 35.39875,
      "lng": 132.68872,
@@ -2683,10 +2752,13 @@
      "artist": "Thinking thing"
     },
     {
-     "name": "가미에냐 쓰키야마 고분",
-     "nameFrom": "translit",
+     "name": "가미엔야 쓰키야마 고분",
+     "nameFrom": "fix",
      "en": "Kamienya Tsukiyama Kofun",
      "ja": "上塩冶築山古墳",
+     "aliases": [
+      "가미에냐 쓰키야마 고분"
+     ],
      "wikidata": "Q55523209",
      "lat": 35.35,
      "lng": 132.76077,
@@ -2727,10 +2799,13 @@
      "artist": "Monado"
     },
     {
-     "name": "신지코 자연관 고비우스",
+     "name": "신지호 자연관 고비우스",
      "nameFrom": "fix",
      "en": "Shinjiko Nature Museum Gobius",
      "ja": "宍道湖自然館ゴビウス",
+     "aliases": [
+      "신지코 자연관 고비우스"
+     ],
      "wikidata": "Q47164008",
      "lat": 35.44722,
      "lng": 132.86444,
@@ -2750,10 +2825,13 @@
      "artist": "運動会プロテインパワー"
     },
     {
-     "name": "후미시마",
+     "name": "후미시마섬",
      "nameFrom": "translit",
      "en": "Fumishima",
      "ja": "経島",
+     "aliases": [
+      "후미시마"
+     ],
      "wikidata": "Q5508550",
      "lat": 35.43028,
      "lng": 132.62667,
@@ -2950,10 +3028,13 @@
      "artist": "トマス秋茄子"
     },
     {
-     "name": "나가시마 박물관",
+     "name": "나가시마 미술관",
      "nameFrom": "translit",
      "en": "Nagashima Museum",
      "ja": "長島美術館",
+     "aliases": [
+      "나가시마 박물관"
+     ],
      "wikidata": "Q25045409",
      "lat": 31.58177,
      "lng": 130.53239,
@@ -3330,7 +3411,9 @@
      "category": "문화",
      "stayMin": 60,
      "bestTime": "09:30-11:00",
-     "area": "기타큐슈",
+     "area": "시모노세키시",
+     "areaEn": "Shimonoseki",
+     "areaJa": "下関市",
      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/06/Akama_jingu_maingate.JPG/500px-Akama_jingu_maingate.JPG",
      "filePage": "https://commons.wikimedia.org/wiki/File:Akama_jingu_maingate.JPG",
      "license": "CC BY-SA 3.0",
@@ -4167,10 +4250,13 @@
      "artist": ""
     },
     {
-     "name": "아라 다케",
+     "name": "아라다케",
      "nameFrom": "translit",
      "en": "Āra Dake",
      "ja": "アーラ岳",
+     "aliases": [
+      "아라 다케"
+     ],
      "wikidata": "Q31707328",
      "lat": 26.31287,
      "lng": 126.78278,
@@ -4405,10 +4491,13 @@
      "artist": "663highland"
     },
     {
-     "name": "구시로 어린이 유가쿠칸",
+     "name": "구시로 어린이 유가쿠관",
      "nameFrom": "fix",
      "en": "Kushiro Children's Museum Kodomo Yūgakukan",
      "ja": "釧路市こども遊学館",
+     "aliases": [
+      "구시로 어린이 유가쿠칸"
+     ],
      "wikidata": "Q11648277",
      "lat": 42.98667,
      "lng": 144.37889,
@@ -5022,10 +5111,13 @@
      "artist": "663highland"
     },
     {
-     "name": "아바시리시 민속 박물관",
+     "name": "아바시리시 향토 박물관",
      "nameFrom": "translit",
      "en": "Abashiri City Folk Museum",
      "ja": "網走市立郷土博物館",
+     "aliases": [
+      "아바시리시 민속 박물관"
+     ],
      "wikidata": "Q11607220",
      "lat": 44.01772,
      "lng": 144.26911,
@@ -5067,10 +5159,13 @@
      "artist": "Ozizo"
     },
     {
-     "name": "고시미즈 겐세이카엔",
-     "nameFrom": "translit",
+     "name": "고시미즈 원생화원",
+     "nameFrom": "fix",
      "en": "Koshimizu Genseikaen",
      "ja": "小清水原生花園",
+     "aliases": [
+      "고시미즈 겐세이카엔"
+     ],
      "wikidata": "Q11462664",
      "lat": 43.94194,
      "lng": 144.41342,
@@ -5189,10 +5284,13 @@
      "artist": "Angaurits"
     },
     {
-     "name": "후타쓰모리 유적",
+     "name": "후타쓰모리 패총",
      "nameFrom": "translit",
      "en": "Futatsumori Site",
      "ja": "二ツ森貝塚",
+     "aliases": [
+      "후타쓰모리 유적"
+     ],
      "wikidata": "Q30593786",
      "lat": 40.74806,
      "lng": 141.23,
@@ -5319,10 +5417,13 @@
      "artist": ""
     },
     {
-     "name": "슈지 데라야마 박물관",
-     "nameFrom": "translit",
+     "name": "데라야마 슈지 기념관",
+     "nameFrom": "fix",
      "en": "Shūji Terayama Museum",
      "ja": "三沢市寺山修司記念館",
+     "aliases": [
+      "슈지 데라야마 박물관"
+     ],
      "wikidata": "Q21654765",
      "lat": 40.74206,
      "lng": 141.36536,
@@ -5486,10 +5587,13 @@
      "artist": "Paipateroma"
     },
     {
-     "name": "미야코지마시 박물관",
+     "name": "미야코지마시 종합 박물관",
      "nameFrom": "translit",
      "en": "Miyakojima City Museum",
      "ja": "宮古島市総合博物館",
+     "aliases": [
+      "미야코지마시 박물관"
+     ],
      "wikidata": "Q30593667",
      "lat": 24.79647,
      "lng": 125.31772,
@@ -6258,7 +6362,7 @@
      "category": "전망",
      "stayMin": 60,
      "bestTime": "15:30-17:00",
-     "area": "나카시베쓰정",
+     "area": "나카시베츠정",
      "areaEn": "Nakashibetsu",
      "areaJa": "中標津町",
      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c0/Kaiyodai_2.jpg/500px-Kaiyodai_2.jpg",
@@ -6267,10 +6371,13 @@
      "artist": "Tzu-hsun, Hsu"
     },
     {
-     "name": "나카시베쓰 신사",
+     "name": "나카시베츠 신사",
      "nameFrom": "translit",
      "en": "Nakashibetsu Shrine",
      "ja": "中標津神社",
+     "aliases": [
+      "나카시베쓰 신사"
+     ],
      "wikidata": "Q11366290",
      "lat": 43.54473,
      "lng": 144.97549,
@@ -6280,7 +6387,7 @@
      "category": "문화",
      "stayMin": 60,
      "bestTime": "09:30-11:00",
-     "area": "나카시베쓰정",
+     "area": "나카시베츠정",
      "areaEn": "Nakashibetsu",
      "areaJa": "中標津町",
      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8a/%E4%B8%AD%E6%A8%99%E6%B4%A5%E7%A5%9E%E7%A4%BE.jpg/500px-%E4%B8%AD%E6%A8%99%E6%B4%A5%E7%A5%9E%E7%A4%BE.jpg",
@@ -6312,10 +6419,13 @@
      "artist": "KishujiRapid"
     },
     {
-     "name": "요로시 온천",
-     "nameFrom": "translit",
+     "name": "요로우시 온천",
+     "nameFrom": "fix",
      "en": "Yoroushi Onsen",
      "ja": "養老牛温泉",
+     "aliases": [
+      "요로시 온천"
+     ],
      "wikidata": "Q11666887",
      "lat": 43.5876,
      "lng": 144.7227,
@@ -6354,10 +6464,13 @@
      "artist": ""
     },
     {
-     "name": "나카시베쓰 시립 민속 박물관",
-     "nameFrom": "translit",
+     "name": "나카시베츠 향토관",
+     "nameFrom": "fix",
      "en": "Nakashibetsu Municipal Folk Museum",
      "ja": "中標津町郷土館",
+     "aliases": [
+      "나카시베쓰 시립 민속 박물관"
+     ],
      "wikidata": "Q11366289",
      "lat": 43.5535,
      "lng": 144.97078,
@@ -6368,7 +6481,7 @@
      "stayMin": 90,
      "bestTime": "10:00-12:00",
      "indoor": true,
-     "area": "나카시베쓰정",
+     "area": "나카시베츠정",
      "areaEn": "Nakashibetsu",
      "areaJa": "中標津町",
      "image": null,
@@ -6390,7 +6503,7 @@
      "category": "산책",
      "stayMin": 75,
      "bestTime": "14:00-16:00",
-     "area": "나카시베쓰정",
+     "area": "나카시베츠정",
      "areaEn": "Nakashibetsu",
      "areaJa": "中標津町",
      "image": null,
@@ -6441,10 +6554,13 @@
      "artist": ""
     },
     {
-     "name": "시베쓰산",
+     "name": "시베쓰다케",
      "nameFrom": "translit",
      "en": "Mount Shibetsu",
      "ja": "標津岳",
+     "aliases": [
+      "시베쓰산"
+     ],
      "wikidata": "Q8536966",
      "lat": 43.66811,
      "lng": 144.70467,
@@ -6497,10 +6613,13 @@
      "artist": "Vanquish0"
     },
     {
-     "name": "난키시라하마 온천",
+     "name": "난키 시라하마 온천",
      "nameFrom": "translit",
      "en": "Nanki-Shirahama Onsen",
      "ja": "南紀白浜温泉",
+     "aliases": [
+      "난키시라하마 온천"
+     ],
      "wikidata": "Q11408352",
      "lat": 33.67578,
      "lng": 135.38703,
@@ -6587,10 +6706,13 @@
      "artist": "さかおり"
     },
     {
-     "name": "미스지 유적",
-     "nameFrom": "translit",
+     "name": "미스 폐사지",
+     "nameFrom": "fix",
      "en": "Misuji temple ruins",
      "ja": "三栖廃寺跡",
+     "aliases": [
+      "미스지 유적"
+     ],
      "wikidata": "Q77700884",
      "lat": 33.73722,
      "lng": 135.41667,
@@ -6791,10 +6913,13 @@
      "artist": "DAI-nk"
     },
     {
-     "name": "니이가타 현립 식물원",
+     "name": "니가타 현립 식물원",
      "nameFrom": "translit",
      "en": "Niigata Prefectural Botanical Garden",
      "ja": "新潟県立植物園",
+     "aliases": [
+      "니이가타 현립 식물원"
+     ],
      "wikidata": "Q5576152",
      "lat": 37.76136,
      "lng": 139.11217,
@@ -6813,10 +6938,13 @@
      "artist": "Strelitziaaugusta"
     },
     {
-     "name": "지토세오하시",
+     "name": "지토세 대교",
      "nameFrom": "translit",
      "en": "Chitose-o-hashi",
      "ja": "千歳大橋",
+     "aliases": [
+      "지토세오하시"
+     ],
      "wikidata": "Q11405635",
      "lat": 37.90574,
      "lng": 139.02298,
@@ -6835,10 +6963,13 @@
      "artist": "Altomarina"
     },
     {
-     "name": "니이가타시 역사 박물관",
+     "name": "니가타시 역사 박물관",
      "nameFrom": "translit",
      "en": "Niigata City History Museum",
      "ja": "新潟市歴史博物館",
+     "aliases": [
+      "니이가타시 역사 박물관"
+     ],
      "wikidata": "Q11502895",
      "lat": 37.92983,
      "lng": 139.05772,
@@ -6858,10 +6989,13 @@
      "artist": "663highland"
     },
     {
-     "name": "니이가타 고코쿠 신사",
+     "name": "니가타 고코쿠 신사",
      "nameFrom": "translit",
      "en": "Niigata Gokoku Shrine",
      "ja": "新潟縣護國神社",
+     "aliases": [
+      "니이가타 고코쿠 신사"
+     ],
      "wikidata": "Q11503581",
      "lat": 37.92204,
      "lng": 139.02908,
@@ -6956,10 +7090,13 @@
      "artist": "663highland"
     },
     {
-     "name": "홋카이도 오비히로 미술관",
-     "nameFrom": "translit",
+     "name": "홋카이도립 오비히로 미술관",
+     "nameFrom": "fix",
      "en": "Hokkaido Obihiro Museum of Art",
      "ja": "北海道立帯広美術館",
+     "aliases": [
+      "홋카이도 오비히로 미술관"
+     ],
      "wikidata": "Q11402964",
      "lat": 42.90458,
      "lng": 143.18553,
@@ -7120,10 +7257,13 @@
    "few": false,
    "places": [
     {
-     "name": "닷코모리산",
+     "name": "닷코모리",
      "nameFrom": "translit",
      "en": "Mount Takkomori",
      "ja": "達子森",
+     "aliases": [
+      "닷코모리산"
+     ],
      "wikidata": "Q11641883",
      "lat": 40.22447,
      "lng": 140.56975,
@@ -7206,10 +7346,13 @@
      "artist": "掬茶"
     },
     {
-     "name": "아키타이누노사토",
-     "nameFrom": "translit",
+     "name": "아키타견의 마을",
+     "nameFrom": "fix",
      "en": "Akita Dog Visitor Center",
      "ja": "秋田犬の里",
+     "aliases": [
+      "아키타이누노사토"
+     ],
      "wikidata": "Q110990382",
      "lat": 40.28674,
      "lng": 140.55613,
@@ -7228,10 +7371,13 @@
      "artist": "掬茶"
     },
     {
-     "name": "오다테시 박물관",
+     "name": "오다테시 향토 박물관",
      "nameFrom": "translit",
      "en": "Ōdate City Museum",
      "ja": "大館郷土博物館",
+     "aliases": [
+      "오다테시 박물관"
+     ],
      "wikidata": "Q20043438",
      "lat": 40.30022,
      "lng": 140.58225,
@@ -8103,10 +8249,13 @@
      "artist": "663highland"
     },
     {
-     "name": "이시카와산",
+     "name": "이시카와다케",
      "nameFrom": "translit",
      "en": "Mount Ishikawa",
      "ja": "石川岳",
+     "aliases": [
+      "이시카와산"
+     ],
      "wikidata": "Q16895460",
      "lat": 26.4495,
      "lng": 127.835,
@@ -8210,10 +8359,13 @@
    "few": true,
    "places": [
     {
-     "name": "리시리 폰 야마",
+     "name": "리시리 폰산",
      "nameFrom": "translit",
      "en": "Rishiri Pon Yama",
      "ja": "利尻ポン山",
+     "aliases": [
+      "리시리 폰 야마"
+     ],
      "wikidata": "Q31486729",
      "lat": 45.22307,
      "lng": 141.22018,
@@ -8370,10 +8522,13 @@
      "artist": "STA3816"
     },
     {
-     "name": "사가 조코칸",
+     "name": "사가 조코관",
      "nameFrom": "translit",
      "en": "Saga Chōkokan",
      "ja": "佐賀徴古館",
+     "aliases": [
+      "사가 조코칸"
+     ],
      "wikidata": "Q64796766",
      "lat": 33.25159,
      "lng": 130.30141,
@@ -8669,7 +8824,7 @@
      "category": "문화",
      "stayMin": 60,
      "bestTime": "09:00-11:00",
-     "area": "이즈미 구",
+     "area": "이즈미구",
      "areaEn": "Izumi-ku",
      "areaJa": "泉区",
      "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/31/Sendai_Daikannon_%281870523730%29.jpg/500px-Sendai_Daikannon_%281870523730%29.jpg",
@@ -9241,10 +9396,13 @@
    "few": false,
    "places": [
     {
-     "name": "겐 도몬 사진 박물관",
-     "nameFrom": "translit",
+     "name": "도몬 겐 기념관",
+     "nameFrom": "fix",
      "en": "Ken Domon Museum of Photography",
      "ja": "土門拳記念館",
+     "aliases": [
+      "겐 도몬 사진 박물관"
+     ],
      "wikidata": "Q3539675",
      "lat": 38.8913,
      "lng": 139.82372,
@@ -9650,10 +9808,13 @@
      "artist": "VinayaMoto"
     },
     {
-     "name": "소부산",
+     "name": "소부다케",
      "nameFrom": "translit",
      "en": "Mount Sobu",
      "ja": "蘇武岳",
+     "aliases": [
+      "소부산"
+     ],
      "wikidata": "Q11625212",
      "lat": 35.47078,
      "lng": 134.63808,
@@ -9778,10 +9939,13 @@
      "artist": "663highland"
     },
     {
-     "name": "메기지마",
+     "name": "메기섬",
      "nameFrom": "translit",
      "en": "Megijima",
      "ja": "女木島",
+     "aliases": [
+      "메기지마"
+     ],
      "wikidata": "Q339004",
      "lat": 34.39528,
      "lng": 134.04861,
@@ -9823,10 +9987,13 @@
      "artist": "松岡明芳"
     },
     {
-     "name": "이이노산",
+     "name": "이노산",
      "nameFrom": "translit",
      "en": "Mount Iino",
      "ja": "飯野山",
+     "aliases": [
+      "이이노산"
+     ],
      "wikidata": "Q11666715",
      "lat": 34.27439,
      "lng": 133.84588,
@@ -10020,10 +10187,13 @@
    "few": true,
    "places": [
     {
-     "name": "이노카와 다케",
+     "name": "이노카와다케",
      "nameFrom": "translit",
      "en": "Inokawa Dake",
      "ja": "井之川岳",
+     "aliases": [
+      "이노카와 다케"
+     ],
      "wikidata": "Q19955545",
      "lat": 27.77872,
      "lng": 128.98318,
@@ -10466,10 +10636,14 @@
      "artist": "me"
     },
     {
-     "name": "오기산",
-     "nameFrom": "translit",
-     "en": "Mount Ōgi",
+     "name": "오기노센",
+     "nameFrom": "fix",
+     "en": "Mount Ōginosen",
      "ja": "扇ノ山",
+     "aliases": [
+      "오기산",
+      "Mount Ōgi"
+     ],
      "wikidata": "Q11496825",
      "lat": 35.43972,
      "lng": 134.44083,
@@ -10655,10 +10829,13 @@
      "artist": "nnh"
     },
     {
-     "name": "도야마 현립 수묵 미술관",
+     "name": "도야마현 수묵 미술관",
      "nameFrom": "fix",
      "en": "The Suiboku Museum, Toyama",
      "ja": "富山県水墨美術館",
+     "aliases": [
+      "도야마 현립 수묵 미술관"
+     ],
      "wikidata": "Q11456481",
      "lat": 36.69906,
      "lng": 137.1965,
@@ -10678,10 +10855,13 @@
      "artist": "くろふね"
     },
     {
-     "name": "도야마 과학관",
+     "name": "도야마 과학 박물관",
      "nameFrom": "translit",
      "en": "Toyama Science Museum",
      "ja": "富山市科学博物館",
+     "aliases": [
+      "도야마 과학관"
+     ],
      "wikidata": "Q11456392",
      "lat": 36.68083,
      "lng": 137.21167,
@@ -10734,10 +10914,13 @@
    "few": false,
    "places": [
     {
-     "name": "왓카나이 오누마호",
+     "name": "왓카나이 오누마",
      "nameFrom": "translit",
      "en": "Wakkanai Lake Ōnuma",
      "ja": "稚内大沼",
+     "aliases": [
+      "왓카나이 오누마호"
+     ],
      "wikidata": "Q11437110",
      "lat": 45.38,
      "lng": 141.75944,
@@ -10778,10 +10961,13 @@
      "artist": "yano@mama.akari.ne.j…"
     },
     {
-     "name": "왓카나이 가라후토 박물관",
+     "name": "왓카나이 가라후토 기념관",
      "nameFrom": "translit",
      "en": "Wakkanai Karafuto Museum",
      "ja": "稚内市樺太記念館",
+     "aliases": [
+      "왓카나이 가라후토 박물관"
+     ],
      "wikidata": "Q68888166",
      "lat": 45.40822,
      "lng": 141.67664,
@@ -10801,10 +10987,13 @@
      "artist": "Totti"
     },
     {
-     "name": "왓카나이 개기 백년 기념탑",
+     "name": "왓카나이 개기 백년 기념탑·북방 기념관",
      "nameFrom": "fix",
      "en": "Wakkanai Centennial Memorial Tower / Hoppō Memorial Museum",
      "ja": "稚内市開基百年記念塔・北方記念館",
+     "aliases": [
+      "왓카나이 개기 백년 기념탑"
+     ],
      "wikidata": "Q11596338",
      "lat": 45.41692,
      "lng": 141.66333,
@@ -10901,10 +11090,13 @@
    "few": false,
    "places": [
     {
-     "name": "못초무산",
+     "name": "못초무다케",
      "nameFrom": "translit",
      "en": "Mount Motchomu",
      "ja": "モッチョム岳",
+     "aliases": [
+      "못초무산"
+     ],
      "wikidata": "Q11344357",
      "lat": 30.26056,
      "lng": 130.56472,
@@ -11055,10 +11247,13 @@
      "artist": "Higa4"
     },
     {
-     "name": "나고리 노 마쓰바라",
+     "name": "나고리노 마쓰바라",
      "nameFrom": "translit",
      "en": "Nagori no Matsubara",
      "ja": "なごりの松原",
+     "aliases": [
+      "나고리 노 마쓰바라"
+     ],
      "wikidata": "Q130279317",
      "lat": 30.43017,
      "lng": 130.56942,
@@ -11077,10 +11272,14 @@
      "artist": "Higa4"
     },
     {
-     "name": "야쿠시마타이샤",
+     "name": "야쿠시마 다이샤",
      "nameFrom": "translit",
      "en": "Yakushima-taisha",
      "ja": "屋久島大社",
+     "aliases": [
+      "야쿠시마 타이샤",
+      "야쿠시마타이샤"
+     ],
      "wikidata": "Q130283583",
      "lat": 30.41522,
      "lng": 130.59032,
@@ -11099,10 +11298,13 @@
      "artist": "Higa4"
     },
     {
-     "name": "구스가와텐만구",
+     "name": "구스가와 텐만구",
      "nameFrom": "translit",
      "en": "Kusugawa-tenmangū",
      "ja": "楠川天満宮",
+     "aliases": [
+      "구스가와텐만구"
+     ],
      "wikidata": "Q130284190",
      "lat": 30.41418,
      "lng": 130.59624,
@@ -11121,10 +11323,13 @@
      "artist": "Higa4"
     },
     {
-     "name": "미야노우라산",
+     "name": "미야노우라다케",
      "nameFrom": "translit",
      "en": "Mount Miyanoura",
      "ja": "宮之浦岳",
+     "aliases": [
+      "미야노우라산"
+     ],
      "wikidata": "Q10950373",
      "lat": 30.33333,
      "lng": 130.51667,
@@ -11245,10 +11450,13 @@
      "artist": "Y-Kaki"
     },
     {
-     "name": "모가미 요시아키 역사 박물관",
+     "name": "모가미 요시아키 역사관",
      "nameFrom": "translit",
      "en": "Mogami Yoshiaki Historical Museum",
      "ja": "最上義光歴史館",
+     "aliases": [
+      "모가미 요시아키 역사 박물관"
+     ],
      "wikidata": "Q6890444",
      "lat": 38.25508,
      "lng": 140.33342,
@@ -11573,10 +11781,13 @@
      "imageNote": "bath photo not reviewed"
     },
     {
-     "name": "미기타산",
-     "nameFrom": "translit",
+     "name": "미기타가다케",
+     "nameFrom": "fix",
      "en": "Mount Migita",
      "ja": "右田ヶ岳",
+     "aliases": [
+      "미기타산"
+     ],
      "wikidata": "Q11412165",
      "lat": 34.08653,
      "lng": 131.55694,
@@ -11779,10 +11990,13 @@
      "artist": "Reggaeman"
     },
     {
-     "name": "쇼지 우에다 사진 박물관",
-     "nameFrom": "translit",
+     "name": "우에다 쇼지 사진 미술관",
+     "nameFrom": "fix",
      "en": "Shoji Ueda Museum of Photography",
      "ja": "植田正治写真美術館",
+     "aliases": [
+      "쇼지 우에다 사진 박물관"
+     ],
      "wikidata": "Q9047014",
      "lat": 35.38986,
      "lng": 133.43583,
@@ -11813,10 +12027,13 @@
    "few": false,
    "places": [
     {
-     "name": "트이시",
-     "nameFrom": "ko",
+     "name": "투이시",
+     "nameFrom": "fix",
      "en": "Tuishi",
      "ja": "トゥイシ",
+     "aliases": [
+      "트이시"
+     ],
      "wikidata": "Q64589704",
      "lat": 24.45139,
      "lng": 122.9325,
@@ -11879,8 +12096,8 @@
      "artist": "Melkov"
     },
     {
-     "name": "도야마 신사",
-     "nameFrom": "translit",
+     "name": "요나구니 도야마 신사",
+     "nameFrom": "fix",
      "en": "Tōyama Shrine",
      "ja": "十山神社",
      "wikidata": "Q11405009",
@@ -11901,10 +12118,13 @@
      "artist": ""
     },
     {
-     "name": "우라부산",
+     "name": "우라부다케",
      "nameFrom": "translit",
      "en": "Mount Urabu",
      "ja": "宇良部岳",
+     "aliases": [
+      "우라부산"
+     ],
      "wikidata": "Q31686520",
      "lat": 24.4529,
      "lng": 123.00547,

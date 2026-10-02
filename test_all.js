@@ -1834,7 +1834,71 @@ async function phaseCityCoverage() {
       [J.kanaToRomaji('とうきょう'), 'tokyo'], [J.enFromKana('台温泉', 'だいおんせん'), 'Dai Onsen']];
     const wrong = cases.filter(([got, want]) => got !== want).map(([got, want]) => `${got} != ${want}`);
     log(wrong.length === 0, 'scripts/ja-names.js: Japanese names in Korean by the official rules (가마부치 폭포, 료젠 신사, 시노부산, 세이류지 …) and Hepburn English', wrong.join(', '));
+    // 일본어 이름이 정하는 것: 장음(新潟 → 니가타), 인물 이름 순서(성 → 이름), 시설 낱말 번역(美術館 → 미술관), 岳 → 다케, 島 → 섬, 館 → 관
+    const D = (ja, en, kana) => (J.koDisplayName({ ja, en, kana: kana ? [kana] : [] }) || {}).name || null;
+    const rules = [
+      // 장음은 적지 않는다: Hepburn의 ii(新潟 Niigata, 飯野 Iino)도. 두 낱말이 만나는 ii(通り池 とおり+いけ)는 그대로
+      [J.koFromEnglish('Niigata Prefectural Botanical Garden'), '니가타 현립 식물원'], [D('新潟', '', 'にいがた'), '니가타'], [D('飯野山', 'Mount Iino'), '이노산'],
+      [J.kanaToRomaji('にいがた'), 'niigata'], [D('通り池', 'Tōriike', 'とおりいけ'), '도리이케'], [J.koFromEnglish('Tōkyō Tower'), '도쿄 타워'], [J.koFromEnglish('Ōsaka Castle'), '오사카성'],
+      // 인물 이름: 일본어 순서(성 이름) — 영어 이름 순서를 따르지 않는다
+      [D('土門拳記念館', 'Ken Domon Museum of Photography'), '도몬 겐 기념관'], [D('植田正治写真美術館', 'Shoji Ueda Museum of Photography'), '우에다 쇼지 사진 미술관'],
+      [D('井上靖記念館', 'Yasushi Inoue Memorial Hall'), '이노우에 야스시 기념관'], [D('三沢市寺山修司記念館', 'Shūji Terayama Museum'), '데라야마 슈지 기념관'],
+      // 시설 낱말은 일본어 이름대로 옮긴다(영어 이름이 Museum이라도)
+      [D('長島美術館', 'Nagashima Museum'), '나가시마 미술관'], [D('青森県立郷土館', 'Aomori Prefectural Museum'), '아오모리 현립 향토관'],
+      [D('茨城県立歴史館', 'Ibaraki Prefectural Museum of History'), '이바라키 현립 역사관'], [D('棟方志功記念館', 'Munakata Shikō Memorial Museum of Art'), '무나카타 시코 기념관'],
+      [D('二ツ森貝塚', 'Futatsumori Site'), '후타쓰모리 패총'], [D('佐賀徴古館', 'Saga Chōkokan'), '사가 조코관'], [D('千歳大橋', 'Chitose-o-hashi'), '지토세 대교'],
+      // 岳 → 다케, ヶ岳 → 가타케(右田ヶ岳 みぎたがだけ만 검토한 예외), 山 → 산(旭山 → 아사히산), 山도 岳도 없는 이름에는 붙이지 않는다; 島 → 섬
+      [D('湯湾岳', 'Mount Yuwan'), '유완다케'], [D('槍ヶ岳', 'Mount Yari'), '야리가타케'], [D('右田ヶ岳', 'Mount Migita'), '미기타가다케'], [D('アーラ岳', 'Āra Dake'), '아라다케'],
+      [D('信夫山', 'Mount Shinobu'), '시노부산'], [D('旭山', 'Mount Asahi'), '아사히산'],
+      [D('達子森', 'Mount Takkomori'), '닷코모리'], [D('大沼', 'Lake Ōnuma'), '오누마'], [D('女木島', 'Megijima'), '메기섬'], [D('経島', 'Fumishima'), '후미시마섬'],
+      // 大社·天満宮은 따로 쓴다: 天満宮은 앱의 큐레이션 표기(다자이후 텐만구)를 따라 텐만구(규칙대로면 덴만구), 大社는 다이샤(구마노 혼구 다이샤)
+      [D('屋久島大社', 'Yakushima-taisha', 'やくしまたいしゃ'), '야쿠시마 다이샤'], [D('楠川天満宮', 'Kusugawa-tenmangū'), '구스가와 텐만구'],
+      [D('楠川天満宮', '', 'くすがわてんまんぐう'), '구스가와 텐만구'],
+      [D('小湊フワガネク遺跡', 'Kominato-Fuwaganeku Site'), '고미나토 후와가네쿠 유적'], [D('備前国総社宮', 'Bizen-no-Kuni Sōjagū'), '비젠노쿠니 소자구'],
+      // 도시 이름은 앱의 도시 표기대로(中標津 → 나카시베츠: 도시 이름 '나카시베츠')
+      [D('中標津町郷土館', 'Nakashibetsu Municipal Folk Museum'), '나카시베츠 향토관']
+    ];
+    const ruleWrong = rules.filter(([got, want]) => got !== want).map(([got, want]) => `${got} != ${want}`);
+    log(ruleWrong.length === 0, 'scripts/ja-names.js: long vowels (新潟 → 니가타), person names family first (土門拳記念館 → 도몬 겐 기념관), Japanese facility words (長島美術館 → 미술관), 岳 다케 / 島 섬 / 館 관', ruleWrong.join(', '));
   } catch (e) { log(false, 'scripts/ja-names.js loads', e.message); }
+  // 한국어 이름에 옮기지 않은 일본어 일반 낱말(비주쓰칸·하쿠부쓰칸·긴넨칸 …)·가나·한자·장음 부호(ー)·니이가타가 없다
+  const UNTRANSLATED_RE = /비주쓰칸|하쿠부쓰칸|기넨칸|긴넨칸|분가쿠칸|시료칸|가가쿠칸|레키시칸|교도칸|도부쓰엔|스이조쿠칸|쇼쿠부쓰엔|데이엔|진자|온센|고엔(?=\s|$)|이세키|고훈|겐리쓰|시리쓰|가이즈카|겐세이카엔|칸$/;
+  const KANA_KANJI_RE = /[぀-ヿ一-鿿ー]/;
+  const KANA_KANJI_KEPT = []; // 일부러 남긴 가나·한자 이름(없음)
+  const untranslated = allPlaces.filter(([, p]) => UNTRANSLATED_RE.test(p.name) || (KANA_KANJI_RE.test(p.name) && !KANA_KANJI_KEPT.includes(p.wikidata)) || /니이가타|겐 도몬|쇼지 우에다|야스시 이노우에|슈지 데라야마/.test(p.name))
+    .map(([ck, p]) => `${ck}|${p.name}`);
+  log(untranslated.length === 0, 'city-places.json: Korean names have no transliterated generic word (비주쓰칸, 하쿠부쓰칸 …), no kana/kanji/ー, no 니이가타, no English-order person name', short(untranslated.slice(0, 6)));
+  // 일본어 이름의 시설·지형 낱말이 한국어 이름에 옮겨져 있다(美術館 → 미술관, 記念館 → 기념관, 島 → 섬, 岳 → 다케 …).
+  // 예외(이유): 한국어 위키백과 제목(水城 미즈키, 由布岳 유후산), 굳어진 이름(鹿児島城山 시로야마), 낱말이 다른 뜻(鉱山 = 광산, 斎場御嶽의 御嶽 = 우타키),
+  // 山을 せん으로 읽는 이름(扇ノ山 おうぎのせん 오기노센 — 요나고의 大山 다이센처럼 이름째 옮긴다)
+  const SUFFIX_RULES = [[/美術館$/, /미술관/], [/博物館$/, /박물관/], [/記念館$/, /기념관/], [/郷土館$/, /향토관/], [/歴史館$/, /역사관/], [/資料館$/, /자료관/],
+    [/史料館$/, /사료관/], [/文学館$/, /문학관/], [/科学館$/, /과학관/], [/動物園$/, /동물원/], [/水族館$/, /수족관/], [/植物園$/, /식물원/], [/神社$/, /신사$/],
+    [/神宮$/, /신궁$/], [/大社$/, /(?:다이샤|대사)$/], [/天満宮$/, /텐만구$/], [/温泉$/, /온천$/], [/貝塚$/, /패총$/], [/遺跡$/, /유적$/], [/古墳群?$/, /고분군?$/],
+    [/[岳嶽]$/, /(?:다케|타케)$/], [/[^半列諸]島$/, /섬$/], [/[^寺]山$/, /산$/], [/城$/, /성$/], [/城跡$/, /성터$/], [/滝$/, /폭포$/], [/公園$/, /공원$/], [/庭園$/, /정원$/]];
+  const SUFFIX_KEPT = new Set(['Q11548410', 'Q705288', 'Q3862015', 'Q109362343', 'Q3087076', 'Q11496825']);
+  const suffixWrong = allPlaces.filter(([, p]) => !SUFFIX_KEPT.has(p.wikidata) && SUFFIX_RULES.some(([jr, kr]) => jr.test(p.ja) && !kr.test(p.name)))
+    .map(([ck, p]) => `${ck}|${p.ja} → ${p.name}`);
+  const keptStill = [...SUFFIX_KEPT].filter((q) => allPlaces.some(([, p]) => p.wikidata === q && SUFFIX_RULES.some(([jr, kr]) => jr.test(p.ja) && !kr.test(p.name))));
+  log(suffixWrong.length === 0 && keptStill.length === SUFFIX_KEPT.size, `city-places.json: the Japanese generic word is translated in the Korean name (美術館 미술관, 記念館 기념관, 島 섬, 岳 다케 …; ${SUFFIX_KEPT.size} listed exceptions)`,
+    short({ suffixWrong: suffixWrong.slice(0, 6), keptStill }));
+  // 이름을 다듬은 장소(인물 이름 순서·장음·시설 낱말): 파일의 이름이 바로 그것이다
+  // (읽기는 위키데이터에 가나가 없는 곳만 일본어 위키백과로 확인: 上塩冶 かみえんや, 扇ノ山 おうぎのせん, 阿多田島 あたたじま, 十山 とおやま)
+  const RENAMED = [['shonai', 'Q3539675', '도몬 겐 기념관'], ['yonago', 'Q9047014', '우에다 쇼지 사진 미술관'], ['niigata', 'Q5576152', '니가타 현립 식물원'],
+    ['kagoshima', 'Q25045409', '나가시마 미술관'], ['asahikawa', 'Q11373285', '이노우에 야스시 기념관'], ['yakushima', 'Q10950373', '미야노우라다케'], ['takamatsu', 'Q339004', '메기섬'],
+    ['izumo', 'Q55523209', '가미엔야 쓰키야마 고분'], ['tottori', 'Q11496825', '오기노센'], ['iwakuni', 'Q11657359', '아타타섬'], ['yakushima', 'Q130284190', '구스가와 텐만구'],
+    ['izumo', 'Q47164008', '신지호 자연관 고비우스'], ['nakashibetsu', 'Q11366289', '나카시베츠 향토관'], ['asahikawa', 'Q6919490', '아사히카와 아사히산'],
+    ['yonaguni', 'Q11405009', '요나구니 도야마 신사'], ['hanamaki', 'Q11537943', '사쿠라치진관'], ['yonaguni', 'Q64589704', '투이시']];
+  const renamedWrong = RENAMED.filter(([ck, q, name]) => !(asset.cities?.[ck]?.places || []).some((p) => p.wikidata === q && p.name === name)).map(([ck, q, name]) => `${ck}|${q} ${name}`);
+  log(renamedWrong.length === 0, 'city-places.json: renamed places carry the new Korean names (도몬 겐 기념관, 우에다 쇼지 사진 미술관, 니가타 현립 식물원, 가미엔야 쓰키야마 고분, 오기노센 …)', short(renamedWrong));
+  // 앱이 이미 쓰는 표기를 따른다: 도시 이름(나카시베츠 — 장소 이름·지역에도 '나카시베쓰'가 없다), 天満宮 텐만구(다자이후 텐만구), 宍道湖 신지호(신지호 석양)
+  const offSpelling = allPlaces.filter(([, p]) => /나카시베쓰|덴만구|신지코/.test(`${p.name} ${p.area}`)).map(([ck, p]) => `${ck}|${p.name} (${p.area})`);
+  log(offSpelling.length === 0, "city-places.json: names follow the app's own spellings (city label 나카시베츠, 다자이후 텐만구, 신지호): no 나카시베쓰 / 덴만구 / 신지코", short(offSpelling));
+  // 예전 이름(배포본이 보여 주던 이름, 저장된 일정에 남는다)은 별칭으로 남아 말로 찾을 수 있다 — 화면에는 쓰지 않는다
+  const FORMER = [['shonai', 'Q3539675', '겐 도몬 사진 박물관'], ['niigata', 'Q5576152', '니이가타 현립 식물원'], ['yonago', 'Q9047014', '쇼지 우에다 사진 박물관'],
+    ['takamatsu', 'Q339004', '메기지마'], ['tottori', 'Q11496825', 'Mount Ōgi'], ['nakashibetsu', 'Q11366290', '나카시베쓰 신사'], ['yakushima', 'Q130283583', '야쿠시마 타이샤']];
+  const formerWrong = FORMER.filter(([ck, q, old]) => !(asset.cities?.[ck]?.places || []).some((p) => p.wikidata === q && (p.aliases || []).includes(old) && p.name !== old)).map(([ck, q, old]) => `${ck}|${q} ${old}`);
+  const tooManyAliases = allPlaces.filter(([, p]) => (p.aliases || []).length > 4).map(([ck, p]) => `${ck}|${p.name}`);
+  log(formerWrong.length === 0 && tooManyAliases.length === 0, 'city-places.json: former names (겐 도몬 사진 박물관, 니이가타 현립 식물원, 메기지마 …) and the other spelling 타이샤 stay as aliases (<= 4, what the server reads)', short({ formerWrong, tooManyAliases }));
 
   // (c) 서버: 모든 도시의 3일 규칙 일정(Gemini 없음)
   mock.reset();
@@ -1901,6 +1965,62 @@ async function phaseCityCoverage() {
     }
     log(bad.length === 0, "chat naming only a nearby place (다케토미섬, Hashima Island, 산나이마루야마 유적) -> that place's city, the place in the plan, no transfer day", short(bad));
   } catch (e) { log(false, 'chat nearby place flow', e.message); }
+  // 이름을 다듬은 장소(인물 이름 순서·장음·시설 낱말·岳·島)도 말로 찾는다: 새 한국어 이름·영어·일본어 이름 → 그 장소의 도시, 일정에 그 장소
+  try {
+    const bad = [];
+    for (const [message, lang, city, place] of [
+      ['도몬 겐 기념관 2일', 'ko', 'shonai', '도몬 겐 기념관'], ['우에다 쇼지 사진 미술관 2일', 'ko', 'yonago', '우에다 쇼지 사진 미술관'],
+      ['이노우에 야스시 기념관 2일', 'ko', 'asahikawa', '이노우에 야스시 기념관'], ['미야노우라다케 2일', 'ko', 'yakushima', '미야노우라다케'],
+      ['메기섬 2일', 'ko', 'takamatsu', '메기섬'], ['고시미즈 원생화원 2일', 'ko', 'memanbetsu', '고시미즈 원생화원'],
+      // '홋카이도립'의 '홋카이도'(삿포로)는 장소 이름 속이라 도시로 보지 않는다
+      ['홋카이도립 오비히로 미술관 2일', 'ko', 'obihiro', '홋카이도립 오비히로 미술관'],
+      ['Ken Domon Museum of Photography 2 days', 'en', 'shonai', 'Ken Domon Museum of Photography'], ['Shoji Ueda Museum of Photography 2 days', 'en', 'yonago', 'Shoji Ueda Museum'],
+      ['土門拳記念館 2日間', 'ja', 'shonai', '土門拳記念館'], ['植田正治写真美術館 2日間', 'ja', 'yonago', '植田正治写真美術館'],
+      // 앱의 기존 표기에 맞춘 이름과 그 다른 표기(다자이후 텐만구, 신지호 석양, 이즈모 타이샤), 읽기를 고친 이름
+      ['구스가와 텐만구 2일', 'ko', 'yakushima', '구스가와 텐만구'], ['신지호 자연관 고비우스 2일', 'ko', 'izumo', '신지호 자연관 고비우스'],
+      ['야쿠시마 타이샤 2일', 'ko', 'yakushima', '야쿠시마 다이샤'], ['나카시베츠 향토관 2일', 'ko', 'nakashibetsu', '나카시베츠 향토관'],
+      ['가미엔야 쓰키야마 고분 2일', 'ko', 'izumo', '가미엔야 쓰키야마 고분'], ['오기노센 2일', 'ko', 'tottori', '오기노센'],
+      // 예전 이름(저장된 일정에 남은 이름) → 지금 이름의 장소
+      ['겐 도몬 사진 박물관 2일', 'ko', 'shonai', '도몬 겐 기념관'], ['니이가타 현립 식물원 2일', 'ko', 'niigata', '니가타 현립 식물원'],
+      ['아타다지마 2일', 'ko', 'iwakuni', '아타타섬'], ['다카마쓰 3일 메기지마 꼭', 'ko', 'takamatsu', '메기섬'],
+      // 영어 이름 속 일본어 조사 no는 영어 부정 "no X"가 아니다
+      ['Nagori no Matsubara 2 days', 'en', 'yakushima', 'Nagori no Matsubara']
+    ]) {
+      const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 3, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+      const p = chat.json?.parsed || {};
+      const plan = await postJson('/api/travel-plan', { city: p.cityKey, theme: 'mixed', days: p.days, budget: 'mid', startDate, lang, useAi: true, request: message, mustVisit: p.wantedPlaces || [] }, { ip: ip() });
+      const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+      if (p.cityKey !== city || !blocks.some((b) => b.includes(place)) || blocks.some((b) => /: (?:메기지마|겐 도몬 사진 박물관) \(/.test(b))) bad.push(`${message}: ${p.cityKey} ${short(blocks, 160)}`);
+    }
+    log(bad.length === 0, 'chat naming a renamed place (도몬 겐 기념관, 우에다 쇼지 사진 미술관, 구스가와 텐만구, 오기노센 …; en/ja names, the other spelling 타이샤, former names like 겐 도몬 사진 박물관 / 메기지마) -> its city, the place in the plan', short(bad));
+  } catch (e) { log(false, 'chat renamed place lookup', e.message); }
+  // 이름이 걸친 말: '아사히카와 아사히야마 동물원'·'旭川旭山動物園'은 동물원 하나(산 '아사히카와 아사히산'·'旭川旭山'이 아니다), '니이가타 2일'은 니가타,
+  // 예전 이름으로 빼 달라고 하면 지금 이름의 장소가 빠진다, 꼭 갈 곳의 여러 낱말 이름은 낱말 조각('쇼지'·'박물관')으로 쪼개지 않는다
+  try {
+    const bad = [];
+    const run = async (message, lang) => {
+      const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 3, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+      const p = chat.json?.parsed || {};
+      const plan = await postJson('/api/travel-plan', { city: p.cityKey, theme: 'mixed', days: p.days, budget: 'mid', startDate, lang, useAi: true, request: message,
+        mustVisit: p.wantedPlaces || [], ...((p.excludedPlaces || []).length ? { excludedPlaces: p.excludedPlaces } : {}) }, { ip: ip() });
+      return { p, blocks: (plan.json?.itinerary || []).flatMap((d) => d.blocks || []) };
+    };
+    for (const [message, lang] of [['아사히카와 아사히야마 동물원 2일', 'ko'], ['아사히카와 2일 아사히야마 동물원 꼭', 'ko'], ['旭川旭山動物園 2日間', 'ja']]) {
+      const { p } = await run(message, lang);
+      if (p.cityKey !== 'asahikawa' || JSON.stringify(p.wantedPlaces) !== JSON.stringify(['아사히야마 동물원'])) bad.push(`${message}: ${p.cityKey} ${short(p.wantedPlaces)}`);
+    }
+    const ni = await run('니이가타 2일', 'ko');
+    if (ni.p.cityKey !== 'niigata') bad.push(`니이가타 2일: ${ni.p.cityKey}`);
+    const ex = await run('쇼나이 2일 겐 도몬 사진 박물관 빼고', 'ko');
+    if (ex.p.cityKey !== 'shonai' || !(ex.p.excludedPlaces || []).includes('도몬 겐 기념관') || ex.blocks.some((b) => b.includes('도몬 겐 기념관'))) bad.push(`exclude by former name: ${short(ex.p.excludedPlaces)} ${short(ex.blocks, 160)}`);
+    const fr = await run('요나고 2일 쇼지 우에다 사진 박물관 꼭 가고 싶어', 'ko');
+    if (JSON.stringify(fr.p.wantedPlaces) !== JSON.stringify(['우에다 쇼지 사진 미술관']) || !fr.blocks.some((b) => b.includes('우에다 쇼지 사진 미술관'))) bad.push(`former name must-go: ${short(fr.p.wantedPlaces)}`);
+    const un = await run('요나고 2일 가나다 라마바 사진 박물관 꼭 가고 싶어', 'ko');
+    if (un.blocks.some((b) => /: (?:가나다|라마바|박물관|사진) \(/.test(b)) || (un.p.wantedPlaces || []).some((w) => ['가나다', '라마바', '박물관'].includes(w))) bad.push(`unknown multi-word must-go: ${short(un.p.wantedPlaces)} ${short(un.blocks, 160)}`);
+    const multi = await run('도쿄 5일 애니·서브컬처 위주로, 아키하바라 이케부쿠로 나카노는 꼭', 'ko');
+    if (!['아키하바라', '이케부쿠로', '나카노'].every((w) => (multi.p.wantedPlaces || []).includes(w))) bad.push(`separate must-go words: ${short(multi.p.wantedPlaces)}`);
+    log(bad.length === 0, "chat: '아사히카와 아사히야마 동물원' / '旭川旭山動物園' = only the zoo, '니이가타' = 니가타, excluding by a former name works, a multi-word must-go name is not cut into word fragments (separate words still are separate places)", short(bad));
+  } catch (e) { log(false, 'chat overlapping names / former names / must-go phrases', e.message); }
   log(notFull.length === 0, '3-day rule plan of every other city fills every sightseeing slot with a real place (no free-time slot)', notFull.join(', '));
 
   // (d) en/ja 화면: 새 명소 이름·지역·분류에 한국어가 남지 않는다
@@ -3296,6 +3416,14 @@ async function phaseAiItinerary() {
     log(allBlocks(mm).filter((b) => b.includes('팀랩 플래닛')).length === 1 && mm.json?.itineraryInfo?.postProcess?.mustInserted === 1 && (mm.json?.itineraryInfo?.missingMustVisit || []).length === 0,
       "missing_must: mustVisit '팀랩 플래닛' that the AI left out is inserted exactly once (mustInserted 1, missingMustVisit [])", short(allBlocks(mm)));
     log(/팀랩 플래닛/.test(lastItinPrompt()) && /Schedule every mustVisit exactly once/.test(lastItinPrompt()), 'missing_must: the prompt asked for the must-visit place');
+    // 15:00 점심은 점심으로 남는다: 시간대 정리 단계마다 기준이 달라(16시/15시) 점심이 비고 저녁이 둘이 되던 문제(실측 10-02 후쿠오카)
+    mock.scenario = { gemini: 'late_lunch' };
+    const ll = await plan('fukuoka');
+    const llDays = ll.json?.itinerary || [];
+    const mealCount = (d, p) => (d.blocks || []).filter((b) => b.startsWith(`${p}(`)).length;
+    log(ll.json?.itineraryInfo?.kind === 'ai' && llDays.length === 2 && llDays.every((d) => mealCount(d, '점심') === 1 && mealCount(d, '저녁') === 1)
+      && llDays.every((d) => (d.blocks || []).some((b) => b.startsWith('점심(15:00-16:00)'))),
+      "late_lunch: AI '점심(15:00-16:00)' + '저녁(18:00-19:30)' -> still one 점심 (15:00) and one 저녁 a day (no empty lunch, no second dinner)", short(llDays.map((d) => d.blocks), 500));
     mock.scenario = { gemini: 'lunch_repeat' };
     const lr = await plan('osaka');
     const lrDays = lr.json?.itinerary || [];

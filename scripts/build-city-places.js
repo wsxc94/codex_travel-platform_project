@@ -180,13 +180,14 @@ const NO_PHOTO_QIDS = {
   Q11414555: 'Kikkō Park: P18 is the Kikkawa Historical Museum building'
 };
 // Korean / English names looked at by hand for places whose Wikidata names are Japanese only and that the
-// rules of scripts/ja-names.js cannot write (loanwords, long institution names). en only where Wikidata has none.
+// rules of scripts/ja-names.js cannot write (loanwords, long institution names). en only where Wikidata has none, or where its
+// English label means another reading or another thing (扇ノ山 Ōginosen, 合氣神社 Aiki Shrine).
 const NAME_FIXES = {
   Q11314514: { ko: '포트타워 셀리온' },
   Q4739454: { ko: '아마미 아일랜드 식물원' },
   Q11411970: { ko: '다이 온천', en: 'Dai Onsen' },
   Q11508588: { ko: '일본 현대 시가 문학관' },
-  Q47164008: { ko: '신지코 자연관 고비우스' },
+  Q47164008: { ko: '신지호 자연관 고비우스' }, // 宍道湖 is 신지호 in the app (curated 신지호 석양, area 신지호)
   Q4141258: { ko: '유신 후루사토관' },
   Q24805773: { ko: '가고시마 자비에르 성당' },
   Q109362343: { ko: '기타다이토 인광산 유적' },
@@ -195,7 +196,7 @@ const NAME_FIXES = {
   Q9187319: { ko: '구시로 정교회' },
   Q22677838: { ko: '구시로시 두루미 자연공원' },
   Q11402997: { ko: '홋카이도립 구시로 예술관' },
-  Q11648277: { ko: '구시로 어린이 유가쿠칸' },
+  Q11648277: { ko: '구시로 어린이 유가쿠관' }, // 館 is 관 (like 스즈키 다이세쓰관)
   Q716411: { ko: '구 가이치 학교' },
   Q11608719: { ko: '우쓰쿠시가하라 고원 미술관' },
   Q11402956: { ko: '홋카이도립 북방민족박물관' },
@@ -225,8 +226,8 @@ const NAME_FIXES = {
   Q28690428: { ko: '데와 대교', en: 'Dewa Bridge' },
   Q11426145: { ko: '기노사키 짚 공예 전승관' },
   Q11405495: { ko: '지쿠라 동굴' },
-  Q11456481: { ko: '도야마 현립 수묵 미술관' },
-  Q11596338: { ko: '왓카나이 개기 백년 기념탑' },
+  Q11456481: { ko: '도야마현 수묵 미술관' }, // 富山県水墨美術館: 県 (like 도야마현 미술관), not 県立
+  Q11596338: { ko: '왓카나이 개기 백년 기념탑·북방 기념관' }, // 開基百年記念塔・北方記念館: the tower and the museum in it
   Q11288187: { ko: '윌슨 그루터기' },
   Q127608800: { ko: '야쿠시마 역사 민속 자료관' },
   Q5926948: { ko: '야마가타시 야초원' },
@@ -244,11 +245,81 @@ const NAME_FIXES = {
   Q21653654: { ko: '쓰루오카 가톨릭 성당' },
   Q7743932: { ko: '가가와 현립 뮤지엄' },
   Q11257752: { ko: '아즈마 다리', en: 'Azuma Bridge' },
-  Q11666887: { en: 'Yoroushi Onsen' }, // the kana reading ようろうし is read as a long vowel by the rules
+  // 養老牛 is ようろううし (Yōrōushi): the Wikidata kana ようろうし drops an う, so the rules would write 요로시
+  Q11666887: { ko: '요로우시 온천', en: 'Yoroushi Onsen' },
   Q11596339: { en: 'Wakkanai Onsen' },
   Q11477827: { en: 'Kawakita Onsen' },
   // a wrong Korean label on Wikidata (the Korean Wikipedia title is right)
-  Q339859: { ko: '시텐노지' }
+  Q339859: { ko: '시텐노지' },
+  // Wikidata Korean labels against the rules of scripts/ja-names.js (looked at 2026-10-02):
+  Q11400854: { ko: '덴쇼치' }, // 展勝地 てんしょうち: a word-initial t is ㄷ (label 텐쇼치)
+  Q11491132: { ko: '시노리다테' }, // 志苔館 しのりだて: a fort (館 read date), not a "hall" (label 시노리관)
+  Q63203: { ko: '히로시마시 식물 공원' }, // 広島市植物公園: "시" written with the city name like 아키타시 … (label 히로시마 시 식물 공원)
+  Q64589704: { ko: '투이시' }, // トゥイシ: トゥ is tu (label 트이시)
+  // readings that Wikidata has no kana for, checked on ja.wikipedia (2026-10-02); the English label alone misleads the rules
+  Q55523209: { ko: '가미엔야 쓰키야마 고분' }, // 上塩冶 かみえんや: ん before や ("Kamienya" without n' reads 가미에냐)
+  Q11496825: { ko: '오기노센', en: 'Mount Ōginosen' }, // 扇ノ山 おうぎのせん (Wikidata alias Ōginosen), like 大山 다이센; label "Mount Ōgi"
+  Q11657359: { ko: '아타타섬' }, // 阿多田島 あたたじま: the English label Atadajima has da
+  Q11537943: { ko: '사쿠라치진관' }, // 桜地人館 さくらちじんかん: one name (사쿠라 지진관 reads "earthquake hall")
+  // 十山神社 とおやまじんじゃ: "도야마 신사" alone is taken for Toyama city (도야마) — the island's name in front
+  Q11405009: { ko: '요나구니 도야마 신사' },
+  // the English Wikipedia article of the item is the Iwama dōjō next to the shrine (Wikidata alias Aiki Shrine)
+  Q2827917: { en: 'Aiki Shrine' }
+};
+// The app's own spelling of a city name, in generated names and areas: the city label 나카시베츠 (中標津; the rules and the
+// Wikidata label of 中標津町 write 나카시베쓰). A place name must not spell its city differently from the city shown above it.
+const CITY_LABEL_SPELLINGS = [[/나카시베쓰/g, '나카시베츠']];
+const withCitySpelling = (s) => CITY_LABEL_SPELLINGS.reduce((acc, [re, to]) => acc.replace(re, to), String(s || ''));
+// Area (P131) Korean label as the app writes wards: 아오바구, not "이즈미 구" (two Wikidata labels have the space)
+const areaSpelling = (s) => withCitySpelling(s).replace(/^([가-힣]+) 구$/, '$1구');
+// Areas looked at by hand: the item has no P131, so the city label stood there (赤間神宮 is in Shimonoseki, not Kitakyushu)
+const AREA_FIXES = {
+  Q712617: { ko: '시모노세키시', en: 'Shimonoseki', ja: '下関市' }
+};
+// Other spellings the app itself shows for a word, kept as aliases so either is found: 大社 다이샤 (구마노 혼구 다이샤,
+// the rules) / 타이샤 (the curated 이즈모 타이샤).
+const SPELLING_VARIANTS = [[/ 다이샤$/, ' 타이샤']];
+// Names the app showed before (deployed 38163f0, until the renaming of 2026-10-02): saved plans keep them, so they stay
+// findable as aliases (chat, exclusion, name restoration) — never shown. Not for a name that misleads (도야마 신사 = Toyama city).
+const FORMER_NAMES = {
+  Q11595319: ['사타케 역사 박물관'], Q11595345: ['아키타 아카렌가 박물관'], // akita
+  Q109363815: ['고미나토후와가네쿠 유적'], Q11444846: ['아마미 공원'], Q31685573: ['유완산'], // amami
+  Q11539040: ['무나카타 시코 기념 미술관'], Q11662265: ['아오모리 현립 박물관'], // aomori
+  Q11356532: ['미우라 아야코 문학관'], Q11373285: ['야스시 이노우에 기념관'], // asahikawa
+  Q11593098: ['이이노 UFO 박물관'], Q718441: ['아즈마코후지산'], // fukushima
+  Q11491132: ['시노리관'], Q11542816: ['요코쓰산'], // hakodate
+  Q11400854: ['텐쇼치'], Q11501987: ['하나마키 니이산'], Q11537943: ['사쿠라 지진칸'], // hanamaki
+  Q63203: ['히로시마 시 식물 공원'], // hiroshima
+  Q2827917: ['Iwama Dōjō'], Q4676321: ['이바라키 현립 역사 박물관'], // ibaraki
+  Q11333899: ['후루스토바루성'], Q4521182: ['오모토산'], // ishigaki
+  Q11657359: ['아타다지마'], // iwakuni
+  Q47164008: ['신지코 자연관 고비우스'], Q4802099: ['시마네 고대 이즈모 박물관'], Q5508550: ['후미시마'], Q55523209: ['가미에냐 쓰키야마 고분'], // izumo
+  Q25045409: ['나가시마 박물관'], // kagoshima
+  Q31707328: ['아라 다케'], // kumejima
+  Q11648277: ['구시로 어린이 유가쿠칸'], // kushiro
+  Q11462664: ['고시미즈 겐세이카엔'], Q11607220: ['아바시리시 민속 박물관'], // memanbetsu
+  Q21654765: ['슈지 데라야마 박물관'], Q30593786: ['후타쓰모리 유적'], // misawa
+  Q30593667: ['미야코지마시 박물관'], // miyako
+  Q11366289: ['나카시베쓰 시립 민속 박물관'], Q11366290: ['나카시베쓰 신사'], Q11666887: ['요로시 온천'], Q8536966: ['시베쓰산'], // nakashibetsu
+  Q11408352: ['난키시라하마 온천'], Q77700884: ['미스지 유적'], // nanki_shirahama
+  Q11405635: ['지토세오하시'], Q11502895: ['니이가타시 역사 박물관'], Q11503581: ['니이가타 고코쿠 신사'], Q5576152: ['니이가타 현립 식물원'], // niigata
+  Q11402964: ['홋카이도 오비히로 미술관'], // obihiro
+  Q110990382: ['아키타이누노사토'], Q11641883: ['닷코모리산'], Q20043438: ['오다테시 박물관'], // odate
+  Q16895460: ['이시카와산'], // okinawa
+  Q31486729: ['리시리 폰 야마'], // rishiri
+  Q64796766: ['사가 조코칸'], // saga
+  Q3539675: ['겐 도몬 사진 박물관'], // shonai
+  Q11625212: ['소부산'], // tajima
+  Q11666715: ['이이노산'], Q339004: ['메기지마'], // takamatsu
+  Q19955545: ['이노카와 다케'], // tokunoshima
+  Q11496825: ['오기산', 'Mount Ōgi'], // tottori
+  Q11456392: ['도야마 과학관'], Q11456481: ['도야마 현립 수묵 미술관'], // toyama
+  Q11437110: ['왓카나이 오누마호'], Q11596338: ['왓카나이 개기 백년 기념탑'], Q68888166: ['왓카나이 가라후토 박물관'], // wakkanai
+  Q10950373: ['미야노우라산'], Q11344357: ['못초무산'], Q130279317: ['나고리 노 마쓰바라'], Q130283583: ['야쿠시마타이샤'], Q130284190: ['구스가와텐만구'], // yakushima
+  Q6890444: ['모가미 요시아키 역사 박물관'], // yamagata
+  Q11412165: ['미기타산'], // yamaguchi_ube
+  Q9047014: ['쇼지 우에다 사진 박물관'], // yonago
+  Q31686520: ['우라부산'], Q64589704: ['트이시'] // yonaguni
 };
 // Kinds that stay a sight even with a rejected extra class ("museum" + "company", "temple" + "cemetery").
 const STRONG_KINDS = new Set(['themepark', 'castle', 'temple', 'shrine', 'church', 'aquarium', 'zoo', 'artmuseum', 'museum', 'onsen', 'garden']);
@@ -447,8 +518,9 @@ function koName(entity, jaName, enName) {
   if (fromWiki) return { name: fromWiki, from: 'kowiki' };
   const fromLabel = stripQualifier(entity.labels.ko);
   if (fromLabel) return { name: fromLabel, from: 'ko' };
+  // (koDisplayName says 'fix' for a Japanese name looked at by hand in ja-names.js, else 'translit')
   const t = jaName ? jaNames.koDisplayName({ ja: jaName, en: enName, kana: entity.kana || [] }) : null;
-  if (t) return { name: t.name, from: 'translit' };
+  if (t) return { name: t.name, from: t.from === 'fix' ? 'fix' : 'translit' };
   return jaName ? { name: jaName, from: 'ja' } : { name: '', from: '' };
 }
 
@@ -535,6 +607,7 @@ async function main() {
         if (kind.id === 'nature' && /island|islet/.test(classLabel) && cityJa && ja.includes(cityJa)) return reject('the-city-island');
         if (ISLAND_CITIES.has(cityKey) && kind.id === 'nature' && /island/.test(classLabel) && dist < 3) return reject('the-city-island');
         const ko = koName(e, ja, labels.en);
+        ko.name = withCitySpelling(ko.name);
         if (!ko.name || ko.name.length > 40 || GENERIC_NAME_RE.test(ko.name) || GENERIC_NAME_RE.test(ja)) return reject('generic-or-long-name');
         if ([ko.name, ja, labels.en].some((n) => n && NOT_A_SIGHT_NAME_RE.test(n))) return reject('not-a-sight-name');
         const keys = [ko.name, ja, labels.en].map(nameKey).filter(Boolean);
@@ -691,7 +764,8 @@ async function main() {
       places: c.places.map((a) => {
         const e = a.entity;
         const admin = e.admin[0] ? entityCache.get(e.admin[0]) : null;
-        const areaKo = admin ? stripQualifier(admin.labels.ko) : '';
+        const areaKo = admin ? areaSpelling(stripQualifier(admin.labels.ko)) : '';
+        const areaFix = AREA_FIXES[e.id] || null;
         const file = photoFile(`${a.ko.name} ${a.labels.ja || ''}`, e);
         const p = photo(file);
         // English: Wikidata, else a name looked at by hand, else the Hepburn reading of the kana name ("Dai Onsen"), else Japanese
@@ -717,8 +791,10 @@ async function main() {
             ja: ja && !names.ja.includes(ja) ? `${ja}${names.ja}` : names.ja
           };
         }
-        // aliases: the names without the city in front (the app matches them only where they are unambiguous)
-        const aliases = [...new Set(baseNames.filter((n) => n && ![names.ko, names.en, names.ja].includes(n)))];
+        // aliases: the names without the city in front (the app matches them only where they are unambiguous), the app's
+        // other spelling of a word (SPELLING_VARIANTS) and the names the app showed before (FORMER_NAMES)
+        const variants = SPELLING_VARIANTS.filter(([re]) => re.test(names.ko)).map(([re, to]) => names.ko.replace(re, to));
+        const aliases = [...new Set([...baseNames, ...variants, ...(FORMER_NAMES[e.id] || [])].filter((n) => n && ![names.ko, names.en, names.ja].includes(n)))];
         const entry = {
           name: names.ko,
           nameFrom: a.ko.from,
@@ -738,8 +814,9 @@ async function main() {
           // whole day: a theme park is fullDay (an admission place), a summit hike or a place more than
           // DAY_TRIP_KM from the city center dayTrip (like a far day trip)
           ...(a.fullDay ? (a.kind.id === 'themepark' ? { fullDay: true } : { dayTrip: true }) : (a.dist > DAY_TRIP_KM ? { dayTrip: true } : {})),
-          area: areaKo || cityLabel,
-          ...(areaKo && admin ? { areaEn: stripQualifier(lib.displayLabels(admin).en || ''), areaJa: stripQualifier(lib.displayLabels(admin).ja || '') } : {}),
+          area: (areaFix && areaFix.ko) || areaKo || cityLabel,
+          ...(areaFix ? { areaEn: areaFix.en, areaJa: areaFix.ja }
+            : (areaKo && admin ? { areaEn: stripQualifier(lib.displayLabels(admin).en || ''), areaJa: stripQualifier(lib.displayLabels(admin).ja || '') } : {})),
           image: p ? p.image : null,
           filePage: p ? p.filePage : null,
           license: p ? p.license : null,
@@ -794,7 +871,7 @@ async function main() {
       script: 'scripts/build-city-places.js',
       targetHalfDay: TARGET_HALF_DAY,
       minSights: MIN_SIGHTS,
-      notes: 'name = Korean name: nameFrom fix (looked at by hand), kowiki (Korean Wikipedia title), ko (Wikidata label), translit (Japanese reading or Hepburn English label written in Korean by scripts/ja-names.js), or ja (the Japanese label, when none of these exists); en falls back to the Hepburn kana reading, then ja. A name used by another city (or one Wikidata needs a qualifier for) has the area in front. Places lie within radiusKm of center (or of an extraCenters circle). distKm = distance to center. few = fewer than minSights half-day sights exist near the city (the app says so instead of borrowing places from other cities).'
+      notes: 'name = Korean name: nameFrom fix (looked at by hand), kowiki (Korean Wikipedia title), ko (Wikidata label), translit (Japanese reading or Hepburn English label written in Korean by scripts/ja-names.js), or ja (the Japanese label, when none of these exists); en falls back to the Hepburn kana reading, then ja. A name used by another city (or one Wikidata needs a qualifier for) has the area in front. aliases = names to find the place by, never shown: the name without the area in front, another spelling the app uses for a word (다이샤/타이샤), and names shown before a renaming (saved plans keep them). Places lie within radiusKm of center (or of an extraCenters circle). distKm = distance to center. few = fewer than minSights half-day sights exist near the city (the app says so instead of borrowing places from other cities).'
     },
     ...sections
   };

@@ -6,8 +6,16 @@
  *
  * - Korean follows the National Institute of Korean Language rules for Japanese (일본어 표기법):
  *   word-initial k/t/ch are written ㄱ/ㄷ/ㅈ, inside a word ㅋ/ㅌ/ㅊ; ts(u) is 쓰; long vowels are not
- *   written; ん is ㄴ and っ is ㅅ as a final consonant. Generic words are translated the usual way
- *   ("X Shrine" → "X 신사", "Mount X" → "X산", "X Castle" → "X성", 温泉 → 온천).
+ *   written (新潟 Niigata → 니가타, 東京 → 도쿄); ん is ㄴ and っ is ㅅ as a final consonant. Generic words are
+ *   translated the usual way ("X Shrine" → "X 신사", "Mount X" → "X산", "X Castle" → "X성", 温泉 → 온천), and the
+ *   Japanese name decides where the English label is loose: 美術館 is 미술관 even for "X Museum", 記念館 기념관,
+ *   郷土館 향토관, 歴史館 역사관, 貝塚 패총 (FACILITY_JA); 岳 is -다케 (湯湾岳 유완다케), ヶ岳 -가타케 (槍ヶ岳 야리가타케), 山 -산;
+ *   島 is 섬 (女木島 메기섬); 館 is 관 (佐賀徴古館 사가 조코관); 大社 다이샤, 天満宮 텐만구 as words of their own.
+ * - Where the app already writes a word its own way, that spelling wins over the rules: 天満宮 is 텐만구 like the
+ *   curated 다자이후 텐만구 (the rules would write 덴만구); city names are spelled like the app's city labels
+ *   (scripts/build-city-places.js CITY_LABEL_SPELLINGS: 中標津 나카시베츠).
+ * - Person names are in Japanese order, family name first (土門拳記念館 → 도몬 겐 기념관), never in the order of the
+ *   English label: names the rules cannot get right are listed by hand in JA_KO_OVERRIDES.
  * - Sources, best first: the English Wikidata label when it is a Hepburn romanisation plus known
  *   English words ("Ryōzen Shrine", "Mount Shinobu", "Kamabuchi Falls"), then the kana reading
  *   (P1814, "りょうぜんじんじゃ") with a known kanji suffix, then a name that is kana only.
@@ -35,7 +43,10 @@ const VOWELS = new Set(['a', 'i', 'u', 'e', 'o']);
 // combinations that are not Hepburn (Nihon-shiki "si", "tu" …, or English spellings)
 const INVALID = new Set(['si', 'ti', 'tu', 'hu', 'zi', 'di', 'du', 'yi', 'ye', 'wu', 'wi', 'we', 'tsa', 'tsi', 'tse', 'tso', 'fa', 'fi', 'fe', 'fo', 'kyi', 'kye', 'gyi', 'gye', 'nyi', 'nye', 'hyi', 'hye', 'byi', 'bye', 'pyi', 'pye', 'myi', 'mye', 'ryi', 'rye']);
 
-// one romaji word → morae [{onset, vowel} | 'N' | 'Q'], or null when it is not Hepburn
+// one romaji word → morae [{onset, vowel} | 'N' | 'Q'], or null when it is not Hepburn.
+// Long vowels are not written in Korean: Hepburn writes a long i as "ii" (新潟 Niigata → 니가타, 飯野 Iino → 이노,
+// 飯坂 Iizaka → 이자카), so a second i in the first syllable of a word is dropped. Later in a word "ii" is usually two
+// words meeting (通り池 Tōri-ike → 도리이케) and stays. (Long a/u/e/o come with macrons, already plain vowels here.)
 function romajiMorae(word) {
   const w = String(word || '').toLowerCase().replace(/[āīūēōâîûêô]/g, (c) => MACRONS[c] || c);
   if (!/^[a-z']+$/.test(w)) return null;
@@ -44,7 +55,13 @@ function romajiMorae(word) {
   while (i < w.length) {
     const c = w[i];
     if (c === "'") { i += 1; continue; }
-    if (VOWELS.has(c)) { out.push({ onset: '', vowel: c }); i += 1; continue; }
+    if (VOWELS.has(c)) {
+      const prev = out[out.length - 1];
+      if (c === 'i' && w[i - 1] === 'i' && out.length === 1 && typeof prev === 'object' && prev.vowel === 'i') { i += 1; continue; }
+      out.push({ onset: '', vowel: c });
+      i += 1;
+      continue;
+    }
     const next = w[i + 1];
     // moraic n: before a consonant (not y), before an apostrophe or at the end; m before b/m/p
     if (c === 'n' && (next === undefined || next === "'" || (!VOWELS.has(next) && next !== 'y'))) { out.push('N'); i += 1; continue; }
@@ -154,21 +171,67 @@ const EN_WORDS = {
   crafts: '공예', traditional: '전통', sea: '바다', seaside: '해변', canal: '운하', photography: '사진'
 };
 const TEMPLE_SUFFIX_RE = /-(?:ji|dera|tera|in|dō|do)$|(?:ji|dera)$/i;
+// shrine words written as a word of their own (romanised, without macrons): translated (jinja 신사, jingu 신궁) or in the
+// app's spelling (tenmangu 텐만구 like the curated 다자이후 텐만구; the rules would write 덴만구)
+const SHRINE_WORDS = { tenmangu: '텐만구', hachimangu: '하치만구', taisha: '다이샤', jingu: '신궁', jinja: '신사' };
 
-// "Ryōzen Shrine" → "료젠 신사", "Mount Shinobu" → "시노부산", "Kasama Castle" → "가사마성"; null when a word is unknown
-function koFromEnglish(en) {
+// What the Japanese name ends with decides the generic word where the English label is loose about it
+// (the English label is only a romanisation plus an English word):
+// - facilities: the Japanese generic word wins ("Nagashima Museum" = 長島美術館 → 나가시마 미술관, "Aomori Prefectural
+//   Museum" = 青森県立郷土館 → 아오모리 현립 향토관, "Futatsumori Site" = 二ツ森貝塚 → 후타쓰모리 패총). Longest first.
+const FACILITY_JA = [
+  ['記念美術館', ' 기념 미술관'], ['写真美術館', ' 사진 미술관'], ['美術館', ' 미술관'],
+  ['歴史博物館', ' 역사 박물관'], ['郷土博物館', ' 향토 박물관'], ['総合博物館', ' 종합 박물관'], ['科学博物館', ' 과학 박물관'],
+  ['民俗博物館', ' 민속 박물관'], ['博物館', ' 박물관'], ['記念文学館', ' 기념 문학관'], ['文学館', ' 문학관'], ['記念館', ' 기념관'],
+  ['歴史民俗資料館', ' 역사 민속 자료관'], ['民俗資料館', ' 민속 자료관'], ['資料館', ' 자료관'], ['史料館', ' 사료관'],
+  ['歴史館', ' 역사관'], ['郷土館', ' 향토관'], ['科学館', ' 과학관'], ['貝塚', ' 패총'], ['遺跡', ' 유적']
+];
+// Korean generic words from English labels that the Japanese facility word may replace (a museum, a site, a castle site)
+const SWAPPABLE_KO = new Set([' 기념 미술관', ' 미술관', ' 기념관', ' 역사 박물관', ' 민속 박물관', ' 문학관', ' 과학관', ' 조각 미술관',
+  ' 박물관', ' 유적', ' 패총', ' 고분', '성', '성터']);
+// descriptive English words that the Japanese generic word already says ("Museum of History" + 歴史館 → 역사관, not 역사 역사관)
+const DESCRIPTIVE_KO = new Set(['역사', '민속', '미술', '과학', '기념', '사진', '문학', '향토', '종합']);
+const facilityOf = (ja) => {
+  const name = String(ja || '').replace(/\s+/g, '');
+  const hit = FACILITY_JA.find(([w]) => name.endsWith(w) && name.length > w.length);
+  return hit ? hit[1] : '';
+};
+const plainRomaji = (s) => String(s || '').toLowerCase().replace(/[āīūēōâîûêô]/g, (c) => MACRONS[c] || c);
+
+// English label → { words (Korean), suffix, attach, generic } or null when a word is unknown.
+// ja (optional): the Japanese name, for the generic word of mountains (山 산 / 岳 다케 / neither) and lakes (湖 호 / 沼, 池 none).
+function englishParts(en, ja = '') {
   let text = String(en || '').replace(/\s+/g, ' ').trim();
   if (!text || /[^A-Za-z\s'’\-āīūēōâîûêôĀĪŪĒŌ.]/.test(text)) return null;
   text = text.replace(/’/g, "'");
+  const jaName = String(ja || '').replace(/\s+/g, '');
+  // "Kominato-Fuwaganeku", "Nanki-Shirahama": two names, two words (고미나토 후와가네쿠); "Azuma-kofuji", "Seiryū-ji" and
+  // a particle ("Bizen-no-Kuni" 비젠노쿠니) stay one word
+  text = text.replace(/(?<![-\s](?:no|ga|ke|tsu))-(?=[A-ZĀĪŪĒŌ])/g, ' ');
+  // "Kusugawa-tenmangū", "Yakushima-taisha": the shrine word is a word of its own (구스가와 텐만구, 야쿠시마 다이샤: SHRINE_WORDS)
+  text = text.replace(/-(tenmang[uū]|hachimang[uū]|taisha|jing[uū]|jinja)$/i, ' $1');
+  // "Chitose-o-hashi" (千歳大橋): ōhashi is "big bridge" (지토세 대교, like 와카토 대교)
+  text = text.replace(/[\s-]+[oō]-?hashi$/i, ' Ohashi Bridge');
   let lower = text.toLowerCase();
   let suffix = '';
   let attachSuffix = false;
+  let generic = false;
   // leading generic words (Korean puts them after the name)
   let m = /^(?:mount|mt\.?)\s+(.+)$/i.exec(text);
   if (m) {
     text = m[1];
-    const tail = text.toLowerCase().replace(/[āīūēō]/g, (c) => MACRONS[c]);
-    suffix = /(?:san|zan|yama|dake|take|mine)$/.test(tail) ? '' : '산';
+    const tail = plainRomaji(text);
+    if (/[ヶケヵがガ][岳嶽]$/.test(jaName)) {
+      // ヶ岳 is usually がたけ: -가타케 (槍ヶ岳 야리가타케, 八ヶ岳 야쓰가타케). A がだけ name is listed in JA_KO_OVERRIDES (右田ヶ岳).
+      suffix = /(?:dake|take)$/.test(tail) ? '' : (/ga$/.test(tail) ? '타케' : '가타케');
+    } else if (/[岳嶽]$/.test(jaName)) {
+      // 岳 is written -다케 (湯湾岳 유완다케, 宮之浦岳 미야노우라다케)
+      suffix = /(?:dake|take)$/.test(tail) ? '' : '다케';
+    } else if (jaName && !/山$/.test(jaName)) {
+      suffix = ''; // no 山 in the name: "Mount Takkomori" = 達子森 (닷코모리), "Mount Azuma-kofuji" = 吾妻小富士 (아즈마코후지)
+    } else {
+      suffix = /(?:san|zan|yama|dake|take|mine)$/.test(tail) ? '' : '산';
+    }
     attachSuffix = true;
   } else if ((m = /^cape\s+(.+)$/i.exec(text))) {
     text = m[1];
@@ -177,10 +240,11 @@ function koFromEnglish(en) {
     attachSuffix = true;
   } else if ((m = /^lake\s+(.+)$/i.exec(text))) {
     text = m[1];
-    suffix = /ko$/i.test(text) ? '' : '호';
+    // 大沼 "Lake Ōnuma" is 오누마 (numa already says it), 湖 is 호
+    suffix = /ko$/i.test(text) || /[沼池]$/.test(jaName) ? '' : '호';
     attachSuffix = true;
   } else {
-    lower = text.toLowerCase().replace(/[āīūēō]/g, (c) => MACRONS[c]);
+    lower = plainRomaji(text);
     let found = false;
     for (const [w, ko, attach] of EN_SUFFIX) {
       if (lower === w) return null;
@@ -207,8 +271,10 @@ function koFromEnglish(en) {
       text = text.replace(/ temple$/i, '');
       if (!found) suffix = TEMPLE_SUFFIX_RE.test(text) ? '' : ' 절';
     }
+    generic = found;
   }
-  if (suffix === '섬' && /(?:jima|shima)$/i.test(text)) suffix = ''; // "Atadajima Island" → 아타다지마
+  // "Atadajima Island" → 아타다지마 (with the Japanese name 阿多田島, jaTouches then writes 아타다섬)
+  if (suffix === '섬' && /(?:jima|shima)$/i.test(text)) suffix = '';
   const words = text.split(' ').filter(Boolean);
   if (!words.length || words.length > 5) return null;
   const outWords = [];
@@ -220,14 +286,33 @@ function koFromEnglish(en) {
       outWords.push(EN_WORDS[lw]);
       continue;
     }
+    // the particle の is written with the word before it: "Nagori no Matsubara" → 나고리노 마쓰바라
+    if (lw === 'no' && outWords.length && /[가-힣]$/.test(outWords[outWords.length - 1])) { outWords[outWords.length - 1] += '노'; continue; }
     if (/^[A-Z]{2,4}$/.test(w)) { outWords.push(w); continue; } // acronyms (UFO)
+    if (outWords.length && SHRINE_WORDS[plainRomaji(w)]) { outWords.push(SHRINE_WORDS[plainRomaji(w)]); continue; }
     const h = romajiWordToHangul(w);
     if (!h) return null;
     outWords.push(h);
   }
   if (!outWords.some((w) => /[가-힣]/.test(w))) return null;
+  return { words: outWords, suffix, attach: attachSuffix, generic };
+}
+
+// "Ryōzen Shrine" → "료젠 신사", "Mount Shinobu" → "시노부산", "Kasama Castle" → "가사마성"; null when a word is unknown.
+// ja (optional): the Japanese name. Its generic word wins for facilities ("Ken Domon Museum of Photography" + 土門拳記念館 →
+// … 기념관; FACILITY_JA), mountains and lakes (englishParts).
+function koFromEnglish(en, ja = '') {
+  const parts = englishParts(en, ja);
+  if (!parts) return null;
+  let { words, suffix, attach } = parts;
+  const facility = ja ? facilityOf(ja) : '';
+  if (facility && parts.generic && SWAPPABLE_KO.has(suffix) && facility !== suffix) {
+    while (words.length > 1 && DESCRIPTIVE_KO.has(words[words.length - 1])) words = words.slice(0, -1);
+    suffix = facility;
+    attach = false;
+  }
   // suffix starts with a space unless it is written with the name ("시노부산", "가사마성", "다케토미섬")
-  const ko = `${outWords.join(' ')}${attachSuffix ? suffix.trim() : suffix}`;
+  const ko = `${words.join(' ')}${attach ? suffix.trim() : suffix}`;
   return ko.replace(/\s+/g, ' ').trim() || null;
 }
 
@@ -285,14 +370,18 @@ const JA_SUFFIX = [
   ['貝塚', ['かいづか'], ' 패총'], ['海岸', ['かいがん'], ' 해안'], ['展望台', ['てんぼうだい'], ' 전망대'], ['教会', ['きょうかい'], ' 교회'],
   ['大橋', ['おおはし'], ' 대교'], ['鍾乳洞', ['しょうにゅうどう'], ' 종유동'], ['湿原', ['しつげん'], ' 습원'], ['渓谷', ['けいこく'], ' 계곡'],
   ['高原', ['こうげん'], ' 고원'], ['牧場', ['ぼくじょう'], ' 목장'], ['市場', ['いちば'], ' 시장'], ['文学館', ['ぶんがくかん'], ' 문학관'],
-  ['科学館', ['かがくかん'], ' 과학관'], ['峠', ['とうげ'], ' 고개']
+  ['科学館', ['かがくかん'], ' 과학관'], ['峠', ['とうげ'], ' 고개'], ['歴史館', ['れきしかん'], ' 역사관'], ['郷土館', ['きょうどかん'], ' 향토관'],
+  // shrine words written as their own word (屋久島大社 → 야쿠시마 다이샤, like the curated 구마노 혼구 다이샤; 天満宮 텐만구 like
+  // the curated 다자이후 텐만구)
+  ['大社', ['たいしゃ'], ' 다이샤'], ['天満宮', ['てんまんぐう'], ' 텐만구'], ['八幡宮', ['はちまんぐう'], ' 하치만구'], ['神宮', ['じんぐう'], ' 신궁']
 ];
 // English generic word for the same suffixes (Hepburn names: "Dai Onsen")
 const JA_SUFFIX_EN = { '神社': 'Shrine', '温泉': 'Onsen', '城跡': 'Castle Ruins', '城址': 'Castle Ruins', '城': 'Castle', '公園': 'Park', '美術館': 'Art Museum',
   '博物館': 'Museum', '記念館': 'Memorial Hall', '資料館': 'Museum', '史料館': 'Museum', '水族館': 'Aquarium', '動物園': 'Zoo', '植物園': 'Botanical Garden',
   '庭園': 'Garden', '灯台': 'Lighthouse', '滝': 'Falls', '古墳群': 'Kofun Cluster', '古墳': 'Kofun', '遺跡': 'Site', '貝塚': 'Shell Mound', '海岸': 'Coast',
   '展望台': 'Observatory', '教会': 'Church', '大橋': 'Bridge', '鍾乳洞': 'Cave', '湿原': 'Marsh', '渓谷': 'Gorge', '高原': 'Plateau', '牧場': 'Farm', '市場': 'Market',
-  '文学館': 'Literature Museum', '科学館': 'Science Museum', '峠': 'Pass' };
+  '文学館': 'Literature Museum', '科学館': 'Science Museum', '峠': 'Pass', '歴史館': 'History Museum', '郷土館': 'Local History Museum',
+  '大社': 'Taisha', '天満宮': 'Tenmangu', '八幡宮': 'Hachimangu', '神宮': 'Jingu' };
 
 const isKanaOnly = (s) => /^[ぁ-ゖァ-ヺー・･\s]+$/.test(String(s || ''));
 
@@ -331,7 +420,8 @@ const JA_WORDS = [
   ['県立', 'けんりつ', '현립'], ['府立', 'ふりつ', '부립'], ['都立', 'とりつ', '도립'], ['道立', 'どうりつ', '도립'], ['市立', 'しりつ', '시립'],
   ['国立', 'こくりつ', '국립'], ['総合', 'そうごう', '종합'], ['歴史', 'れきし', '역사'], ['民俗', 'みんぞく', '민속'], ['郷土', 'きょうど', '향토'],
   ['自然', 'しぜん', '자연'], ['近代', 'きんだい', '근대'], ['現代', 'げんだい', '현대'], ['古代', 'こだい', '고대'], ['美術', 'びじゅつ', '미술'],
-  ['科学', 'かがく', '과학'], ['記念', 'きねん', '기념'], ['文化', 'ぶんか', '문화'], ['運河', 'うんが', '운하'], ['県', 'けん', '현']
+  ['科学', 'かがく', '과학'], ['記念', 'きねん', '기념'], ['文化', 'ぶんか', '문화'], ['運河', 'うんが', '운하'], ['写真', 'しゃしん', '사진'],
+  ['県', 'けん', '현']
 ];
 // Japanese stem + its reading → Korean words (known words in Korean, the rest transliterated), or null
 function segmentKo(stem, reading) {
@@ -383,17 +473,57 @@ function enFromKana(ja, kana) {
   return split.en ? `${cap} ${split.en}` : cap;
 }
 
-// Best Korean name for a place with only Japanese / English labels: { name, from } or null.
-// Order: the kana reading of a name with a known generic word (exact: "霊山神社" + reading) → the English
-// romanisation ("Ryōzen Shrine") → the kana reading of a short name without one.
-function koDisplayName({ ja, en, kana }) {
-  const reading = [].concat(kana || [])[0] || (isKanaOnly(ja) ? ja : '');
-  const withSuffix = reading ? koFromKana(ja, reading, true) : null;
-  if (withSuffix) return { name: withSuffix, from: 'translit' };
-  const fromEn = en && en !== ja ? koFromEnglish(en) : null;
-  if (fromEn) return { name: fromEn, from: 'translit' };
-  const plain = reading ? koFromKana(ja, reading) : null;
-  return plain ? { name: plain, from: 'translit' } : null;
+// Korean names looked at by hand where the rules cannot get it right, by the exact Japanese name (label without a qualifier).
+// - Person names: Japanese order, family name first, whatever order the English label has
+//   ("Ken Domon Museum of Photography" = 土門拳記念館 → 도몬 겐 기념관).
+// - A Japanese reading or word the English label does not carry (原生花園 원생화원, 秋田犬 아키타견, 廃寺跡 폐사지),
+//   a loanword facility name (奄美パーク 아마미 파크), a reading the general rule gets wrong (右田ヶ岳 がだけ).
+// (旭山 stays 아사히산 by the 山 rule: "아사히카와 아사히야마" would be read inside "아사히카와 아사히야마 동물원" = the curated zoo.)
+const JA_KO_OVERRIDES = {
+  '土門拳記念館': '도몬 겐 기념관',
+  '植田正治写真美術館': '우에다 쇼지 사진 미술관',
+  '井上靖記念館': '이노우에 야스시 기념관',
+  '三沢市寺山修司記念館': '데라야마 슈지 기념관',
+  '中標津町郷土館': '나카시베츠 향토관', // 町 (a town): not "시립"; 나카시베츠 like the app's city label
+  '北海道立帯広美術館': '홋카이도립 오비히로 미술관', // like 홋카이도립 구시로 예술관
+  '小清水原生花園': '고시미즈 원생화원',
+  '秋田犬の里': '아키타견의 마을',
+  '三栖廃寺跡': '미스 폐사지', // みすはいじあと: the ruins of Misu's abandoned temple
+  '奄美パーク': '아마미 파크',
+  '右田ヶ岳': '미기타가다케' // みぎたがだけ (ja.wikipedia), not the usual がたけ of ヶ岳
+};
+
+// Japanese-name details the readings alone do not settle (applied to every transliterated name).
+function jaTouches(ko, ja) {
+  let out = String(ko || '');
+  const name = String(ja || '').replace(/\s+/g, '');
+  if (!out || !name) return out;
+  // 館 is 관 like 기념관 / 미술관: 佐賀徴古館 "Saga Chōkokan" → 사가 조코관
+  if (/館$/.test(name)) out = out.replace(/칸$/, '관');
+  // 岳 -다케 and 山 -산 are written with the name: アーラ岳 "Āra Dake" → 아라다케, 利尻ポン山 "Rishiri Pon Yama" → 리시리 폰산
+  if (/[岳嶽]$/.test(name)) out = out.replace(/ 다케$/, '다케');
+  if (/山$/.test(name)) out = out.replace(/ 야마$/, '산');
+  // 島 is 섬 (女木島 메기섬, like the Korean Wikipedia's 男木島 오기섬); a one-kanji name keeps -시마 (経島 후미시마섬, like 似島 니노시마섬)
+  if (/島$/.test(name) && !/[半列諸群]島$/.test(name) && /(?:지마|시마)$/.test(out)) {
+    out = [...name].length >= 3 ? out.replace(/(?:지마|시마)$/, '섬') : `${out}섬`;
+  }
+  return out;
 }
 
-module.exports = { romajiWordToHangul, koFromEnglish, kanaToRomaji, koFromKana, enFromKana, koDisplayName, isKanaOnly };
+// Best Korean name for a place with only Japanese / English labels: { name, from } or null.
+// Order: a name looked at by hand (JA_KO_OVERRIDES, from: 'fix') → the kana reading of a name with a known generic word
+// (exact: "霊山神社" + reading) → the English romanisation ("Ryōzen Shrine", generic word per the Japanese name) → the
+// kana reading of a short name without one.
+function koDisplayName({ ja, en, kana }) {
+  const fixed = JA_KO_OVERRIDES[String(ja || '').replace(/\s+/g, '')];
+  if (fixed) return { name: fixed, from: 'fix' };
+  const reading = [].concat(kana || [])[0] || (isKanaOnly(ja) ? ja : '');
+  const withSuffix = reading ? koFromKana(ja, reading, true) : null;
+  if (withSuffix) return { name: jaTouches(withSuffix, ja), from: 'translit' };
+  const fromEn = en && en !== ja ? koFromEnglish(en, ja) : null;
+  if (fromEn) return { name: jaTouches(fromEn, ja), from: 'translit' };
+  const plain = reading ? koFromKana(ja, reading) : null;
+  return plain ? { name: jaTouches(plain, ja), from: 'translit' } : null;
+}
+
+module.exports = { romajiWordToHangul, koFromEnglish, kanaToRomaji, koFromKana, enFromKana, koDisplayName, isKanaOnly, JA_KO_OVERRIDES, FACILITY_JA };
