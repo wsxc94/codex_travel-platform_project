@@ -107,8 +107,9 @@ let fxLastUpdate = '';
 let fxSource = (FX_ENV_USD_KRW && FX_ENV_JPY_KRW) ? 'env' : 'approximate';
 let fxProvider = null;
 let fxLiveAt = 0;
-const OPENAI_API_KEY = envValue('OPENAI_API_KEY', 'OPENAI_KEY');
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+// OpenAI 호환 공급자의 키·주소·모델(OPENAI_API_KEY·GROQ_API_KEY·OPENAI_BASE_URL·OPENAI_MODEL)은 아래 'OpenAI 호환 공급자'에서 정한다.
+const OPENAI_KEY_FROM_ENV = envValue('OPENAI_API_KEY', 'OPENAI_KEY');
+const GROQ_API_KEY = envValue('GROQ_API_KEY');
 const GEMINI_API_KEY = envValue('GEMINI_API_KEY', 'GOOGLE_API_KEY');
 const GEMINI_API_MODEL = envValue('GEMINI_API_MODEL').replace(/^models\//, '') || 'gemini-2.5-flash';
 // 대체 모델 순서(2026-10-01 실측). 주 모델(GEMINI_API_MODEL) 다음에 이 순서로 시도하고, 주 모델과 같은 이름은 뺀다.
@@ -185,6 +186,97 @@ if (GEMINI_FALLBACK_FROM_ENV && GEMINI_FALLBACK_FROM_ENV.invalid > 0) {
 if (GEMINI_FALLBACK_FROM_ENV && GEMINI_FALLBACK_FROM_ENV.models.length > GEMINI_MAX_CHAIN_LENGTH - 1) {
   warnOnce('gemini-fallback-long', `[gemini] GEMINI_FALLBACK_MODELS는 앞의 ${GEMINI_MAX_CHAIN_LENGTH - 1}개만 씁니다.`);
 }
+
+// ── OpenAI 호환 공급자(OpenAI 또는 Groq): 같은 Responses API 형식이라 주소(OPENAI_BASE_URL)만 바꾸면 된다 ──
+// 예: Groq 무료(카드 불필요) OPENAI_BASE_URL=https://api.groq.com/openai/v1 + GROQ_API_KEY=gsk_…
+// 주소는 https만(로컬 주소 localhost·127.0.0.1은 http도 허용: 개발·테스트용). 틀리면 기본 주소를 쓰고 경고한다.
+// OPENAI_BASE_URL이 비었을 때: OPENAI_API_KEY 없이 GROQ_API_KEY만 있으면 Groq 주소, 그 밖에는 OpenAI 주소.
+const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
+function normalizeOpenAiBaseUrl(raw) {
+  const text = String(raw || '').trim().replace(/\/+$/, '');
+  if (!text) return OPENAI_DEFAULT_BASE_URL;
+  let u;
+  try { u = new URL(text); } catch { u = null; }
+  const loopback = u && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+  if (!u || u.username || u.password || u.search || u.hash || !(u.protocol === 'https:' || (u.protocol === 'http:' && loopback))) {
+    // 값은 찍지 않는다(키를 잘못 넣었을 수도 있음)
+    warnOnce('openai-base-invalid', `[openai] OPENAI_BASE_URL이 https 주소가 아니라서 기본 주소(${OPENAI_DEFAULT_BASE_URL})를 씁니다.`);
+    return OPENAI_DEFAULT_BASE_URL;
+  }
+  return text;
+}
+const OPENAI_BASE_URL = normalizeOpenAiBaseUrl(envValue('OPENAI_BASE_URL') || (GROQ_API_KEY && !OPENAI_KEY_FROM_ENV ? GROQ_BASE_URL : ''));
+const OPENAI_BASE_HOST = new URL(OPENAI_BASE_URL).host;
+const OPENAI_IS_GROQ = /(^|\.)groq\.com$/i.test(new URL(OPENAI_BASE_URL).hostname);
+// 로그·오류 안내에 쓰는 이름(화면의 출처 표시는 그대로 'openai')
+const OPENAI_PROVIDER_LABEL = OPENAI_IS_GROQ ? 'Groq' : 'OpenAI';
+// 키는 주소에 맞는 것만 보낸다: Groq 주소에는 GROQ_API_KEY(또는 OPENAI_API_KEY에 잘못 넣은 gsk_ 키),
+// 그 밖의 주소에는 OPENAI_API_KEY. Groq 키(gsk_)는 api.openai.com으로, OpenAI 키는 Groq로 보내지 않는다(값은 찍지 않음).
+// OPENAI_KEY_SOURCE: 실제로 쓰는 변수 이름('GROQ_API_KEY' | 'OPENAI_API_KEY' | null). /api/health의 ai.openaiKeySource
+const { key: OPENAI_API_KEY, source: OPENAI_KEY_SOURCE } = (() => {
+  const groqShaped = /^gsk_/.test(OPENAI_KEY_FROM_ENV);
+  if (OPENAI_IS_GROQ) {
+    if (GROQ_API_KEY) return { key: GROQ_API_KEY, source: 'GROQ_API_KEY' };
+    if (groqShaped) return { key: OPENAI_KEY_FROM_ENV, source: 'OPENAI_API_KEY' };
+    if (OPENAI_KEY_FROM_ENV) warnOnce('openai-key-groq', '[openai] OPENAI_BASE_URL이 Groq인데 GROQ_API_KEY가 없어서, OpenAI 키를 Groq로 보내지 않습니다(GROQ_API_KEY에 gsk_ 키를 넣으세요).');
+    return { key: '', source: null };
+  }
+  if (groqShaped) {
+    warnOnce('openai-key-gsk', `[openai] OPENAI_API_KEY가 Groq 키(gsk_) 모양이라 ${new URL(OPENAI_BASE_URL).host}에 보내지 않습니다(Groq 키는 GROQ_API_KEY에, 주소는 OPENAI_BASE_URL=${GROQ_BASE_URL}).`);
+    return { key: '', source: null };
+  }
+  if (GROQ_API_KEY) warnOnce('openai-groq-unused', `[openai] GROQ_API_KEY는 OPENAI_BASE_URL이 Groq 주소(${GROQ_BASE_URL})일 때만 씁니다. 지금은 ${new URL(OPENAI_BASE_URL).host}라 쓰지 않습니다.`);
+  return OPENAI_KEY_FROM_ENV ? { key: OPENAI_KEY_FROM_ENV, source: 'OPENAI_API_KEY' } : { key: '', source: null };
+})();
+// 주 모델. 비우면 Groq는 openai/gpt-oss-120b, OpenAI는 gpt-4o-mini
+const OPENAI_MODEL = normalizeOpenAiModelName(envValue('OPENAI_MODEL')) || (OPENAI_IS_GROQ ? 'openai/gpt-oss-120b' : 'gpt-4o-mini');
+if (envValue('OPENAI_MODEL') && !normalizeOpenAiModelName(envValue('OPENAI_MODEL'))) {
+  warnOnce('openai-model-invalid', `[openai] OPENAI_MODEL이 모델 이름 형식이 아니라서 ${OPENAI_MODEL}을 씁니다.`);
+}
+
+// 모델 이름 하나: Groq 이름은 'openai/gpt-oss-120b'처럼 / 가 들어간다. 키처럼 생긴 값(sk-·gsk_·AIza…)은 이름으로 쓰지 않는다.
+function normalizeOpenAiModelName(raw) {
+  const name = String(raw || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/.test(name) || /^(sk-|gsk_|AIza|sb_|eyJ)/.test(name)) return '';
+  return name;
+}
+// OPENAI_FALLBACK_MODELS: 쉼표로 나눈 대체 모델(주 모델이 한도·과부하·잘림·형식 오류면 다음 모델). 비우면 주 모델만.
+const OPENAI_MAX_CHAIN_LENGTH = 5;
+const OPENAI_FALLBACK_RAW = String(envValue('OPENAI_FALLBACK_MODELS') || '').split(',').map((s) => s.trim()).filter(Boolean);
+const OPENAI_FALLBACK_MODELS = [...new Set(OPENAI_FALLBACK_RAW.map(normalizeOpenAiModelName).filter(Boolean))]
+  .filter((m) => m !== OPENAI_MODEL)
+  .slice(0, OPENAI_MAX_CHAIN_LENGTH - 1);
+// 실제로 시도하는 순서(주 모델 포함). /api/health의 ai.openaiModelChain
+const OPENAI_MODEL_CHAIN = Object.freeze([OPENAI_MODEL, ...OPENAI_FALLBACK_MODELS]);
+{
+  const invalid = OPENAI_FALLBACK_RAW.filter((s) => !normalizeOpenAiModelName(s)).length;
+  if (invalid > 0) warnOnce('openai-fallback-invalid', `[openai] OPENAI_FALLBACK_MODELS에서 모델 이름 형식이 아닌 값 ${invalid}개를 뺐습니다(예: openai/gpt-oss-20b).`);
+}
+// OPENAI_MAX_OUTPUT_TOKENS: 출력 토큰 상한(0 = 상한 없음, 그 밖에는 최소 256). Groq 무료는 분당 8천 토큰이라 일정(6일 이상 8192)을 그보다 작게 묶는다.
+const OPENAI_MAX_OUTPUT_TOKENS = (() => {
+  const n = nonNegativeInt(envValue('OPENAI_MAX_OUTPUT_TOKENS'), 0);
+  return n > 0 ? Math.min(65_536, Math.max(256, n)) : 0;
+})();
+// OPENAI_REASONING_EFFORT: 추론 모델의 생각 정도(reasoning.effort). 비우면 보내지 않는다(gpt-4o-mini 같은 일반 모델은 이 값을 거절).
+// Groq gpt-oss는 low·medium·high, qwen3.8-27b는 none·default·low·medium·high를 받는다 → 'low'는 셋 다 된다.
+const OPENAI_REASONING_EFFORT = (() => {
+  const v = envValue('OPENAI_REASONING_EFFORT').toLowerCase();
+  if (!v) return '';
+  if (/^(none|default|minimal|low|medium|high)$/.test(v)) return v;
+  warnOnce('openai-reasoning-invalid', '[openai] OPENAI_REASONING_EFFORT는 none·default·minimal·low·medium·high 중 하나여야 해서 보내지 않습니다.');
+  return '';
+})();
+
+// AI_CHAT_PROVIDER_ORDER: 채팅 해석에서 AI 공급자를 시도하는 순서(쉼표 구분, gemini·openai). 빠진 공급자는 기본 순서대로 뒤에 붙는다.
+// 예: openai,gemini → Groq가 먼저 해석하고 Gemini 한도는 일정 생성에 남긴다. 일정 생성은 늘 Gemini → OpenAI 호환 순서다.
+const AI_PROVIDERS_DEFAULT_ORDER = Object.freeze(['gemini', 'openai']);
+const AI_CHAT_PROVIDER_ORDER = (() => {
+  const parts = envValue('AI_CHAT_PROVIDER_ORDER').toLowerCase().split(',').map((s) => s.trim()).filter(Boolean);
+  const known = parts.filter((p) => AI_PROVIDERS_DEFAULT_ORDER.includes(p));
+  if (known.length < parts.length) warnOnce('chat-order-invalid', '[chat] AI_CHAT_PROVIDER_ORDER에서 모르는 공급자 이름을 뺐습니다(gemini·openai만).');
+  return Object.freeze([...new Set([...known, ...AI_PROVIDERS_DEFAULT_ORDER])]);
+})();
 
 // 모델별 생각(thinking) 설정. 생각 토큰도 maxOutputTokens를 나눠 써서, 켜 두면 JSON이 MAX_TOKENS로 잘린다(2026-10-01 실측).
 //  'level' : gemini-3.5-flash-lite(별칭 gemini-flash-lite-latest) — thinkingBudget 0을 400 INVALID_ARGUMENT로 거절하고
@@ -4319,10 +4411,11 @@ async function parseTravelChatWithOpenAI(message, context, history, prevParsed) 
     }
   ];
   if (hasHistory) {
+    // 지난 대화는 문자열 content로 보낸다(Responses API는 assistant 메시지의 content 배열에 input_text를 받지 않는다)
     for (const h of history.slice(-10)) {
       inputMessages.push({
         role: h.role === 'user' ? 'user' : 'assistant',
-        content: [{ type: 'input_text', text: h.content }]
+        content: String(h.content || '')
       });
     }
   }
@@ -4334,7 +4427,6 @@ async function parseTravelChatWithOpenAI(message, context, history, prevParsed) 
   });
   const strList = { type: 'array', items: { type: 'string' } };
   const body = {
-    model: OPENAI_MODEL,
     input: inputMessages,
     text: {
       format: {
@@ -4390,18 +4482,9 @@ async function parseTravelChatWithOpenAI(message, context, history, prevParsed) 
       }
     }
   };
-  const res = await fetchWithTimeout('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  }, AI_REQUEST_TIMEOUT_MS);
-  if (!res.ok) throw new Error(`OpenAI error: ${res.status}`);
-  const data = await res.json();
-  const parsed = parseJsonFromText(extractOpenAiText(data));
-  if (!parsed) throw new Error('OpenAI parser returned unexpected format');
+  // 모델 체인(주 모델 → OPENAI_FALLBACK_MODELS)·형식 검사는 callOpenAiResponses가 맡는다
+  const { parsed, model } = await callOpenAiResponses(body);
+  parsed._aiModel = model;
   return parsed;
 }
 
@@ -4485,39 +4568,29 @@ async function buildTravelChatPlan(payload = {}) {
   let aiModel = null;
   const aiErrors = [];
 
-  if (USE_GEMINI) {
+  // 공급자 순서는 AI_CHAT_PROVIDER_ORDER(기본 gemini → openai). 키가 있는 공급자만 시도하고, 모두 실패하면 규칙 기반 해석.
+  const chatProviders = AI_CHAT_PROVIDER_ORDER.filter((p) => (p === 'gemini' ? USE_GEMINI : Boolean(OPENAI_API_KEY)));
+  const chatProviderLabel = (p) => (p === 'gemini' ? 'Gemini' : OPENAI_PROVIDER_LABEL);
+  for (let i = 0; i < chatProviders.length && !parsed; i += 1) {
+    const provider = chatProviders[i];
+    const label = chatProviderLabel(provider);
     try {
-      const geminiParsed = await parseTravelChatWithGemini(message, context, history, prevParsed);
-      const normalized = normalizeTravelChatParsed(geminiParsed, fallback, { message, isFollowUp, prev: prevParsed });
+      const aiParsed = provider === 'gemini'
+        ? await parseTravelChatWithGemini(message, context, history, prevParsed)
+        : await parseTravelChatWithOpenAI(message, context, history, prevParsed);
+      const normalized = normalizeTravelChatParsed(aiParsed, fallback, { message, isFollowUp, prev: prevParsed });
       if (normalized._aiFieldCount > 0) {
         parsed = normalized;
-        aiModel = geminiParsed._aiModel || GEMINI_API_MODEL;
-        source = 'gemini_chat_parser_v1';
+        aiModel = aiParsed._aiModel || (provider === 'gemini' ? GEMINI_API_MODEL : OPENAI_MODEL);
+        source = provider === 'gemini' ? 'gemini_chat_parser_v1' : 'openai_chat_parser_v1';
       } else {
-        throw new AiOutputError('AI_INVALID_OUTPUT', 'Gemini chat parser returned no usable fields');
+        throw new AiOutputError('AI_INVALID_OUTPUT', `${label} chat parser returned no usable fields`);
       }
     } catch (err) {
-      const classified = classifyAiError('Gemini', err);
+      const classified = classifyAiError(label, err);
       aiErrors.push(classified);
-      warnThrottled(`chat:gemini:${classified.code}`, `[chat] Gemini 해석 실패(${classified.code}) → ${OPENAI_API_KEY ? 'OpenAI 시도' : '규칙 기반 해석'}: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
-    }
-  }
-
-  if (!parsed && OPENAI_API_KEY) {
-    try {
-      const openaiParsed = await parseTravelChatWithOpenAI(message, context, history, prevParsed);
-      const normalized = normalizeTravelChatParsed(openaiParsed, fallback, { message, isFollowUp, prev: prevParsed });
-      if (normalized._aiFieldCount > 0) {
-        parsed = normalized;
-        aiModel = OPENAI_MODEL;
-        source = 'openai_chat_parser_v1';
-      } else {
-        throw new AiOutputError('AI_INVALID_OUTPUT', 'OpenAI chat parser returned no usable fields');
-      }
-    } catch (err) {
-      const classified = classifyAiError('OpenAI', err);
-      aiErrors.push(classified);
-      warnThrottled(`chat:openai:${classified.code}`, `[chat] OpenAI 해석 실패(${classified.code}) → 규칙 기반 해석: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
+      const nextStep = chatProviders[i + 1] ? `${chatProviderLabel(chatProviders[i + 1])} 시도` : '규칙 기반 해석';
+      warnThrottled(`chat:${provider}:${classified.code}`, `[chat] ${label} 해석 실패(${classified.code}) → ${nextStep}: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
     }
   }
 
@@ -7386,8 +7459,9 @@ function looksLikeGeminiKey(key) {
   return /^AIza[0-9A-Za-z_-]{20,}$/.test(String(key || '').trim());
 }
 
+// OpenAI(sk-…) 또는 Groq(gsk_…) 키 모양인지(진단 표시용)
 function looksLikeOpenAiKey(key) {
-  return /^sk-[A-Za-z0-9_-]{20,}$/.test(String(key || '').trim());
+  return /^(sk-|gsk_)[A-Za-z0-9_-]{20,}$/.test(String(key || '').trim());
 }
 
 async function fetchWithTimeout(url, options = {}, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
@@ -7434,7 +7508,7 @@ function classifyAiError(provider, err) {
   } else if (!raw) {
     code = 'empty_error';
     action = `${provider} 응답이 비어 있습니다. 모델/네트워크 상태를 다시 확인해 주세요.`;
-  } else if (err?.geminiTimeout) {
+  } else if (err?.geminiTimeout || err?.aiTimeout) {
     // 모델들이 제한 시간 안에 답하지 못함(느린 503 포함): 네트워크 고장이 아니라 'AI가 바쁨'으로 알린다
     code = 'timeout';
     action = `${provider} 응답이 제한 시간 안에 오지 않아 규칙 기반 일정으로 대신 만들었습니다. 잠시 후 다시 시도해 주세요.`;
@@ -8494,18 +8568,19 @@ async function probeOpenAI() {
     return { configured: false, ok: false, reason: 'missing_key' };
   }
   try {
-    const url = `https://api.openai.com/v1/models/${encodeURIComponent(OPENAI_MODEL)}`;
+    // Groq 모델 이름의 / 는 경로 구분자로 둔다(openai/gpt-oss-120b → /models/openai/gpt-oss-120b)
+    const url = `${OPENAI_BASE_URL}/models/${OPENAI_MODEL.split('/').map(encodeURIComponent).join('/')}`;
     const res = await fetchWithTimeout(url, {
       method: 'GET',
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}` }
     }, AI_REQUEST_TIMEOUT_MS);
     if (!res.ok) {
       const text = await res.text();
-      throw new Error(`OpenAI error ${res.status}: ${text}`);
+      throw new Error(`${OPENAI_PROVIDER_LABEL} error ${res.status}: ${text}`);
     }
     return { configured: true, ok: true, model: OPENAI_MODEL };
   } catch (err) {
-    const classified = classifyAiError('OpenAI', err);
+    const classified = classifyAiError(OPENAI_PROVIDER_LABEL, err);
     return { configured: true, ok: false, model: OPENAI_MODEL, error: classified };
   }
 }
@@ -8592,7 +8667,16 @@ async function buildAiDiagnostics({ probe = false } = {}) {
       openai: {
         configured: Boolean(OPENAI_API_KEY),
         model: OPENAI_MODEL,
-        keyFormatOk: looksLikeOpenAiKey(OPENAI_API_KEY)
+        keyFormatOk: looksLikeOpenAiKey(OPENAI_API_KEY),
+        // OpenAI 호환 공급자: 주소의 호스트(api.openai.com | api.groq.com …)와 이름, 시도 순서, 요청 설정, 채팅 해석 순서
+        baseHost: OPENAI_BASE_HOST,
+        providerLabel: OPENAI_PROVIDER_LABEL,
+        keySource: OPENAI_KEY_SOURCE,
+        modelChain: OPENAI_MODEL_CHAIN,
+        reasoningEffort: OPENAI_REASONING_EFFORT || null,
+        maxOutputTokens: OPENAI_MAX_OUTPUT_TOKENS || null,
+        totalBudgetMs: OPENAI_TOTAL_BUDGET_MS,
+        chatProviderOrder: AI_CHAT_PROVIDER_ORDER
       }
     }
   };
@@ -8698,6 +8782,113 @@ function extractOpenAiText(data) {
     });
   });
   return texts.join('\n').trim();
+}
+
+// OpenAI 호환 Responses API 호출 한 번(OPENAI_BASE_URL/responses). 본문 읽기까지 같은 제한 시간 안에서 끝낸다.
+async function openAiPostOnce(body, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${OPENAI_BASE_URL}/responses`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const text = await res.text();
+    return { status: res.status, ok: res.ok, text };
+  } catch (err) {
+    if (controller.signal.aborted || err?.name === 'AbortError') {
+      const e = new Error(`${OPENAI_PROVIDER_LABEL} timeout after ${timeoutMs}ms (${body.model})`);
+      e.aiTimeout = true;
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 한 번 생성(채팅 해석·일정 하나)에 OpenAI 호환 모델 체인 전체가 쓸 수 있는 시간
+const OPENAI_TOTAL_BUDGET_MS = 40_000;
+
+// OpenAI 호환 Responses API: 주 모델(OPENAI_MODEL) → OPENAI_FALLBACK_MODELS 순서로 시도해 { parsed, model }을 돌려준다.
+// 요청마다 OPENAI_REASONING_EFFORT(reasoning.effort)와 OPENAI_MAX_OUTPUT_TOKENS(max_output_tokens 상한)를 넣는다.
+// 다음 모델로 넘기는 실패: 429(한도)·413(요청이 큼)·404(모델 없음)·400(그 모델이 요청 설정을 거절)·5xx·시간 초과·잘림·JSON 아님.
+// 키·권한 문제(401·403)와 네트워크 오류(DNS·연결 거부)는 모델을 바꿔도 같으므로 바로 알린다.
+// opts.retrySingle: 대체 모델이 없으면 같은 모델로 한 번 더 시도한다(예전 일정 동작). 잘린 응답은 같은 모델로 다시 보내지 않는다.
+// opts.accept(parsed, model): 내용 검사(예: 일정 날짜 수). AiOutputError를 던지면 형식 오류처럼 다음 모델로 넘긴다. 돌려준 값이 parsed가 된다.
+async function callOpenAiResponses(body, opts = {}) {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
+  const label = OPENAI_PROVIDER_LABEL;
+  const perCallTimeoutMs = Math.max(AI_REQUEST_TIMEOUT_MS, Number(opts.timeoutMs) || 0);
+  const deadline = Date.now() + OPENAI_TOTAL_BUDGET_MS;
+  const attempts = OPENAI_MODEL_CHAIN.length === 1 && opts.retrySingle ? [OPENAI_MODEL, OPENAI_MODEL] : [...OPENAI_MODEL_CHAIN];
+  let lastError = null;
+  let busyError = null;
+  let truncatedError = null;
+  let timeoutError = null;
+  const failed = [];
+  for (let i = 0; i < attempts.length; i += 1) {
+    const model = attempts[i];
+    if (i > 0 && truncatedError && model === attempts[i - 1]) break;
+    const remaining = deadline - Date.now();
+    if (remaining < GEMINI_MIN_ATTEMPT_MS) {
+      console.log(`[openai] Time budget ${OPENAI_TOTAL_BUDGET_MS}ms used up; not tried: ${attempts.slice(i).join(', ')}`);
+      break;
+    }
+    const reqBody = { ...body, model };
+    if (OPENAI_REASONING_EFFORT) reqBody.reasoning = { effort: OPENAI_REASONING_EFFORT };
+    if (OPENAI_MAX_OUTPUT_TOKENS > 0) reqBody.max_output_tokens = Math.min(Number(body.max_output_tokens) || OPENAI_MAX_OUTPUT_TOKENS, OPENAI_MAX_OUTPUT_TOKENS);
+    const next = i < attempts.length - 1 ? ', trying next...' : '';
+    let r;
+    try {
+      r = await openAiPostOnce(reqBody, Math.min(perCallTimeoutMs, remaining));
+    } catch (err) {
+      if (!err?.aiTimeout) throw err;
+      lastError = err;
+      timeoutError = timeoutError || err;
+      failed.push(`${model}(timeout)`);
+      console.log(`[openai] ${label} model ${model} timed out${next}`);
+      continue;
+    }
+    if (r.ok) {
+      let data = null;
+      try { data = JSON.parse(r.text); } catch { data = null; }
+      if (data?.status === 'incomplete') {
+        const why = String(data?.incomplete_details?.reason || '');
+        const e = new AiOutputError(why === 'max_output_tokens' ? 'AI_TRUNCATED' : 'AI_INVALID_OUTPUT', `${label} response incomplete (${why || 'unknown'}, ${model})`);
+        if (e.reasonCode === 'AI_TRUNCATED') truncatedError = truncatedError || e; else lastError = e;
+        failed.push(`${model}(incomplete ${why || 'unknown'})`);
+        console.log(`[openai] ${label} model ${model} returned an incomplete response (${why || 'unknown'})${next}`);
+        continue;
+      }
+      const parsed = data ? parseJsonFromText(extractOpenAiText(data)) : null;
+      if (parsed && typeof parsed === 'object') {
+        try {
+          const accepted = opts.accept ? opts.accept(parsed, model) : parsed;
+          if (failed.length) console.log(`[openai] Succeeded with ${model} after: ${failed.join(', ')}`);
+          return { parsed: accepted, model };
+        } catch (err) {
+          if (!(err instanceof AiOutputError)) throw err;
+          lastError = err;
+          failed.push(`${model}(${err.reasonCode})`);
+          console.log(`[openai] ${label} model ${model} output rejected (${String(err.message).slice(0, 120)})${next}`);
+          continue;
+        }
+      }
+      lastError = new AiOutputError('AI_INVALID_OUTPUT', `${label} returned unexpected format (${model})`);
+      failed.push(`${model}(format)`);
+      console.log(`[openai] ${label} model ${model} returned no JSON${next}`);
+      continue;
+    }
+    lastError = new Error(`${label} error ${r.status} (${model}): ${r.text.slice(0, 200)}`);
+    if (r.status === 401 || r.status === 403) throw lastError;
+    if (r.status === 429 || r.status === 503) busyError = busyError || lastError;
+    failed.push(`${model}(${r.status})`);
+    console.log(`[openai] ${label} model ${model} failed (${r.status})${next}`);
+  }
+  throw busyError || truncatedError || timeoutError || lastError || new Error(`${label}: all models exhausted`);
 }
 
 function extractGeminiText(data) {
@@ -8956,7 +9147,6 @@ async function createItineraryWithOpenAI(payload, picks) {
     ...(ctx.constraints ? ['Constraints:', ...ctx.constraints.map((l) => '- ' + l)] : [])].join('\n');
 
   const body = {
-    model: OPENAI_MODEL,
     input: [
       {
         role: 'system',
@@ -8978,43 +9168,18 @@ async function createItineraryWithOpenAI(payload, picks) {
     max_output_tokens: itineraryMaxOutputTokens(ctx.days)
   };
 
-  let json = null;
-  let lastError = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const res = await fetchWithTimeout('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    }, Math.max(AI_REQUEST_TIMEOUT_MS, 30_000));
-
-    if (!res.ok) {
-      lastError = new Error(`OpenAI error: ${res.status}`);
-      continue;
-    }
-    const data = await res.json();
-    if (data?.status === 'incomplete') {
-      const why = String(data?.incomplete_details?.reason || '');
-      throw new AiOutputError(why === 'max_output_tokens' ? 'AI_TRUNCATED' : 'AI_INVALID_OUTPUT', `OpenAI response incomplete (${why || 'unknown'})`);
-    }
-    const text = extractOpenAiText(data);
-    const parsed = parseJsonFromText(text);
-    if (parsed) {
-      json = parsed;
-      lastError = null;
-      break;
-    }
-    lastError = new AiOutputError('AI_INVALID_OUTPUT', 'OpenAI returned unexpected format');
-  }
-  if (!json) throw lastError || new AiOutputError('AI_INVALID_OUTPUT', 'OpenAI parse error');
+  // 모델 체인·잘림(incomplete)·형식 검사는 callOpenAiResponses가 맡는다(호출 하나 30초, 대체 모델이 없으면 한 번 더)
+  // 날짜 수가 모자라는 등 정규화가 거절한 일정도 다음 모델로 넘긴다.
+  const { parsed: normalized, model } = await callOpenAiResponses(body, {
+    timeoutMs: 30_000,
+    retrySingle: true,
+    accept: (json) => normalizeAiItinerary(json, payload, OPENAI_PROVIDER_LABEL, ctx.picks)
+  });
 
   const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
-  const normalized = normalizeAiItinerary(json, payload, 'OpenAI', ctx.picks);
 
   return {
-    source: 'openai_itinerary_v1',
+    source: 'openai_itinerary_v1 (' + model + ')',
     provider: 'openai',
     city: city.label,
     theme: payload.theme || 'mixed',
@@ -9448,16 +9613,16 @@ async function buildTravelPlan(rawPayload) {
       } catch (err) {
         const classified = classifyAiError('Gemini', err);
         aiErrors.push(classified);
-        warnThrottled(`itinerary:gemini:${classified.code}`, `[itinerary] Gemini 일정 실패(${classified.code}) → ${OPENAI_API_KEY ? 'OpenAI 시도' : '규칙 기반 일정'}: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
+        warnThrottled(`itinerary:gemini:${classified.code}`, `[itinerary] Gemini 일정 실패(${classified.code}) → ${OPENAI_API_KEY ? `${OPENAI_PROVIDER_LABEL} 시도` : '규칙 기반 일정'}: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
       }
     }
     if (!it && OPENAI_API_KEY) {
       try {
         it = await createItineraryWithOpenAI({ ...payload, city: key, _picks: aiPicks, _aiIntent: aiIntent }, aiPicks);
       } catch (err) {
-        const classified = classifyAiError('OpenAI', err);
+        const classified = classifyAiError(OPENAI_PROVIDER_LABEL, err);
         aiErrors.push(classified);
-        warnThrottled(`itinerary:openai:${classified.code}`, `[itinerary] OpenAI 일정 실패(${classified.code}) → 규칙 기반 일정: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
+        warnThrottled(`itinerary:openai:${classified.code}`, `[itinerary] ${OPENAI_PROVIDER_LABEL} 일정 실패(${classified.code}) → 규칙 기반 일정: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
       }
     }
   }
@@ -10619,9 +10784,15 @@ const FX_SOURCES = [
     parse: (d) => ({ krw: d?.rates?.KRW, usd: d?.rates?.USD, at: d?.time_last_update_utc })
   },
   {
+    // 옛 api.frankfurter.app은 301로 넘어가고 v1은 지원 중단 예정이라 v2를 쓴다. v2 기본값은 여러 기관 값을 섞으므로
+    // providers=ecb로 예전과 같은 유럽중앙은행 기준 환율만 받는다. 응답은 [{ date, base, quote, rate }] 배열.
     provider: 'frankfurter',
-    url: 'https://api.frankfurter.app/latest?from=JPY&to=KRW,USD',
-    parse: (d) => ({ krw: d?.rates?.KRW, usd: d?.rates?.USD, at: d?.date })
+    url: 'https://api.frankfurter.dev/v2/rates?base=JPY&quotes=KRW,USD&providers=ecb',
+    parse: (d) => {
+      const rows = Array.isArray(d) ? d : [];
+      const rate = (quote) => rows.find((r) => String(r?.quote || '').toUpperCase() === quote)?.rate;
+      return { krw: rate('KRW'), usd: rate('USD'), at: rows[0]?.date };
+    }
   }
 ];
 
@@ -11890,6 +12061,13 @@ async function handleApi(req, res, parsedUrl) {
           geminiCoolingModels: geminiCoolingModels(),
           openaiConfigured: Boolean(OPENAI_API_KEY),
           openaiModel: OPENAI_MODEL,
+          // OpenAI 호환 공급자(OPENAI_BASE_URL의 호스트·이름), 시도 순서(주 모델 + OPENAI_FALLBACK_MODELS), 채팅 해석 공급자 순서
+          openaiBaseHost: OPENAI_BASE_HOST,
+          openaiProvider: OPENAI_PROVIDER_LABEL,
+          // 실제로 쓰는 키의 변수 이름('GROQ_API_KEY' | 'OPENAI_API_KEY' | null). 값은 내보내지 않는다.
+          openaiKeySource: OPENAI_KEY_SOURCE,
+          openaiModelChain: OPENAI_MODEL_CHAIN,
+          chatProviderOrder: AI_CHAT_PROVIDER_ORDER,
           chatParseStrictAi: CHAT_PARSE_STRICT_AI,
           requestTimeoutMs: AI_REQUEST_TIMEOUT_MS,
           geminiKeyFormatOk: diagnostics.providers.gemini.keyFormatOk,

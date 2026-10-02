@@ -213,6 +213,29 @@ Google Maps Platform은 **결제 계정이 연결된 프로젝트에서만** 동
 - google 모드의 서버 보호 장치: 결제 꺼짐·권한 거부·할당량 초과 응답을 받으면 30분 동안 모든 Google 호출을 건너뜀, 하루·월 호출 상한(UTC 기준), 결과 캐시 12시간, 사진 캐시(서버 메모리 최대 200장·30MB·24시간, 브라우저 캐시 1일). 일정 생성 1회에 Text Search가 최대 4건(명소 2 + 맛집 2) 나가고, 같은 조건이 캐시에 있으면 0건입니다.
 - 결과를 12시간 캐시하는 것이 Google Maps Platform 약관의 캐시 제한과 맞는지는 아직 확인하지 않았습니다. 켜기 전에 약관을 확인하세요.
 
+## Groq 무료 연결 (AI 한도 늘리기)
+
+Gemini 무료 한도는 모델마다 하루 약 20회이고 키가 아니라 프로젝트 단위라서, 키를 더 만들어도 늘지 않습니다. Groq 무료(카드 불필요)를 OpenAI 호환 경로에 연결하면 채팅 해석은 Groq가 맡고, Gemini 한도는 일정 생성에 남습니다. Gemini 한도를 다 써도 일정은 Groq가 만듭니다.
+
+1. [console.groq.com](https://console.groq.com)에 가입하고 API Keys에서 `gsk_`로 시작하는 키를 만듭니다. 결제 수단은 필요 없습니다.
+2. Render 환경변수에 넣습니다. Groq 키는 `OPENAI_API_KEY`가 아니라 **`GROQ_API_KEY`**에 넣습니다(서버는 Groq 키를 Groq 주소에만 보냅니다).
+   ```
+   GROQ_API_KEY=gsk_...
+   OPENAI_BASE_URL=https://api.groq.com/openai/v1
+   OPENAI_MODEL=openai/gpt-oss-120b
+   OPENAI_FALLBACK_MODELS=openai/gpt-oss-20b,qwen/qwen3.8-27b
+   OPENAI_MAX_OUTPUT_TOKENS=3500
+   OPENAI_REASONING_EFFORT=low
+   AI_CHAT_PROVIDER_ORDER=openai,gemini
+   ```
+   `qwen/qwen3.8-27b`는 Groq의 미리보기 모델(예고 없이 종료될 수 있음)이라 맨 뒤에 둡니다. `OPENAI_MAX_OUTPUT_TOKENS`는 Groq 무료의 분당 8천 토큰 한도보다 작게 잡은 값입니다. `OPENAI_API_KEY`가 비어 있으면 `OPENAI_BASE_URL`·`OPENAI_MODEL`은 생략해도 Groq 주소·`openai/gpt-oss-120b`가 됩니다.
+3. 확인: `GET /api/health`의 `ai.openaiProvider`가 `Groq`, `ai.openaiKeySource`가 `GROQ_API_KEY`, `ai.openaiModelChain`이 위 순서, `ai.chatProviderOrder`가 `["openai","gemini"]`인지 봅니다. 채팅 해석 응답의 `source`가 `openai_chat_parser_v1`이고 `aiModel`이 Groq 모델 이름이면 Groq가 해석한 것입니다.
+4. 되돌리기: `AI_CHAT_PROVIDER_ORDER`를 지우면 채팅 해석이 다시 Gemini 먼저입니다. `GROQ_API_KEY`를 지우면 Groq를 쓰지 않습니다.
+
+- 한도(2026-10-02 공식 문서 기준, 모델마다): 분당 30회, 하루 1,000회, 분당 8천 토큰, 하루 20만 토큰. 하루 토큰 한도가 먼저 차며, 채팅 해석(약 3.6천 토큰)과 일정(약 7천 토큰)을 함께 쓰면 모델 하나로 하루 약 18회입니다.
+- 일정 생성은 늘 Gemini가 먼저이고, Gemini가 실패하면 Groq가 만듭니다. Groq 품질이 충분한지는 같은 요청으로 비교해 본 뒤에 순서를 바꾸세요.
+- Groq는 입력을 기본으로 보관하지 않고, 악용 조사 목적으로만 최대 30일 보관합니다. 보관을 완전히 끄는 설정(ZDR)은 콘솔에서 고를 수 있습니다.
+
 ## 데이터 출처와 저작자 표시
 
 | 출처 | 쓰는 곳 | 라이선스·조건 | 화면 표기 |
@@ -223,7 +246,8 @@ Google Maps Platform은 **결제 계정이 연결된 프로젝트에서만** 동
 | [Leaflet](https://leafletjs.com/) 1.9.4 | 지도 라이브러리(unpkg, SRI 검증) | BSD-2-Clause | 지도 표기에 포함 |
 | [Open-Meteo](https://open-meteo.com/) | 날씨 예보, 무료 지오코딩 | 데이터 CC BY 4.0(출처 표기 필요). 무료 API는 **비상업적 사용** 조건(하루 10,000회 이하) | 날씨 위젯·날씨 패널 하단에 "Weather data by Open-Meteo.com" 링크(ko/en/ja) |
 | [ExchangeRate-API](https://www.exchangerate-api.com/) (`open.er-api.com`) | 환율(1순위) | 공개 엔드포인트는 출처 표기 필요, 하루 1회 갱신, 받은 환율을 다른 곳에 다시 배포하는 것은 금지 | 환율 칩 안에 "Rates By Exchange Rate API" 링크(ko/en/ja) |
-| Frankfurter (`api.frankfurter.app`) | 환율(2순위) | 유럽중앙은행(ECB) 기준 환율, 표기 의무 없음 | — |
+| Frankfurter (`api.frankfurter.dev/v2`, `providers=ecb`) | 환율(2순위) | 유럽중앙은행(ECB) 기준 환율만 받음(v2 기본값은 여러 기관 값을 섞어서 ECB로 고정), 표기 의무 없음 | — |
+| [Rakuten Web Service](https://webservice.rakuten.co.jp/guide/credit) | 숙소(Rakuten Travel) | API를 쓰는 앱은 크레딧 배지 필수, 제공된 HTML을 고치지 말 것(어기면 API 사용이 막힐 수 있음) | 숙소 결과 아래 "Supported by Rakuten Developers" 링크(제공 HTML 그대로) |
 | Travelpayouts(Aviasales), Rakuten Travel | 항공 캐시 가격, 숙소 | 각 제휴 약관 | 예시 데이터에는 "예시" 표시가 붙고 일정에 넣을 수 없음 |
 
 - 서버가 무료 공개 API(Open-Meteo, 환율)를 부를 때는 `User-Agent: TabimaruBot/0.1 (+https://github.com/wsxc94/tabimaru-japan-travel-planner)`을 보냅니다. 날씨는 좌표별 30분, 환율은 12시간 동안 캐시합니다.
@@ -260,8 +284,8 @@ npm test                  # = node test_all.js
 - 브랜드 검사: `/api/health`의 `app`이 `tabimaru`, 페이지 제목·매니페스트 이름이 Tabimaru인지, 언어를 바꾸면 제목도 바뀌는지, 외부 호출의 User-Agent가 `TabimaruBot/0.1`인지 봅니다. 도메인에 묶인 값(운영 주소, Render 서비스 이름, OAuth 콜백 경로, `sid` 쿠키, localStorage 키, 매니페스트 `start_url`)이 그대로인지도 봅니다.
 - 첫 화면은 `tests/support/browser-sandbox.js`로 `app.js`를 실제로 부팅해, 유료 API를 부르지 않는지 확인합니다. 이어서 [일정 만들기]를 두 번 눌러도 일정 1회 + 항공·맛집·숙소 각 1회만 부르는지, 카드에 실제 `<img>`와 위키미디어 출처가 붙는지, Leaflet이 일정이 생긴 뒤에만 SRI와 함께 로드되는지, 빈 일정에 안내 문구가 나오는지도 봅니다. 사진·출처 표시 함수(`safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`)와 추천·맛집 카드에는 악성 값(`javascript:`·`data:` 주소, 비슷한 호스트, `/\`·`//` 우회 주소, 따옴표·HTML이 든 이름과 저작자)을 넣습니다. 그래도 사진은 Commons나 `/api/place-photo`, 출처 링크는 Commons 파일 페이지나 Google 기여자 페이지만 남고, 나머지 값은 모두 이스케이프되는지 봅니다.
 - 그 밖에 응답에 키가 섞이지 않는지, 날씨 응답이 날짜·숫자만 담는지, CSRF 출처 검사, 긴급 전화번호 표시 = `tel:` 링크, CSS 변수 자기참조, CSS 중복 사본·키보드 포커스 링·다크 모드 토큰, 사전 누락·중복 키·코드가 쓰는 키(`t('…')`, `data-i18n`)의 ko/en/ja 존재, `index.html` 기본 글자 = ko 사전, `alert(`·`prompt(` 없음, localStorage 새 키는 `tabimaru.draft.v1` 하나, `render.yaml`·`.env.example`·README의 환경변수 목록과 기본값 누락도 검사합니다.
-- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-02 기준 738개 검사가 모두 통과합니다(40초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간, 8초는 Gemini 모델 체인의 시간 예산 검사).
-- 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`chain`·`oauth`·`session`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
+- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-02 기준 782개 검사가 모두 통과합니다(40초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간, 8초는 Gemini 모델 체인의 시간 예산 검사).
+- 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`oauth`·`session`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
 - GitHub Actions(`.github/workflows/ci.yml`)가 push와 pull request마다 Node 20으로 `npm test`를 돌립니다. `.github/workflows/keepalive.yml`은 테스트가 아니라 3일마다 운영 `/api/keepalive`를 부르는 예약 작업입니다(정적 검사로 내용만 확인).
 
 수동 점검(개발용, CI 제외): `node _test_api.js`는 로컬 서버만 확인합니다. `node _test_api.js --google`을 붙이면 Google Places·Geocoding을 한 번씩 실제로 호출하므로 과금될 수 있습니다. `node scripts/prompt-matrix.mjs --base http://127.0.0.1:3000`은 실행 중인 서버에 대표 요청 16개를 보내 해석과 날짜별 일정을 표로 보여 줍니다(실제 Gemini 약 32회, 무료 한도를 씀). 화면 손가락 끌기 같은 브라우저 점검 순서는 [ARCHITECTURE.md 14](ARCHITECTURE.md#14-수동-점검-체크리스트)에 있습니다.
@@ -287,8 +311,14 @@ npm test                  # = node test_all.js
 | `GEMINI_API_MODEL` | `gemini-2.5-flash` | 1순위 모델(운영은 `gemini-2.5-flash-lite` 권장). 429·503·404·5xx·시간 초과가 나면 아래 대체 모델을 차례로 시도 |
 | `GEMINI_FALLBACK_MODELS` | 실측 순서 | 대체 모델 목록(쉼표 구분, 앞에서부터 시도, 1순위 모델과 같은 이름·중복은 빠짐, 최대 9개). `none`이면 1순위 모델만. 비우면 `gemini-2.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-3-flash-preview` → `gemini-3.5-flash-lite` → `gemini-2.5-flash` → `gemini-3.6-flash` → `gemini-flash-latest`(2026-10-01 실측). 무료 한도는 모델마다 하루 20회라 모델이 많을수록 하루에 더 씀. 실제 순서는 `/api/health`의 `ai.geminiModelChain` |
 | `GEMINI_TOTAL_BUDGET_MS` | `40000` | 한 번 생성(채팅 해석·일정 하나)에 Gemini 모델 체인 전체가 쓰는 최대 시간(최소 4000). 호출 하나는 `AI_REQUEST_TIMEOUT_MS`(일정 30초)와 남은 시간 중 짧은 쪽까지만 기다리고, 시간이 다 되면 다음 모델 없이 규칙 기반(`AI_BUSY`) |
-| `OPENAI_API_KEY` | — | OpenAI 키(별칭 `OPENAI_KEY`). Gemini가 실패했을 때 사용 |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI 모델 |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI 호환 공급자 주소(Responses API). Groq 무료는 `https://api.groq.com/openai/v1`. https만(로컬 주소만 http 허용), 틀리면 기본 주소. 비어 있고 `OPENAI_API_KEY` 없이 `GROQ_API_KEY`만 있으면 Groq 주소 |
+| `OPENAI_API_KEY` | — | OpenAI 키(`sk-…`, 별칭 `OPENAI_KEY`). Groq가 아닌 주소에만 보냄. `gsk_` 키가 들어 있으면 api.openai.com에 보내지 않고 경고 |
+| `GROQ_API_KEY` | — | Groq 키(`gsk_…`). `OPENAI_BASE_URL`이 Groq 주소일 때만 보냄(OpenAI 키는 Groq에 보내지 않음). 실제로 쓰는 변수는 `/api/health`의 `ai.openaiKeySource` |
+| `OPENAI_MODEL` | `gpt-4o-mini`(Groq는 `openai/gpt-oss-120b`) | OpenAI 호환 주 모델. 형식이 틀리면 기본값 |
+| `OPENAI_FALLBACK_MODELS` | — | 대체 모델(쉼표 구분, 앞에서부터, 주 모델과 같은 이름·중복·키 모양 값은 빠짐, 최대 4개). 429·413·404·400·5xx·시간 초과·잘림·형식 오류·날짜 수 부족이면 다음 모델, 401·403은 바로 중단. 체인 전체 40초. 실제 순서는 `/api/health`의 `ai.openaiModelChain` |
+| `OPENAI_MAX_OUTPUT_TOKENS` | 상한 없음 | 출력 토큰 상한(최소 256). 일정은 `min(4096·8192, 이 값)`. Groq 무료는 분당 8천 토큰이라 `3500` 권장 |
+| `OPENAI_REASONING_EFFORT` | 보내지 않음 | 추론 모델의 `reasoning.effort`(`none`·`default`·`minimal`·`low`·`medium`·`high`). Groq gpt-oss·qwen은 `low` 권장. `gpt-4o-mini` 같은 일반 모델에는 비워 둘 것(거절함) |
+| `AI_CHAT_PROVIDER_ORDER` | `gemini,openai` | 채팅 해석의 AI 공급자 순서. `openai,gemini`면 Groq가 먼저 해석해 Gemini 한도를 일정 생성에 남김. 빠진 공급자는 기본 순서대로 뒤에 붙음 |
 | `AI_REQUEST_TIMEOUT_MS` | `15000` | AI 요청 타임아웃(최소 4000). 일정 생성은 30초 |
 | `CHAT_PARSE_STRICT_AI` | `false` | `true`면 AI 채팅 해석이 실패할 때 규칙 기반으로 대신하지 않고 오류 |
 | `TRAVELPAYOUTS_TOKEN` | — | 항공권 캐시 가격(Travelpayouts Data API) |

@@ -41,7 +41,7 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
 
 1. 고친 JS 파일마다 `node --check server.js`, `node --check public/app.js`로 구문을 검사한다.
 2. `npm test`(= `node test_all.js`)로 전체 테스트를 돌린다.
-   - 2026-10-02 기준 738개가 모두 통과하는 것이 정상이다.
+   - 2026-10-02 기준 782개가 모두 통과하는 것이 정상이다.
    - 외부 패키지가 없어 `npm install`은 필요 없다. Node 20 이상이 필요하다.
    - 실제 네트워크와 `.env` 값을 쓰지 않는다(가짜 벤더 서버, 네트워크 차단).
    - 포트 13581·3205가 비어 있어야 한다.
@@ -78,9 +78,11 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
   - 한국 시간 16시(미국 표준시 기간에는 17시)에 다시 찬다.
   - 실제 AI 점검(`scripts/prompt-matrix.mjs`는 약 32회)을 돌리면 운영에서 쓸 한도가 준다.
 - 모델 순서와 시간 예산은 README의 `GEMINI_FALLBACK_MODELS`·`GEMINI_TOTAL_BUDGET_MS`를 본다. 실제 순서는 `/api/health`의 `ai.geminiModelChain`이다.
-- **Groq 키는 `GROQ_API_KEY`라는 이름으로 받아 둔다.** 지금 코드는 이 값을 아직 읽지 않는다.
-  - Groq 키를 `OPENAI_API_KEY`에 넣지 않는다. 지금 코드는 그 값을 api.openai.com으로 보낸다.
-  - 연결 설계는 `docs/api-review-2026-10-02.md` 3절에 있다.
+- **Groq 키는 `GROQ_API_KEY`에 둔다.** 서버는 이 키를 `OPENAI_BASE_URL`이 Groq 주소일 때만 보낸다.
+  - `OPENAI_API_KEY` 없이 `GROQ_API_KEY`만 있으면 주소는 Groq, 모델은 `openai/gpt-oss-120b`가 기본이다.
+  - Groq 키를 `OPENAI_API_KEY`에 넣지 않는다. 넣으면 서버가 api.openai.com에 보내지 않고 경고만 남긴다(OpenAI 키도 Groq로 보내지 않는다).
+  - 어느 키를 쓰는지는 `/api/health`의 `ai.openaiKeySource`, 모델 순서는 `ai.openaiModelChain`이다.
+  - Render 설정값(대체 모델·출력 상한·reasoning·채팅 순서)은 README "Groq 무료 연결"에 있다.
 - **로컬 `.env`의 Supabase는 운영과 같은 프로젝트다.** 로컬에서 저장한 일정도 운영 표에 들어간다. 파일 저장 위치만 바꾸려면 `TABIMARU_DATA_DIR`을 쓴다.
 
 ## 배포 후 확인

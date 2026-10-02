@@ -4523,7 +4523,8 @@ var LEAFLET_CSS_URL = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
 var LEAFLET_CSS_SRI = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
 var LEAFLET_JS_URL = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
 var LEAFLET_JS_SRI = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
-var OSM_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+// OSM 재단 타일 정책: 서브도메인({s}.tile…) 없이 tile.openstreetmap.org 한 곳만 쓴다(operations.osmfoundation.org/policies/tiles/).
+var OSM_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 var OSM_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
 var GOOGLE_GEOCODE_LIMIT = 15; // Google 모드에서 좌표 없는 장소를 한 번에 최대 몇 곳까지 지오코딩할지(유료)
 
@@ -4732,7 +4733,7 @@ function renderLeafletItinMap(mapEl, points) {
   var L = window.L;
   if (!itinLeafletMap) {
     itinLeafletMap = L.map(mapEl, { scrollWheelZoom: false });
-    L.tileLayer(OSM_TILE_URL, { subdomains: 'abc', maxZoom: 19, attribution: OSM_ATTRIBUTION }).addTo(itinLeafletMap);
+    L.tileLayer(OSM_TILE_URL, { maxZoom: 19, attribution: OSM_ATTRIBUTION }).addTo(itinLeafletMap);
     itinLeafletLayer = L.layerGroup().addTo(itinLeafletMap);
   }
   itinLeafletLayer.clearLayers();

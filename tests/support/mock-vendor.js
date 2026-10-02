@@ -24,6 +24,12 @@
  *   geminiDelayMs: { [모델 이름]: ms } — 그만큼 늦게 답한다. 서버가 먼저 끊으면(시간 초과) 아무것도 보내지 않는다.
  *   travelpayouts: 'ok' | 'empty' | 'error'
  *   weather:       'ok' | 'hostile' (open-meteo 응답에 예상 밖 필드·HTML·잘못된 날짜를 섞음)
+ *   fx:            'ok' | 'erapi_down' (open.er-api가 503 → 서버가 Frankfurter v2로 넘어가는지 본다)
+ *   openai:        OpenAI 호환 Responses API(진짜 주소 api.groq.com/openai/v1·api.openai.com/v1은 net-guard가, 로컬 <mock>/openai/v1은 바로 여기로)
+ *                  'ok' | 'error401' | 'error429' | 'error413' | 'error404' | 'error503'
+ *                  | 'incomplete' (status incomplete, max_output_tokens) | 'bad_json' (JSON이 아닌 글) | 'short_days' (일정 날짜가 하나 모자람)
+ *                  채팅 해석에는 chatScenarioJson('ok'면 'chat_ok')을, 일정에는 geminiItinerary와 같은 일정을 낸다.
+ *   openaiModels:  { [모델 이름]: 위 openai 값 } — 그 모델에만 다른 시나리오
  *
  *   oauth:         'refuse'(기본) | 'ok'
  *   supabase:      'ok' | 'down' (모든 Supabase 요청에 503 + 원문 SUPABASE_ERROR_TEXT)
@@ -53,7 +59,7 @@ const JPEG_BYTES = Buffer.from('ffd8ffe000104a46494600010100000100010000ffd9', '
 // net-guard를 거쳐 들어와도 되는 무료 공개 API(가짜 응답을 준다). 여기에 없는 외부 호스트는 "예상 밖 호출"로 기록한다.
 const FREE_EXTERNAL_HOSTS = new Set([
   'open.er-api.com',
-  'api.frankfurter.app',
+  'api.frankfurter.dev',
   'api.open-meteo.com',
   'geocoding-api.open-meteo.com'
 ]);
@@ -238,6 +244,22 @@ function geminiItinerary(days, startDate, scenario = 'ok') {
   return { summary: '테스트용 AI 일정', itinerary, tips: ['교통카드를 준비하세요'] };
 }
 
+// OpenAI Responses API 응답 모양(Groq도 같음). output_text 편의 필드 없이 output 배열에 reasoning + message를 넣는다.
+function openAiResponse(model, text, status = 'completed', incompleteReason = '') {
+  return {
+    id: 'resp_mock',
+    object: 'response',
+    status,
+    model,
+    ...(incompleteReason ? { incomplete_details: { reason: incompleteReason } } : {}),
+    output: [
+      { type: 'reasoning', id: 'rs_mock', summary: [], content: [{ type: 'reasoning_text', text: '(mock reasoning)' }] },
+      ...(text === null ? [] : [{ type: 'message', id: 'msg_mock', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] }])
+    ],
+    usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 }
+  };
+}
+
 function geminiResponse(text, finishReason, usageExtra = {}) {
   return {
     candidates: [{ content: { role: 'model', parts: [{ text }] }, finishReason, index: 0 }],
@@ -285,7 +307,7 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
 
   function reset(scenario = {}) {
     state.log.length = 0;
-    state.scenario = { places: 'ok', geocode: 'ok', directions: 'ok', gemini: 'ok', travelpayouts: 'ok', weather: 'ok', oauth: 'refuse', supabase: 'ok', ...scenario };
+    state.scenario = { places: 'ok', geocode: 'ok', directions: 'ok', gemini: 'ok', travelpayouts: 'ok', weather: 'ok', fx: 'ok', openai: 'ok', oauth: 'refuse', supabase: 'ok', ...scenario };
     state.db = { rows: [], lastTs: 0, seq: 0 };
   }
   reset();
@@ -421,6 +443,40 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
     return unsupported(res, entry, `method ${req.method}`);
   }
 
+  // OpenAI 호환 Responses API 흉내(OpenAI·Groq 공용). oaHost: 'api.groq.com' | 'api.openai.com' | 'mock'(로컬 주소),
+  // apiPath: 공급자 접두어(/openai/v1, /v1)를 뗀 경로('/responses', '/models/<모델>'). 그 밖의 경로는 unknownMockRoute.
+  async function openAiCompat(req, res, oaHost, apiPath, body, headers, sc) {
+    if (req.method === 'GET' && apiPath.startsWith('/models/')) {
+      const model = apiPath.slice('/models/'.length).split('/').map(decodeURIComponent).join('/');
+      record({ kind: 'openaiModels', host: oaHost, model, path: apiPath, method: req.method, headers });
+      return sendJson(res, 200, { id: model, object: 'model', owned_by: 'mock' });
+    }
+    if (req.method === 'POST' && apiPath === '/responses') {
+      let parsed = {};
+      try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+      const model = String(parsed.model || '');
+      // 일정 요청은 json_schema 이름이 'itinerary'(채팅 해석은 'travel_chat_parser')
+      const isItinerary = parsed?.text?.format?.name === 'itinerary';
+      record({ kind: 'openai', host: oaHost, model, path: apiPath, method: req.method, headers, body: parsed, isItinerary });
+      const scOa = (sc.openaiModels && sc.openaiModels[model]) || sc.openai;
+      const fail = (status, message, type, code) => sendJson(res, status, { error: { message: `${message} (mock)`, type, code } });
+      if (scOa === 'error401') return fail(401, 'Invalid API Key', 'invalid_request_error', 'invalid_api_key');
+      if (scOa === 'error429') return fail(429, `Rate limit reached for model \`${model}\` in organization org_mock service tier on_demand on tokens per minute (TPM): Limit 8000, Used 7900, Requested 900. Please try again in 6.75s.`, 'tokens', 'rate_limit_exceeded');
+      if (scOa === 'error413') return fail(413, `Request too large for model \`${model}\` in organization org_mock service tier on_demand on tokens per minute (TPM): Limit 8000, Requested 9100, please reduce your message size and try again.`, 'tokens', 'rate_limit_exceeded');
+      if (scOa === 'error404') return fail(404, `The model \`${model}\` does not exist or you do not have access to it.`, 'invalid_request_error', 'model_not_found');
+      if (scOa === 'error503') return fail(503, 'Service Unavailable', 'internal_server_error', 'service_unavailable');
+      if (scOa === 'incomplete') return sendJson(res, 200, openAiResponse(model, '{"summary":"잘린 응답","itinerary":[', 'incomplete', 'max_output_tokens'));
+      if (scOa === 'bad_json') return sendJson(res, 200, openAiResponse(model, 'Sure! Here is your plan.'));
+      if (!isItinerary) return sendJson(res, 200, openAiResponse(model, JSON.stringify(chatScenarioJson(scOa === 'ok' ? 'chat_ok' : scOa))));
+      // 일정: 사용자 메시지(JSON 문맥)의 days만큼(short_days면 하나 모자라게)
+      let days = 2;
+      try { days = Number(JSON.parse(parsed.input[parsed.input.length - 1].content[0].text).days) || 2; } catch { days = 2; }
+      return sendJson(res, 200, openAiResponse(model, JSON.stringify(geminiItinerary(scOa === 'short_days' ? Math.max(0, days - 1) : days, null, 'ok'))));
+    }
+    record({ kind: 'unknownMockRoute', host: oaHost, path: apiPath, method: req.method, headers, body });
+    return sendJson(res, 404, { error: { message: `mock: no OpenAI-compatible route for ${req.method} ${apiPath}` } });
+  }
+
   async function handle(req, res) {
     const url = new URL(req.url, `http://${host}:${port}`);
     const body = await readBody(req);
@@ -442,14 +498,23 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
         }
         return sendJson(res, 401, { error: 'invalid_client', error_description: 'mock: token exchange refused (test)' });
       }
+      // OpenAI 호환 공급자(진짜 주소 그대로 설정한 서버): Groq는 /openai/v1/…, OpenAI는 /v1/…
+      const oaPrefix = extHost === 'api.groq.com' ? '/openai/v1' : (extHost === 'api.openai.com' ? '/v1' : '');
+      if (oaPrefix && extPath.startsWith(oaPrefix + '/')) return openAiCompat(req, res, extHost, extPath.slice(oaPrefix.length), body, headers, sc);
       const known = FREE_EXTERNAL_HOSTS.has(extHost);
       record({ kind: known ? 'external' : 'unexpectedExternal', host: extHost, path: extPath, query: url.search, method: req.method, headers, body });
       if (!known) return sendJson(res, 502, { error: `blocked by test network guard: ${extHost}` });
       if (extHost === 'open.er-api.com') {
+        if (sc.fx === 'erapi_down') return sendJson(res, 503, { result: 'error', 'error-type': 'mock-unavailable' });
         return sendJson(res, 200, { result: 'success', base_code: 'JPY', time_last_update_utc: 'Wed, 01 Oct 2026 00:02:31 +0000', rates: { KRW: 9.25, USD: 0.00675, JPY: 1 } });
       }
-      if (extHost === 'api.frankfurter.app') {
-        return sendJson(res, 200, { amount: 1, base: 'JPY', date: '2026-10-01', rates: { KRW: 9.25, USD: 0.00675 } });
+      if (extHost === 'api.frankfurter.dev') {
+        // v2 /v2/rates: 기준·대상 통화마다 한 줄씩인 배열. 다른 경로(v1 등)는 404로 둬서 옛 주소를 쓰면 테스트가 잡는다.
+        if (extPath !== '/v2/rates') return sendJson(res, 404, { message: 'mock: not found' });
+        return sendJson(res, 200, [
+          { date: '2026-10-01', base: 'JPY', quote: 'KRW', rate: 9.31 },
+          { date: '2026-10-01', base: 'JPY', quote: 'USD', rate: 0.0068 }
+        ]);
       }
       if (extHost === 'api.open-meteo.com') {
         return sendJson(res, 200, forecastFor(url.searchParams.get('latitude'), url.searchParams.get('longitude'), sc.weather === 'hostile'));
@@ -582,6 +647,9 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
       }
       return sendJson(res, 200, geminiResponse(JSON.stringify(geminiItinerary(days, null, scGem)), 'STOP'));
     }
+
+    // ── OpenAI 호환 Responses API: 로컬 주소(OPENAI_BASE_URL = <mock>/openai/v1, http 로컬 허용 확인용) ──
+    if (p.startsWith('/openai/v1/')) return openAiCompat(req, res, 'mock', p.slice('/openai/v1'.length), body, headers, sc);
 
     // ── Travelpayouts (Aviasales Data API v3) ──
     if (req.method === 'GET' && p === '/aviasales/v3/prices_for_dates') {

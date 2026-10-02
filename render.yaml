@@ -47,9 +47,27 @@ services:
       # 한 번 생성할 때 Gemini 모델 체인 전체가 쓸 수 있는 시간(ms). 비우면 40000.
       - key: GEMINI_TOTAL_BUDGET_MS
         sync: false
+      # OpenAI 호환 공급자. Groq 무료(카드 불필요): GROQ_API_KEY=gsk_… + OPENAI_BASE_URL=https://api.groq.com/openai/v1 (README 'Groq 무료 연결')
+      - key: OPENAI_BASE_URL
+        sync: false
+      # OpenAI 키(sk-). Groq 키는 여기가 아니라 GROQ_API_KEY에.
       - key: OPENAI_API_KEY
         sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: OPENAI_MODEL
+        sync: false
+      # 대체 모델(쉼표 구분). 비우면 주 모델만.
+      - key: OPENAI_FALLBACK_MODELS
+        sync: false
+      # 출력 토큰 상한(Groq 무료는 분당 8천 토큰이라 3500 권장). 비우면 상한 없음.
+      - key: OPENAI_MAX_OUTPUT_TOKENS
+        sync: false
+      # 추론 모델의 생각 정도(reasoning.effort, Groq gpt-oss·qwen은 low 권장). 비우면 보내지 않음.
+      - key: OPENAI_REASONING_EFFORT
+        sync: false
+      # 채팅 해석 공급자 순서(gemini,openai 기본). openai,gemini면 Groq가 먼저 해석하고 Gemini 한도는 일정에 남김.
+      - key: AI_CHAT_PROVIDER_ORDER
         sync: false
       - key: AI_REQUEST_TIMEOUT_MS
         sync: false

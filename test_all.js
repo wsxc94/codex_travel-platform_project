@@ -408,7 +408,7 @@ async function runTests() {
     const start = appCode.indexOf('var I18N = {');
     const dict = vm.runInNewContext('(' + extractBalanced(appCode, appCode.indexOf('{', start)) + ')', {});
     if (only.has('sandbox')) { await sandboxSchedulingTests(htmlCode, appCode, dict); await sandboxStorageTests(htmlCode, appCode, dict); }
-    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, chain: phaseGeminiChain, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree };
+    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, chain: phaseGeminiChain, openai: phaseOpenAiCompat, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree };
     const chosen = Object.keys(phases).filter((k) => only.has(k));
     if (chosen.length) {
       await mock.start();
@@ -648,6 +648,23 @@ async function runTests() {
   log(!/rakuten-config/.test(appCode) && !/pathname === '\/api\/rakuten-config'/.test(serverCode), 'Rakuten config endpoint/client code removed');
   const serverNoComments = serverCode.replace(/^\s*\/\/.*$/gm, '');
   log(!/amadeus\.com|AMADEUS_[A-Z_]+/i.test(serverNoComments), 'Amadeus removed from server (flights/stays: live provider -> mock)');
+
+  // 외부 서비스 규정(docs/api-review-2026-10-02.md 0번)
+  // Rakuten: 배지를 꼭 보여야 하고 제공된 HTML을 고치지 않고 그대로 쓴다(webservice.rakuten.co.jp/guide/credit)
+  const RAKUTEN_CREDIT = [
+    '<!-- Rakuten Web Services Attribution Snippet FROM HERE -->',
+    '<a href="https://developers.rakuten.com/" target="_blank">Supported by Rakuten Developers</a>',
+    '<!-- Rakuten Web Services Attribution Snippet TO HERE -->'
+  ].join('\n');
+  const rakutenCreditAt = htmlCode.indexOf(RAKUTEN_CREDIT);
+  log(rakutenCreditAt > htmlCode.indexOf('id="stayCards"') && htmlCode.indexOf('id="stayCards"') > 0,
+    'Rakuten credit: the official "Supported by Rakuten Developers" snippet is in index.html, unmodified, under the stay results');
+  // OSM 타일 정책: {s} 서브도메인 없이 tile.openstreetmap.org 한 곳
+  log(appCode.includes("var OSM_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';") && !/\{s\}\.tile\.openstreetmap|subdomains:/.test(appCode),
+    'OSM tiles: https://tile.openstreetmap.org/{z}/{x}/{y}.png, no {s} subdomains');
+  // Frankfurter: 옛 api.frankfurter.app(301 리디렉트)·v1(지원 중단 예정) 대신 v2
+  log(serverCode.includes("url: 'https://api.frankfurter.dev/v2/rates?base=JPY&quotes=KRW,USD&providers=ecb'") && !/frankfurter\.app|frankfurter\.dev\/v1/.test(serverNoComments),
+    'FX: Frankfurter is called at api.frankfurter.dev/v2/rates, ECB only (no redirecting frankfurter.app, no deprecated v1)');
 
   // index.html 인라인 스크립트는 우리 API를 부르지 않는다
   const inlineScripts = [...htmlCode.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]);
@@ -943,6 +960,7 @@ async function runTests() {
     await phaseIntentRegression();
     await phaseAiItinerary();
     await phaseGeminiChain();
+    await phaseOpenAiCompat();
   } finally {
     await stopServer();
     await mock.stop();
@@ -2065,8 +2083,23 @@ async function phaseCityCoverage() {
 async function phaseTrustedProxy() {
   section('Phase 2: TRUST_PROXY=1 (weather for every city, XFF spoofing)');
   // 날씨 가짜 응답에 예상 밖 필드·HTML·숫자 문자열·잘못된 날짜를 섞는다(서버가 날짜와 숫자만 남기는지 본다)
-  mock.reset({ weather: 'hostile' });
+  // 환율: open.er-api가 503이면 Frankfurter v2로 넘어가는지도 이 서버로 본다(가짜 값 9.31은 er-api의 9.25와 다르다)
+  mock.reset({ weather: 'hostile', fx: 'erapi_down' });
   try { await startServer('trusted-proxy', { TRUST_PROXY: '1' }); } catch (e) { log(false, 'Server (trusted proxy) started', e.message); return; }
+  try {
+    let fx = null;
+    for (let i = 0; i < 30; i++) {
+      const r = await fetchUrl('/api/fx-rate', { ip: '198.18.250.1', record: false });
+      fx = r.json || null;
+      if (fx && fx.provider === 'frankfurter') break;
+      await sleep(100);
+    }
+    const fr = mock.entries('external').filter((e) => /frankfurter/.test(e.host));
+    log(fx && fx.provider === 'frankfurter' && fx.source === 'live' && fx.jpyToKrw === 9.31 && fx.usdToKrw === Math.round(9.31 / 0.0068) && fx.lastUpdate === '2026-10-01',
+      'FX: open.er-api down -> Frankfurter v2 rows parsed (JPY->KRW 9.31, USD->KRW from the JPY->USD row, date)', short(fx));
+    log(fr.length >= 1 && fr.every((e) => e.host === 'api.frankfurter.dev' && e.path === '/v2/rates' && e.query === '?base=JPY&quotes=KRW,USD&providers=ecb'),
+      'FX: Frankfurter request = api.frankfurter.dev/v2/rates?base=JPY&quotes=KRW,USD&providers=ecb', short(fr.map((e) => e.host + e.path + e.query)));
+  } catch (e) { log(false, 'fx fallback (frankfurter v2)', e.message); }
   try {
     const citiesRes = await fetchUrl('/api/cities', { ip: '198.18.0.1' });
     const cities = citiesRes.json?.cities || [];
@@ -3509,6 +3542,196 @@ async function phaseAiItinerary() {
 // ── Phase 10: Gemini 모델 체인 — 순서·환경변수로 바꾸기·쉬는 모델 건너뛰기·하루 한도 넘기기·404 하루 쉼·모델별 생각 설정·
 //    전체 시간 예산·/api/health 표시. 가짜 Gemini만 쓴다(실제 호출 0회). ──
 // 2026-10-01 실측 순서(server.js GEMINI_DEFAULT_FALLBACK_MODELS). 운영 주 모델이 gemini-2.5-flash-lite라 체인이 이 순서 그대로다.
+// ── OpenAI 호환 공급자(Groq·OpenAI): 키·주소 짝, 모델 체인, 요청 설정, 채팅 공급자 순서, 일정 대체, health ──
+// 서버에는 진짜 주소(api.groq.com·api.openai.com)를 주고, net-guard가 가짜 서버로 돌린다(가짜 서버가 두 호스트를 흉내 냄).
+async function phaseOpenAiCompat() {
+  section('OpenAI-compatible provider (Groq / OpenAI): key-host pairing, model chain, reasoning + max tokens, chat provider order, itinerary fallback, health');
+  const GEM = 'GEMKEY-openai-test-7c41d2';
+  const GSK = 'gsk_TESTONLYgroqKey0123456789abcdefghij';
+  const SK = 'sk-TESTONLYopenaiKey0123456789abcdefgh';
+  const DIAG = 'diag-openai-test-5b8e19c3';
+  const FAKE_KEY_IN_LIST = 'gsk_FAKEnotAmodel0123456789abcdefghijk';
+  const GROQ_CHAIN = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const aiHealth = async () => (await fetchUrl('/api/health', { record: false })).json?.ai || {};
+  const plan = (extra = {}) => postJson('/api/travel-plan', { city: 'osaka', theme: 'mixed', days: 2, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: true, ...extra }, { ip: nextIntentIp() });
+  const chat = (message = '오사카 4일', extra = {}) => postJson('/api/ai-travel-chat', { message, context: { city: 'tokyo', days: 3 }, ...extra }, { ip: nextIntentIp() });
+  const oa = () => mock.entries('openai');
+  const oaModels = () => oa().map((e) => e.model);
+  const gemCalls = () => mock.entries('gemini').length;
+  const vendorTextLeak = () => responseLog.filter((r) => /Rate limit reached for model|Invalid API Key|Request too large for model/.test(r.body)).map((r) => r.path);
+
+  // (1) Groq 운영 권장 설정 + Gemini. OPENAI_MODEL은 비워 Groq 기본 모델(openai/gpt-oss-120b)을 쓴다.
+  mock.reset({ gemini: 'chat_ok', openai: 'ok' });
+  try {
+    await startServer('openai-groq', {
+      GEMINI_API_KEY: GEM, GEMINI_FALLBACK_MODELS: 'none', TRUST_PROXY: '1', DIAGNOSTICS_TOKEN: DIAG,
+      GROQ_API_KEY: GSK, OPENAI_BASE_URL: 'https://api.groq.com/openai/v1/',
+      OPENAI_FALLBACK_MODELS: ` openai/gpt-oss-20b, qwen/qwen3.8-27b ,openai/gpt-oss-120b,${FAKE_KEY_IN_LIST},bad name!,openai/gpt-oss-20b`,
+      OPENAI_MAX_OUTPUT_TOKENS: '3500', OPENAI_REASONING_EFFORT: 'LOW', AI_CHAT_PROVIDER_ORDER: 'OpenAI, gemini'
+    });
+    const h = await aiHealth();
+    log(h.openaiConfigured === true && h.openaiProvider === 'Groq' && h.openaiKeySource === 'GROQ_API_KEY' && h.openaiBaseHost === 'api.groq.com'
+      && h.openaiModel === 'openai/gpt-oss-120b' && same(h.openaiModelChain, GROQ_CHAIN) && same(h.chatProviderOrder, ['openai', 'gemini']) && h.openaiKeyFormatOk === true,
+      'health: Groq via GROQ_API_KEY + OPENAI_BASE_URL (trailing / dropped), default model openai/gpt-oss-120b, chain = primary + fallbacks (duplicates, the primary, a pasted gsk_ key and a bad name dropped), chat order openai,gemini', short(h, 700));
+    const logs0 = serverLogs();
+    log(/OPENAI_FALLBACK_MODELS에서 모델 이름 형식이 아닌 값 2개를 뺐습니다/.test(logs0) && !logs0.includes(FAKE_KEY_IN_LIST) && !logs0.includes(GSK),
+      'a key pasted into OPENAI_FALLBACK_MODELS is not used as a model; only the count of dropped values is logged (no key in the log)');
+    const dg = (await fetchUrl('/api/ai-diagnostics')).json?.providers?.openai || {};
+    log(same(dg.modelChain, GROQ_CHAIN) && dg.providerLabel === 'Groq' && dg.keySource === 'GROQ_API_KEY' && dg.reasoningEffort === 'low' && dg.maxOutputTokens === 3500
+      && dg.totalBudgetMs === 40000 && same(dg.chatProviderOrder, ['openai', 'gemini']),
+      'ai-diagnostics (public): Groq chain, key source, reasoning effort low, max output 3500, chain budget 40000 ms, chat order', short(dg, 500));
+    mock.reset({ gemini: 'chat_ok', openai: 'ok' });
+    const pr = (await fetchUrl('/api/ai-diagnostics?probe=1', { headers: { 'x-diagnostics-token': DIAG } })).json?.probe?.openai || {};
+    const pe = mock.entries('openaiModels')[0];
+    log(pr.ok === true && pe?.host === 'api.groq.com' && pe.path === '/models/openai/gpt-oss-120b' && pe.headers.authorization === `Bearer ${GSK}`,
+      'probe: GET <OPENAI_BASE_URL>/models/openai/gpt-oss-120b (the / in a Groq model name stays a path separator) with the Groq key', short({ pr, path: pe?.path, host: pe?.host }));
+
+    // 채팅 해석: Groq 주 모델이 먼저(Gemini는 부르지 않음). 요청 = Groq 주소 + Groq 키 + reasoning low + 출력 상한 + strict 스키마
+    mock.reset({ gemini: 'chat_ok', openai: 'ok' });
+    const c1 = await chat();
+    const e1 = oa()[0];
+    log(c1.json?.source === 'openai_chat_parser_v1' && c1.json?.sourceInfo?.kind === 'ai' && c1.json?.sourceInfo?.provider === 'openai' && c1.json?.aiModel === 'openai/gpt-oss-120b'
+      && c1.json?.parsed?.cityKey === 'osaka' && same(oaModels(), ['openai/gpt-oss-120b']) && gemCalls() === 0,
+      'chat: AI_CHAT_PROVIDER_ORDER=openai,gemini -> Groq parses first (Gemini not called); aiModel = the model that answered', short({ src: c1.json?.source, info: c1.json?.sourceInfo, model: c1.json?.aiModel, called: oaModels(), gem: gemCalls() }));
+    log(Boolean(e1) && e1.host === 'api.groq.com' && e1.path === '/responses' && e1.headers.authorization === `Bearer ${GSK}` && same(e1.body.reasoning, { effort: 'low' })
+      && e1.body.max_output_tokens === 3500 && e1.body.text?.format?.type === 'json_schema' && e1.body.text?.format?.strict === true && e1.body.text?.format?.name === 'travel_chat_parser',
+      'chat request: POST api.groq.com/openai/v1/responses with the Groq key, reasoning {effort: low}, max_output_tokens 3500, strict json_schema', short(e1 && { host: e1.host, path: e1.path, reasoning: e1.body.reasoning, max: e1.body.max_output_tokens, format: e1.body.text?.format?.name }));
+    // 후속 대화: 지난 assistant 말은 문자열 content(Responses API는 assistant 메시지의 input_text 조각을 거절)
+    mock.reset({ gemini: 'chat_ok', openai: 'ok' });
+    const history = [{ role: 'user', content: '오사카 3일' }, { role: 'assistant', content: '오사카 3일 여행으로 맞췄어요.' }];
+    await chat('하루 더 늘려줘', { history, prevParsed: { cityKey: 'osaka', cityLabel: '오사카', days: 3, theme: 'mixed' } });
+    const asst = (oa()[0]?.body?.input || []).filter((m) => m.role === 'assistant');
+    log(asst.length === 1 && asst.every((m) => typeof m.content === 'string' && m.content.includes('맞췄어요')),
+      'chat follow-up: earlier assistant turns are sent as plain string content', short(asst));
+    // 주 모델 429(분당 토큰) → 대체 모델
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiModels: { 'openai/gpt-oss-120b': 'error429' } });
+    const c2 = await chat();
+    log(c2.json?.source === 'openai_chat_parser_v1' && c2.json?.aiModel === 'openai/gpt-oss-20b' && same(oaModels(), ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']) && gemCalls() === 0,
+      'chat: 429 (tokens per minute) on the primary -> the next fallback model (openai/gpt-oss-20b) answers', short({ called: oaModels(), model: c2.json?.aiModel }));
+    // 모든 Groq 모델 429 → 다음 공급자 Gemini
+    mock.reset({ gemini: 'chat_ok', openai: 'error429' });
+    const c3 = await chat();
+    log(c3.json?.source === 'gemini_chat_parser_v1' && same(oaModels(), GROQ_CHAIN) && gemCalls() === 1
+      && (c3.json?.aiErrors || []).some((e) => e.provider === 'Groq' && e.reasonCode === 'AI_BUSY'),
+      'chat: every Groq model at its rate limit -> Gemini parses next; the Groq error is reported as AI_BUSY', short({ called: oaModels(), src: c3.json?.source, errs: c3.json?.aiErrors }));
+    // 401(키 문제)는 모델을 바꿔도 같으므로 한 번에 멈춘다
+    mock.reset({ gemini: 'chat_ok', openai: 'error401' });
+    const c4 = await chat();
+    log(c4.json?.source === 'gemini_chat_parser_v1' && same(oaModels(), ['openai/gpt-oss-120b']) && (c4.json?.aiErrors || []).some((e) => e.provider === 'Groq' && e.code === 'invalid_key'),
+      'chat: 401 (bad key) stops the Groq chain after one call -> Gemini', short({ called: oaModels(), errs: c4.json?.aiErrors }));
+
+    // 일정: Gemini가 먼저, Gemini 503이면 Groq. 출력 상한 = min(4096, 3500)
+    mock.reset({ gemini: 'error503', openai: 'ok' });
+    const p1 = await plan();
+    const ep = oa()[0];
+    log(p1.json?.itineraryInfo?.kind === 'ai' && p1.json?.itineraryInfo?.provider === 'openai' && p1.json?.itinerarySource === 'openai_itinerary_v1 (openai/gpt-oss-120b)'
+      && gemCalls() >= 1 && same(oaModels(), ['openai/gpt-oss-120b']) && (p1.json?.itinerary || []).length === 2,
+      'itinerary: Gemini first; Gemini 503 -> Groq makes the AI itinerary (source names the model)', short({ src: p1.json?.itinerarySource, info: p1.json?.itineraryInfo, called: oaModels(), gem: gemCalls() }));
+    log(ep?.isItinerary === true && ep.body.max_output_tokens === 3500 && same(ep.body.reasoning, { effort: 'low' }) && ep.body.text?.format?.strict === true,
+      'itinerary request: max_output_tokens = min(4096, OPENAI_MAX_OUTPUT_TOKENS 3500), reasoning low, strict schema', short(ep && { max: ep.body.max_output_tokens, reasoning: ep.body.reasoning }));
+    // 잘림(incomplete max_output_tokens) → 다음 모델
+    mock.reset({ gemini: 'error503', openai: 'ok', openaiModels: { 'openai/gpt-oss-120b': 'incomplete' } });
+    const p2 = await plan();
+    log(p2.json?.itineraryInfo?.kind === 'ai' && p2.json?.itinerarySource === 'openai_itinerary_v1 (openai/gpt-oss-20b)' && same(oaModels(), ['openai/gpt-oss-120b', 'openai/gpt-oss-20b']),
+      'itinerary: a truncated reply (status incomplete, max_output_tokens) -> the next model answers', short({ called: oaModels(), src: p2.json?.itinerarySource }));
+    // 날짜가 하나 모자란 일정(정규화가 거절)·JSON이 아닌 답도 다음 모델로
+    mock.reset({ gemini: 'error503', openai: 'ok', openaiModels: { 'openai/gpt-oss-120b': 'short_days', 'openai/gpt-oss-20b': 'bad_json' } });
+    const p3 = await plan();
+    log(p3.json?.itineraryInfo?.kind === 'ai' && p3.json?.itinerarySource === 'openai_itinerary_v1 (qwen/qwen3.8-27b)' && same(oaModels(), GROQ_CHAIN),
+      'itinerary: a day missing (rejected by normalization) and a non-JSON reply also go to the next model -> qwen answers', short({ called: oaModels(), src: p3.json?.itinerarySource }));
+    // 모두 잘림 → 규칙 일정, Groq 오류는 AI_TRUNCATED(모델마다 한 번씩만)
+    mock.reset({ gemini: 'error503', openai: 'incomplete' });
+    const p4 = await plan();
+    log(p4.json?.itineraryInfo?.kind === 'rule' && same(oaModels(), GROQ_CHAIN) && (p4.json?.aiErrors || []).some((e) => e.provider === 'Groq' && e.reasonCode === 'AI_TRUNCATED'),
+      'itinerary: every Groq model truncated -> rule-based plan; the Groq error is AI_TRUNCATED (each model tried once)', short({ called: oaModels(), info: p4.json?.itineraryInfo, errs: p4.json?.aiErrors }));
+    log(vendorTextLeak().length === 0, 'Groq vendor error text (rate limit, invalid key) never reaches a client response', vendorTextLeak().slice(0, 3).join(', '));
+  } catch (e) { log(false, 'OpenAI-compatible (Groq)', e.stack || e.message); }
+  checkNoSecrets('OpenAI-compatible (Groq)', [GSK, GEM, DIAG]);
+  checkNoUnexpectedExternal('OpenAI-compatible (Groq)');
+  checkNoFatal('OpenAI-compatible (Groq)');
+
+  // (2) OpenAI 기본값(주소·모델 비움, 대체 모델 없음): reasoning·출력 상한을 보내지 않고, 모델 하나는 예전처럼 한 번 더 시도
+  mock.reset({ openai: 'ok' });
+  try {
+    await startServer('openai-default', { OPENAI_API_KEY: SK, TRUST_PROXY: '1' });
+    const h = await aiHealth();
+    log(h.openaiProvider === 'OpenAI' && h.openaiKeySource === 'OPENAI_API_KEY' && h.openaiBaseHost === 'api.openai.com' && same(h.openaiModelChain, ['gpt-4o-mini'])
+      && same(h.chatProviderOrder, ['gemini', 'openai']) && h.openaiKeyFormatOk === true,
+      'health (defaults): OpenAI at api.openai.com, chain = gpt-4o-mini only, chat order gemini,openai', short(h, 500));
+    const c = await chat();
+    const e = oa()[0];
+    log(c.json?.source === 'openai_chat_parser_v1' && c.json?.aiModel === 'gpt-4o-mini' && e?.host === 'api.openai.com' && e.path === '/responses'
+      && e.headers.authorization === `Bearer ${SK}` && !('reasoning' in e.body) && !('max_output_tokens' in e.body),
+      'defaults: no Gemini key -> OpenAI parses at api.openai.com/v1/responses; no reasoning and no max_output_tokens when those env vars are empty', short(e && { host: e.host, keys: Object.keys(e.body) }));
+    mock.reset({ openai: 'ok' });
+    const p6 = await plan({ days: 6 });
+    log(p6.json?.itineraryInfo?.kind === 'ai' && p6.json?.itinerarySource === 'openai_itinerary_v1 (gpt-4o-mini)' && oa()[0]?.body?.max_output_tokens === 8192,
+      'defaults: a 6-day OpenAI itinerary asks for 8192 output tokens (no cap set)', short({ src: p6.json?.itinerarySource, max: oa()[0]?.body?.max_output_tokens }));
+    mock.reset({ openai: 'error429' });
+    const p7 = await plan();
+    log(p7.json?.itineraryInfo?.kind === 'rule' && p7.json?.itineraryInfo?.reasonCode === 'AI_BUSY' && same(oaModels(), ['gpt-4o-mini', 'gpt-4o-mini']),
+      'defaults: a single model is tried twice on 429 (old behavior), then a rule-based plan with AI_BUSY', short({ called: oaModels(), info: p7.json?.itineraryInfo }));
+  } catch (e) { log(false, 'OpenAI-compatible (defaults)', e.stack || e.message); }
+  checkNoSecrets('OpenAI-compatible (defaults)', [SK]);
+  checkNoUnexpectedExternal('OpenAI-compatible (defaults)');
+  checkNoFatal('OpenAI-compatible (defaults)');
+
+  // (3) 키는 주소에 맞는 것만 나간다(CLAUDE.md: Groq 키를 api.openai.com으로 보내지 않는다)
+  const keyCases = [
+    { name: 'gsk_ key in OPENAI_API_KEY, no base URL', env: { OPENAI_API_KEY: GSK }, expect: { configured: false, source: null, host: 'api.openai.com' }, warn: /OPENAI_API_KEY가 Groq 키\(gsk_\) 모양이라 api\.openai\.com에 보내지 않습니다/ },
+    { name: 'GROQ_API_KEY only (no base URL, no OpenAI key)', env: { GROQ_API_KEY: GSK }, expect: { configured: true, source: 'GROQ_API_KEY', host: 'api.groq.com', provider: 'Groq', model: 'openai/gpt-oss-120b' } },
+    { name: 'Groq base URL + OpenAI key only', env: { OPENAI_BASE_URL: 'https://api.groq.com/openai/v1', OPENAI_API_KEY: SK }, expect: { configured: false, source: null, host: 'api.groq.com' }, warn: /OPENAI_BASE_URL이 Groq인데 GROQ_API_KEY가 없어서/ },
+    { name: 'both keys, no base URL', env: { OPENAI_API_KEY: SK, GROQ_API_KEY: GSK }, expect: { configured: true, source: 'OPENAI_API_KEY', host: 'api.openai.com', provider: 'OpenAI', model: 'gpt-4o-mini' }, warn: /GROQ_API_KEY는 OPENAI_BASE_URL이 Groq 주소/ }
+  ];
+  for (const kc of keyCases) {
+    mock.reset({ openai: 'ok' });
+    try {
+      await startServer('openai-keys', { ...kc.env, TRUST_PROXY: '1' });
+      const h = await aiHealth();
+      const p = await plan();
+      const logs = serverLogs();
+      const sent = oa();
+      const ok = h.openaiConfigured === kc.expect.configured && h.openaiKeySource === kc.expect.source && h.openaiBaseHost === kc.expect.host
+        && (!kc.expect.provider || h.openaiProvider === kc.expect.provider) && (!kc.expect.model || h.openaiModel === kc.expect.model)
+        && (!kc.warn || kc.warn.test(logs)) && !logs.includes(GSK) && !logs.includes(SK)
+        && (kc.expect.configured
+          ? sent.length === 1 && sent[0].host === kc.expect.host && sent[0].headers.authorization === `Bearer ${kc.expect.source === 'GROQ_API_KEY' ? GSK : SK}` && p.json?.itineraryInfo?.kind === 'ai'
+          : sent.length === 0 && p.json?.itineraryInfo?.reasonCode === 'AI_KEY_MISSING');
+      log(ok, `key-host pairing: ${kc.name} -> ${kc.expect.configured ? `${kc.expect.source} sent only to ${kc.expect.host}` : 'no key sent anywhere (AI_KEY_MISSING), warning without the value'}`,
+        short({ h: { c: h.openaiConfigured, src: h.openaiKeySource, host: h.openaiBaseHost, model: h.openaiModel }, sent: sent.map((e) => e.host), info: p.json?.itineraryInfo }));
+    } catch (e) { log(false, `key-host pairing: ${kc.name}`, e.stack || e.message); }
+  }
+
+  // (4) 틀린 설정: https가 아닌 주소(로컬 제외)·모르는 reasoning 값·너무 작은 출력 상한·모르는 공급자 이름·틀린 모델 이름
+  mock.reset({ openai: 'ok' });
+  try {
+    await startServer('openai-bad-config', {
+      OPENAI_API_KEY: SK, OPENAI_BASE_URL: 'http://example.com/v1', OPENAI_REASONING_EFFORT: 'extreme', OPENAI_MAX_OUTPUT_TOKENS: '10',
+      AI_CHAT_PROVIDER_ORDER: 'claude,openai', OPENAI_MODEL: 'bad model!'
+    });
+    const h = await aiHealth();
+    const dg = (await fetchUrl('/api/ai-diagnostics')).json?.providers?.openai || {};
+    const logs = serverLogs();
+    log(h.openaiBaseHost === 'api.openai.com' && /OPENAI_BASE_URL이 https 주소가 아니라서/.test(logs) && !logs.includes('example.com'),
+      'a non-https OPENAI_BASE_URL (not loopback) is not used: default api.openai.com, warning without the value', short({ host: h.openaiBaseHost }));
+    log(dg.reasoningEffort === null && /OPENAI_REASONING_EFFORT는/.test(logs) && dg.maxOutputTokens === 256 && same(h.chatProviderOrder, ['openai', 'gemini'])
+      && /AI_CHAT_PROVIDER_ORDER에서 모르는 공급자 이름을 뺐습니다/.test(logs) && h.openaiModel === 'gpt-4o-mini' && /OPENAI_MODEL이 모델 이름 형식이 아니라서/.test(logs),
+      'invalid OPENAI_REASONING_EFFORT is not sent, OPENAI_MAX_OUTPUT_TOKENS is at least 256, unknown names in AI_CHAT_PROVIDER_ORDER are dropped, a bad OPENAI_MODEL falls back to the default (each with a warning)', short({ dg, order: h.chatProviderOrder, model: h.openaiModel }));
+  } catch (e) { log(false, 'OpenAI-compatible (bad config)', e.stack || e.message); }
+  // (5) 로컬 주소는 http도 받는다(개발·테스트용)
+  mock.reset({ openai: 'ok' });
+  try {
+    await startServer('openai-local-base', { OPENAI_API_KEY: SK, OPENAI_BASE_URL: MOCK + '/openai/v1' });
+    const c = await chat();
+    log(c.json?.source === 'openai_chat_parser_v1' && oa()[0]?.host === 'mock' && (await aiHealth()).openaiBaseHost === new URL(MOCK).host,
+      'a loopback http OPENAI_BASE_URL is accepted (local development)', short({ src: c.json?.source, host: oa()[0]?.host }));
+  } catch (e) { log(false, 'OpenAI-compatible (local base)', e.stack || e.message); }
+  checkNoSecrets('OpenAI-compatible (config)', [SK, GSK]);
+  checkNoUnexpectedExternal('OpenAI-compatible (config)');
+  checkNoFatal('OpenAI-compatible (config)');
+}
+
 const GEMINI_DEFAULT_CHAIN = ['gemini-2.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-flash-latest'];
 
 async function phaseGeminiChain() {
