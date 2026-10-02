@@ -662,6 +662,11 @@ async function runTests() {
   // OSM 타일 정책: {s} 서브도메인 없이 tile.openstreetmap.org 한 곳
   log(appCode.includes("var OSM_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';") && !/\{s\}\.tile\.openstreetmap|subdomains:/.test(appCode),
     'OSM tiles: https://tile.openstreetmap.org/{z}/{x}/{y}.png, no {s} subdomains');
+  // 교통비: AI(Gemini·OpenAI 호환)를 부르지 않고 거리로 추정한다(docs/api-review-2026-10-02.md 2번)
+  const rcStart = serverCode.indexOf('async function calculateRouteCost(');
+  const rcBody = rcStart >= 0 ? extractBalanced(serverCode, serverCode.indexOf('{', rcStart)) : '';
+  log(rcBody.length > 500 && !/callGeminiGenerateContent|callOpenAiResponses|parseTravelChatWith/.test(rcBody) && /mapsUrl/.test(rcBody),
+    'route cost: calculateRouteCost makes no AI call (distance estimate + per-leg Google Maps transit link)');
   // Frankfurter: 옛 api.frankfurter.app(301 리디렉트)·v1(지원 중단 예정) 대신 v2
   log(serverCode.includes("url: 'https://api.frankfurter.dev/v2/rates?base=JPY&quotes=KRW,USD&providers=ecb'") && !/frankfurter\.app|frankfurter\.dev\/v1/.test(serverNoComments),
     'FX: Frankfurter is called at api.frankfurter.dev/v2/rates, ECB only (no redirecting frankfurter.app, no deprecated v1)');
@@ -851,6 +856,25 @@ async function runTests() {
       log(newErrors.length === 0, 'switching language in the sandbox raises no errors', short(newErrors, 400));
     } catch (e) {
       log(false, 'Brand: document.title follows the language (ko/en/ja)', e.message);
+    }
+
+    // 교통비: 구간마다 Google 지도 대중교통 링크(https://www.google.com/maps/dir/?api=1&…만), '예상 합계'와 안내 문구.
+    // 악성·비슷한 주소는 링크로 그리지 않는다(safeMapsDirUrl).
+    try {
+      const OK_URL = 'https://www.google.com/maps/dir/?api=1&origin=35.714765%2C139.796655&destination=35.676397%2C139.699325&travelmode=transit';
+      const hostileMaps = ['javascript:alert(1)', 'https://evil.example/maps/dir/?api=1&x=1', 'https://www.google.com.evil.example/maps/dir/?api=1&x=1',
+        'https://www.google.com/maps/dir/?api=1&"><img src=x onerror=alert(1)>', 'http://www.google.com/maps/dir/?api=1&origin=a'];
+      const rcData = { source: 'distance_estimate', estimated: true, totalFareJPY: 370, totalFareKRW: 3190, totalDurationMin: 30,
+        segments: [{ from: '센소지', to: '메이지 신궁', mode: 'subway', durationMin: 25, fareJPY: 200, fareKRW: 1720, estimated: true, tip: '지하철 2~3구간 (약 9.1km)', mapsUrl: OK_URL },
+          ...hostileMaps.map((u, i) => ({ from: 'A' + i, to: 'B' + i, mode: 'subway', durationMin: 5, fareJPY: 170, fareKRW: 1460, estimated: true, tip: '', mapsUrl: u }))] };
+      const rcHtml = String(osmBrowser.run(`routeCostHtml(${JSON.stringify(rcData)})`));
+      const rcHrefs = [...rcHtml.matchAll(/href="([^"]*)"/g)].map((m) => m[1].replace(/&amp;/g, '&'));
+      log(rcHrefs.length === 1 && rcHrefs[0] === OK_URL && /target="_blank" rel="noopener noreferrer"/.test(rcHtml) && !/onerror|javascript:|evil\.example/.test(rcHtml),
+        `route cost: only https://www.google.com/maps/dir/?api=1& addresses become transit links (${hostileMaps.length} hostile mapsUrl values dropped)`, short(rcHrefs));
+      log(rcHtml.includes('예상 합계: ¥370') && rcHtml.includes('🗺 대중교통 경로') && rcHtml.includes('거리로 어림한 값') && rcHtml.includes('거리 기반 추정치') && !/AI/.test(rcHtml),
+        'route cost (ko): "예상 합계", per-leg [🗺 대중교통 경로] link, estimate source + hint (no AI wording)', short(rcHtml, 300));
+    } catch (e) {
+      log(false, 'route cost links (sandbox)', e.message);
     }
 
     // 사진·출처 표시: 악성 주소와 HTML이 든 값은 허용 목록(safeImageUrl·safeCreditUrl)과 escapeHtml로 막혀야 한다.
@@ -3646,6 +3670,22 @@ async function phaseOpenAiCompat() {
     log(p4.json?.itineraryInfo?.kind === 'rule' && same(oaModels(), GROQ_CHAIN) && (p4.json?.aiErrors || []).some((e) => e.provider === 'Groq' && e.reasonCode === 'AI_TRUNCATED'),
       'itinerary: every Groq model truncated -> rule-based plan; the Groq error is AI_TRUNCATED (each model tried once)', short({ called: oaModels(), info: p4.json?.itineraryInfo, errs: p4.json?.aiErrors }));
     log(vendorTextLeak().length === 0, 'Groq vendor error text (rate limit, invalid key) never reaches a client response', vendorTextLeak().slice(0, 3).join(', '));
+
+    // 교통비: AI 키(Gemini·Groq)가 모두 있어도 AI를 부르지 않고 거리로 추정한다. 구간마다 Google 지도 대중교통 링크.
+    mock.reset({ gemini: 'chat_ok', openai: 'ok' });
+    const rc = await postJson('/api/route-cost', { city: 'tokyo', places: ['센소지', '메이지 신궁', '없는 장소 테스트'], lang: 'ko' }, { ip: nextIntentIp() });
+    const segs = rc.json?.segments || [];
+    log(rc.status === 200 && rc.json?.source === 'distance_estimate' && rc.json?.estimated === true && segs.length === 2 && segs.every((x) => x.estimated === true)
+      && gemCalls() === 0 && oa().length === 0,
+      'route-cost: no AI call even with Gemini and Groq configured; every leg is a distance estimate (estimated: true)', short({ status: rc.status, src: rc.json?.source, gem: gemCalls(), oa: oa().length, segs: segs.map((x) => [x.mode, x.estimated]) }));
+    const legUrl = (i) => { try { return new URL(segs[i]?.mapsUrl || ''); } catch { return null; } };
+    const u0 = legUrl(0);
+    const u1 = legUrl(1);
+    log(segs.every((x) => /^https:\/\/www\.google\.com\/maps\/dir\/\?api=1&/.test(x.mapsUrl)) && u0 && u1
+      && u0.searchParams.get('travelmode') === 'transit' && u1.searchParams.get('travelmode') === 'transit'
+      && /^\d+\.\d{6},\d+\.\d{6}$/.test(u0.searchParams.get('origin') || '') && /^\d+\.\d{6},\d+\.\d{6}$/.test(u0.searchParams.get('destination') || '')
+      && u1.searchParams.get('destination') === '없는 장소 테스트 東京 Japan',
+      'route-cost: each leg links to Google Maps transit directions; known places use coordinates, unknown names are searched as "name + Japanese city + Japan"', short(segs.map((x) => x.mapsUrl)));
   } catch (e) { log(false, 'OpenAI-compatible (Groq)', e.stack || e.message); }
   checkNoSecrets('OpenAI-compatible (Groq)', [GSK, GEM, DIAG]);
   checkNoUnexpectedExternal('OpenAI-compatible (Groq)');

@@ -4354,8 +4354,16 @@ function modeLabel(mode) {
   return keys[mode] ? t(keys[mode]) : String(mode || '');
 }
 
+// 이동비 구간의 Google 지도 길찾기 링크: https://www.google.com/maps/dir/?api=1& 로 시작하는 주소만 쓴다(그 밖은 버림).
+function safeMapsDirUrl(u) {
+  var s = String(u || '');
+  return /^https:\/\/www\.google\.com\/maps\/dir\/\?api=1&[^\s"'<>\\]*$/.test(s) ? s : '';
+}
+
+// 요금·시간은 서버가 거리로 어림한 값이다(AI 추측 없음). 구간마다 Google 지도 대중교통 경로 링크를 붙인다.
 function routeCostHtml(data) {
   var h = '<div class="route-cost-segments">';
+  var hasMaps = false;
   for (var i = 0; i < data.segments.length; i++) {
     var seg = data.segments[i];
     var fareText = seg.fareJPY > 0 ? '¥' + Number(seg.fareJPY).toLocaleString() + ' (~' + formatKRW(seg.fareKRW) + ')' : t('free-label');
@@ -4365,13 +4373,23 @@ function routeCostHtml(data) {
     var routeText = String(seg.from || '') + ' → ' + String(seg.to || '');
     h += '<span class="route-seg-route" title="' + escapeHtml(routeText) + '">' + escapeHtml(routeText) + '</span>';
     h += '<span class="route-seg-detail">' + escapeHtml(seg.durationMin + t('min-suffix') + ' · ' + fareText) + '</span>';
-    if (seg.tip) h += '<span class="route-seg-tip">' + escapeHtml(seg.tip) + '</span>';
+    var mapsUrl = safeMapsDirUrl(seg.mapsUrl);
+    if (seg.tip || mapsUrl) {
+      h += '<div class="route-seg-extra">';
+      if (seg.tip) h += '<span class="route-seg-tip">' + escapeHtml(seg.tip) + '</span>';
+      if (mapsUrl) {
+        hasMaps = true;
+        h += '<a class="route-seg-maps" href="' + escapeHtml(mapsUrl) + '" target="_blank" rel="noopener noreferrer">' + escapeHtml(t('route-open-maps')) + '</a>';
+      }
+      h += '</div>';
+    }
     h += '</div>';
   }
   h += '</div><div class="route-cost-total">' + escapeHtml(t('total-fare') + Number(data.totalFareJPY || 0).toLocaleString() + ' (~' + formatKRW(data.totalFareKRW) + ')' + t('route-move') + data.totalDurationMin + t('min-suffix')) + '</div>';
   if (data.routeTip) h += '<div class="route-cost-tip">' + escapeHtml(data.routeTip) + '</div>';
-  var routeSourceLabel = data.source === 'ai' ? t('source-ai-calc') : data.source === 'distance_estimate' ? t('source-dist-est') : data.source === 'directions_api' ? t('source-google-route') : t('source-estimate');
+  var routeSourceLabel = data.source === 'distance_estimate' ? t('source-dist-est') : data.source === 'directions_api' ? t('source-google-route') : t('source-estimate');
   h += '<div class="route-cost-source">' + escapeHtml(routeSourceLabel) + '</div>';
+  if (hasMaps) h += '<div class="route-cost-hint">' + escapeHtml(t('route-maps-hint')) + '</div>';
   return h;
 }
 
@@ -7542,7 +7560,7 @@ var I18N = {
     'transport-walk': '🚶 도보',
     'transport-est': '📍 추정',
     'transport-err': '⚠️ 오류',
-    'total-fare': '합계: ¥',
+    'total-fare': '예상 합계: ¥',
     'free': '무료',
     'budget-low': '절약',
     'budget-mid': '표준',
@@ -7661,8 +7679,9 @@ var I18N = {
     'route-need-2': '교통비를 계산하려면 이날 장소가 2곳 이상 있어야 해요.',
     'calculating': '계산 중...',
     'free-label': '무료',
-    'source-ai-calc': '✨ AI 기반 계산',
     'source-dist-est': '📏 거리 기반 추정치',
+    'route-open-maps': '🗺 대중교통 경로',
+    'route-maps-hint': '요금과 시간은 거리로 어림한 값이에요. 실제 경로와 요금은 구간마다 [🗺 대중교통 경로]를 눌러 Google 지도에서 확인하세요.',
     'source-google-route': '🗺 Google 경로 정보',
     'err-input': '입력값을 확인해 주세요.',
     'source-ai-google': '✨ AI + Google Places 기반',
@@ -8078,7 +8097,7 @@ var I18N = {
     'transport-walk': '🚶 Walk',
     'transport-est': '📍 Est.',
     'transport-err': '⚠️ Error',
-    'total-fare': 'Total: \u00a5',
+    'total-fare': 'Est. total: \u00a5',
     'free': 'Free',
     'budget-low': 'Budget',
     'budget-mid': 'Standard',
@@ -8186,8 +8205,9 @@ var I18N = {
     'route-need-2': 'Add at least 2 places to this day to calculate transit costs.',
     'calculating': 'Calculating...',
     'free-label': 'Free',
-    'source-ai-calc': '✨ AI Calculation',
     'source-dist-est': '📏 Distance-based estimate',
+    'route-open-maps': '🗺 Transit route',
+    'route-maps-hint': 'Fares and times are rough estimates from distance. Tap [🗺 Transit route] on each leg to check the real route and fare in Google Maps.',
     'source-google-route': '🗺 Google route data',
     'err-input': 'Please check what you entered.',
     'source-ai-google': '✨ AI + Google Places',
@@ -8614,7 +8634,7 @@ var I18N = {
     'transport-walk': '🚶 徒歩',
     'transport-est': '📍 推定',
     'transport-err': '⚠️ エラー',
-    'total-fare': '合計: ¥',
+    'total-fare': '概算合計: ¥',
     'free': '無料',
     'budget-low': '節約',
     'budget-mid': '標準',
@@ -8722,8 +8742,9 @@ var I18N = {
     'route-need-2': '交通費を計算するには、この日に2か所以上が必要です。',
     'calculating': '計算中...',
     'free-label': '無料',
-    'source-ai-calc': '✨ AI計算',
     'source-dist-est': '📏 距離に基づく推定',
+    'route-open-maps': '🗺 乗換案内',
+    'route-maps-hint': '料金と時間は距離からの概算です。実際の経路と運賃は各区間の［🗺 乗換案内］からGoogleマップで確認してください。',
     'source-google-route': '🗺 Google経路情報',
     'err-input': '入力内容を確認してください。',
     'source-ai-google': '✨ AI + Google Places',

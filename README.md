@@ -103,9 +103,9 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 | 지도 | OpenStreetMap + Leaflet 1.9.4 | `MAP_PROVIDER=google` + 브라우저 키면 Google Maps JavaScript API |
 | 항공권 | Travelpayouts 캐시 가격(요청 날짜가 비면 ±7일, 화면에 "다른 날짜" 표시) | 토큰이 없거나 결과가 없으면 "예시 데이터"로 표시 |
 | 숙소 | Rakuten Travel(좌표 기반, 62개 도시). 날짜 조건 결과가 없으면 최저가 목록("날짜 미확인 최저가" 표시) | 키가 없거나 결과가 없으면 "예시 데이터"로 표시 |
-| 경로 교통비 | AI 계산 또는 좌표 기반 거리 추정 | google 모드에서만 Directions API |
+| 경로 교통비 | 좌표 기반 거리 추정(AI 호출 없음, 화면에 "예상 합계"·추정 표시) + 구간마다 Google 지도 대중교통 경로 링크(`travelmode=transit`, 키·요금 없음) | google 모드에서만 Directions API로 거리 |
 | 날씨 | Open-Meteo(무료, 키 없음), 모든 도시, 16일 예보(범위 밖 날짜는 안내) | 위치를 모르는 도시는 다른 도시 날씨로 대신하지 않음 |
-| 환율 | open.er-api(ExchangeRate-API) → Frankfurter(무료) | `FX_USD_KRW`·`FX_JPY_KRW` 고정값 → 코드의 대략값 |
+| 환율 | open.er-api(ExchangeRate-API) → Frankfurter v2(무료, ECB 기준) | `FX_USD_KRW`·`FX_JPY_KRW` 고정값 → 코드의 대략값 |
 | 투어 | Klook 위젯 | 8초 안에 안 뜨면 Klook·Viator·GetYourGuide 링크 |
 | 로그인 · 내 일정 | Google · Naver · Kakao OAuth. 로그인은 서명 쿠키(30일)라 서버가 재시작해도 유지 | 키가 없으면 로그인 버튼 숨김 |
 | 내 일정 저장소 | Supabase(`SUPABASE_*` 설정 시, `travel_plans` 표) | 설정이 없으면 서버의 로컬 파일(`data/`, 로컬 개발용). 설정했는데 연결되지 않으면 503 |
@@ -284,7 +284,7 @@ npm test                  # = node test_all.js
 - 브랜드 검사: `/api/health`의 `app`이 `tabimaru`, 페이지 제목·매니페스트 이름이 Tabimaru인지, 언어를 바꾸면 제목도 바뀌는지, 외부 호출의 User-Agent가 `TabimaruBot/0.1`인지 봅니다. 도메인에 묶인 값(운영 주소, Render 서비스 이름, OAuth 콜백 경로, `sid` 쿠키, localStorage 키, 매니페스트 `start_url`)이 그대로인지도 봅니다.
 - 첫 화면은 `tests/support/browser-sandbox.js`로 `app.js`를 실제로 부팅해, 유료 API를 부르지 않는지 확인합니다. 이어서 [일정 만들기]를 두 번 눌러도 일정 1회 + 항공·맛집·숙소 각 1회만 부르는지, 카드에 실제 `<img>`와 위키미디어 출처가 붙는지, Leaflet이 일정이 생긴 뒤에만 SRI와 함께 로드되는지, 빈 일정에 안내 문구가 나오는지도 봅니다. 사진·출처 표시 함수(`safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`)와 추천·맛집 카드에는 악성 값(`javascript:`·`data:` 주소, 비슷한 호스트, `/\`·`//` 우회 주소, 따옴표·HTML이 든 이름과 저작자)을 넣습니다. 그래도 사진은 Commons나 `/api/place-photo`, 출처 링크는 Commons 파일 페이지나 Google 기여자 페이지만 남고, 나머지 값은 모두 이스케이프되는지 봅니다.
 - 그 밖에 응답에 키가 섞이지 않는지, 날씨 응답이 날짜·숫자만 담는지, CSRF 출처 검사, 긴급 전화번호 표시 = `tel:` 링크, CSS 변수 자기참조, CSS 중복 사본·키보드 포커스 링·다크 모드 토큰, 사전 누락·중복 키·코드가 쓰는 키(`t('…')`, `data-i18n`)의 ko/en/ja 존재, `index.html` 기본 글자 = ko 사전, `alert(`·`prompt(` 없음, localStorage 새 키는 `tabimaru.draft.v1` 하나, `render.yaml`·`.env.example`·README의 환경변수 목록과 기본값 누락도 검사합니다.
-- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-02 기준 782개 검사가 모두 통과합니다(40초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간, 8초는 Gemini 모델 체인의 시간 예산 검사).
+- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-02 기준 787개 검사가 모두 통과합니다(40초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간, 8초는 Gemini 모델 체인의 시간 예산 검사).
 - 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`oauth`·`session`·`live`·`free`이고, `npm test`와 CI는 늘 전체를 돌립니다.
 - GitHub Actions(`.github/workflows/ci.yml`)가 push와 pull request마다 Node 20으로 `npm test`를 돌립니다. `.github/workflows/keepalive.yml`은 테스트가 아니라 3일마다 운영 `/api/keepalive`를 부르는 예약 작업입니다(정적 검사로 내용만 확인).
 

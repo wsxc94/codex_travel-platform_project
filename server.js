@@ -8886,7 +8886,13 @@ async function callOpenAiResponses(body, opts = {}) {
     if (r.status === 401 || r.status === 403) throw lastError;
     if (r.status === 429 || r.status === 503) busyError = busyError || lastError;
     failed.push(`${model}(${r.status})`);
-    console.log(`[openai] ${label} model ${model} failed (${r.status})${next}`);
+    // 원인을 알 수 있게 벤더 오류 코드·문장 앞부분을 서버 로그에만 남긴다(키는 들어 있지 않고, 클라이언트 응답에는 넣지 않음)
+    let why = '';
+    try {
+      const e = JSON.parse(r.text)?.error || {};
+      why = [e.code, String(e.message || '').replace(/\s+/g, ' ').slice(0, 140)].filter(Boolean).join(': ');
+    } catch { why = ''; }
+    console.log(`[openai] ${label} model ${model} failed (${r.status}${why ? ' ' + why : ''})${next}`);
   }
   throw busyError || truncatedError || timeoutError || lastError || new Error(`${label}: all models exhausted`);
 }
@@ -11109,17 +11115,17 @@ const ROUTE_COST_TEXT = {
   ko: {
     walking: '도보 이동', subway1: '지하철 1구간', subway2: '지하철 2~3구간', subway: '지하철/전철', rail: 'JR/사철 이용',
     longRail: '장거리 전철', shinkansen: '특급/신칸센 추정', approx: (km) => ` (약 ${km}km)`,
-    noDistance: '거리 정보 없음(대략 추정)', needTwo: '장소가 2곳 이상 필요합니다.', aiLang: ''
+    noDistance: '거리 정보 없음(대략 추정)', needTwo: '장소가 2곳 이상 필요합니다.'
   },
   en: {
     walking: 'Walk', subway1: 'Subway, 1 zone', subway2: 'Subway, 2-3 zones', subway: 'Subway/train', rail: 'JR/private railway',
     longRail: 'Long-distance train', shinkansen: 'Limited express/Shinkansen (estimate)', approx: (km) => ` (about ${km} km)`,
-    noDistance: 'No distance data (rough estimate)', needTwo: 'At least 2 places are needed.', aiLang: '영어(English)'
+    noDistance: 'No distance data (rough estimate)', needTwo: 'At least 2 places are needed.'
   },
   ja: {
     walking: '徒歩', subway1: '地下鉄 1区間', subway2: '地下鉄 2～3区間', subway: '地下鉄/電車', rail: 'JR/私鉄',
     longRail: '長距離電車', shinkansen: '特急/新幹線（推定）', approx: (km) => `（約${km}km）`,
-    noDistance: '距離情報なし（概算）', needTwo: '2か所以上の場所が必要です。', aiLang: '일본어(日本語)'
+    noDistance: '距離情報なし（概算）', needTwo: '2か所以上の場所が必要です。'
   }
 };
 
@@ -11192,7 +11198,10 @@ function koPlaceNameForLabel(label, cityKey) {
   return placeLabelMatches(label, [cityKey])[0]?.ko || '';
 }
 
-// ── Route Cost Calculator (AI-based via Gemini) ──
+// ── 경로 교통비: AI 없이 거리로 추정한다 ──
+// 예전에는 Gemini가 요금·시간을 추측했는데, 추측값이 실측처럼 보이고 Gemini 하루 한도를 썼다(2026-10-02 제거).
+// 모든 구간은 추정값(estimated: true)이고, 구간마다 Google 지도 대중교통 길찾기 링크(mapsUrl, 키·요금 없음)를 붙인다.
+// google 모드면 Directions API 거리(비용 가드 적용), 아니면 장소 좌표(place-images.json·큐레이션) 직선거리 × 1.3.
 async function calculateRouteCost(places, city, langInput) {
   const lang = routeCostLang(langInput, places);
   const RT = ROUTE_COST_TEXT[lang] || ROUTE_COST_TEXT.ko;
@@ -11206,92 +11215,8 @@ async function calculateRouteCost(places, city, langInput) {
   const cityObj = CITY_DATA[cityKey];
   const cityLabel = (cityObj && cityObj.label) ? cityObj.label : city;
 
-  // Build route string for AI
-  const routeList = places.map((p, i) => `${i + 1}. ${p}`).join('\n');
-
-  // Try AI first
-  if (GEMINI_API_KEY) {
-    try {
-      const prompt = `일본 ${cityLabel} 여행 경로의 대중교통 이동 정보를 계산해주세요.
-
-경로 (순서대로):
-${routeList}
-
-각 구간별로 다음을 JSON으로 답해주세요:
-- from: 출발지명
-- to: 도착지명
-- mode: 이동수단 (subway/rail/bus/tram/walking 중 하나, 가장 현실적인 수단)
-- durationMin: 예상 소요시간(분, 정수)
-- fareJPY: 예상 요금(엔, 정수. 도보는 0)
-- tip: 한줄 팁 (예: "JR야마노테선 이용", "도보 5분 거리")
-
-JSON 형식:
-{
-  "segments": [ { "from": "...", "to": "...", "mode": "...", "durationMin": 0, "fareJPY": 0, "tip": "..." } ],
-  "totalDurationMin": 0,
-  "totalFareJPY": 0,
-  "routeTip": "전체 경로 팁 한줄"
-}
-
-주의:
-- 실제 일본 대중교통 요금 기준으로 현실적으로 계산
-- 500m 이내 가까운 거리는 walking(도보)으로, 요금 0
-- 지하철/전철 기본요금 약 170~200엔 참고
-- 장거리 신칸센은 해당 요금 반영${RT.aiLang ? `\n- tip과 routeTip은 ${RT.aiLang}로 작성` : ''}`;
-
-      // gemini-2.0-flash 고정은 모델 종료(404)로 매번 한 번씩 헛호출이 나서 기본 모델을 쓴다.
-      // 화면은 30초에 요청을 끊으므로 체인 전체를 20초로 줄여, 그 안에 못 받으면 아래 추정값으로 답한다.
-      const geminiResp = await callGeminiGenerateContent(prompt, {
-        temperature: 0.1,
-        maxOutputTokens: 1500,
-        thinkingBudget: 0,
-        responseMimeType: 'application/json',
-        totalBudgetMs: 20_000
-      });
-
-      const text = geminiResp?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      let parsed;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        const jsonMatch = text.match(/\{[\s\S]*\}/);
-        if (jsonMatch) parsed = JSON.parse(jsonMatch[0]);
-      }
-
-      if (parsed && Array.isArray(parsed.segments) && parsed.segments.length > 0) {
-        // Normalize and add KRW conversion
-        const segments = parsed.segments.map(seg => ({
-          from: seg.from || '',
-          to: seg.to || '',
-          mode: seg.mode || 'transit',
-          durationMin: Math.round(Number(seg.durationMin) || 0),
-          fareJPY: Math.round(Number(seg.fareJPY) || 0),
-          fareKRW: Math.round((Number(seg.fareJPY) || 0) * JPY_TO_KRW),
-          distanceM: 0,
-          tip: seg.tip || '',
-          estimated: false
-        }));
-
-        const totalDurationMin = segments.reduce((s, seg) => s + seg.durationMin, 0);
-        const totalFareJPY = segments.reduce((s, seg) => s + seg.fareJPY, 0);
-
-        return {
-          segments,
-          totalDurationMin,
-          totalFareJPY,
-          totalFareKRW: Math.round(totalFareJPY * JPY_TO_KRW),
-          routeTip: parsed.routeTip || '',
-          source: 'ai',
-          aiModel: geminiResp._usedModel || 'gemini'
-        };
-      }
-    } catch (err) {
-      console.error('[route-cost] AI calculation failed, falling back:', err.message);
-    }
-  }
-
-  // Fallback: google 모드면 Directions API(비용 가드 적용), 아니면 장소 좌표(place-images.json) 기반 거리 추정.
-  const cityNameJa = (cityObj && cityObj.nameJa) ? cityObj.nameJa : cityLabel;
+  // 지도 검색어·Directions에 쓰는 일본어 도시 이름(nameJa → CITY_NAME_I18N의 일본어 → 화면 이름)
+  const cityNameJa = (cityObj && cityObj.nameJa) ? cityObj.nameJa : (CITY_NAME_I18N[cityLabel]?.[1] || cityLabel);
   const segments = [];
   let totalDuration = 0;
   let totalFareJPY = 0;
@@ -11321,6 +11246,11 @@ JSON 형식:
     const apCoord = ap ? JAPAN_AIRPORT_COORDS.find((a) => a.code === ap[1].toUpperCase()) : null;
     return apCoord ? { lat: apCoord.lat, lng: apCoord.lng } : null;
   };
+  // Google 지도 대중교통 길찾기 링크: 좌표를 알면 좌표, 모르면 "이름 도시(일본어) Japan"으로 찾게 한다.
+  const mapsUrlFor = (fromPlace, toPlace, a, b) => googleTransitDirUrl(
+    a ? `${a.lat.toFixed(6)},${a.lng.toFixed(6)}` : `${fromPlace} ${cityNameJa} Japan`,
+    b ? `${b.lat.toFixed(6)},${b.lng.toFixed(6)}` : `${toPlace} ${cityNameJa} Japan`
+  );
   // 좌표로 구간 추정(직선거리 × 1.3). 좌표가 없으면 대략값.
   const estimateSegmentFromCoords = (fromPlace, toPlace) => {
     const a = coordFor(fromPlace);
@@ -11330,7 +11260,8 @@ JSON 형식:
         from: fromPlace, to: toPlace,
         distanceM: 0, durationMin: 20,
         fareJPY: 200, fareKRW: Math.round(200 * JPY_TO_KRW),
-        mode: 'estimated', estimated: true, tip: RT.noDistance
+        mode: 'estimated', estimated: true, tip: RT.noDistance,
+        mapsUrl: mapsUrlFor(fromPlace, toPlace, a, b)
       };
     }
     const distKm = haversineKm(a, b) * 1.3;
@@ -11341,7 +11272,8 @@ JSON 형식:
       distanceM: Math.round(distKm * 1000), durationMin,
       fareJPY: est.fareJPY, fareKRW: Math.round(est.fareJPY * JPY_TO_KRW),
       mode: est.mode, estimated: true,
-      tip: est.tip + RT.approx(distKm.toFixed(1))
+      tip: est.tip + RT.approx(distKm.toFixed(1)),
+      mapsUrl: mapsUrlFor(fromPlace, toPlace, a, b)
     };
   };
 
@@ -11395,7 +11327,8 @@ JSON 형식:
           distanceM, durationMin: transitDurationMin,
           fareJPY: est.fareJPY, fareKRW: Math.round(est.fareJPY * JPY_TO_KRW),
           mode: est.mode, estimated: true,
-          tip: est.tip + RT.approx(distKm.toFixed(1))
+          tip: est.tip + RT.approx(distKm.toFixed(1)),
+          mapsUrl: mapsUrlFor(fromPlace, toPlace, coordFor(fromPlace), coordFor(toPlace))
         });
         totalDuration += transitDurationMin;
         totalFareJPY += est.fareJPY;
@@ -11423,8 +11356,15 @@ JSON 형식:
     totalDurationMin: totalDuration,
     totalFareJPY,
     totalFareKRW: Math.round(totalFareJPY * JPY_TO_KRW),
-    source: 'distance_estimate'
+    source: 'distance_estimate',
+    estimated: true
   };
+}
+
+// Google 지도 길찾기 링크(Maps URLs, 키 없음). 대중교통 모드는 경유지를 받지 않아 구간마다 하나씩 만든다.
+function googleTransitDirUrl(origin, destination) {
+  const q = (v) => encodeURIComponent(String(v || '').trim().slice(0, 200));
+  return `https://www.google.com/maps/dir/?api=1&origin=${q(origin)}&destination=${q(destination)}&travelmode=transit`;
 }
 
 // GET /api/place-photo?name=places/{id}/photos/{id}&w=100..1600 (google 모드 전용)

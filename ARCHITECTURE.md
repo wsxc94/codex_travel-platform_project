@@ -209,7 +209,7 @@ HTTP Request
 | POST | `/api/itinerary` | 규칙 기반 일정만 |
 | POST | `/api/dest-search` | 여행지 탐색(`recommendDestinations()` 재사용, `sourceInfo`) |
 | POST | `/api/ai-travel-chat` | 자연어 조건 해석 + 선택 장소 제안 |
-| POST | `/api/route-cost` | 경로 교통비(장소 이름 문자열 최대 12개). AI 계산 → (google 모드) Directions → 좌표 기반 거리 추정 |
+| POST | `/api/route-cost` | 경로 교통비(장소 이름 문자열 최대 12개). AI를 부르지 않는다(2026-10-02, 예전 Gemini 추측은 실측처럼 보이고 하루 한도를 썼음). (google 모드) Directions 거리 → 그 밖에는 좌표(`place-images.json`·큐레이션) 직선거리 × 1.3으로 요금·시간 추정. 모든 구간 `estimated: true`, 응답 `source: 'distance_estimate'`·`estimated: true`. 구간마다 `mapsUrl` = Google 지도 대중교통 길찾기(`googleTransitDirUrl()`: `https://www.google.com/maps/dir/?api=1&origin=…&destination=…&travelmode=transit`, 좌표를 알면 `lat,lng`, 모르면 `이름 + 일본어 도시 이름 + Japan`; 대중교통 모드는 경유지를 받지 않아 구간마다 하나). 화면 `routeCostHtml()`은 `safeMapsDirUrl()`(그 주소 형태만)을 거친 링크만 [🗺 대중교통 경로]로 그리고, "예상 합계"와 안내 문구(`route-maps-hint`)를 붙인다 |
 
 #### `/api/travel-plan` 요청
 ```json
@@ -381,7 +381,7 @@ AI 힌트 보너스: 선호 지역 +65,000, 오션뷰 +30,000, 공항 셔틀 +28
 - 채팅 해석 공급자 순서 `AI_CHAT_PROVIDER_ORDER`(쉼표 구분 `gemini`·`openai`, 모르는 이름은 버림, 빠진 공급자는 기본 순서대로 뒤에 붙임). 지난 대화는 문자열 `content`로 보낸다(Responses API는 assistant 메시지의 `input_text` 조각을 거절). `/api/health`의 `ai.openaiBaseHost`·`ai.openaiProvider`·`ai.openaiKeySource`·`ai.openaiModelChain`·`ai.chatProviderOrder`, `/api/ai-diagnostics`의 `providers.openai`(`baseHost`·`providerLabel`·`keySource`·`modelChain`·`reasoningEffort`·`maxOutputTokens`·`totalBudgetMs`·`chatProviderOrder`). probe는 `GET <OPENAI_BASE_URL>/models/<모델>`(Groq 이름의 `/`는 경로 구분자로 둠).
 - Gemini 모델 순서(`GEMINI_MODEL_CHAIN`): `GEMINI_API_MODEL`(기본 `gemini-2.5-flash`) → `GEMINI_DEFAULT_FALLBACK_MODELS`(2026-10-01 실측: `gemini-2.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-3-flash-preview` → `gemini-3.5-flash-lite` → `gemini-2.5-flash` → `gemini-3.6-flash` → `gemini-flash-latest`, 주 모델과 겹치면 제외). `GEMINI_FALLBACK_MODELS`(쉼표 구분, `none` = 주 모델만)가 있으면 대체 목록을 통째로 바꾼다(`parseGeminiFallbackModels()`: 공백·중복·`models/` 접두어 정리, 소문자·숫자·`. _ -`가 아닌 이름은 버리고 개수만 로그, 최대 9개).
 - `callGeminiGenerateContent()`가 다음 모델로 넘기는 경우: 429·503(+ 5xx 500/502/504)·404·시간 초과·키 문제가 아닌 400(요청 설정 거절)·생각 토큰이 출력 한도를 다 쓴 `MAX_TOKENS`(`usageMetadata.thoughtsTokenCount > 0`). 바로 오류로 끝내는 경우: 키·권한·지역 400(`GEMINI_ACCOUNT_ERROR_RE`: `API_KEY_INVALID` 등)·401·403·DNS/연결 오류·생각 없이 잘린 `MAX_TOKENS`(다른 모델 한도를 쓰지 않게 호출한 쪽이 `AI_TRUNCATED`).
-- 시간: 호출 하나는 `geminiPostOnce()`가 본문 읽기까지 `min(AI_REQUEST_TIMEOUT_MS 또는 opts.timeoutMs, 남은 예산)`으로 끊고, 체인 전체는 `GEMINI_TOTAL_BUDGET_MS`(기본 40초). 남은 시간이 `GEMINI_MIN_ATTEMPT_MS`(2.5초)보다 짧으면 다음 모델을 시작하지 않는다. 시간 초과로 쉬게 하는 것은 제 시간(호출 하나의 제한 시간)을 다 받은 모델만(남은 예산 때문에 짧게 끊은 호출은 쉬게 하지 않음). 교통비 계산(`calculateRouteCost()`)은 화면이 30초에 끊어서 `totalBudgetMs: 20000`으로 줄인다(`opts.totalBudgetMs`는 줄이기만 함). 한도·과부하 응답 없이 시간만 다 쓰면 `geminiTimeout` → `classifyAiError()`의 `timeout` → `AI_BUSY`.
+- 시간: 호출 하나는 `geminiPostOnce()`가 본문 읽기까지 `min(AI_REQUEST_TIMEOUT_MS 또는 opts.timeoutMs, 남은 예산)`으로 끊고, 체인 전체는 `GEMINI_TOTAL_BUDGET_MS`(기본 40초). 남은 시간이 `GEMINI_MIN_ATTEMPT_MS`(2.5초)보다 짧으면 다음 모델을 시작하지 않는다. 시간 초과로 쉬게 하는 것은 제 시간(호출 하나의 제한 시간)을 다 받은 모델만(남은 예산 때문에 짧게 끊은 호출은 쉬게 하지 않음). `opts.totalBudgetMs`로 예산을 줄일 수 있다(늘리지는 않음). 한도·과부하 응답 없이 시간만 다 쓰면 `geminiTimeout` → `classifyAiError()`의 `timeout` → `AI_BUSY`.
 - 모델별 생각 설정(`geminiThinkingStyle()`): `gemini-3.5-flash-lite`·`gemini-flash-lite-latest`는 `thinkingLevel: 'minimal'`(thinkingBudget을 400으로 거절), 2.5 계열·flash 이름은 `thinkingBudget: 0`(pro는 최소 128), 그 밖(gemma 등)은 보내지 않음. 목록에 없는 모델이 400을 내면 다른 형식으로 한 번 더 보내고, 받아들인 형식을 실행 중 기억한다(`_geminiThinkingLearned`).
 - `recordModelFailure()` / `isModelAvailable()` / `getAvailableModels()`: 실패 모델을 60초 쿨다운(연속 실패 시 최대 5분까지 두 배씩). 하루 한도는 태평양 시간 자정까지(최대 6시간), 404는 하루(`MODEL_GONE_COOLDOWN_MS`). 전부 쿨다운이면 가장 오래된 1개만 재시도(404 모델은 다른 모델이 없을 때만).
 - `/api/health`의 `ai.geminiModelChain`·`ai.geminiFallbackSource`(`default`|`env`)·`ai.geminiTotalBudgetMs`·`ai.geminiCoolingModels`(`[{ model, secondsLeft }]`만, `geminiCoolingModels()`). `/api/ai-diagnostics`의 `providers.gemini`에도 같은 값(`modelChain`·`fallbackSource`·`totalBudgetMs`·`coolingModels`).
@@ -637,7 +637,7 @@ POST /api/flights
 | open.er-api → Frankfurter v2 | 환율 | 키 없음, 같은 User-Agent, 8초 타임아웃, 12시간 갱신. ExchangeRate-API 공개 엔드포인트는 "Rates By Exchange Rate API" 링크 표기가 필요하고(환율 칩 안에 표기) 받은 환율의 재배포는 금지. Frankfurter는 `api.frankfurter.dev/v2/rates?base=JPY&quotes=KRW,USD&providers=ecb`(옛 `api.frankfurter.app`은 301, v1은 지원 중단 예정, v2 기본값은 여러 기관 값을 섞으므로 ECB로 고정). 응답은 `[{date, base, quote, rate}]` 배열 |
 | Travelpayouts (Aviasales Data API v3) | 항공권 캐시 가격 | `TRAVELPAYOUTS_TOKEN`, 30분 캐시, 토큰은 로그에서 가림 |
 | Rakuten Travel | 숙소(VacantHotelSearch → SimpleHotelSearch) | `RAKUTEN_APP_ID`·`RAKUTEN_ACCESS_KEY`, Referer/Origin 헤더는 운영 도메인 고정. 약관상 크레딧 배지 필수: `index.html` 숙소 결과(`#stayCards`) 아래 `.rakuten-credit`에 제공된 텍스트 HTML("Supported by Rakuten Developers")을 고치지 않고 그대로 둔다(webservice.rakuten.co.jp/guide/credit) |
-| Gemini API | 일정 생성, 채팅 해석, 경로 교통비 | 헤더 키, JSON 응답 스키마 |
+| Gemini API | 일정 생성, 채팅 해석(`AI_CHAT_PROVIDER_ORDER` 순서) | 헤더 키, JSON 응답 스키마. 경로 교통비에는 쓰지 않는다(2026-10-02) |
 | OpenAI 호환 API(OpenAI·Groq) | 일정은 Gemini 실패 시 대체, 채팅 해석은 `AI_CHAT_PROVIDER_ORDER` 순서 | Responses API + strict JSON Schema. 주소 `OPENAI_BASE_URL`, 키는 주소에 맞는 것만(Groq는 `GROQ_API_KEY`), 모델 체인 `OPENAI_MODEL` + `OPENAI_FALLBACK_MODELS`. Groq 무료: 모델마다 분당 30회·하루 1,000회·분당 8천 토큰·하루 20만 토큰, 입력은 기본 보관 안 함(악용 조사 최대 30일) |
 | Google Places API (New) / Geocoding / Directions | google 모드에서만 | 서버 키, `googleApiFetch()` 비용 가드 |
 | Google Maps JavaScript API | `MAP_PROVIDER=google`일 때만 | 브라우저 키(리퍼러 제한) |
@@ -685,7 +685,7 @@ POST /api/flights
 - **로그인 유지·저장소 장애 안내(샌드박스, `sandboxStorageTests()`)**: `/api/auth/me`가 한 번 502(서버가 깨어나는 중)여도 다시 물어 로그인 화면(내 일정 버튼·닉네임)이 나오는지, 내 일정 목록·불러오기·삭제·저장(목록이 503이면 저장 창을 닫음, 저장 POST가 503이면 안내)이 503일 때 `store-unavailable`("저장소에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.", en/ja 포함)을 보여 주는지 본다. 저장 POST가 409 `PLAN_LIMIT`·413 `PLAN_TOO_LARGE`·400 `INVALID_PLAN`이면 `plan-limit`(`{n}` = 50)·`plan-too-large`·`plan-invalid`, 그 밖에는 `save-fail`, `/?authError=not_allowed`면 `auth-err-not-allowed`가 뜨는지도 본다.
 - **가짜 Supabase**(`tests/support/mock-vendor.js`, `<mock>/supabase/rest/v1`): `travel_plans` 한 표의 PostgREST 흉내. GET(`select` 열 목록·`eq` 필터·`order`·`limit`), POST(`on_conflict=plan_key` + `resolution=merge-duplicates`, `return=representation|minimal`, 열 검사: 모르는 열 400, `city_key`·`payload` not null, `start_date` 날짜, `days` 정수, 실제 Postgres처럼 NUL이 든 글자 400 `22P05`·짝 없는 서로게이트 400 `22P02`), DELETE(필터 필수), HEAD/GET 루트. 그 밖의 연산자·열·경로는 `unknownMockRoute`로 기록되어 실패한다. `scenario.supabase`: `'down'` 모든 요청에 503 + 원문(`SUPABASE_ERROR_TEXT`), `'auth'` 모든 요청에 401 Invalid API key, `'reject_post'` POST만 400 `22P05`. 가짜 OAuth 프로필의 `emailVerified`(기본 true)가 Google `verified_email`·Kakao `is_email_verified`로 나간다. `mock.supabaseRows()`·`mock.seedSupabase()`로 표를 보고 미리 채운다.
 - 각 단계 끝에서 모든 응답 본문·헤더에 서버 키·토큰이 없는지, 서버 로그에 크래시가 없는지 확인한다.
-- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`oauth`·`session`·`live`·`free`). `npm test`·CI는 늘 전체(2026-10-02 기준 782개).
+- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`oauth`·`session`·`live`·`free`). `npm test`·CI는 늘 전체(2026-10-02 기준 787개).
 - CI: `.github/workflows/ci.yml`(push·PR, Node 20). `.github/workflows/keepalive.yml`(3일마다 운영 `/api/keepalive`)은 정적 검사로 내용(cron `17 3 */3 * *`, `workflow_dispatch`, `permissions: {}`, 5번 재시도, `"supabase":"ok"`일 때만 성공, 비밀값 없음)만 확인한다.
 
 ---
@@ -759,6 +759,7 @@ POST /api/flights
 | 2026-10-02 | **AI 일정 전국 점검 반영**: 62개 도시 말로 찾기(일본어·영어·표기 변형·더 긴 이름 우선·짧은 장소 이름), 장소만 말하면 그 장소의 도시, AI 해석의 '데이터 없음' 바로잡기, 먼 도시 이동은 비행기, 도시 주변 실제 명소 한국어 이름(`scripts/ja-names.js`)·이름 겹침 구분·검토로 뺀 곳·중복 합치기, AI가 바꿔 적은 후보 이름 되돌리기(`namesRestored`)·지어낸 곳 빼기·'자유 식사' 바꾸기, 프롬프트(이름 그대로 복사·식사는 foods에서), AI 후보 상한 하루 3곳, 테스트 729개 |
 | 2026-10-02 | **외부 서비스 규정 정비**(docs/api-review-2026-10-02.md 0번): Rakuten 크레딧 배지(제공 HTML 그대로, 숙소 결과 아래), OSM 타일 주소에서 `{s}` 서브도메인 제거, Frankfurter를 v2(`api.frankfurter.dev/v2/rates`, `providers=ecb`)로 교체 |
 | 2026-10-02 | **Groq 무료 연결**(같은 문서 1번): OpenAI 호환 경로에 `OPENAI_BASE_URL`·`GROQ_API_KEY`(키는 주소에 맞는 것만 보냄)·`OPENAI_FALLBACK_MODELS`(모델 체인 `callOpenAiResponses()`, 40초 예산, 잘림·형식·날짜 수 부족이면 다음 모델)·`OPENAI_MAX_OUTPUT_TOKENS`·`OPENAI_REASONING_EFFORT`·`AI_CHAT_PROVIDER_ORDER`, 지난 대화를 문자열 content로, health·diagnostics 필드, 가짜 서버의 Groq·OpenAI 흉내. 테스트 782개 |
+| 2026-10-02 | **교통비 AI 제거**(같은 문서 2번): `calculateRouteCost()`가 Gemini를 부르지 않고 거리로 추정(모든 구간 `estimated: true`, 화면 "예상 합계"·안내), 구간마다 Google 지도 대중교통 링크(`mapsUrl`, `safeMapsDirUrl()` 허용 목록), 일본어 도시 이름은 `CITY_NAME_I18N`에서도 찾음. 테스트 787개 |
 
 ---
 

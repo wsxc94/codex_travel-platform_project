@@ -2376,13 +2376,32 @@ button[disabled] {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Route cost AI tips ── */
+/* ── Route cost: 구간 팁 + Google 지도 대중교통 링크(구간 아래 한 줄 전체) ── */
+.route-seg-extra {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 12px;
+}
 .route-seg-tip {
   display: block;
   font-size: 12px;
   color: var(--accent-2);
   margin-top: 2px;
   padding-left: 28px;
+}
+.route-seg-maps {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--info);
+  white-space: nowrap;
+  text-decoration: none;
+}
+.route-seg-maps:hover,
+.route-seg-maps:focus-visible {
+  text-decoration: underline;
 }
 .route-cost-tip {
   font-size: 13px;
@@ -2396,6 +2415,12 @@ button[disabled] {
   font-size: 12px;
   color: var(--fg-3);
   text-align: right;
+  margin-top: 4px;
+}
+.route-cost-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-3);
   margin-top: 4px;
 }
 
