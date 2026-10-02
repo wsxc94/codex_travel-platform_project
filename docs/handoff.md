@@ -27,7 +27,8 @@
 
 **여행지 30곳 확장 데이터** (`scripts/build-city-places.js` 목표 30)
 - 데스크톱 PC에서 위키데이터로 다시 받았다. 62개 도시 모두 대부분 27~28곳을 받았고, 작은 섬은 `few`로 표시된다
-- 결과는 아직 `main`의 `assets/city-places.json`에 넣지 않았다(이름 검사·전체 테스트 전). 받기가 끝나면 `wip/city-places-30` 브랜치에 올려 둔다(운영에 배포되지 않음). 브랜치가 없으면 다시 만든다
+- 결과는 **`wip/city-places-30` 브랜치의 `wip/city-places-30.json`**(1,439곳, 지금 511곳)과 보고서·`wip/README.md`에 있다(운영 미반영). 도쿄 0→25, 교토 0→27, 오사카 3→18, 삿포로 6→28, 후쿠오카 5→27곳
+- 그대로 넣으면 테스트 815개 중 5개 실패: 한국어 이름에 가나·한자가 남은 곳 210곳(`nameFrom: 'ja'`, 위키데이터에 한국어 이름·읽는 법이 없음, 3건), 온천 사진 검토 1건(`matsuyama|기스케 BOX`), 표기 1건(`기타노 덴만구` → 앱은 '텐만구'). 가장 빠른 길은 한국어 이름을 못 만드는 후보를 빼고 다시 만드는 것(약 1,229곳). 자세한 방법은 브랜치의 `wip/README.md`
 - 다시 만들기: `node scripts/build-city-places.js --report report.tsv`(위키데이터 초당 1회라 1시간 넘게 걸림, 응답 캐시는 `<OS 임시 폴더>/tabimaru-city-places-cache`)
 - 넣는 순서: 새 파일로 바꿈 → `npm test`(이름 검사: 가나·한자 남음, 美術館→미술관 같은 번역, 이름 겹침) → 걸리는 이름은 `scripts/ja-names.js` 고침 표나 `build-city-places.js`의 `NAME_FIXES`로 고침 → 도쿄·교토·오사카 추천 카드 30곳 확인 → 배포
 
