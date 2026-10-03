@@ -10,7 +10,7 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 
 ## 지금 동작 방식 요약
 
-- **기본은 무료 모드입니다.** 장소 추천은 내장 큐레이션 데이터(62개 도시)와 위키미디어 공용(Wikimedia Commons) 사진·좌표를 쓰고, 지도는 OpenStreetMap을 씁니다. Google Maps Platform은 한 번도 부르지 않으므로 요금이 생기지 않습니다.
+- **기본은 무료 모드입니다.** 장소 추천은 내장 큐레이션 데이터(62개 도시)와 위키미디어 공용(Wikimedia Commons) 사진·좌표를 쓰고, 지도는 OpenFreeMap 벡터 지도(지명을 화면 언어로, 실패하면 OpenStreetMap 타일)를 씁니다. Google Maps Platform은 한 번도 부르지 않으므로 요금이 생기지 않습니다.
 - 무료 모드의 추천은 오류 때문에 대신 보여 주는 목록이 아니라 **정상 결과**입니다. 화면에는 "엄선한 추천 장소"로 표시됩니다.
 - **사진:** 명소 카드에는 그 장소를 찍은 사진을 붙입니다. 그 장소의 사진이 없으면 도시 대표 사진을, 내장 맛집에는 음식 장르 예시 사진(라멘·스시 등)을 붙이고, 카드의 출처 줄에 "도시 대표 사진" / "음식 예시 사진"이라고 표시해 실제 장소·가게 사진으로 오해하지 않게 합니다.
 - **영어·일본어 이름:** 명소 이름은 위키데이터의 영어·일본어 이름(`labels`)과 서버의 번역 표로 바꿔 보여 줍니다. 영어·일본어 화면의 카드와 일정에는 한국어가 남지 않습니다(일정 블록 앞의 시간대 표기는 화면이 번역합니다).
@@ -70,9 +70,9 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 
 ![추천 결과](docs/screenshots/plan.png)
 
-### 일정 지도 (OpenStreetMap)
+### 일정 지도 (OpenFreeMap / OpenStreetMap)
 
-일정의 장소를 순서대로 번호 마커로 보여 줍니다. 위치 정보가 없는 장소는 지도에서 빼고 개수를 알려 줍니다.
+일정의 장소를 순서대로 번호 마커로 보여 줍니다. 바탕 지도는 OpenFreeMap 벡터 지도(MapLibre GL 5.24.0 + maplibre-gl-leaflet 0.1.4, unpkg·SRI 고정)이고 지명이 화면 언어(ko/en/ja)로 나옵니다. WebGL이 없거나 스타일·타일이 10초 안에 안 오면(탭이 보이는 동안만 셈) OpenStreetMap 타일로 바뀝니다. 위치 정보가 없는 장소는 지도에서 빼고 개수를 알려 줍니다.
 
 ![일정 지도](docs/screenshots/map.png)
 
@@ -82,7 +82,7 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 
 ### 항공권 탐색
 
-편도·왕복·다구간을 지원하고, 추천순·최저가순·최단시간순으로 정렬합니다. 요청한 날짜의 가격이 없으면 가까운 날짜(±7일) 항공편을 "다른 날짜"로 표시해 보여 줍니다. Skyscanner·KAYAK 링크도 제공합니다.
+편도·왕복·다구간을 지원하고, 추천순·최저가순·최단시간순으로 정렬합니다. 요청한 날짜의 가격이 없으면 가까운 날짜(±7일) 항공편을 "다른 날짜"로 표시해 보여 줍니다. 카드마다 Google 항공편·네이버 항공권·스카이스캐너·카약·Trip.com 링크를 편도·왕복·다구간 날짜에 맞춰 붙입니다(다구간은 형식을 확인한 네이버·스카이스캐너·카약만). 응답 통화가 원화가 아니면 원화로 바꾸고, 바꿀 수 없으면 가격을 쓰지 않습니다. 가까운 날짜는 `grouped_prices`(4초 제한)와 가격순 목록을 함께 봅니다. `node scripts/travelpayouts-check.mjs`는 market별 결과 수·통화를 비교하는 수동 점검 도구입니다(실제 API 약 40회, 토큰은 출력하지 않음).
 
 ![항공권 탐색](docs/screenshots/flights.png)
 
@@ -100,13 +100,13 @@ English: **Tabimaru — AI Japan Trip Planner** · 日本語: **Tabimaru — AI�
 | 일정 생성 | 버튼을 누르면 Gemini → OpenAI 순서로 AI 일정 | AI 키가 없거나 응답이 잘리거나 형식이 틀리면 규칙 기반 일정 |
 | AI 조건 채팅 | Gemini → OpenAI | 규칙 기반 해석 |
 | 맛집 | `HOTPEPPER_API_KEY`가 있으면 ホットペッパー(도시 중심 3km, 가게 이름·장르·예산·사진·가게 페이지, 장르를 고르지 않으면 장르를 섞어 30곳), 없으면 내장 큐레이션 + 음식 장르 예시 사진 | google 모드면 Google Places(New), 영업시간 표시 |
-| 지도 | OpenStreetMap + Leaflet 1.9.4 | `MAP_PROVIDER=google` + 브라우저 키면 Google Maps JavaScript API |
+| 지도 | OpenFreeMap 벡터(MapLibre GL, 지명 ko/en/ja) + Leaflet 1.9.4, 실패하면 OpenStreetMap 타일 | `MAP_PROVIDER=google` + 브라우저 키면 Google Maps JavaScript API |
 | 항공권 | Travelpayouts 캐시 가격(요청 날짜가 비면 ±7일, 화면에 "다른 날짜" 표시) | 토큰이 없거나 결과가 없으면 "예시 데이터"로 표시 |
 | 숙소 | Rakuten Travel(좌표 기반, 62개 도시). 날짜 조건 결과가 없으면 최저가 목록("날짜 미확인 최저가" 표시) | 키가 없거나 결과가 없으면 "예시 데이터"로 표시 |
 | 경로 교통비 | 좌표 기반 거리 추정(AI 호출 없음, 화면에 "예상 합계"·추정 표시) + 구간마다 Google 지도 대중교통 경로 링크(`travelmode=transit`, 키·요금 없음) | google 모드에서만 Directions API로 거리 |
 | 날씨 | Open-Meteo(무료, 키 없음), 모든 도시, 16일 예보(범위 밖 날짜는 안내) | 위치를 모르는 도시는 다른 도시 날씨로 대신하지 않음 |
 | 환율 | open.er-api(ExchangeRate-API) → Frankfurter v2(무료, ECB 기준) | `FX_USD_KRW`·`FX_JPY_KRW` 고정값 → 코드의 대략값 |
-| 투어 | Klook 위젯 | 8초 안에 안 뜨면 Klook·Viator·GetYourGuide 링크 |
+| 투어 | Klook·KKday·Viator·GetYourGuide 검색 바로가기 | — |
 | 로그인 · 내 일정 | Google · Naver · Kakao OAuth. 로그인은 서명 쿠키(30일)라 서버가 재시작해도 유지 | 키가 없으면 로그인 버튼 숨김 |
 | 내 일정 저장소 | Supabase(`SUPABASE_*` 설정 시, `travel_plans` 표) | 설정이 없으면 서버의 로컬 파일(`data/`, 로컬 개발용). 설정했는데 연결되지 않으면 503 |
 
@@ -170,7 +170,7 @@ API 응답은 기존 필드(`source` 등)를 그대로 두고, 다음 정보 객
 
 내장 큐레이션 명소는 도시마다 3~6곳뿐이라, 3~4일 일정이 '자유 일정'으로 채워지던 도시가 많았습니다. `assets/city-places.json`(버전 1)은 `scripts/build-city-places.js`(`npm run build:city-places`)가 키 없이 Wikidata(장소·좌표·이름, CC0)와 Commons(사진)로 만든, 도시 주변의 실제 명소 목록입니다. 서버는 시작할 때 한 번 읽고, 실행 중에는 위키미디어를 부르지 않습니다.
 
-- 범위(2026-10-03 기준): 도시 주변 명소 1,378곳(62개 도시 모두, 도시당 중간값 27곳, 도쿄 24·교토 27·오사카 16·삿포로 28·후쿠오카 27), 사진 1,169곳, 한국어 이름 1,378곳 모두(아래 '이름', 일본어로만 남은 이름 0). `media` 25곳. `few` 6곳(리시리·다네가시마·시모지시마·구메지마·기타다이토·도쿠노시마).
+- 범위(2026-10-03 기준): 도시 주변 명소 1,372곳(62개 도시 모두, 도시당 중간값 27곳, 도쿄 24·교토 27·오사카 14·삿포로 28·후쿠오카 27), 사진 1,161곳, 한국어 이름 1,372곳 모두(아래 '이름', 일본어로만 남은 이름 0). `media` 25곳. `few` 6곳(리시리·다네가시마·시모지시마·구메지마·기타다이토·도쿠노시마).
 - **큐레이션이 먼저입니다.** 추천 카드의 반나절 명소(도시 명소 + 생성 장소)가 30곳이 될 때까지만 채웁니다(탐색 탭 30곳). 규칙 일정과 AI 후보는 요청하지 않은 생성 장소를 큐레이션 명소(도시 명소·대표 명소·추가 명소)를 다 쓴 뒤에만 씁니다(`isGeneratedCityPlace`). 한국어 이름을 만들 수 없는 후보(`nameFrom: 'ja'`)와 호텔·료칸·리조트는 받지 않습니다.
 - **실제 장소만 씁니다.** 모든 항목에 위키데이터 QID와 좌표가 있고, 도시 중심(`CITY_CENTER_COORDS`)에서 정한 반경(대도시 12~15km, 보통 20km, 섬은 섬 크기) 안의 절·신사·성·박물관·미술관·공원·정원·전망대·온천·수족관·시장·명승·유적만 고릅니다. 역·학교·행정구역·강·국립공원처럼 한 곳을 가리키지 않는 항목, 도시가 있는 섬 자체는 뺍니다. 순서는 위키데이터에서 많이 다룬 순(사이트링크 수, 한국어 이름이 있으면 가산)이고, 같은 종류가 몰리지 않게 종류마다 상한을 둡니다.
 - 규칙 일정과 AI 일정은 이 목록과 큐레이션 데이터 안에서만 장소를 고릅니다(지어낸 장소 없음). 다른 도시의 장소로 빈칸을 채우지 않습니다.
@@ -244,6 +244,7 @@ Gemini 무료 한도는 모델마다 하루 약 20회이고 키가 아니라 프
 | [Wikidata](https://www.wikidata.org/) | 명소 좌표, 영어·일본어 이름 | CC0(표기 의무 없음) | — |
 | [OpenStreetMap](https://www.openstreetmap.org/copyright) | 지도 타일(`tile.openstreetmap.org`) | 지도 데이터 ODbL. OSM 재단 타일 사용 정책상 트래픽이 많아지면 별도 타일 제공자로 옮겨야 함 | 지도 오른쪽 아래 "© OpenStreetMap contributors" |
 | [Leaflet](https://leafletjs.com/) 1.9.4 | 지도 라이브러리(unpkg, SRI 검증) | BSD-2-Clause | 지도 표기에 포함 |
+| [OpenFreeMap](https://openfreemap.org/) + [MapLibre GL](https://maplibre.org/) 5.24.0 | 벡터 바탕 지도(`tiles.openfreemap.org`, 스타일 liberty) | 키 없음, 운영 보장 없음(실패하면 OSM 타일). 지도 데이터 © OpenMapTiles · © OpenStreetMap contributors | 지도 오른쪽 아래 "OpenFreeMap © OpenMapTiles Data from OpenStreetMap" |
 | [Open-Meteo](https://open-meteo.com/) | 날씨 예보, 무료 지오코딩 | 데이터 CC BY 4.0(출처 표기 필요). 무료 API는 **비상업적 사용** 조건(하루 10,000회 이하) | 날씨 위젯·날씨 패널 하단에 "Weather data by Open-Meteo.com" 링크(ko/en/ja) |
 | [ExchangeRate-API](https://www.exchangerate-api.com/) (`open.er-api.com`) | 환율(1순위) | 공개 엔드포인트는 출처 표기 필요, 하루 1회 갱신, 받은 환율을 다른 곳에 다시 배포하는 것은 금지 | 환율 칩 안에 "Rates By Exchange Rate API" 링크(ko/en/ja) |
 | Frankfurter (`api.frankfurter.dev/v2`, `providers=ecb`) | 환율(2순위) | 유럽중앙은행(ECB) 기준 환율만 받음(v2 기본값은 여러 기관 값을 섞어서 ECB로 고정), 표기 의무 없음 | — |
@@ -285,7 +286,7 @@ npm test                  # = node test_all.js
 - 브랜드 검사: `/api/health`의 `app`이 `tabimaru`, 페이지 제목·매니페스트 이름이 Tabimaru인지, 언어를 바꾸면 제목도 바뀌는지, 외부 호출의 User-Agent가 `TabimaruBot/0.1`인지 봅니다. 도메인에 묶인 값(운영 주소, Render 서비스 이름, OAuth 콜백 경로, `sid` 쿠키, localStorage 키, 매니페스트 `start_url`)이 그대로인지도 봅니다.
 - 첫 화면은 `tests/support/browser-sandbox.js`로 `app.js`를 실제로 부팅해, 유료 API를 부르지 않는지 확인합니다. 이어서 [일정 만들기]를 두 번 눌러도 일정 1회 + 항공·맛집·숙소 각 1회만 부르는지, 카드에 실제 `<img>`와 위키미디어 출처가 붙는지, Leaflet이 일정이 생긴 뒤에만 SRI와 함께 로드되는지, 빈 일정에 안내 문구가 나오는지도 봅니다. 사진·출처 표시 함수(`safeImageUrl`·`safeCreditUrl`·`cardPhoto`·`photoCreditHtml`)와 추천·맛집 카드에는 악성 값(`javascript:`·`data:` 주소, 비슷한 호스트, `/\`·`//` 우회 주소, 따옴표·HTML이 든 이름과 저작자)을 넣습니다. 그래도 사진은 Commons나 `/api/place-photo`, 출처 링크는 Commons 파일 페이지나 Google 기여자 페이지만 남고, 나머지 값은 모두 이스케이프되는지 봅니다.
 - 그 밖에 응답에 키가 섞이지 않는지, 날씨 응답이 날짜·숫자만 담는지, CSRF 출처 검사, 긴급 전화번호 표시 = `tel:` 링크, CSS 변수 자기참조, CSS 중복 사본·키보드 포커스 링·다크 모드 토큰, 사전 누락·중복 키·코드가 쓰는 키(`t('…')`, `data-i18n`)의 ko/en/ja 존재, `index.html` 기본 글자 = ko 사전, `alert(`·`prompt(` 없음, localStorage 새 키는 `tabimaru.draft.v1` 하나, `render.yaml`·`.env.example`·README의 환경변수 목록과 기본값 누락도 검사합니다.
-- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-03 기준 1,103개 검사가 모두 통과합니다(40초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간, 8초는 Gemini 모델 체인의 시간 예산 검사).
+- 포트 13581과 3205가 비어 있어야 합니다(다른 포트로 돌리려면 `TABIMARU_TEST_PORT`·`TABIMARU_TEST_MOCK_PORT`). 2026-10-03 기준 1,575개 검사가 모두 통과합니다(40초 안쪽, 그중 15초는 keepalive 실패 캐시가 끝나기를 기다리는 시간, 8초는 Gemini 모델 체인의 시간 예산 검사).
 - 개발 중 일부만: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(PowerShell은 `$env:TEST_ONLY='intent'; node test_all.js`). 고를 수 있는 이름은 `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`hotpepper`·`oauth`·`session`·`live`·`free`·`city`(도시 주변 명소 데이터)이고, `npm test`와 CI는 늘 전체를 돌립니다.
 - GitHub Actions(`.github/workflows/ci.yml`)가 push와 pull request마다 Node 20으로 `npm test`를 돌립니다. `.github/workflows/keepalive.yml`은 테스트가 아니라 3일마다 운영 `/api/keepalive`를 부르는 예약 작업입니다(정적 검사로 내용만 확인).
 
@@ -299,7 +300,7 @@ npm test                  # = node test_all.js
 |---|---|---|
 | `PORT` | `3000` | 서버 포트(Render는 자동 지정) |
 | `PLACES_PROVIDER` | `free` | `free`: Google 호출 0회. `google`: Places API(New)·Geocoding·Directions 사용 |
-| `MAP_PROVIDER` | `osm` | `osm`: OpenStreetMap + Leaflet. `google`: Maps JavaScript API(브라우저 키가 없으면 `osm`) |
+| `MAP_PROVIDER` | `osm` | `osm`: Leaflet + OpenFreeMap 벡터 바탕(실패하면 OpenStreetMap 타일). `google`: Maps JavaScript API(브라우저 키가 없으면 `osm`) |
 | `GOOGLE_MAPS_SERVER_KEY` | — | 서버 전용 키. 브라우저로 보내지 않음. 리퍼러 제한 금지 |
 | `GOOGLE_MAPS_BROWSER_KEY` | — | 브라우저용 키(`/api/maps-config`로 공개). HTTP 리퍼러 제한 + Maps JavaScript API |
 | `GOOGLE_MAPS_API_KEY` | — | 예전 단일 키. google 모드에서 서버 키가 없을 때만 서버 키로 씀(경고 로그). 브라우저로는 보내지 않음 |
@@ -355,7 +356,7 @@ npm test                  # = node test_all.js
 | `POST /api/travel-plan` | 여행지 추천 + 일정 + 추천 맛집. 선택 필드 `request`(요청 원문, 600자까지)·`mustVisit`·`excludedPlaces`(각 8개)·`foodWishes`(3개)·`_picks`. 응답에 `recommendationInfo`·`itineraryInfo`(`postProcess`·`missingMustVisit`)·`foodsInfo`, 일자별 `places`(지도 좌표), `placeCoords` 포함 |
 | `POST /api/destinations`, `POST /api/dest-search` | 여행지 추천·검색(`sourceInfo`) |
 | `POST /api/itinerary` | 규칙 기반 일자별 일정 |
-| `POST /api/ai-travel-chat` | 자연어 여행 조건 해석. 후속 대화용 `history`(최근 12개, 각 500자)·`prevParsed`(4KB 이하). 응답에 `parsed`(꼭 갈 곳·제외·미지원 지역·도착/출발/시작 시각 포함)·`reply`(화면 언어)·`sourceInfo` |
+| `POST /api/ai-travel-chat` | 자연어 여행 조건 해석. 후속 대화용 `history`(최근 12개, 각 500자)·`prevParsed`(4KB 이하). 응답에 `parsed`(꼭 갈 곳·제외·미지원 지역·도착/출발/시작 시각 포함)·`reply`(화면 언어)·`sourceInfo`. 지금 일정(`itinerary`)을 함께 보내고 말이 편집 명령(빼기·넣기·옮기기·바꾸기·시간)이면 일정을 다시 만들지 않고 `mode: 'edit'`, `edit: { status: 'apply'|'ask'|'none', ops, question, choices }`로 답한다(해석은 Groq만, Gemini 0회, 없으면 규칙; 넣을 장소는 그날 도시 후보만). 편집은 바로 적용하지 않고 늘 `edit.confirm`으로 '이렇게 바꿀까요?'와 바꿀 것 한 줄씩(날·칸·시각·장소)을 먼저 묻는다(선택지 [이대로 바꾸기]·여럿이면 [모두]·`cancel`, 맞바꾸기는 op `swap`). 화면은 버튼이나 분명한 승낙 글('네', '응', 'はい', 'yes' — 물음표가 붙으면 승낙 아님)일 때만 바꾸고, 좁힌 선택지는 보이는 줄만 보낸다. 넣을 것이 종류·음식 낱말(라멘·쇼핑·온천 …)이면 `editRegen: 'category'`로 다시 만들기를 제안하고, 바꾸기 전에 묻는다. 되묻기에 글로 답하면 `editChoices`를 함께 보내 `edit.status` `pick`(picks)·`cancel` |
 | `POST /api/flights` | 항공권(`oneway`·`roundtrip`·`multicity`, 필터). `sourceInfo`, `dateMatch`(`exact`·`nearby`·`null`) |
 | `POST /api/stays` | 숙소(가격·평점(5점 만점, 리뷰 없으면 `null`)·편의시설 필터). `sourceInfo`, `dateMatch`(날짜 조건 없는 최저가면 `none`) |
 | `GET /api/foods` | 맛집(`sourceInfo`) |

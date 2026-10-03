@@ -177,6 +177,9 @@ let aiSpecialPrefs = {};
 var chatHistory = [], lastParsedConditions = null, aiRequestText = '', aiMustVisit = [], aiWantedNames = [], aiExcludedPlaces = [], aiFoodWishes = [];
 // 요청칸(#aiRequest)의 글 중 이미 처리한(채팅으로 적용했거나 조건 변경으로 무효가 된) 문장. 같은 글로 주 버튼을 다시 누르면 채팅을 또 부르지 않는다.
 var aiRequestHandledText = '';
+// aiRequestHandledText를 일정 편집 응답(확인·되묻기·고르기)으로 처리했으면 true. 그 글로 주 버튼을 다시 누르면 앞서 알아들은 의도 없이
+// 일정을 통째로 다시 만들지 않고 채팅으로 다시 보낸다(서버가 다시 확인을 묻는다 — 검토 R2).
+var aiRequestHandledAsEdit = false;
 // 대화가 예산(숨은 #budget)을 처음 바꾸기 직전 값. 대화 초기화 때 이 값으로 되돌린다.
 // null이면 이번 대화는 예산을 바꾼 적이 없다(초안·저장한 일정에서 온 예산은 그대로 둔다).
 var budgetBeforeChat = null;
@@ -199,6 +202,7 @@ function resetAiIntentState(keepHandledText) {
   budgetBeforeChat = null;
   var box = document.getElementById('aiRequest');
   aiRequestHandledText = keepHandledText && box ? String(box.value || '').trim() : '';
+  aiRequestHandledAsEdit = false;
 }
 
 // -- Undo/Redo History Stack --
@@ -1247,10 +1251,82 @@ function flightCardTemplate(x) {
     <div class="link-row">
       ${selectButton}
       ${safeLinkUrl(x.deeplink) ? `<a href="${escapeHtml(safeLinkUrl(x.deeplink))}" target="_blank" rel="noreferrer" class="booking-link">${escapeHtml(t('book-flight'))}</a>` : ''}
-      <a href="${escapeHtml('https://www.skyscanner.co.kr/transport/flights/' + (x.legs && x.legs[0] ? x.legs[0].from : '').toLowerCase() + '/' + (x.legs && x.legs[0] ? x.legs[0].to : '').toLowerCase() + '/' + (x.legs && x.legs[0] && x.legs[0].date ? x.legs[0].date.replace(/-/g,'').slice(2) : '') + '/' + (x.legs && x.legs[1] && x.legs[1].date ? x.legs[1].date.replace(/-/g,'').slice(2) + '/' : ''))}" target="_blank" rel="noreferrer">${escapeHtml(t('skyscanner'))}</a>
-      <a href="${escapeHtml('https://www.kayak.co.kr/flights/' + (x.legs && x.legs[0] ? x.legs[0].from : '') + '-' + (x.legs && x.legs[0] ? x.legs[0].to : '') + '/' + (x.legs && x.legs[0] ? x.legs[0].date : '') + (x.legs && x.legs[1] && x.legs[1].date ? '/' + x.legs[1].date : '') + '?sort=bestflight_a')}" target="_blank" rel="noreferrer">${escapeHtml(t('kayak'))}</a>
     </div>
+    ${siteLinksHtml(flightSiteLinks(x.tripType, x.legs, currentLang), t('flight-other-sites'))}
   </article>`;
+}
+
+// ── 다른 사이트에서 같은 항공편 찾기(링크만 만든다. 서버·외부 호출 없음) ──
+// 편도는 첫 구간, 왕복은 첫 구간 + 마지막 구간 날짜(귀국일), 다구간은 모든 구간을 그대로 넣는다.
+// Travelpayouts 다구간 결과는 카드마다 구간이 1개라 그 구간의 편도 링크가 된다.
+// (예전 카드 링크는 다구간도 '첫 구간 왕복 + 2번째 구간 날짜를 귀국일'로 만들어 날짜·경로가 틀렸다.)
+// 다구간 주소 형식을 확인하지 못한 Google 항공편·Trip.com은 다구간 카드에서 뺀다.
+var FLIGHT_SITE_LOCALE = {
+  ko: { hl: 'ko', tripHost: 'https://kr.trip.com', tripLocale: 'ko-KR' },
+  en: { hl: 'en', tripHost: 'https://www.trip.com', tripLocale: 'en-US' },
+  ja: { hl: 'ja', tripHost: 'https://jp.trip.com', tripLocale: 'ja-JP' }
+};
+
+// 구간 하나를 { from, to, date }로(공항 코드 3글자, 날짜 YYYY-MM-DD). 모양이 틀리면 null.
+function flightLinkLeg(leg) {
+  var from = String((leg && leg.from) || '').trim().toUpperCase();
+  var to = String((leg && leg.to) || '').trim().toUpperCase();
+  var date = String((leg && leg.date) || '').trim();
+  if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to) || from === to) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date + 'T00:00:00Z'))) return null;
+  return { from: from, to: to, date: date };
+}
+
+// 반환: [{ site, label, url }] (보일 순서). 첫 구간이 틀리면 [](링크 줄을 그리지 않는다).
+function flightSiteLinks(tripType, legs, lang) {
+  var list = (Array.isArray(legs) ? legs : []).map(flightLinkLeg);
+  var first = list[0];
+  if (!first) return [];
+  var loc = FLIGHT_SITE_LOCALE[lang] || FLIGHT_SITE_LOCALE.ko;
+  var kind = 'oneway';
+  var back = '';
+  if (tripType === 'multicity' && list.length >= 2) {
+    if (list.some(function(l) { return !l; })) return []; // 구간 하나라도 틀리면 다구간 링크를 만들지 않는다
+    kind = 'multicity';
+  } else if (tripType === 'roundtrip' && list.length >= 2) {
+    var lastLeg = list[list.length - 1];
+    if (lastLeg && lastLeg.date >= first.date) { kind = 'roundtrip'; back = lastLeg.date; }
+  }
+  var ymd = function(d) { return d.replace(/-/g, ''); };
+  var yymmdd = function(d) { return ymd(d).slice(2); };
+  var low = function(c) { return c.toLowerCase(); };
+  var out = [];
+  if (kind !== 'multicity') {
+    var q = 'Flights from ' + first.from + ' to ' + first.to + ' on ' + first.date + (kind === 'roundtrip' ? ' through ' + back : ' one way');
+    out.push({ site: 'google', label: t('site-google-flights'), url: 'https://www.google.com/travel/flights?q=' + encodeURIComponent(q) + '&hl=' + loc.hl + '&curr=KRW' });
+  }
+  var naverPath = kind === 'multicity'
+    ? list.map(function(l) { return l.from + '-' + l.to + '-' + ymd(l.date); }).join('/')
+    : first.from + '-' + first.to + '-' + ymd(first.date) + (kind === 'roundtrip' ? '/' + first.to + '-' + first.from + '-' + ymd(back) : '');
+  out.push({ site: 'naver', label: t('site-naver-flights'), url: 'https://flight.naver.com/flights/international/' + naverPath + '?adult=1&fareType=Y' });
+  var skyscanner = kind === 'multicity'
+    ? 'https://www.skyscanner.co.kr/transport/flights-multi-city/' + list.map(function(l) { return low(l.from) + '/' + low(l.to) + '/' + yymmdd(l.date); }).join('/') + '/'
+    : 'https://www.skyscanner.co.kr/transport/flights/' + low(first.from) + '/' + low(first.to) + '/' + yymmdd(first.date) + '/' + (kind === 'roundtrip' ? yymmdd(back) + '/' : '');
+  out.push({ site: 'skyscanner', label: t('skyscanner'), url: skyscanner });
+  var kayakPath = kind === 'multicity'
+    ? list.map(function(l) { return l.from + '-' + l.to + '/' + l.date; }).join('/')
+    : first.from + '-' + first.to + '/' + first.date + (kind === 'roundtrip' ? '/' + back : '');
+  out.push({ site: 'kayak', label: t('kayak'), url: 'https://www.kayak.co.kr/flights/' + kayakPath + '?sort=bestflight_a' });
+  if (kind !== 'multicity') {
+    out.push({ site: 'tripcom', label: 'Trip.com', url: loc.tripHost + '/flights/showfarefirst?dcity=' + low(first.from) + '&acity=' + low(first.to) + '&ddate=' + first.date
+      + (kind === 'roundtrip' ? '&rdate=' + back + '&triptype=rt' : '&triptype=ow') + '&class=y&quantity=1&locale=' + loc.tripLocale + '&curr=KRW' });
+  }
+  return out;
+}
+
+// 사이트 링크 한 줄: '<라벨> 링크 · 링크 …'. 새 탭으로 열고 이 앱 주소를 넘기지 않는다.
+function siteLinksHtml(links, labelText) {
+  var anchors = (links || []).map(function(x) {
+    var url = safeLinkUrl(x.url);
+    return url ? '<a href="' + escapeHtml(url) + '" target="_blank" rel="noopener noreferrer" data-site="' + escapeHtml(x.site) + '">' + escapeHtml(x.label) + '</a>' : '';
+  }).filter(Boolean);
+  if (!anchors.length) return '';
+  return '<div class="site-links"><span class="site-links-label">' + escapeHtml(labelText) + '</span>' + anchors.join('') + '</div>';
 }
 
 // 좌석 등급은 서버의 한국어 표기(cabinLabel) 대신 등급 코드를 화면 언어로 바꿔 보여 준다.
@@ -3012,7 +3088,72 @@ function renderStayCards(reset) {
   }
   el('stayCards').innerHTML = shown.length > 0 ? shown.map(stayCardTemplate).join('') : '<div class="card">' + t('no-results') + '</div>';
   setStayMoreVisible(visibleStayCount < results.length);
+  renderStaySiteLinks();
   if (lost) { renderPlanExtras(); renderItineraryTimeline(); }
+}
+
+// ── 숙소: 마지막 숙소 검색 조건(도시·날짜·인원·객실)으로 다른 예약 사이트 검색 링크(링크만, 호출 없음) ──
+// 검색어는 영어 도시 이름 + ', Japan'(Kochi(인도)처럼 해외에 같은 이름이 있는 도시와 헷갈리지 않게). 영어 이름을 모르는 도시는 도시 이름 그대로.
+// じゃらん은 도시 검색 주소 대신 그 도시가 속한 도도부현 숙소 목록(https://www.jalan.net/<현 코드>0000/)으로 연다(현을 모르면 뺀다).
+var lastStaySearch = null; // { city, checkIn, checkOut, guests, rooms } — 숙소 검색을 누를 때 정한다
+
+var JALAN_PREF_BY_CITY = {
+  tokyo: '13', osaka: '27', kyoto: '26', sapporo: '01', hakodate: '01', nagoya: '23', fukuoka: '40', hiroshima: '34',
+  sendai: '04', okinawa: '47', kanazawa: '17', kobe: '28', nagasaki: '42', kumamoto: '43', kagoshima: '46', oita: '44',
+  matsuyama: '38', takamatsu: '37', niigata: '15', okayama: '33', toyama: '16', shizuoka: '22', kochi: '39', tokushima: '36',
+  yamagata: '06', akita: '05', aomori: '02', fukushima: '07', miyazaki: '45', obihiro: '01', nara: '29', kamakura: '14',
+  hakone: '14', nikko: '09', asahikawa: '01', hanamaki: '03', yonago: '31', izumo: '32', wakkanai: '01', rishiri: '01',
+  memanbetsu: '01', kushiro: '01', nakashibetsu: '01', okadama: '01', misawa: '02', odate: '05', shonai: '06', ibaraki: '08',
+  matsumoto: '20', nanki_shirahama: '30', tajima: '28', tottori: '31', iwakuni: '35', yamaguchi_ube: '35', kitakyushu: '40',
+  saga: '41', amami: '46', yakushima: '46', tanegashima: '46', miyako: '47', ishigaki: '47', shimojishima: '47',
+  kumejima: '47', kita_daito: '47', yonaguni: '47', tokunoshima: '46'
+};
+
+var STAY_SITE_LOCALE = {
+  ko: { booking: 'ko', agoda: 'ko-kr', hl: 'ko' },
+  en: { booking: 'en-gb', agoda: 'en-us', hl: 'en' },
+  ja: { booking: 'ja', agoda: 'ja-jp', hl: 'ja' }
+};
+
+function staySiteLinks(search, lang) {
+  if (!search || !search.city) return [];
+  var checkIn = String(search.checkIn || '');
+  var checkOut = String(search.checkOut || '');
+  var DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  if (!DATE_RE.test(checkIn) || !DATE_RE.test(checkOut)) return [];
+  var nights = Math.round((Date.parse(checkOut + 'T00:00:00Z') - Date.parse(checkIn + 'T00:00:00Z')) / 86400000);
+  if (!(nights >= 1 && nights <= 60)) return [];
+  var guests = Math.min(8, Math.max(1, Math.floor(Number(search.guests) || 2)));
+  var rooms = Math.min(5, Math.max(1, Math.floor(Number(search.rooms) || 1)));
+  var label = cityLabelByKey(search.city);
+  var names = PLACE_NAME_I18N[label];
+  var query = names ? names[0] + ', Japan' : label;
+  if (!query) return [];
+  var loc = STAY_SITE_LOCALE[lang] || STAY_SITE_LOCALE.ko;
+  var q = encodeURIComponent(query);
+  var out = [
+    { site: 'booking', label: 'Booking.com', url: 'https://www.booking.com/searchresults.' + loc.booking + '.html?ss=' + q + '&checkin=' + checkIn + '&checkout=' + checkOut
+      + '&group_adults=' + guests + '&no_rooms=' + rooms + '&group_children=0&selected_currency=KRW' },
+    { site: 'agoda', label: 'Agoda', url: 'https://www.agoda.com/' + loc.agoda + '/search?textToSearch=' + q + '&checkIn=' + checkIn + '&checkOut=' + checkOut
+      + '&los=' + nights + '&rooms=' + rooms + '&adults=' + guests + '&children=0' },
+    { site: 'google', label: t('site-google-hotels'), url: 'https://www.google.com/travel/search?q=' + encodeURIComponent(query + ' hotels') + '&checkin=' + checkIn + '&checkout=' + checkOut
+      + '&adults=' + guests + '&hl=' + loc.hl + '&gl=kr&curr=KRW' }
+  ];
+  var pref = JALAN_PREF_BY_CITY[search.city];
+  if (pref) {
+    out.push({ site: 'jalan', label: t('site-jalan'), url: 'https://www.jalan.net/' + pref + '0000/?stayYear=' + checkIn.slice(0, 4) + '&stayMonth=' + Number(checkIn.slice(5, 7))
+      + '&stayDay=' + Number(checkIn.slice(8, 10)) + '&stayCount=' + nights + '&roomCount=' + rooms + '&adultNum=' + guests });
+  }
+  return out;
+}
+
+// 숙소 결과 위(#staySiteLinks)에 그린다. 숙소 검색을 하기 전에는 비어 있다(첫 화면에 보이지 않음).
+function renderStaySiteLinks() {
+  var box = el('staySiteLinks');
+  if (!box) return;
+  var html = siteLinksHtml(staySiteLinks(lastStaySearch, currentLang), t('stay-other-sites'));
+  box.innerHTML = html;
+  box.classList.toggle('hidden', !html);
 }
 
 document.addEventListener('click', function(e) {
@@ -3105,6 +3246,454 @@ function cleanNameList(list, max) {
     .slice(0, max || 8);
 }
 
+// ── 대화로 일정 일부만 고치기(②)·애매하면 되묻기(③) — 서버 interpretItineraryEdit(docs/handoff.md 4절 1번) ──
+// 일정이 있으면 채팅 요청에 지금 일정(블록 문자열 그대로)을 함께 보낸다. 서버가 편집 명령으로 보면(mode 'edit') 일정을 다시 만들지 않고
+// '이렇게 바꿀까요?'(status 'ask' + confirm) 또는 되묻기 선택지를 돌려준다. 선택지 버튼만 보이고, 고르기 전에는 일정을 바꾸지 않는다(고를 때 서버 호출 없음).
+// 고른 편집(ops)만 직접 배치 함수(placeBlock·fitSightTime·SLOT_DEFS)로 적용한 뒤 '바뀐 점' 한 줄과 ↩ 되돌리기를 채팅에 붙인다.
+// 편집은 손으로 고친 것과 같다(userEdited). 한 번의 대화 편집은 되돌리기 한 단계다(일정 되돌리기 기록 _itinHistory를 그대로 쓴다).
+var chatEditSeq = 0;
+var chatEditRecords = {};    // id → { before, after, undone }: 되돌리기 전후 일정(_itinHistory 기록 문자열)
+var chatEditChoiceSets = {}; // id → { choices: [{ label, ops }], used }
+// 아직 고르지 않은 마지막 되묻기(id). 다음 말을 보낼 때 그 선택지(editChoices)를 함께 보내 글로 한 답('2일째', '두 번째', '취소')을 서버가 맞춘다.
+var chatEditPendingId = '';
+var CHAT_EDIT_FAIL_TEXT = {
+  stale: 'chat-edit-fail-stale', cancelled: 'chat-edit-fail-cancelled', duplicate: 'chat-edit-fail-duplicate',
+  kind: 'chat-edit-fail-kind', noop: 'chat-edit-fail-noop', other: 'chat-edit-fail-other'
+};
+
+function chatEditItineraryPayload() {
+  var data = currentItineraryData;
+  if (!data || !itineraryHasContent(data.itinerary)) return null;
+  return {
+    lang: data.lang || currentLang,
+    cityKey: data.cityKey || (el('city') ? el('city').value : '') || '',
+    routeCities: Array.isArray(data.routeCities) ? data.routeCities.slice(0, 10) : [],
+    days: (data.itinerary || []).slice(0, 12).map(function(d) {
+      return {
+        day: Number(d && d.day),
+        date: String((d && d.date) || ''),
+        blocks: (Array.isArray(d && d.blocks) ? d.blocks : []).slice(0, 60).map(function(b) { return String(b == null ? '' : b).slice(0, 300); })
+      };
+    })
+  };
+}
+
+// 서버가 돌려준 블록 문자열의 지금 위치. 그 사이 시각만 바뀌었으면 같은 시간대·같은 이름 블록이 하나일 때 그것, 없으면 -1.
+function findChatEditBlock(dayData, blockText) {
+  if (!dayData || !Array.isArray(dayData.blocks)) return -1;
+  var want = parseItineraryBlock(blockText);
+  if (want.type !== 'main') return -1;
+  var idx = dayData.blocks.indexOf(blockText);
+  if (idx >= 0) return idx;
+  var name = parsePlaceInfo(want.place).name;
+  var hits = [];
+  dayData.blocks.forEach(function(b, i) {
+    var p = parseItineraryBlock(b);
+    if (p.type === 'main' && p.period === want.period && placeNamesEqual(parsePlaceInfo(p.place).name, name)) hits.push(i);
+  });
+  return hits.length === 1 ? hits[0] : -1;
+}
+
+function chatEditBlockName(blockText) {
+  var p = parseItineraryBlock(blockText);
+  return p.type === 'main' ? parsePlaceInfo(p.place).name : '';
+}
+
+// 칸 이름(저녁 이후 칸의 오후 항목은 '저녁 이후')
+function chatEditPeriodLabel(dayData, blockIndex) {
+  var p = parseItineraryBlock(dayData.blocks[blockIndex]);
+  if (p.type !== 'main') return '';
+  return isNightAfternoonBlock(dayData, p) ? t('itin-night') : tPeriod(p.period);
+}
+
+// 편집 하나를 적용한다. 반환 { ok, text } 또는 { ok: false, reason: stale·cancelled·duplicate·kind·noop·other, name }
+function applyChatEditOp(op) {
+  if (!op || typeof op !== 'object') return { ok: false, reason: 'other' };
+  var day = null;
+  var idx = -1;
+  if (op.op === 'remove' || op.op === 'replace' || op.op === 'time') {
+    day = findItineraryDay(op.day);
+    idx = findChatEditBlock(day, String(op.block || ''));
+    if (idx < 0) return { ok: false, reason: 'stale', name: chatEditBlockName(op.block) };
+  }
+  if (op.op === 'remove') {
+    var removed = parseItineraryBlock(day.blocks[idx]);
+    var removedLabel = chatEditPeriodLabel(day, idx);
+    removeBlockGroup(day, idx);
+    markItineraryEdited();
+    invalidateRouteCost(day.day);
+    return { ok: true, text: fillText(t('chat-edit-removed'), { d: itinDayLabel(day.day), p: removedLabel, n: parsePlaceInfo(removed.place).name }) };
+  }
+  if (op.op === 'replace') {
+    var old = parseItineraryBlock(day.blocks[idx]);
+    var oldName = parsePlaceInfo(old.place).name;
+    var newName = String(op.name || '').trim();
+    if (!newName) return { ok: false, reason: 'other', name: oldName };
+    if (isMealPeriod(old.period) !== (op.kind === 'food')) return { ok: false, reason: 'kind', name: newName };
+    var dup = day.blocks.some(function(b, i) {
+      if (i === idx) return false;
+      var p = parseItineraryBlock(b);
+      return p.type === 'main' && placeNamesEqual(parsePlaceInfo(p.place).name, newName);
+    });
+    if (dup) return { ok: false, reason: 'duplicate', name: newName };
+    var replacedLabel = chatEditPeriodLabel(day, idx);
+    // 시각·시간대는 그대로 두고 장소만 바꾼다(예전 장소의 설명·팁 줄은 함께 지운다)
+    removeBlockGroup(day, idx);
+    day.blocks.splice(idx, 0, formatPlanBlock(old.period, padTime(old.startTime), padTime(old.endTime), newName, String(op.area || '').trim()));
+    markItineraryEdited();
+    invalidateRouteCost(day.day);
+    return { ok: true, text: fillText(t('chat-edit-replaced'), { d: itinDayLabel(day.day), p: replacedLabel, a: oldName, n: newName }) };
+  }
+  if (op.op === 'time') {
+    var cur = parseItineraryBlock(day.blocks[idx]);
+    var info = parsePlaceInfo(cur.place);
+    var s = timeToMin(op.start);
+    var s0 = timeToMin(cur.startTime);
+    var e0 = timeToMin(cur.endTime);
+    if (!Number.isFinite(s)) return { ok: false, reason: 'other', name: info.name };
+    if (s === s0) return { ok: false, reason: 'noop', name: info.name };
+    var e = Math.min(23 * 60 + 59, s + (Number.isFinite(s0) && Number.isFinite(e0) && e0 > s0 ? e0 - s0 : 60));
+    if (e <= s) return { ok: false, reason: 'other', name: info.name };
+    // 관광 칸은 실제 시각에 맞춰 오전(12시 전 시작)·오후로. 종일·식사 칸은 그대로.
+    var period = cur.period;
+    if (period === SLOT_DEFS.morning.period || period === SLOT_DEFS.afternoon.period) period = s < 12 * 60 ? SLOT_DEFS.morning.period : SLOT_DEFS.afternoon.period;
+    // 여행지 시간 겹침은 직접 배치와 같은 기준(fitSightTime)으로 보고, 겹치면 무엇과 겹치는지 묻는다
+    if (!isMealPeriod(period) && !isFreeTimePlace(info.name)) {
+      var fit = fitSightTime(day, minToTime(s), minToTime(e), idx, false);
+      if (fit.conflict) {
+        var c = fit.conflict;
+        if (!confirm(fillText(t('confirm-time-overlap'), { day: itinDayLabel(day.day), n: c.name, t: c.startTime + '–' + c.endTime }))) return { ok: false, reason: 'cancelled', name: info.name };
+      }
+    }
+    var group = removeBlockGroup(day, idx);
+    group[0] = formatPlanBlock(period, minToTime(s), minToTime(e), info.name, info.info);
+    insertBlockSorted(day, group);
+    markItineraryEdited();
+    invalidateRouteCost(day.day);
+    return { ok: true, text: fillText(t('chat-edit-retimed'), { d: itinDayLabel(day.day), n: info.name, t: minToTime(s) + '–' + minToTime(e) }) };
+  }
+  if (op.op === 'swap') {
+    // 맞바꾸기: 두 블록의 시각·칸은 그대로 두고 장소(이름·지역과 설명·팁 줄)만 서로 바꾼다
+    var dayA = findItineraryDay(op.day);
+    var dayB = findItineraryDay(op.day2);
+    var ia = findChatEditBlock(dayA, String(op.block || ''));
+    var ib = findChatEditBlock(dayB, String(op.block2 || ''));
+    if (ia < 0) return { ok: false, reason: 'stale', name: chatEditBlockName(op.block) };
+    if (ib < 0) return { ok: false, reason: 'stale', name: chatEditBlockName(op.block2) };
+    if (dayA === dayB && ia === ib) return { ok: false, reason: 'noop', name: chatEditBlockName(op.block) };
+    var pa = parseItineraryBlock(dayA.blocks[ia]);
+    var pb = parseItineraryBlock(dayB.blocks[ib]);
+    if (isMealPeriod(pa.period) !== isMealPeriod(pb.period)) return { ok: false, reason: 'kind', name: chatEditBlockName(op.block2) };
+    var infoA = parsePlaceInfo(pa.place);
+    var infoB = parsePlaceInfo(pb.place);
+    var labelA = chatEditPeriodLabel(dayA, ia);
+    var labelB = chatEditPeriodLabel(dayB, ib);
+    var groupA = dayA.blocks.slice(ia, ia + blockGroupLength(dayA.blocks, ia));
+    var groupB = dayB.blocks.slice(ib, ib + blockGroupLength(dayB.blocks, ib));
+    var newA = [formatPlanBlock(pa.period, padTime(pa.startTime), padTime(pa.endTime), infoB.name, infoB.info)].concat(groupB.slice(1));
+    var newB = [formatPlanBlock(pb.period, padTime(pb.startTime), padTime(pb.endTime), infoA.name, infoA.info)].concat(groupA.slice(1));
+    // 같은 날이면 뒤쪽 블록부터 바꿔야 앞쪽 위치가 그대로다
+    var parts = [{ day: dayA, idx: ia, len: groupA.length, lines: newA }, { day: dayB, idx: ib, len: groupB.length, lines: newB }];
+    if (dayA === dayB && ia < ib) parts.reverse();
+    parts.forEach(function(p) { Array.prototype.splice.apply(p.day.blocks, [p.idx, p.len].concat(p.lines)); });
+    markItineraryEdited();
+    invalidateRouteCost(dayA.day);
+    if (dayB !== dayA) invalidateRouteCost(dayB.day);
+    return { ok: true, text: fillText(t('chat-edit-swapped'), { d: itinDayLabel(dayA.day), p: labelA, a: infoA.name, d2: itinDayLabel(dayB.day), p2: labelB, b: infoB.name }) };
+  }
+  if (op.op === 'add' || op.op === 'move') {
+    var tgt = findItineraryDay(op.day);
+    if (!tgt) return { ok: false, reason: 'stale', name: String(op.name || chatEditBlockName(op.block)) };
+    var night = op.slot === 'night';
+    var slotKey = night ? 'afternoon' : String(op.slot || '');
+    if (!SLOT_DEFS[slotKey]) return { ok: false, reason: 'other', name: String(op.name || '') };
+    var win = night ? nightDropWindow(tgt) : null;
+    var r;
+    var opName;
+    if (op.op === 'add') {
+      opName = String(op.name || '').trim();
+      r = placeBlock({ mode: 'add', day: op.day, slotKey: slotKey, window: win, name: opName, area: String(op.area || ''), kind: op.kind === 'food' ? 'food' : 'dest', silent: true });
+    } else {
+      opName = chatEditBlockName(op.block);
+      var src = findItineraryDay(op.fromDay);
+      var srcIdx = findChatEditBlock(src, String(op.block || ''));
+      if (srcIdx < 0) return { ok: false, reason: 'stale', name: opName };
+      r = placeBlock({ mode: 'move', from: { day: op.fromDay, blockIndex: srcIdx }, day: op.day, slotKey: slotKey, window: win, silent: true });
+    }
+    if (!r || !r.ok) {
+      var why = r && r.reason;
+      return { ok: false, reason: why === 'kind-mismatch' ? 'kind' : (why === 'noop' || why === 'cancelled' ? why : 'other'), name: opName };
+    }
+    var placedDay = findItineraryDay(r.day);
+    var placed = parseItineraryBlock(placedDay.blocks[r.blockIndex]);
+    return { ok: true, text: fillText(t(op.op === 'add' ? 'chat-edit-added' : 'chat-edit-moved'), {
+      d: itinDayLabel(r.day), p: chatEditPeriodLabel(placedDay, r.blockIndex), n: parsePlaceInfo(placed.place).name, t: padTime(placed.startTime) + '–' + padTime(placed.endTime)
+    }) };
+  }
+  return { ok: false, reason: 'other' };
+}
+
+// 편집 목록을 차례로 적용한다. 바뀐 것이 있으면 일정을 다시 그리고, 그 사이 placeBlock이 남긴 중간 기록을 지워 되돌리기 한 단계로 만든다.
+function applyChatEditOps(ops) {
+  var list = Array.isArray(ops) ? ops.slice(0, 12) : [];
+  var result = { applied: [], failed: [], before: null, after: null };
+  if (!currentItineraryData || !Array.isArray(currentItineraryData.itinerary)) {
+    list.forEach(function() { result.failed.push({ ok: false, reason: 'stale' }); });
+    return result;
+  }
+  pushItinHistory();
+  result.before = _itinHistory[_itinHistoryIdx] || null;
+  list.forEach(function(op) {
+    var r;
+    try { r = applyChatEditOp(op); } catch (err) { console.warn('[chat-edit]', err && err.message); r = { ok: false, reason: 'other' }; }
+    (r.ok ? result.applied : result.failed).push(r);
+  });
+  if (result.applied.length) {
+    renderItineraryTimeline();
+    updateItinMap();
+    result.after = _itinHistory[_itinHistoryIdx] || null;
+    var at = result.before ? _itinHistory.lastIndexOf(result.before, _itinHistoryIdx) : -1;
+    if (at >= 0 && _itinHistoryIdx - at > 1) {
+      _itinHistory.splice(at + 1, _itinHistoryIdx - at - 1);
+      _itinHistoryIdx = at + 1;
+    }
+    updatePlanControls();
+  }
+  return result;
+}
+
+// 채팅에 '바뀐 점' 한 줄(+ ↩ 되돌리기). 못 바꾼 것도 이유와 함께 적는다.
+function appendChatEditOutcome(result) {
+  var parts = [];
+  if (result.applied.length) parts.push(fillText(t('chat-edit-summary'), { list: result.applied.map(function(r) { return r.text; }).join(' · ') }));
+  if (result.failed.length) {
+    parts.push(fillText(t('chat-edit-failed'), { list: result.failed.map(function(r) {
+      return (r.name ? r.name + ' — ' : '') + t(CHAT_EDIT_FAIL_TEXT[r.reason] || CHAT_EDIT_FAIL_TEXT.other);
+    }).join(', ') }));
+  }
+  if (!result.applied.length) parts.push(t('chat-edit-nothing'));
+  var id = '';
+  if (result.applied.length && result.after) {
+    id = 'e' + (++chatEditSeq);
+    chatEditRecords[id] = { before: result.before, after: result.after, undone: false };
+  }
+  var box = el('aiChatLog');
+  if (!box || typeof document.createElement !== 'function') return id;
+  var node = document.createElement('div');
+  node.className = 'chat-edit-result';
+  node.setAttribute('role', 'status');
+  node.innerHTML = '<span class="chat-edit-summary">' + escapeHtml(parts.join(' ')) + '</span>' + (id
+    ? '<button type="button" class="chat-edit-undo" data-chat-edit-undo="' + escapeHtml(id) + '" data-i18n="btn-chat-edit-undo" data-i18n-aria="aria-chat-edit-undo" aria-label="' +
+      escapeHtml(t('aria-chat-edit-undo')) + '">' + escapeHtml(t('btn-chat-edit-undo')) + '</button>'
+    : '');
+  box.appendChild(node);
+  box.scrollTop = box.scrollHeight;
+  return id;
+}
+
+// 되묻기 선택지 버튼. 고르기 전에는 일정을 바꾸지 않는다.
+// '이렇게 바꿀까요?'(confirm)의 [취소]는 편집 없이 cancel: true로 온다(누르면 선택지를 닫고 일정은 그대로).
+function appendChatEditChoices(choices) {
+  var list = (Array.isArray(choices) ? choices : []).filter(function(c) {
+    return c && typeof c.label === 'string' && c.label && ((Array.isArray(c.ops) && c.ops.length) || c.cancel === true);
+  }).map(function(c) {
+    return c.cancel === true ? { label: c.label, ops: [], cancel: true } : c;
+  }).slice(0, 8);
+  if (!list.some(function(c) { return !c.cancel; })) return '';
+  var box = el('aiChatLog');
+  if (!list.length || !box || typeof document.createElement !== 'function') return '';
+  var id = 'c' + (++chatEditSeq);
+  // visible = 지금 보이는(글로 답하면 서버로 보내는) 선택지 번호. 글로 한 답으로 좁히면 그 줄만 남는다(chatEditNarrowIndexes).
+  chatEditChoiceSets[id] = { choices: list, used: false, visible: list.map(function(c, i) { return i; }) };
+  renderChatEditChoiceButtons(id, list.map(function(c, i) { return i; }));
+  chatEditPendingId = id;
+  return id;
+}
+
+// 글로 한 답이 여럿에 맞을 때 다시 보여 줄 선택지 번호(검토 K1c 막는 문제 1).
+// 원래 '모두'(all)는 다시 보이지 않는다(뺀 것까지 들어 있다). 원래 선택지에 '모두'가 있었고 둘 이상 남으면 남은 것만 합친 '모두(n곳)'를 새로 붙이고,
+// [취소]가 있었으면 함께 보인다. 이 줄이 다음 글 답의 기준이 된다('둘 다'·'첫 번째'는 이 줄에서 고른다).
+function chatEditNarrowIndexes(set, picks) {
+  var out = picks.filter(function(i) { return set.choices[i] && !set.choices[i].cancel && !set.choices[i].all; });
+  var hadAll = set.choices.some(function(c) { return c.all === true; });
+  if (hadAll && out.length > 1) {
+    var seen = {};
+    var ops = [];
+    out.forEach(function(i) {
+      (set.choices[i].ops || []).forEach(function(o) {
+        var k = JSON.stringify(o);
+        if (!seen[k]) { seen[k] = true; ops.push(o); }
+      });
+    });
+    set.choices.push({ label: fillText(t('chat-edit-choice-all'), { n: out.length }), ops: ops, all: true });
+    out.push(set.choices.length - 1);
+  }
+  for (var i = 0; i < set.choices.length; i++) if (set.choices[i].cancel) { out.push(i); break; }
+  return out;
+}
+
+// 선택지 버튼 한 줄. indexes = 보여 줄 선택지 번호(글로 한 답이 여럿에 맞으면 그 일부만 다시 보여 준다 — 같은 id라 어느 줄에서 고르든 한 번만 적용된다)
+function renderChatEditChoiceButtons(id, indexes) {
+  var set = chatEditChoiceSets[id];
+  var box = el('aiChatLog');
+  if (!set || !box || typeof document.createElement !== 'function') return false;
+  set.visible = indexes.filter(function(i) { return set.choices[i]; });
+  var node = document.createElement('div');
+  node.className = 'chat-edit-choices';
+  node.setAttribute('role', 'group');
+  node.innerHTML = indexes.filter(function(i) { return set.choices[i]; }).map(function(i) {
+    return '<button type="button" class="chat-choice-btn' + (set.choices[i].cancel ? ' chat-choice-cancel' : '') + '" data-chat-choice="' + id + '" data-choice-index="' + i + '" aria-pressed="false">' + escapeHtml(set.choices[i].label.slice(0, 120)) + '</button>';
+  }).join('');
+  box.appendChild(node);
+  box.scrollTop = box.scrollHeight;
+  return true;
+}
+
+// 아직 고르지 않은 마지막 되묻기의 선택지(서버로 보낼 모양: 라벨과 편집 종류). 없으면 null.
+// 지금 보이는 줄(visible)만 보낸다: 글로 한 답으로 좁혔으면 그 줄이 기준이다('1일째 말고 다' 뒤 '둘 다'·'첫 번째'가 원래 '모두'·첫째를 고르지 않게 — 검토 K1c 막는 문제 1).
+// 서버가 고른 번호(picks)는 이 목록 기준이라 sent로 원래 번호를 찾는다(handleChatEditResponse).
+function chatEditPendingChoices() {
+  var set = chatEditPendingId ? chatEditChoiceSets[chatEditPendingId] : null;
+  if (!set || set.used) return null;
+  var idx = (Array.isArray(set.visible) && set.visible.length ? set.visible : set.choices.map(function(c, i) { return i; })).filter(function(i) { return set.choices[i]; });
+  set.sent = idx;
+  return idx.map(function(i) {
+    var c = set.choices[i];
+    var kinds = c.cancel ? ['cancel'] : [];
+    (c.ops || []).forEach(function(o) { if (o && o.op && kinds.indexOf(o.op) < 0) kinds.push(String(o.op)); });
+    return { label: c.label.slice(0, 120), kinds: kinds };
+  });
+}
+
+// 아직 고르지 않은 선택지를 모두 닫는다(일정을 새로 만들면 예전 선택지는 더 이상 맞지 않는다)
+function closeAllChatEditChoices() {
+  Object.keys(chatEditChoiceSets).forEach(function(id) {
+    if (!chatEditChoiceSets[id].used) closeChatEditChoices(id);
+  });
+  chatEditPendingId = '';
+}
+
+// 선택지를 닫는다(고른 것 없이). chosenIndex가 있으면 그 버튼을 고른 것으로 표시한다.
+function closeChatEditChoices(id, chosenIndex) {
+  var set = chatEditChoiceSets[id];
+  if (!set) return;
+  set.used = true;
+  if (chatEditPendingId === id) chatEditPendingId = '';
+  Array.prototype.forEach.call(document.querySelectorAll('[data-chat-choice="' + id + '"]'), function(b) {
+    var on = chosenIndex !== undefined && String(b.dataset.choiceIndex) === String(chosenIndex);
+    b.disabled = true;
+    b.classList.toggle('chosen', on);
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+// fromAnswer: 글로 한 답을 서버가 맞춘 경우(runChatPlan 안이라 생성 중 표시가 켜져 있다)
+function chooseChatEdit(id, index, fromAnswer) {
+  var set = chatEditChoiceSets[id];
+  if (!set || set.used) return false;
+  if (planBusyCount > 0 && !fromAnswer) { showMemoToast(t('chat-edit-busy'), 2500); return false; }
+  var choice = set.choices[index];
+  if (!choice) return false;
+  closeChatEditChoices(id, index);
+  if (choice.cancel) {
+    // [취소]: 아무것도 바꾸지 않는다(서버 호출 없음)
+    appendAiChat('assistant', t('chat-edit-choice-cancelled'));
+    return true;
+  }
+  var result = applyChatEditOps(choice.ops);
+  appendChatEditOutcome(result);
+  // 시간 겹침 확인에서 '취소'해 아무것도 바뀌지 않았으면 선택지를 다시 열어 둔다(다른 것을 고를 수 있게)
+  if (!result.applied.length && result.failed.length && result.failed.every(function(r) { return r.reason === 'cancelled'; })) reopenChatEditChoices(id);
+  return true;
+}
+
+// 닫은 선택지를 다시 연다(고른 표시도 지운다)
+function reopenChatEditChoices(id) {
+  var set = chatEditChoiceSets[id];
+  if (!set) return;
+  set.used = false;
+  chatEditPendingId = id;
+  Array.prototype.forEach.call(document.querySelectorAll('[data-chat-choice="' + id + '"]'), function(b) {
+    b.disabled = false;
+    b.classList.remove('chosen');
+    b.setAttribute('aria-pressed', 'false');
+  });
+}
+
+// 채팅의 ↩ 되돌리기: 이 편집 바로 뒤 상태일 때만 일정 되돌리기(undoItinerary) 한 단계. 그 뒤 또 바뀌었으면 위의 ↩를 쓰라고 알린다.
+function undoChatEdit(id, btn) {
+  var rec = chatEditRecords[id];
+  if (!rec) return false;
+  if (!rec.undone) {
+    var cur = _itinHistory[_itinHistoryIdx];
+    if (cur === rec.after && _itinHistoryIdx > 0 && _itinHistory[_itinHistoryIdx - 1] === rec.before) {
+      undoItinerary();
+      rec.undone = true;
+    } else if (cur === rec.before) {
+      rec.undone = true; // 일정 위의 ↩ 되돌리기로 이미 되돌렸다
+    }
+  }
+  if (!rec.undone) {
+    showMemoToast(t('chat-edit-undo-stale'), 4000);
+    return false;
+  }
+  if (btn) btn.disabled = true;
+  showMemoToast(t('chat-edit-undone'), 2500);
+  return true;
+}
+
+document.addEventListener('click', function(e) {
+  var target = e.target;
+  if (!target || !target.closest) return;
+  var undoBtn = target.closest('[data-chat-edit-undo]');
+  if (undoBtn) { undoChatEdit(undoBtn.dataset.chatEditUndo, undoBtn); return; }
+  var choiceBtn = target.closest('[data-chat-choice]');
+  if (choiceBtn && !choiceBtn.disabled) chooseChatEdit(choiceBtn.dataset.chatChoice, Number(choiceBtn.dataset.choiceIndex));
+});
+
+// 서버가 편집으로 답했을 때: 답장 → (적용 | 선택지 | 글로 한 답으로 고르기 | 선택지 닫기 | 안내만). 다시 만들지 않으므로 조건·의도·이전 해석은 그대로 둔다.
+// pendingId: 이 말과 함께 보낸 되묻기 선택지(editChoices)의 id
+function handleChatEditResponse(data, text, pendingId) {
+  var edit = data.edit || {};
+  var reply = String(data.reply || '');
+  pushChatHistory('user', text);
+  if (reply) pushChatHistory('assistant', reply);
+  aiRequestHandledText = text;
+  aiRequestHandledAsEdit = true;
+  if (reply) appendAiChat('assistant', reply);
+  if (edit.status === 'pick' && pendingId && chatEditChoiceSets[pendingId]) {
+    var set = chatEditChoiceSets[pendingId];
+    // 서버의 번호는 보낸 목록(sent) 기준이다 → 원래 선택지 번호로
+    var sent = Array.isArray(set.sent) ? set.sent : set.choices.map(function(c, i) { return i; });
+    var picks = (Array.isArray(edit.picks) ? edit.picks : []).map(Number).filter(function(i, k, arr) {
+      return Number.isInteger(i) && i >= 0 && i < sent.length && arr.indexOf(i) === k;
+    }).map(function(i) { return sent[i]; });
+    if (picks.length === 1) chooseChatEdit(pendingId, picks[0], true);
+    else {
+      // 여럿에 맞으면 그것만 다시 보여 주고(이 줄이 다음 글 답의 기준), 맞는 것이 없으면 위 선택지를 그대로 둔다(둘 다 아직 고르는 중)
+      if (picks.length > 1) renderChatEditChoiceButtons(pendingId, chatEditNarrowIndexes(set, picks));
+      if (!set.used) chatEditPendingId = pendingId;
+    }
+    return;
+  }
+  if (edit.status === 'cancel' && pendingId) {
+    closeChatEditChoices(pendingId);
+    return;
+  }
+  // 새 편집·새 질문이 오면 아직 고르지 않은 예전 선택지는 닫는다(일정이 바뀌었거나 새 질문이 앞 질문을 대신한다.
+  // 남겨 두면 이미 지운 장소의 [취소]가 '그대로 둘게요'라고 답하는 등 실제 상태와 어긋난다).
+  if (edit.status === 'apply') {
+    closeAllChatEditChoices();
+    appendChatEditOutcome(applyChatEditOps(edit.ops));
+  } else if (edit.status === 'ask') {
+    closeAllChatEditChoices();
+    appendChatEditChoices(edit.choices);
+  } else if (pendingId && chatEditChoiceSets[pendingId] && !chatEditChoiceSets[pendingId].used) {
+    // 안내만(바뀐 것 없음): 앞 질문은 아직 고르는 중이다
+    chatEditPendingId = pendingId;
+  }
+}
+
 // 말로 한 요청 → /api/ai-travel-chat로 조건·의도를 알아낸 뒤 그 조건으로 일정을 만든다.
 async function runChatPlan(message, trigger) {
   var text = String(message || '').trim();
@@ -3116,6 +3705,11 @@ async function runChatPlan(message, trigger) {
   var triggerId = trigger || 'btnAiAssist';
   appendAiChat('user', text);
   var editSeqAtStart = itinEditSeq;
+  // 일정이 있으면 지금 일정을 함께 보낸다: 서버가 일부만 고치는 말로 보면(mode 'edit') 다시 만들지 않고 그 칸만 고친다.
+  var editItinerary = chatEditItineraryPayload();
+  // 아직 고르지 않은 되묻기가 있으면 그 선택지도 보낸다: 글로 한 답('2일째', '두 번째', '취소')이면 서버가 선택지를 고른다(다시 만들지 않는다).
+  var pendingChoices = editItinerary ? chatEditPendingChoices() : null;
+  var pendingId = pendingChoices ? chatEditPendingId : '';
   beginPlanBusy(triggerId);
   // 채팅 해석(AI)부터 기다리므로 일정 칸의 생성 중 안내도 지금 띄운다(8초 뒤 '서버 깨우는 중' 안내 포함).
   showPlanLoading();
@@ -3127,14 +3721,40 @@ async function runChatPlan(message, trigger) {
       days: Number(el('days').value || 4),
       startDate: el('startDate').value || defaultStartDate()
     };
-    const data = await postJson('/api/ai-travel-chat', {
+    const chatBody = {
       message: text,
       context,
       lang: currentLang,
       history: chatHistory.slice(-12),
       prevParsed: lastParsedConditions
-    });
+    };
+    if (editItinerary) chatBody.itinerary = editItinerary;
+    if (pendingChoices) chatBody.editChoices = pendingChoices;
+    const data = await postJson('/api/ai-travel-chat', chatBody);
     renderSourceNote('aiSourceNote', 'chat', sectionInfo('chat', data), { oneLine: true });
+    // 새 말이 처리됐으니 앞 질문은 더 기다리지 않는다(글로 한 답이 아직 고르는 중이면 handleChatEditResponse가 다시 건다)
+    chatEditPendingId = '';
+    if (data && data.mode === 'edit' && data.edit && typeof data.edit === 'object') {
+      hidePlanLoading();
+      handleChatEditResponse(data, text, pendingId);
+      return;
+    }
+    // 되묻기(선택지)에 답하는 중이었는데 서버가 '다시 만들기'로 답했으면(답이 아니라 새 일정 요청으로 알아들음) 바로 다시 만들지 않고 묻는다.
+    // 거절하면 일정과 선택지를 그대로 둔다(계속 고를 수 있다). 이 질문이 직접 고친 일정 덮어쓰기 확인도 겸한다.
+    var pendingOpen = Boolean(pendingId && chatEditChoiceSets[pendingId] && !chatEditChoiceSets[pendingId].used);
+    // 일정이 있는데 넣거나 바꿀 것이 종류·음식 낱말('라멘 넣어줘')이라 서버가 일정 전체를 다시 만들라고 답했으면(editRegen 'category'),
+    // 고친 적이 없어도 지금 일정을 바꾸기 전에 묻는다(검토 R1 수정안 (a)). 거절하면 일정은 그대로다.
+    var categoryRegen = !pendingOpen && Boolean(editItinerary) && Boolean(data) && data.editRegen === 'category';
+    var regenOk = pendingOpen ? confirm(t('confirm-chat-regen-pending')) : (categoryRegen ? confirm(t('confirm-chat-regen-category')) : confirmOverwriteIfEdited());
+    if (!regenOk) {
+      hidePlanLoading();
+      if (pendingOpen) chatEditPendingId = pendingId;
+      appendAiChat('assistant', t(pendingOpen ? 'chat-regen-pending-kept' : (categoryRegen ? 'chat-edit-choice-cancelled' : 'chat-regen-kept')));
+      return;
+    }
+    // 일정을 새로 만든다: 예전 일정에 묶인 선택지는 더 이상 맞지 않으니 모두 닫는다
+    closeAllChatEditChoices();
+    editSeqAtStart = itinEditSeq;
     if (data.cityMeta) upsertCityOption(data.cityMeta);
     var parsed = data.parsed || {};
     applyAiConditions(parsed);
@@ -3142,6 +3762,7 @@ async function runChatPlan(message, trigger) {
     // 의도 상태(다음 /api/travel-plan 본문에 실린다)
     aiRequestText = text.slice(0, 500);
     aiRequestHandledText = text;
+    aiRequestHandledAsEdit = false;
     aiMustVisit = (Array.isArray(data.selectedDestinations) ? data.selectedDestinations : []).map(normalizeDestinationForPlan).filter(Boolean).slice(0, 8);
     aiWantedNames = cleanNameList(parsed.wantedPlaces, 8);
     aiExcludedPlaces = cleanNameList(parsed.excludedPlaces, 8);
@@ -3170,11 +3791,13 @@ async function runChatPlan(message, trigger) {
 el('btnPlan').addEventListener('click', async () => {
   if (planBusyCount > 0) return; // 생성 중 중복 클릭 방지(유료 호출)
   var text = String((el('aiRequest') && el('aiRequest').value) || '').trim();
-  if (!confirmOverwriteIfEdited()) return;
-  if (text && text !== aiRequestHandledText) {
+  // 새 말: 일부만 고치는 말이면 일정을 다시 만들지 않으므로, 덮어쓸지는 서버가 '다시 만들기'로 답한 뒤 runChatPlan이 묻는다.
+  // 편집으로 처리한 글을 다시 누르면(취소·↩ 뒤 마음을 바꿈) 그 글을 채팅으로 다시 보낸다(편집이면 다시 확인을 묻는다 — 검토 R2).
+  if (text && (text !== aiRequestHandledText || aiRequestHandledAsEdit)) {
     await runChatPlan(text, 'btnPlan');
     return;
   }
+  if (!confirmOverwriteIfEdited()) return;
   // 요청칸이 비었으면 앞서 말로 한 요청의 의도(꼭 갈 곳·제외·경로 등)를 모두 지운다. 같은 글이면 유지한다.
   if (!text) resetAiIntentState(false);
   try {
@@ -3194,7 +3817,7 @@ el('btnAiAssist')?.addEventListener('click', async () => {
     appendAiChat('assistant', t('chat-enter-msg'));
     return;
   }
-  if (!confirmOverwriteIfEdited()) return;
+  // 덮어쓸지는 서버가 '다시 만들기'로 답한 뒤 runChatPlan이 묻는다(일부만 고치는 말이면 묻지 않는다)
   await runChatPlan(message, 'btnAiAssist');
 });
 
@@ -3214,6 +3837,10 @@ function resetChatConversation() {
   var log = el('aiChatLog');
   if (log) log.innerHTML = '';
   chatIntentRecords = [];
+  // 대화로 고친 일정은 그대로 두고(되돌리기는 일정 위의 ↩), 채팅의 선택지·되돌리기 버튼 기록만 비운다
+  chatEditRecords = {};
+  chatEditChoiceSets = {};
+  chatEditPendingId = '';
   renderSourceNote('aiSourceNote', 'chat', null);
   showMemoToast(t('chat-reset-done'));
   return true;
@@ -3942,6 +4569,9 @@ async function searchStays(opts) {
       }
     };
 
+    // 다른 예약 사이트 링크(#staySiteLinks)는 이 검색 조건으로 만든다(결과가 없거나 오류여도 보인다).
+    lastStaySearch = { city: payload.city, checkIn: payload.checkIn, checkOut: payload.checkOut, guests: payload.guests, rooms: payload.rooms };
+
     // 서버 API 호출 (Rakuten 실시간 → 없으면 예시 데이터)
     validateDates();
     setLoading('btnStays', true);
@@ -3962,6 +4592,7 @@ async function searchStays(opts) {
     if (seq !== staySearchSeq) return;
     el('stayCards').innerHTML = '<div class="card">' + escapeHtml(friendlyError(err)) + '</div>';
     setStayMoreVisible(false);
+    renderStaySiteLinks();
   } finally {
     if (seq === staySearchSeq) setLoading('btnStays', false);
   }
@@ -4631,7 +5262,10 @@ function hideItinMapLegend() {
 }
 
 // ── 일정 지도 ──
-// 기본은 OpenStreetMap + Leaflet(무료, 키·요금 없음). 서버가 MAP_PROVIDER=google 이면 Google 지도 JS를 쓴다.
+// 기본(osm 모드)은 Leaflet 위에 OpenFreeMap 벡터 지도(MapLibre GL + maplibre-gl-leaflet)를 깐다. 키·가입·요금이 없고,
+// 지도 데이터의 name:ko·name:ja·name:en으로 지명을 화면 언어로 보여 준다(docs/api-review-2026-10-02.md 6번).
+// 벡터 지도를 못 쓰면(WebGL 없음, 라이브러리·스타일·타일 실패, 시간 초과) OpenStreetMap 래스터 타일로 대신 그린다.
+// 서버가 MAP_PROVIDER=google 이면 Google 지도 JS를 쓴다(이때는 OpenFreeMap·MapLibre를 부르지 않는다).
 // 지도 라이브러리는 일정이 처음 생길 때 불러오고, 늦게 도착해도 준비되는 즉시 다시 그린다.
 var LEAFLET_CSS_URL = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
 var LEAFLET_CSS_SRI = 'sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=';
@@ -4640,14 +5274,39 @@ var LEAFLET_JS_SRI = 'sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';
 // OSM 재단 타일 정책: 서브도메인({s}.tile…) 없이 tile.openstreetmap.org 한 곳만 쓴다(operations.osmfoundation.org/policies/tiles/).
 var OSM_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 var OSM_ATTRIBUTION = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+// MapLibre GL 6부터는 ES 모듈 판만 있어, 전역 maplibregl을 쓰는 maplibre-gl-leaflet과 맞는 5.x 단일 파일 판을 고정한다.
+var MAPLIBRE_CSS_URL = 'https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css';
+var MAPLIBRE_CSS_SRI = 'sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK';
+var MAPLIBRE_JS_URL = 'https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js';
+var MAPLIBRE_JS_SRI = 'sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp';
+var MAPLIBRE_LEAFLET_JS_URL = 'https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js';
+var MAPLIBRE_LEAFLET_JS_SRI = 'sha384-tXYNKOHx4T02jMP7YYCtBxPIv1B5gaA5mcVPBzqMp6d7VzWzxJgI2aWF/nJLrQdS';
+// OpenFreeMap(openfreemap.org/tos/): 운영 보장(SLA)이 없어 실패하면 OSM으로 대체한다. 출처 문구는 OpenFreeMap TileJSON의 것과 같다.
+var OFM_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';
+var OFM_ATTRIBUTION = '<a href="https://openfreemap.org" target="_blank" rel="noopener noreferrer">OpenFreeMap</a> ' +
+  '<a href="https://www.openmaptiles.org/" target="_blank" rel="noopener noreferrer">&copy; OpenMapTiles</a> ' +
+  'Data from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>';
+var VECTOR_MAP_LOAD_TIMEOUT_MS = 10000; // 라이브러리 3개와 스타일을 기다리는 최대 시간(넘으면 OSM)
+var VECTOR_TILE_TIMEOUT_MS = 10000;     // 벡터 지도를 붙인 뒤 첫 타일을 기다리는 최대 시간(넘으면 OSM)
+var VECTOR_TILE_ERROR_LIMIT = 2;        // 첫 타일이 오기 전에 타일·소스 오류가 이만큼 나면 OSM
 var GOOGLE_GEOCODE_LIMIT = 15; // Google 모드에서 좌표 없는 장소를 한 번에 최대 몇 곳까지 지오코딩할지(유료)
 
 var mapConfig = null;          // { provider: 'osm' } | { provider: 'google', key }
 var mapConfigPromise = null;
-var mapLibState = 'idle';      // idle | loading | ready | failed
+var mapLibState = 'idle';      // idle | loading | ready | failed (지도를 그릴 수 있는지)
+var leafletLibState = 'idle';  // idle | loading | ready | failed (osm 모드의 Leaflet)
+var vectorMapState = 'idle';   // idle | loading | ready | failed (OpenFreeMap 벡터 지도)
+var vectorMapParts = { maplibre: false, pluginRequested: false, plugin: false };
+var vectorMapStyle = null;     // 받아 둔 OpenFreeMap 스타일 원본(언어마다 지명 칸만 바꿔 쓴다)
+var vectorMapLoadTimer = null;
+var vectorTileWatch = null;    // { layer, ok, errors, timer }: 붙인 벡터 지도가 실제로 타일을 받는지
+var vectorTileVisibilityBound = false; // 탭 숨김·보임(visibilitychange)을 한 번만 듣는다
 var mapRenderSeq = 0;
 var itinLeafletMap = null;
 var itinLeafletLayer = null;
+var itinBaseLayer = null;      // 지금 깔린 바탕 지도(벡터 또는 OSM 래스터)
+var itinBaseKind = '';         // 'vector' | 'raster'
+var itinBaseLang = '';         // 벡터 지도의 지명 언어
 var itinPolylines = [];
 var itinGeoFailed = {};
 var googleGeocodeBlocked = false;
@@ -4673,6 +5332,26 @@ function onMapLibraryLoaded(ok) {
   if (currentItineraryData) updateItinMap();
 }
 
+function appendMapCss(href, sri) {
+  var css = document.createElement('link');
+  css.rel = 'stylesheet';
+  css.href = href;
+  css.integrity = sri;
+  css.crossOrigin = '';
+  document.head.appendChild(css);
+}
+
+function appendMapScript(src, sri, done) {
+  var s = document.createElement('script');
+  s.src = src;
+  s.integrity = sri;
+  s.crossOrigin = '';
+  s.async = true;
+  s.onload = function() { done(true); };
+  s.onerror = function() { done(false); };
+  document.head.appendChild(s);
+}
+
 function ensureMapLibrary() {
   if (mapLibState !== 'idle' || !mapConfig) return;
   mapLibState = 'loading';
@@ -4687,20 +5366,115 @@ function ensureMapLibrary() {
     document.head.appendChild(gs);
     return;
   }
-  var css = document.createElement('link');
-  css.rel = 'stylesheet';
-  css.href = LEAFLET_CSS_URL;
-  css.integrity = LEAFLET_CSS_SRI;
-  css.crossOrigin = '';
-  document.head.appendChild(css);
-  var s = document.createElement('script');
-  s.src = LEAFLET_JS_URL;
-  s.integrity = LEAFLET_JS_SRI;
-  s.crossOrigin = '';
-  s.async = true;
-  s.onload = function() { onMapLibraryLoaded(typeof window.L !== 'undefined'); };
-  s.onerror = function() { onMapLibraryLoaded(false); };
-  document.head.appendChild(s);
+  leafletLibState = 'loading';
+  appendMapCss(LEAFLET_CSS_URL, LEAFLET_CSS_SRI);
+  appendMapScript(LEAFLET_JS_URL, LEAFLET_JS_SRI, function(ok) {
+    leafletLibState = ok && typeof window.L !== 'undefined' ? 'ready' : 'failed';
+    if (leafletLibState === 'failed') failVectorMap('leaflet');
+    stepVectorMap();
+    settleOsmMapLibraries();
+  });
+  // 벡터 지도 준비는 Leaflet과 함께 시작한다(다 되거나 실패해야 지도를 그린다).
+  startVectorMapLoad();
+}
+
+// osm 모드: Leaflet이 준비되고 벡터 지도가 준비되거나 실패하면 그린다(Leaflet이 실패하면 지도 실패).
+function settleOsmMapLibraries() {
+  if (mapLibState !== 'loading' || !mapConfig || mapConfig.provider === 'google') return;
+  if (leafletLibState === 'failed') onMapLibraryLoaded(false);
+  else if (leafletLibState === 'ready' && (vectorMapState === 'ready' || vectorMapState === 'failed')) onMapLibraryLoaded(true);
+}
+
+function webglAvailable() {
+  try {
+    if (typeof window.WebGLRenderingContext === 'undefined') return false;
+    var c = document.createElement('canvas');
+    var gl = c.getContext('webgl2') || c.getContext('webgl');
+    if (!gl) return false;
+    // 확인용 문맥은 바로 돌려준다(브라우저마다 동시에 쓸 수 있는 WebGL 문맥 수가 정해져 있다).
+    var lose = typeof gl.getExtension === 'function' ? gl.getExtension('WEBGL_lose_context') : null;
+    if (lose && typeof lose.loseContext === 'function') lose.loseContext();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function isUsableMapStyle(style) {
+  return Boolean(style && typeof style === 'object' && Array.isArray(style.layers) && style.layers.length > 0 &&
+    style.sources && typeof style.sources === 'object' && Object.keys(style.sources).length > 0);
+}
+
+// 벡터 지도 준비: MapLibre GL(js+css)과 OpenFreeMap 스타일을 함께 받고, Leaflet과 MapLibre가 다 있으면
+// maplibre-gl-leaflet(둘을 잇는 플러그인)을 받는다. 하나라도 실패하거나 시간이 넘으면 OSM 래스터로 간다.
+function startVectorMapLoad() {
+  if (vectorMapState !== 'idle') return;
+  if (!webglAvailable()) { vectorMapState = 'failed'; return; }
+  vectorMapState = 'loading';
+  vectorMapLoadTimer = setTimeout(function() { failVectorMap('timeout'); }, VECTOR_MAP_LOAD_TIMEOUT_MS);
+  appendMapCss(MAPLIBRE_CSS_URL, MAPLIBRE_CSS_SRI);
+  appendMapScript(MAPLIBRE_JS_URL, MAPLIBRE_JS_SRI, function(ok) {
+    if (vectorMapState !== 'loading') return;
+    if (!ok || typeof window.maplibregl === 'undefined') { failVectorMap('maplibre-gl'); return; }
+    vectorMapParts.maplibre = true;
+    stepVectorMap();
+  });
+  fetch(OFM_STYLE_URL)
+    .then(function(r) { return r && r.ok ? r.json() : null; })
+    .then(function(style) {
+      if (vectorMapState !== 'loading') return;
+      if (!isUsableMapStyle(style)) { failVectorMap('style'); return; }
+      vectorMapStyle = style;
+      stepVectorMap();
+    })
+    .catch(function() { failVectorMap('style'); });
+}
+
+function stepVectorMap() {
+  if (vectorMapState !== 'loading') return;
+  if (vectorMapParts.maplibre && leafletLibState === 'ready' && !vectorMapParts.pluginRequested) {
+    vectorMapParts.pluginRequested = true;
+    appendMapScript(MAPLIBRE_LEAFLET_JS_URL, MAPLIBRE_LEAFLET_JS_SRI, function(ok) {
+      if (vectorMapState !== 'loading') return;
+      if (!ok || !window.L || typeof window.L.maplibreGL !== 'function') { failVectorMap('maplibre-gl-leaflet'); return; }
+      vectorMapParts.plugin = true;
+      stepVectorMap();
+    });
+  }
+  if (vectorMapParts.plugin && vectorMapStyle) {
+    clearTimeout(vectorMapLoadTimer);
+    vectorMapState = 'ready';
+    settleOsmMapLibraries();
+  }
+}
+
+// 벡터 지도를 이번 방문 동안 끄고, 이미 깔려 있으면 그 자리에서 OSM 래스터로 바꾼다.
+function failVectorMap(reason) {
+  if (vectorMapState === 'failed') return;
+  vectorMapState = 'failed';
+  clearTimeout(vectorMapLoadTimer);
+  console.info('[map] OpenFreeMap -> OpenStreetMap:', reason);
+  if (itinBaseKind === 'vector') useRasterItinBase();
+  settleOsmMapLibraries();
+}
+
+// 지명 칸: ko·ja는 그 언어 이름, 없으면 현지 이름(name). en은 영어 → 로마자 → 현지 이름.
+function mapLabelExpression(lang) {
+  if (lang === 'ko') return ['coalesce', ['get', 'name:ko'], ['get', 'name']];
+  if (lang === 'ja') return ['coalesce', ['get', 'name:ja'], ['get', 'name']];
+  return ['coalesce', ['get', 'name:en'], ['get', 'name_en'], ['get', 'name:latin'], ['get', 'name']];
+}
+
+// 스타일 사본에서 이름을 쓰는 글자 칸(text-field)만 화면 언어로 바꾼다. 도로 번호(ref) 같은 칸은 그대로 둔다.
+function localizeMapStyle(style, lang) {
+  var copy = JSON.parse(JSON.stringify(style));
+  (copy.layers || []).forEach(function(layer) {
+    var layout = layer && layer.layout;
+    if (!layout || layout['text-field'] === undefined) return;
+    if (!/"name(?:[:_][A-Za-z-]+)?"|\{name(?:[:_][A-Za-z-]+)?\}/.test(JSON.stringify(layout['text-field']))) return;
+    layout['text-field'] = mapLabelExpression(lang);
+  });
+  return copy;
 }
 
 function placeKey(name) {
@@ -4843,11 +5617,121 @@ async function updateItinMap() {
   setItinMapNote(mapMissingNote(points, drawnPoints));
 }
 
+// 지금 깔린 바탕 지도를 뗀다(벡터 지도면 타일 감시도 멈춘다).
+function removeItinBase() {
+  var layer = itinBaseLayer;
+  itinBaseLayer = null;
+  itinBaseKind = '';
+  itinBaseLang = '';
+  if (vectorTileWatch) clearTimeout(vectorTileWatch.timer);
+  vectorTileWatch = null;
+  if (!layer || !itinLeafletMap) return;
+  // maplibre-gl-leaflet은 GL 지도를 만들다 실패한 층을 뗄 때 onRemove에서 멈춘다 → 빈 GL 지도를 대신 둔다.
+  if (typeof layer.getMaplibreMap === 'function' && !layer.getMaplibreMap()) layer._glMap = { remove: function() {} };
+  try { itinLeafletMap.removeLayer(layer); } catch (e) { /* 이미 떨어진 층 */ }
+}
+
+function useRasterItinBase() {
+  if (!itinLeafletMap || !window.L) return;
+  removeItinBase();
+  itinBaseLayer = window.L.tileLayer(OSM_TILE_URL, { maxZoom: 19, attribution: OSM_ATTRIBUTION }).addTo(itinLeafletMap);
+  itinBaseKind = 'raster';
+}
+
+// 붙인 벡터 지도가 실제로 타일을 받는지 본다. 첫 타일 전에 오류가 이어지거나 시간이 넘으면 OSM으로 바꾼다.
+function watchVectorTiles(layer) {
+  var gl = typeof layer.getMaplibreMap === 'function' ? layer.getMaplibreMap() : null;
+  if (!gl || typeof gl.on !== 'function') return;
+  var w = vectorTileWatch = { layer: layer, ok: false, errors: 0, timer: null };
+  gl.on('sourcedata', function(e) {
+    if (vectorTileWatch !== w || !e || !e.tile) return;
+    w.ok = true;
+    clearTimeout(w.timer);
+  });
+  gl.on('error', function(e) {
+    // 스프라이트·글꼴 오류는 지도 자체를 막지 않으니 세지 않는다(타일·소스 오류만).
+    if (vectorTileWatch !== w || w.ok || !e || !(e.sourceId || e.tile)) return;
+    w.errors++;
+    if (w.errors >= VECTOR_TILE_ERROR_LIMIT) failVectorMap('tile errors');
+  });
+  armVectorTileWatch();
+}
+
+// 첫 타일을 기다리는 시간은 탭이 보이는 동안만 잰다. 숨은 탭에서는 브라우저가 requestAnimationFrame을 멈추고
+// MapLibre는 그 안에서 스타일을 적용하고 타일을 부르므로, 숨은 동안 타일이 없는 것은 실패가 아니다.
+// 숨으면 타이머를 멈추고, 다시 보이면 처음부터 잰다.
+function armVectorTileWatch() {
+  var w = vectorTileWatch;
+  if (!w || w.ok || w.timer) return;
+  watchVectorTileVisibility();
+  if (document.hidden) return; // 다시 보이면 visibilitychange에서 잰다
+  w.timer = setTimeout(function() {
+    w.timer = null;
+    if (vectorTileWatch !== w || w.ok) return;
+    // 숨김 알림을 놓쳐 숨은 채 시간이 끝난 경우도 실패로 보지 않는다(다시 보이면 다시 잰다).
+    if (document.hidden) return;
+    // 지도 칸이 숨겨져 크기가 0이면 타일을 부르지 않으니 실패로 보지 않는다(다시 그릴 때 다시 잰다).
+    var mapEl = el('itinMap');
+    if (!mapEl || !mapEl.offsetWidth || !mapEl.offsetHeight) return;
+    failVectorMap('no vector tile in ' + VECTOR_TILE_TIMEOUT_MS + 'ms');
+  }, VECTOR_TILE_TIMEOUT_MS);
+}
+
+function watchVectorTileVisibility() {
+  if (vectorTileVisibilityBound) return;
+  vectorTileVisibilityBound = true;
+  document.addEventListener('visibilitychange', function() {
+    var w = vectorTileWatch;
+    if (!w || w.ok) return;
+    if (document.hidden) {
+      clearTimeout(w.timer);
+      w.timer = null;
+    } else {
+      armVectorTileWatch();
+    }
+  });
+}
+
+// 바탕 지도를 정한다: 벡터 지도가 준비됐으면 화면 언어 지명의 OpenFreeMap, 아니면 OSM 래스터.
+// 화면 위치(setView/fitBounds)를 정한 뒤에 불러야 GL 지도가 바로 만들어져 실패를 여기서 잡을 수 있다.
+function setItinMapBase() {
+  var L = window.L;
+  var lang = currentLang || 'ko';
+  var wantVector = vectorMapState === 'ready' && Boolean(vectorMapStyle) && typeof L.maplibreGL === 'function';
+  if (wantVector && itinBaseKind === 'vector') {
+    if (itinBaseLang !== lang) {
+      // 화면 언어가 바뀌면 지명 칸만 바꾼다(MapLibre가 차이만 적용해 타일을 다시 받지 않는다).
+      var gl = itinBaseLayer.getMaplibreMap();
+      if (gl) gl.setStyle(localizeMapStyle(vectorMapStyle, lang));
+      itinBaseLang = lang;
+    }
+    armVectorTileWatch();
+    return;
+  }
+  if (!wantVector) {
+    if (itinBaseKind !== 'raster') useRasterItinBase();
+    return;
+  }
+  removeItinBase();
+  try {
+    var layer = L.maplibreGL({ style: localizeMapStyle(vectorMapStyle, lang), attributionControl: { customAttribution: OFM_ATTRIBUTION } });
+    itinBaseLayer = layer;
+    itinBaseKind = 'vector';
+    itinBaseLang = lang;
+    layer.addTo(itinLeafletMap);
+    watchVectorTiles(layer);
+  } catch (err) {
+    // WebGL 문맥을 못 만드는 등: 반쯤 붙은 층을 떼고 OSM으로
+    failVectorMap('maplibre: ' + (err && err.message));
+    if (itinBaseKind !== 'raster') useRasterItinBase();
+  }
+}
+
 function renderLeafletItinMap(mapEl, points) {
   var L = window.L;
   if (!itinLeafletMap) {
-    itinLeafletMap = L.map(mapEl, { scrollWheelZoom: false });
-    L.tileLayer(OSM_TILE_URL, { maxZoom: 19, attribution: OSM_ATTRIBUTION }).addTo(itinLeafletMap);
+    // 바탕 지도(OpenFreeMap 또는 OSM)는 화면 위치를 정한 뒤 setItinMapBase()가 깐다.
+    itinLeafletMap = L.map(mapEl, { scrollWheelZoom: false, maxZoom: 19 });
     itinLeafletLayer = L.layerGroup().addTo(itinLeafletMap);
   }
   itinLeafletLayer.clearLayers();
@@ -4873,6 +5757,7 @@ function renderLeafletItinMap(mapEl, points) {
   });
   if (latlngs.length === 1) itinLeafletMap.setView(latlngs[0], 14);
   else if (latlngs.length > 1) itinLeafletMap.fitBounds(latlngs, { padding: [28, 28], maxZoom: 15 });
+  setItinMapBase();
   return latlngs.length;
 }
 
@@ -7071,6 +7956,8 @@ async function loadPlanFromServer(planId) {
     flightResults = []; stayResults = []; manualFlights = []; manualStays = [];
     latestDestList = []; latestRecFoodList = []; latestFoodList = []; latestDestSearchList = []; latestFoodSearchList = [];
     resetAiIntentState(false);
+    lastStaySearch = null; // 다른 예약 사이트 링크는 이 일정으로 숙소를 다시 검색할 때 다시 만든다
+    renderStaySiteLinks();
 
     // 1. 폼 값 복원 → 도시·날짜에 딸린 칸 맞추기 → 저장해 둔 항공·숙소 날짜로 덮기
     var fv = d.formValues || {};
@@ -7191,6 +8078,7 @@ function renderTourFallbackLinks(target, cityName, displayName, cityKey) {
     '<p style="margin:0 0 14px;font-size:13px;color:var(--fg-3);letter-spacing:0.04em;">' + escapeHtml(fillText(t('tours-popular'), { city: shownName })) + '</p>' +
     '<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;">' +
     '<a href="https://www.klook.com/' + KLOOK_LOCALE_PATH[currentLang === 'en' || currentLang === 'ja' ? currentLang : 'ko'] + '/search/result/?query=' + encodeURIComponent(cityName + ' tour') + '" target="_blank" rel="noopener" style="' + tourLinkStyle + '">' + escapeHtml(t('tour-klook')) + '</a>' +
+    '<a href="https://www.kkday.com/' + KKDAY_LOCALE_PATH[currentLang === 'en' || currentLang === 'ja' ? currentLang : 'ko'] + '/product/productlist?keyword=' + encodeURIComponent(cityName) + '" target="_blank" rel="noopener" style="' + tourLinkStyle + '">' + escapeHtml(t('tour-kkday')) + '</a>' +
     '<a href="https://www.viator.com/searchResults/all?text=' + encodeURIComponent(cityName) + '&destId=&tags=alltrips" target="_blank" rel="noopener" style="' + tourLinkStyle + '">' + escapeHtml(t('tour-viator')) + '</a>' +
     '<a href="https://www.getyourguide.com/s/?q=' + encodeURIComponent(cityName + ', Japan') + '&searchSource=1" target="_blank" rel="noopener" style="' + tourLinkStyle + '">GetYourGuide</a>' +
     '</div></div>';
@@ -7198,6 +8086,8 @@ function renderTourFallbackLinks(target, cityName, displayName, cityKey) {
 
 // Klook 검색 페이지 언어 경로(화면 언어를 따른다)
 var KLOOK_LOCALE_PATH = { ko: 'ko', en: 'en-US', ja: 'ja' };
+// KKday 상품 검색(https://www.kkday.com/<언어>/product/productlist?keyword=도시) 언어 경로
+var KKDAY_LOCALE_PATH = { ko: 'ko', en: 'en-us', ja: 'ja' };
 
 // 투어: 외부 위젯 스크립트(tpwgt.com, 콘솔 'KlookAff' 오류·8초 대기)를 넣지 않고 검색 바로가기를 바로 그린다.
 function loadKlookWidget(cityKey) {
@@ -7708,6 +8598,12 @@ var I18N = {
     'book-flight': '✈ 예약하기',
     'skyscanner': '스카이스캐너',
     'kayak': '카약',
+    'flight-other-sites': '다른 사이트에서 보기',
+    'site-google-flights': 'Google 항공편',
+    'site-naver-flights': '네이버 항공권',
+    'stay-other-sites': '다른 예약 사이트에서 찾기',
+    'site-google-hotels': 'Google 호텔',
+    'site-jalan': '자란(じゃらん)',
     'move-up': '위로',
     'move-down': '아래로',
     'route-calc': '🚃 경로 교통비 계산',
@@ -7844,6 +8740,32 @@ var I18N = {
     'btn-chat-reset': '대화 초기화',
     'aria-chat-reset': '대화 초기화: 채팅 기록과 말로 정한 조건만 지워요(지금 일정과 조건 칸은 그대로)',
     'chat-reset-done': '대화를 비웠어요. 지금 일정과 조건 칸은 그대로예요.',
+    'chat-edit-summary': '바뀐 점: {list}',
+    'chat-edit-removed': '{d} {p} {n} 뺌',
+    'chat-edit-added': '{d} {p} {n} 넣음({t})',
+    'chat-edit-moved': '{n} → {d} {p}({t})',
+    'chat-edit-replaced': '{d} {p} {a} → {n}',
+    'chat-edit-retimed': '{d} {n} {t}로',
+    'chat-edit-failed': '못 바꾼 것: {list}',
+    'chat-edit-fail-stale': '일정이 그 사이 바뀌어 찾지 못함',
+    'chat-edit-fail-cancelled': '취소함',
+    'chat-edit-fail-duplicate': '그날 이미 있음',
+    'chat-edit-fail-kind': '칸 종류가 맞지 않음',
+    'chat-edit-fail-noop': '이미 그 칸에 있음',
+    'chat-edit-fail-other': '적용하지 못함',
+    'chat-edit-nothing': '일정은 바꾸지 않았어요.',
+    'btn-chat-edit-undo': '↩ 되돌리기',
+    'aria-chat-edit-undo': '대화로 고친 것을 되돌리기',
+    'chat-edit-undone': '대화로 고친 것을 되돌렸어요.',
+    'chat-edit-undo-stale': '그 뒤에 일정이 또 바뀌어서 여기서는 되돌릴 수 없어요. 일정 위의 ↩ 되돌리기를 써 주세요.',
+    'chat-edit-busy': '일정을 만드는 중이라 지금은 고를 수 없어요.',
+    'chat-regen-kept': '직접 고친 일정을 그대로 두었어요.',
+    'chat-edit-swapped': '{d} {p} {a} ↔ {d2} {p2} {b} 자리 바꿈',
+    'chat-edit-choice-cancelled': '알겠어요. 일정은 그대로 둘게요.',
+    'confirm-chat-regen-pending': '위 질문에 대한 답이 아니라 새 일정 요청으로 알아들었어요. 지금 일정을 새로 만들까요? (고친 내용은 ↩ 되돌리기로 돌아갈 수 있어요)',
+    'chat-regen-pending-kept': "일정은 그대로 두었어요. 위 선택지에서 고르거나, 그만두려면 '취소'라고 말해 주세요.",
+    'confirm-chat-regen-category': '라멘·카페 같은 종류는 일정 한 칸에 바로 넣을 수 없어서, 이 조건으로 일정 전체를 새로 만들어야 해요. 지금 일정을 새로 만들까요? (↩ 되돌리기로 돌아갈 수 있어요)',
+    'chat-edit-choice-all': '모두({n}곳)',
     'aria-rec-tabs': '추천 유형 선택',
     'plan-control-copy': '고른 항공권·숙소는 그대로 두고 일정만 새로 짜요.',
     'aria-undo': '일정 되돌리기 (Ctrl+Z)',
@@ -7923,6 +8845,7 @@ var I18N = {
     'tours-popular': '{city} 인기 투어 & 액티비티',
     'tours-loading': '{city} 투어 로딩 중...',
     'tour-klook': 'Klook 투어',
+    'tour-kkday': 'KKday 투어',
     'tour-viator': 'Viator 투어',
     'wx-rain': '☔ 여행 기간 중 {n}일은 비 소식이 있어요. 우산을 챙기고 실내 관광지도 준비해 두세요.',
     'wx-cold': '❄️ 추운 날이 있어요. 따뜻한 옷을 챙겨 주세요.',
@@ -8239,6 +9162,12 @@ var I18N = {
     'book-flight': '✈ Book',
     'skyscanner': 'Skyscanner',
     'kayak': 'Kayak',
+    'flight-other-sites': 'Also search on',
+    'site-google-flights': 'Google Flights',
+    'site-naver-flights': 'Naver Flights',
+    'stay-other-sites': 'Search other booking sites',
+    'site-google-hotels': 'Google Hotels',
+    'site-jalan': 'Jalan',
     'move-up': 'Up',
     'move-down': 'Down',
     'route-calc': '🚃 Calculate Route Cost',
@@ -8386,6 +9315,32 @@ var I18N = {
     'btn-chat-reset': 'Clear chat',
     'aria-chat-reset': 'Clear chat: removes only the chat and the conditions it set (your plan and form stay)',
     'chat-reset-done': 'Chat cleared. Your current plan and form are unchanged.',
+    'chat-edit-summary': 'Changed: {list}',
+    'chat-edit-removed': 'removed {n} ({d} {p})',
+    'chat-edit-added': 'added {n} ({d} {p}, {t})',
+    'chat-edit-moved': 'moved {n} to {d} {p} ({t})',
+    'chat-edit-replaced': '{d} {p}: {a} → {n}',
+    'chat-edit-retimed': '{n} on {d} now at {t}',
+    'chat-edit-failed': 'Not changed: {list}',
+    'chat-edit-fail-stale': 'the plan changed in the meantime',
+    'chat-edit-fail-cancelled': 'cancelled',
+    'chat-edit-fail-duplicate': 'already on that day',
+    'chat-edit-fail-kind': 'wrong kind of slot',
+    'chat-edit-fail-noop': 'already in that slot',
+    'chat-edit-fail-other': 'could not apply',
+    'chat-edit-nothing': 'Your plan was not changed.',
+    'btn-chat-edit-undo': '↩ Undo',
+    'aria-chat-edit-undo': 'Undo the change made from chat',
+    'chat-edit-undone': 'Undid the change made from chat.',
+    'chat-edit-undo-stale': 'The plan changed again after that, so it can\'t be undone here. Use ↩ Undo above the plan.',
+    'chat-edit-busy': 'A plan is being made. Choose after it\'s ready.',
+    'chat-regen-kept': 'Kept your edited plan as it is.',
+    'chat-edit-swapped': 'swapped {a} ({d} {p}) and {b} ({d2} {p2})',
+    'chat-edit-choice-cancelled': 'OK. I left your plan as it is.',
+    'confirm-chat-regen-pending': 'I took that as a new trip request, not an answer to the question above. Make a new plan now? (You can go back with ↩ Undo)',
+    'chat-regen-pending-kept': "Kept your plan. Pick one of the options above, or say 'cancel' to stop.",
+    'confirm-chat-regen-category': "A kind of place (like ramen or a café) can't go straight into one slot, so this needs a whole new plan with that condition. Make a new plan now? (You can go back with ↩ Undo)",
+    'chat-edit-choice-all': 'All ({n})',
     'aria-rec-tabs': 'Recommendation type',
     'plan-control-copy': 'Keeps your chosen flight and stay, and rebuilds only the plan.',
     'aria-undo': 'Undo (Ctrl+Z)',
@@ -8465,6 +9420,7 @@ var I18N = {
     'tours-popular': 'Popular tours & activities in {city}',
     'tours-loading': 'Loading tours for {city}…',
     'tour-klook': 'Klook tours',
+    'tour-kkday': 'KKday tours',
     'tour-viator': 'Viator tours',
     'wx-rain': '☔ Rain is expected on {n} day(s) of your trip. Bring an umbrella and plan some indoor spots.',
     'wx-cold': '❄️ Some days will be cold. Pack warm clothes.',
@@ -8781,6 +9737,12 @@ var I18N = {
     'book-flight': '✈ 予約',
     'skyscanner': 'Skyscanner',
     'kayak': 'Kayak',
+    'flight-other-sites': '他のサイトで見る',
+    'site-google-flights': 'Google フライト',
+    'site-naver-flights': 'NAVER航空券',
+    'stay-other-sites': '他の予約サイトで探す',
+    'site-google-hotels': 'Google ホテル',
+    'site-jalan': 'じゃらん',
     'move-up': '上へ',
     'move-down': '下へ',
     'route-calc': '🚃 経路交通費計算',
@@ -8928,6 +9890,32 @@ var I18N = {
     'btn-chat-reset': '会話をリセット',
     'aria-chat-reset': '会話をリセット：会話の記録と会話で決めた条件だけを消します（今の日程と条件欄はそのまま）',
     'chat-reset-done': '会話をリセットしました。今の日程と条件欄はそのままです。',
+    'chat-edit-summary': '変更点：{list}',
+    'chat-edit-removed': '{d}{p}の{n}を削除',
+    'chat-edit-added': '{d}{p}に{n}を追加（{t}）',
+    'chat-edit-moved': '{n}を{d}{p}へ移動（{t}）',
+    'chat-edit-replaced': '{d}{p}：{a}→{n}',
+    'chat-edit-retimed': '{d}の{n}を{t}開始に',
+    'chat-edit-failed': '変更できなかったもの：{list}',
+    'chat-edit-fail-stale': 'その間に日程が変わり見つからない',
+    'chat-edit-fail-cancelled': '取り消し',
+    'chat-edit-fail-duplicate': 'その日にすでにある',
+    'chat-edit-fail-kind': '枠の種類が合わない',
+    'chat-edit-fail-noop': 'すでにその枠にある',
+    'chat-edit-fail-other': '反映できない',
+    'chat-edit-nothing': '日程は変更していません。',
+    'btn-chat-edit-undo': '↩ 元に戻す',
+    'aria-chat-edit-undo': '会話での変更を元に戻す',
+    'chat-edit-undone': '会話での変更を元に戻しました。',
+    'chat-edit-undo-stale': 'そのあと日程がさらに変わったため、ここでは戻せません。日程の上の↩ 元に戻すを使ってください。',
+    'chat-edit-busy': 'プランを作成中のため、今は選べません。',
+    'chat-regen-kept': '手で直した日程をそのままにしました。',
+    'chat-edit-swapped': '{d}{p}の{a}と{d2}{p2}の{b}を入れ替え',
+    'chat-edit-choice-cancelled': 'わかりました。日程はそのままにします。',
+    'confirm-chat-regen-pending': '上の質問への答えではなく、新しいプランの依頼として受け取りました。今のプランを作り直しますか？（↩ 元に戻すで戻せます）',
+    'chat-regen-pending-kept': '日程はそのままにしました。上の選択肢から選ぶか、やめる場合は「キャンセル」と書いてください。',
+    'confirm-chat-regen-category': 'ラーメンやカフェのような種類は日程の1枠に直接入れられないため、この条件で日程全体を作り直す必要があります。今の日程を作り直しますか？（↩ 元に戻すで戻せます）',
+    'chat-edit-choice-all': 'すべて（{n}件）',
     'aria-rec-tabs': 'おすすめの種類',
     'plan-control-copy': '選んだ航空券・宿はそのままに、プランだけ作り直します。',
     'aria-undo': '元に戻す (Ctrl+Z)',
@@ -9007,6 +9995,7 @@ var I18N = {
     'tours-popular': '{city}の人気ツアー＆アクティビティ',
     'tours-loading': '{city}のツアーを読み込み中…',
     'tour-klook': 'Klookツアー',
+    'tour-kkday': 'KKdayツアー',
     'tour-viator': 'Viatorツアー',
     'wx-rain': '☔ 旅行中{n}日は雨の予報です。傘を忘れずに、屋内スポットも用意しましょう。',
     'wx-cold': '❄️ 寒い日があります。暖かい服を用意しましょう。',
@@ -9241,6 +10230,7 @@ function applyLanguage(lang) {
     if (typeof renderStayCards === 'function' && typeof stayResults !== 'undefined' && stayResults.length > 0) {
       renderStayCards();
     }
+    renderStaySiteLinks(); // 숙소 결과가 없거나 오류여도 다른 예약 사이트 링크는 새 언어로
     if (lastStayFilterOptions) {
       // 이미 고른 체크는 유지한다.
       var checkedAmenities = getCheckedValues('.stay-amenity-check');

@@ -445,7 +445,8 @@ function createBrowser({ html = '', fetchRoutes = {}, location = 'http://localho
     if (!innerJSON) innerJSON = vm.runInContext('JSON', ctx);
     return innerJSON.parse(text);
   };
-  // 경로별 가짜 응답: { status, body } 또는 (call) => { status, body } (요청 본문·순번에 따라 다르게 답할 때)
+  // 경로별 가짜 응답: { status, body } 또는 (call) => { status, body } (요청 본문·순번에 따라 다르게 답할 때).
+  // 같은 출처는 경로('/api/…'), 다른 출처는 전체 주소가 키다.
   function routeFor(pathname, call) {
     if (Object.prototype.hasOwnProperty.call(fetchRoutes, pathname)) {
       const r = fetchRoutes[pathname];
@@ -459,7 +460,9 @@ function createBrowser({ html = '', fetchRoutes = {}, location = 'http://localho
     // body: 문자열 본문(JSON)은 그대로 남긴다 → 테스트가 요청 필드(request·mustVisit·history 등)를 확인한다.
     const call = { url: u.href, path: u.pathname, search: u.search, method: String((init && init.method) || 'GET').toUpperCase(), sameOrigin: u.origin === new URL(location).origin, body: init && typeof init.body === 'string' ? init.body : null };
     env.fetchCalls.push(call);
-    const route = u.origin === new URL(location).origin ? routeFor(u.pathname, call) : { status: 200, body: {} };
+    // 다른 출처는 전체 주소 키(예: 'https://tiles.openfreemap.org/styles/liberty')가 있을 때만 그 응답, 아니면 빈 {}.
+    const route = u.origin === new URL(location).origin ? routeFor(u.pathname, call)
+      : (Object.prototype.hasOwnProperty.call(fetchRoutes, u.href) ? routeFor(u.href, call) : { status: 200, body: {} });
     const status = route.status || 200;
     const text = JSON.stringify(route.body === undefined ? {} : route.body);
     const response = {

@@ -27,13 +27,22 @@
  *   geminiModels:  { [모델 이름]: 위 gemini 값 } — 그 모델에만 다른 시나리오(나머지 모델은 gemini 값)
  *   geminiDelayMs: { [모델 이름]: ms } — 그만큼 늦게 답한다. 서버가 먼저 끊으면(시간 초과) 아무것도 보내지 않는다.
  *   travelpayouts: 'ok' | 'empty' | 'error'
+ *                  | 'nearby' (정확한 날짜(YYYY-MM-DD) 조회는 0건, 달(YYYY-MM) 조회만 결과: prices_for_dates는 그 달 15일·28일 189,000원,
+ *                    grouped_prices는 그 달 모든 날 175,000원(편도 요청에는 return_at이 붙은 왕복 운임 50,000원 1건을 섞는다))
+ *                  | 'nearby_grouped_error' ('nearby'와 같지만 grouped_prices만 500)
+ *                  | 'usd' (응답 currency 'usd', price 150) | 'rub' (응답 currency 'rub', price 15000)
+ *                  grouped_prices: data = { 'YYYY-MM-DD': 행 } ('ok'·'nearby'), 'empty'는 {}, 'error'는 500
+ *   travelpayoutsDelayMs: { grouped_prices?: ms, prices_for_dates?: ms } — 그 엔드포인트만 그만큼 늦게 답한다.
+ *                  서버가 먼저 끊으면(시간 초과) 아무것도 보내지 않는다.
  *   weather:       'ok' | 'hostile' (open-meteo 응답에 예상 밖 필드·HTML·잘못된 날짜를 섞음)
  *   fx:            'ok' | 'erapi_down' (open.er-api가 503 → 서버가 Frankfurter v2로 넘어가는지 본다)
  *   openai:        OpenAI 호환 Responses API(진짜 주소 api.groq.com/openai/v1·api.openai.com/v1은 net-guard가, 로컬 <mock>/openai/v1은 바로 여기로)
  *                  'ok' | 'error401' | 'error429' | 'error413' | 'error404' | 'error503'
  *                  | 'incomplete' (status incomplete, max_output_tokens) | 'bad_json' (JSON이 아닌 글) | 'short_days' (일정 날짜가 하나 모자람)
  *                  채팅 해석에는 chatScenarioJson('ok'면 'chat_ok')을, 일정에는 geminiItinerary와 같은 일정을 낸다.
+ *                  대화로 일정 고치기 해석(json_schema 이름 'itinerary_edit')에는 openaiEdit 값을 낸다.
  *   openaiModels:  { [모델 이름]: 위 openai 값 } — 그 모델에만 다른 시나리오
+ *   openaiEdit:    편집 해석 답 { kind: 'edit'|'regenerate'|'other', ops: [...] } (없으면 { kind: 'other', ops: [] })
  *   hotpepper:     ホットペッパー グルメサーチAPI(webservice.recruit.co.jp, net-guard가 돌려보냄)
  *                  'ok' | 'key_invalid'(results.error code 2000) | 'empty'(가게 0곳) | 'http500' | 'hostile'(http·다른 호스트 사진,
  *                  javascript: 가게 주소, HTML이 든 이름, 일본 밖 좌표, 같은 이름 두 번이 섞임)
@@ -593,9 +602,10 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
       let parsed = {};
       try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
       const model = String(parsed.model || '');
-      // 일정 요청은 json_schema 이름이 'itinerary'(채팅 해석은 'travel_chat_parser')
+      // 일정 요청은 json_schema 이름이 'itinerary'(채팅 해석은 'travel_chat_parser', 대화로 일정 고치기 해석은 'itinerary_edit')
       const isItinerary = parsed?.text?.format?.name === 'itinerary';
-      record({ kind: 'openai', host: oaHost, model, path: apiPath, method: req.method, headers, body: parsed, isItinerary });
+      const isEdit = parsed?.text?.format?.name === 'itinerary_edit';
+      record({ kind: 'openai', host: oaHost, model, path: apiPath, method: req.method, headers, body: parsed, isItinerary, isEdit });
       const scOa = (sc.openaiModels && sc.openaiModels[model]) || sc.openai;
       const fail = (status, message, type, code) => sendJson(res, status, { error: { message: `${message} (mock)`, type, code } });
       if (scOa === 'error401') return fail(401, 'Invalid API Key', 'invalid_request_error', 'invalid_api_key');
@@ -605,6 +615,8 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
       if (scOa === 'error503') return fail(503, 'Service Unavailable', 'internal_server_error', 'service_unavailable');
       if (scOa === 'incomplete') return sendJson(res, 200, openAiResponse(model, '{"summary":"잘린 응답","itinerary":[', 'incomplete', 'max_output_tokens'));
       if (scOa === 'bad_json') return sendJson(res, 200, openAiResponse(model, 'Sure! Here is your plan.'));
+      // 편집 해석: 테스트가 정한 답(scenario.openaiEdit, 없으면 '편집 아님')을 그대로 돌려준다
+      if (isEdit) return sendJson(res, 200, openAiResponse(model, JSON.stringify(sc.openaiEdit || { kind: 'other', ops: [] })));
       if (!isItinerary) return sendJson(res, 200, openAiResponse(model, JSON.stringify(chatScenarioJson(scOa === 'ok' ? 'chat_ok' : scOa))));
       // 일정: 사용자 메시지(JSON 문맥)의 days만큼(short_days면 하나 모자라게)
       let days = 2;
@@ -809,31 +821,71 @@ function createMockVendor({ port, host = '127.0.0.1' } = {}) {
     if (p.startsWith('/openai/v1/')) return openAiCompat(req, res, 'mock', p.slice('/openai/v1'.length), body, headers, sc);
 
     // ── Travelpayouts (Aviasales Data API v3) ──
-    if (req.method === 'GET' && p === '/aviasales/v3/prices_for_dates') {
-      record({ kind: 'travelpayouts', path: p, query: url.search, method: req.method, headers });
-      if (sc.travelpayouts === 'error') return sendJson(res, 500, { success: false, error: 'mock failure' });
-      if (sc.travelpayouts === 'empty') return sendJson(res, 200, { success: true, data: [], currency: 'krw' });
+    if (req.method === 'GET' && (p === '/aviasales/v3/prices_for_dates' || p === '/aviasales/v3/grouped_prices')) {
+      const grouped = p === '/aviasales/v3/grouped_prices';
+      record({ kind: 'travelpayouts', endpoint: grouped ? 'grouped_prices' : 'prices_for_dates', path: p, query: url.search, method: req.method, headers });
+      // 엔드포인트별 응답 지연(travelpayoutsDelayMs): 서버가 기다리다 끊으면(시간 초과) 아무것도 보내지 않는다.
+      const tpDelayMs = Number(sc.travelpayoutsDelayMs && sc.travelpayoutsDelayMs[grouped ? 'grouped_prices' : 'prices_for_dates']) || 0;
+      if (tpDelayMs > 0) {
+        let gone = false;
+        res.once('close', () => { gone = true; });
+        await new Promise((r) => setTimeout(r, tpDelayMs));
+        if (gone || res.destroyed || res.writableEnded) return undefined;
+      }
+      const tpSc = sc.travelpayouts;
+      if (tpSc === 'error' || (grouped && tpSc === 'nearby_grouped_error')) return sendJson(res, 500, { success: false, error: 'mock failure' });
+      if (tpSc === 'empty') return sendJson(res, 200, { success: true, data: grouped ? {} : [], currency: 'krw' });
       const dep = String(url.searchParams.get('departure_at') || '2026-05-01');
       const ret = String(url.searchParams.get('return_at') || '');
-      const depDate = /^\d{4}-\d{2}-\d{2}$/.test(dep) ? dep : `${dep}-15`;
-      const row = {
-        origin: url.searchParams.get('origin') || 'ICN',
-        destination: url.searchParams.get('destination') || 'NRT',
-        origin_airport: url.searchParams.get('origin') || 'ICN',
-        destination_airport: url.searchParams.get('destination') || 'NRT',
-        price: 189000,
-        airline: 'KE',
-        flight_number: '703',
-        departure_at: `${depDate}T09:05:00+09:00`,
-        transfers: 0,
-        return_transfers: 0,
-        duration: 145,
-        duration_to: 145,
-        duration_back: ret ? 150 : 0,
-        link: '/search/ICN0105NRT1'
+      const exactDate = /^\d{4}-\d{2}-\d{2}$/.test(dep);
+      const nearbyOnly = tpSc === 'nearby' || tpSc === 'nearby_grouped_error';
+      if (nearbyOnly && exactDate) return sendJson(res, 200, { success: true, data: grouped ? {} : [], currency: 'krw' });
+      const currency = tpSc === 'usd' ? 'usd' : (tpSc === 'rub' ? 'rub' : 'krw');
+      const basePrice = tpSc === 'usd' ? 150 : (tpSc === 'rub' ? 15000 : 189000);
+      const stayDays = ret ? 3 : 0;
+      const makeRow = (depDate, price, extra = {}) => {
+        const row = {
+          origin: url.searchParams.get('origin') || 'ICN',
+          destination: url.searchParams.get('destination') || 'NRT',
+          origin_airport: url.searchParams.get('origin') || 'ICN',
+          destination_airport: url.searchParams.get('destination') || 'NRT',
+          price,
+          airline: 'KE',
+          flight_number: '703',
+          departure_at: `${depDate}T09:05:00+09:00`,
+          transfers: 0,
+          return_transfers: 0,
+          duration: 145,
+          duration_to: 145,
+          duration_back: ret ? 150 : 0,
+          link: '/search/ICN0105NRT1',
+          ...extra
+        };
+        if (ret) {
+          const retDate = /^\d{4}-\d{2}-\d{2}$/.test(ret) ? ret
+            : (nearbyOnly ? new Date(Date.parse(`${depDate}T00:00:00Z`) + stayDays * 86400000).toISOString().slice(0, 10) : `${ret}-18`);
+          row.return_at = `${retDate}T18:00:00+09:00`;
+        }
+        return row;
       };
-      if (ret) row.return_at = `${/^\d{4}-\d{2}-\d{2}$/.test(ret) ? ret : `${ret}-18`}T18:00:00+09:00`;
-      return sendJson(res, 200, { success: true, data: [row], currency: 'krw' });
+      if (grouped) {
+        // 그 달의 모든 날(출발일마다 1건). 'nearby' 편도에는 왕복 운임(return_at 있음, 아주 쌈)을 하나 섞는다 → 서버가 걸러야 한다.
+        const month = dep.slice(0, 7);
+        const days = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0)).getUTCDate();
+        const data = {};
+        for (let d = 1; d <= days; d += 1) {
+          const date = `${month}-${String(d).padStart(2, '0')}`;
+          data[date] = makeRow(date, nearbyOnly ? 175000 : basePrice, { flight_number: '711' });
+        }
+        if (nearbyOnly && !ret) {
+          const leak = `${month}-10`;
+          data[leak] = makeRow(leak, 50000, { flight_number: '799', return_at: `${month}-14T18:00:00+09:00` });
+        }
+        return sendJson(res, 200, { success: true, data, currency });
+      }
+      const rows = exactDate ? [makeRow(dep, basePrice)]
+        : (nearbyOnly ? [makeRow(`${dep}-15`, basePrice), makeRow(`${dep}-28`, basePrice, { flight_number: '705' })] : [makeRow(`${dep}-15`, basePrice)]);
+      return sendJson(res, 200, { success: true, data: rows, currency });
     }
 
     record({ kind: 'unknownMockRoute', path: p, query: url.search, method: req.method, headers, body });

@@ -1,6 +1,6 @@
 {
  "version": 1,
- "generatedAt": "2026-10-02T19:00:48.506Z",
+ "generatedAt": "2026-10-03T08:15:50.583Z",
  "source": {
   "data": "Wikidata (CC0): items with coordinates near each city, query.wikidata.org wikibase:around; labels from Wikidata / Wikipedia titles",
   "photos": "Wikimedia Commons, free licenses only (credit: artist, license, filePage)",
@@ -298,26 +298,6 @@
      "artist": "掬茶"
     },
     {
-     "name": "아키타 대교",
-     "nameFrom": "translit",
-     "en": "Akita Bridge",
-     "ja": "秋田大橋",
-     "wikidata": "Q11595295",
-     "lat": 39.69097,
-     "lng": 140.0915,
-     "distKm": 3.2,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "아키타",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/5c/Akita_Ohashi_Bridge_spans_the_Omono_River.jpg/500px-Akita_Ohashi_Bridge_spans_the_Omono_River.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Akita_Ohashi_Bridge_spans_the_Omono_River.jpg",
-     "license": "CC BY-SA 3.0",
-     "artist": "掬茶"
-    },
-    {
      "name": "히토쓰모리 공원",
      "nameFrom": "translit",
      "en": "Hitotsumori Park",
@@ -340,10 +320,13 @@
      "artist": "掬茶"
     },
     {
-     "name": "지조우덴 유적",
-     "nameFrom": "translit",
+     "name": "지조덴 유적",
+     "nameFrom": "fix",
      "en": "Jizouden Site",
      "ja": "地蔵田遺跡",
+     "aliases": [
+      "지조우덴 유적"
+     ],
      "wikidata": "Q11424682",
      "lat": 39.65781,
      "lng": 140.15825,
@@ -619,6 +602,28 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Nibetu_sinrin_hakubutukan.jpg",
      "license": "CC BY-SA 3.0",
      "artist": "MWE"
+    },
+    {
+     "name": "아키타 간기지",
+     "nameFrom": "translit",
+     "en": "Akita Kangi-ji Temple",
+     "ja": "秋田歓喜寺",
+     "wikidata": "Q11545319",
+     "lat": 39.70372,
+     "lng": 140.16364,
+     "distKm": 5.5,
+     "sitelinks": 1,
+     "kind": "temple",
+     "category": "문화",
+     "stayMin": 60,
+     "bestTime": "09:00-11:00",
+     "area": "아키타시",
+     "areaEn": "Akita",
+     "areaJa": "秋田市",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7d/%E6%AD%93%E5%96%9C%E5%AF%BA.jpg/500px-%E6%AD%93%E5%96%9C%E5%AF%BA.jpg",
+     "filePage": "https://commons.wikimedia.org/wiki/File:%E6%AD%93%E5%96%9C%E5%AF%BA.jpg",
+     "license": "CC BY-SA 3.0",
+     "artist": "アルヴェ"
     },
     {
      "name": "아키타 다이헤이산",
@@ -1485,10 +1490,13 @@
      "artist": "Abasaa"
     },
     {
-     "name": "근대 아오모리 문학관",
-     "nameFrom": "translit",
+     "name": "아오모리현 근대 문학관",
+     "nameFrom": "fix",
      "en": "Museum of Modern Aomori Literature",
      "ja": "青森県近代文学館",
+     "aliases": [
+      "근대 아오모리 문학관"
+     ],
      "wikidata": "Q123515864",
      "lat": 40.79516,
      "lng": 140.73863,
@@ -2222,26 +2230,6 @@
      "artist": "そらみみ (Soramimi)"
     },
     {
-     "name": "가시이 가모메 대교",
-     "nameFrom": "kowiki",
-     "en": "Kashii Kamome Bridge",
-     "ja": "香椎かもめ大橋",
-     "wikidata": "Q10855023",
-     "lat": 33.64472,
-     "lng": 130.41139,
-     "distKm": 6.1,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "후쿠오카",
-     "image": null,
-     "filePage": null,
-     "license": null,
-     "artist": ""
-    },
-    {
      "name": "아부라산",
      "nameFrom": "translit",
      "en": "Mount Abura",
@@ -2282,6 +2270,28 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:K%C5%8Drokan_Ruins_1_J%C5%8Dnai_Ch%C5%AB%C5%8D-ku_Fukuoka_City_20221018.jpg",
      "license": "CC BY-SA 4.0",
      "artist": "Hirho"
+    },
+    {
+     "name": "이타즈케 유적",
+     "nameFrom": "translit",
+     "en": "Itazuke Site",
+     "ja": "板付遺跡",
+     "wikidata": "Q11532469",
+     "lat": 33.56547,
+     "lng": 130.45281,
+     "distKm": 5.5,
+     "sitelinks": 4,
+     "kind": "heritage",
+     "category": "문화",
+     "stayMin": 45,
+     "bestTime": "10:00-11:30",
+     "area": "이타즈케",
+     "areaEn": "Itazuke",
+     "areaJa": "板付",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/56/Itazuke_Ruins.jpg/500px-Itazuke_Ruins.jpg",
+     "filePage": "https://commons.wikimedia.org/wiki/File:Itazuke_Ruins.jpg",
+     "license": "CC BY-SA 3.0",
+     "artist": "Muyo"
     },
     {
      "name": "다카스산",
@@ -2748,26 +2758,6 @@
      "artist": "Decosu"
     },
     {
-     "name": "아즈마 다리",
-     "nameFrom": "fix",
-     "en": "Azuma Bridge",
-     "ja": "あづま橋",
-     "wikidata": "Q11257752",
-     "lat": 37.74522,
-     "lng": 140.45769,
-     "distKm": 1,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "후쿠시마",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8d/Arakawa_River_%28Fukushima_City%29.jpg/500px-Arakawa_River_%28Fukushima_City%29.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Arakawa_River_(Fukushima_City).jpg",
-     "license": "Public domain",
-     "artist": "上条ジョー"
-    },
-    {
      "name": "미야하타 유적",
      "nameFrom": "translit",
      "en": "Miyahata Site",
@@ -2990,10 +2980,13 @@
      "artist": "Snap55"
     },
     {
-     "name": "고하타노 오 스기",
-     "nameFrom": "translit",
+     "name": "고하타의 큰 삼나무",
+     "nameFrom": "fix",
      "en": "Kohata no O Sugi",
      "ja": "木幡の大スギ",
+     "aliases": [
+      "고하타노 오 스기"
+     ],
      "wikidata": "Q123255605",
      "lat": 37.62217,
      "lng": 140.57603,
@@ -3010,10 +3003,13 @@
      "artist": ""
     },
     {
-     "name": "아다치가하라 후루사토무라",
-     "nameFrom": "translit",
+     "name": "아다치가하라 후루사토 마을",
+     "nameFrom": "fix",
      "en": "Adachigahara Furusatomura",
      "ja": "安達ヶ原ふるさと村",
+     "aliases": [
+      "아다치가하라 후루사토무라"
+     ],
      "wikidata": "Q65261124",
      "lat": 37.59358,
      "lng": 140.46381,
@@ -3160,6 +3156,28 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Stele_of_Omori_Castle_220403.jpg",
      "license": "CC BY-SA 4.0",
      "artist": "Yauchi"
+    },
+    {
+     "name": "요센지",
+     "nameFrom": "translit",
+     "en": "Yōsen-ji",
+     "ja": "陽泉寺",
+     "wikidata": "Q11658801",
+     "lat": 37.72603,
+     "lng": 140.41497,
+     "distKm": 5,
+     "sitelinks": 2,
+     "kind": "temple",
+     "category": "문화",
+     "stayMin": 60,
+     "bestTime": "09:00-11:00",
+     "area": "후쿠시마시",
+     "areaEn": "Fukushima",
+     "areaJa": "福島市",
+     "image": null,
+     "filePage": null,
+     "license": null,
+     "artist": ""
     },
     {
      "name": "아즈마코후지",
@@ -3425,10 +3443,13 @@
      "artist": "掬茶"
     },
     {
-     "name": "신슈 오타니하 하코다테 베쓰인",
-     "nameFrom": "translit",
+     "name": "신슈 오타니파 하코다테 별원",
+     "nameFrom": "fix",
      "en": "Shinshū Ōtani-ha Hakodate Betsu-in Temple",
      "ja": "真宗大谷派函館別院",
+     "aliases": [
+      "신슈 오타니하 하코다테 베쓰인"
+     ],
      "wikidata": "Q285602",
      "lat": 41.76301,
      "lng": 140.71375,
@@ -3536,10 +3557,13 @@
      "artist": "Yauchi"
     },
     {
-     "name": "나카지마 렌바이",
-     "nameFrom": "translit",
+     "name": "나카지마 렌바이 시장",
+     "nameFrom": "fix",
      "en": "Nakajima Renbai",
      "ja": "中島廉売",
+     "aliases": [
+      "나카지마 렌바이"
+     ],
      "wikidata": "Q11364487",
      "lat": 41.78148,
      "lng": 140.74364,
@@ -3690,10 +3714,13 @@
      "artist": "Towacoco"
     },
     {
-     "name": "혼간지 하코다테 베쓰인",
-     "nameFrom": "translit",
+     "name": "혼간지 하코다테 별원",
+     "nameFrom": "fix",
      "en": "Honganji hakodate betsu-in Temple",
      "ja": "本願寺函館別院",
+     "aliases": [
+      "혼간지 하코다테 베쓰인"
+     ],
      "wikidata": "Q109597107",
      "lat": 41.76374,
      "lng": 140.72302,
@@ -4074,10 +4101,13 @@
      "artist": "663highland"
     },
     {
-     "name": "다카무라 산소",
-     "nameFrom": "translit",
+     "name": "다카무라 산장",
+     "nameFrom": "fix",
      "en": "Takamura Sansō",
      "ja": "高村山荘",
+     "aliases": [
+      "다카무라 산소"
+     ],
      "wikidata": "Q11670235",
      "lat": 39.38786,
      "lng": 141.00431,
@@ -4231,10 +4261,13 @@
      "artist": "Towacoco"
     },
     {
-     "name": "쇼겐인노 사카사 가시와",
-     "nameFrom": "translit",
+     "name": "쇼겐인의 사카사 떡갈나무",
+     "nameFrom": "fix",
      "en": "Shogen-in no sakasa gashiwa",
      "ja": "勝源院の逆ガシワ",
+     "aliases": [
+      "쇼겐인노 사카사 가시와"
+     ],
      "wikidata": "Q114774790",
      "lat": 39.56,
      "lng": 141.16583,
@@ -4940,10 +4973,13 @@
      "artist": "Mnd"
     },
     {
-     "name": "시라카미샤 신사",
-     "nameFrom": "translit",
+     "name": "시라카미 신사",
+     "nameFrom": "fix",
      "en": "Shirakami-sha Shrine",
      "ja": "白神社",
+     "aliases": [
+      "시라카미샤 신사"
+     ],
      "wikidata": "Q11580269",
      "lat": 34.39044,
      "lng": 132.45639,
@@ -5050,10 +5086,13 @@
      "artist": "Chax2"
     },
     {
-     "name": "후데노사토 고보",
-     "nameFrom": "translit",
+     "name": "후데노사토 공방",
+     "nameFrom": "fix",
      "en": "Fudenosato Kōbō",
      "ja": "筆の里工房",
+     "aliases": [
+      "후데노사토 고보"
+     ],
      "wikidata": "Q11602688",
      "lat": 34.34272,
      "lng": 132.57535,
@@ -6030,10 +6069,13 @@
      "artist": "Maytake"
     },
     {
-     "name": "도진바카",
-     "nameFrom": "translit",
+     "name": "도진 묘",
+     "nameFrom": "fix",
      "en": "Tōjin-baka",
      "ja": "唐人墓",
+     "aliases": [
+      "도진바카"
+     ],
      "wikidata": "Q10922512",
      "lat": 24.36572,
      "lng": 124.11325,
@@ -6184,28 +6226,6 @@
      "artist": "Syced"
     },
     {
-     "name": "나구라 다리",
-     "nameFrom": "translit",
-     "en": "Nagura Bridge",
-     "ja": "名蔵橋",
-     "wikidata": "Q11415551",
-     "lat": 24.40227,
-     "lng": 124.14103,
-     "distKm": 7,
-     "sitelinks": 1,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "이시가키시",
-     "areaEn": "Ishigaki",
-     "areaJa": "石垣市",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/72/Ishigaki_nagura_amparu.jpg/500px-Ishigaki_nagura_amparu.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Ishigaki_nagura_amparu.jpg",
-     "license": "CC BY-SA 3.0",
-     "artist": "Paipateroma"
-    },
-    {
      "name": "이시가키 하마지마섬",
      "nameFrom": "translit",
      "en": "Ishigaki Hamajima",
@@ -6310,6 +6330,28 @@
      "area": "이시가키시",
      "areaEn": "Ishigaki",
      "areaJa": "石垣市",
+     "image": null,
+     "filePage": null,
+     "license": null,
+     "artist": ""
+    },
+    {
+     "name": "야라부다케",
+     "nameFrom": "translit",
+     "en": "Yarabu-dake",
+     "ja": "屋良部岳",
+     "wikidata": "Q31686036",
+     "lat": 24.43944,
+     "lng": 124.08636,
+     "distKm": 13,
+     "sitelinks": 1,
+     "kind": "mountain",
+     "category": "자연",
+     "stayMin": 150,
+     "bestTime": "09:00-12:00",
+     "area": "오키나와현",
+     "areaEn": "Okinawa Prefecture",
+     "areaJa": "沖縄県",
      "image": null,
      "filePage": null,
      "license": null,
@@ -7750,10 +7792,13 @@
      "artist": "Sakoppi"
     },
     {
-     "name": "혼간지 가고시마베쓰인",
-     "nameFrom": "translit",
+     "name": "혼간지 가고시마 별원",
+     "nameFrom": "fix",
      "en": "Hongan-ji Kagoshima-betsu-in Temple",
      "ja": "本願寺鹿児島別院",
+     "aliases": [
+      "혼간지 가고시마베쓰인"
+     ],
      "wikidata": "Q106836673",
      "lat": 31.59394,
      "lng": 130.55498,
@@ -8111,10 +8156,13 @@
      "artist": "MathieuMD"
     },
     {
-     "name": "도가타노 시노키",
-     "nameFrom": "translit",
+     "name": "도가타의 모밀잣밤나무",
+     "nameFrom": "fix",
      "en": "Dōgata no Shiinoki",
      "ja": "堂形のシイノキ",
+     "aliases": [
+      "도가타노 시노키"
+     ],
      "wikidata": "Q111585833",
      "lat": 36.56217,
      "lng": 136.65783,
@@ -8151,10 +8199,13 @@
      "artist": "663highland"
     },
     {
-     "name": "세이부 료쿠치 공원",
-     "nameFrom": "translit",
+     "name": "세이부 녹지 공원",
+     "nameFrom": "fix",
      "en": "Seibu Ryokuchi Park",
      "ja": "西部緑地公園",
+     "aliases": [
+      "세이부 료쿠치 공원"
+     ],
      "wikidata": "Q11629615",
      "lat": 36.57494,
      "lng": 136.60236,
@@ -8173,10 +8224,13 @@
      "artist": "Hirorinmsa"
     },
     {
-     "name": "겐민카이힌 공원",
-     "nameFrom": "translit",
+     "name": "겐민 해변 공원",
+     "nameFrom": "fix",
      "en": "Kenminkaihin Park",
      "ja": "健民海浜公園",
+     "aliases": [
+      "겐민카이힌 공원"
+     ],
      "wikidata": "Q11585941",
      "lat": 36.59333,
      "lng": 136.58306,
@@ -8411,10 +8465,13 @@
      "artist": "名古屋太郎"
     },
     {
-     "name": "혼간지 가나자와 베쓰인",
-     "nameFrom": "translit",
+     "name": "혼간지 가나자와 별원",
+     "nameFrom": "fix",
      "en": "Hongan-ji Kanazawa Betsu-in Temple",
      "ja": "本願寺金沢別院",
+     "aliases": [
+      "혼간지 가나자와 베쓰인"
+     ],
      "wikidata": "Q106836680",
      "lat": 36.57738,
      "lng": 136.65556,
@@ -9564,26 +9621,24 @@
      "artist": "663highland"
     },
     {
-     "name": "히가시 고베 대교",
+     "name": "에게노야마 유적",
      "nameFrom": "translit",
-     "en": "Higashi Kobe Bridge",
-     "ja": "東神戸大橋",
-     "wikidata": "Q5753964",
-     "lat": 34.70917,
-     "lng": 135.29222,
-     "distKm": 9.1,
-     "sitelinks": 4,
+     "en": "Egenoyama Site",
+     "ja": "会下山遺跡",
+     "wikidata": "Q11381184",
+     "lat": 34.74081,
+     "lng": 135.29114,
+     "distKm": 10.4,
+     "sitelinks": 3,
      "kind": "heritage",
      "category": "문화",
      "stayMin": 45,
      "bestTime": "10:00-11:30",
-     "area": "효고현",
-     "areaEn": "Hyōgo Prefecture",
-     "areaJa": "兵庫県",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a3/Hanshin_Expressway.jpg/500px-Hanshin_Expressway.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Hanshin_Expressway.jpg",
-     "license": "CC BY 3.0",
-     "artist": "Studio IRONY"
+     "area": "고베",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Egenoyamaiseki1.jpg/500px-Egenoyamaiseki1.jpg",
+     "filePage": "https://commons.wikimedia.org/wiki/File:Egenoyamaiseki1.jpg",
+     "license": "CC BY-SA 3.0",
+     "artist": "KENPEI"
     },
     {
      "name": "고시미즈성",
@@ -10118,10 +10173,13 @@
      "artist": "Naokijp"
     },
     {
-     "name": "고치 쇼우류지",
-     "nameFrom": "translit",
+     "name": "고치 쇼류지",
+     "nameFrom": "fix",
      "en": "Kochi Shouryū-ji Temple",
      "ja": "高知青龍寺",
+     "aliases": [
+      "고치 쇼우류지"
+     ],
      "wikidata": "Q11662839",
      "lat": 33.426,
      "lng": 133.45081,
@@ -10182,28 +10240,6 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Kyu-Yamanouchike_shimoyashiki_nagaya01s3200.jpg",
      "license": "CC BY 2.5",
      "artist": "663highland"
-    },
-    {
-     "name": "우라토 대교",
-     "nameFrom": "translit",
-     "en": "Urato Bridge",
-     "ja": "浦戸大橋",
-     "wikidata": "Q11558256",
-     "lat": 33.50008,
-     "lng": 133.56794,
-     "distKm": 7.5,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "고치시",
-     "areaEn": "Kōchi-shi",
-     "areaJa": "高知市",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/31/Uradobridge.jpg/500px-Uradobridge.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Uradobridge.jpg",
-     "license": "Public domain",
-     "artist": "Sawaman18"
     },
     {
      "name": "히에 유적",
@@ -10270,6 +10306,31 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Kouyazi01.jpg",
      "license": "CC BY-SA 4.0",
      "artist": "Dokudami"
+    },
+    {
+     "name": "우시오에 텐만구",
+     "nameFrom": "translit",
+     "en": "Ushioe Tenmangū",
+     "ja": "潮江天満宮",
+     "aliases": [
+      "우시오에 덴만구"
+     ],
+     "wikidata": "Q11565717",
+     "lat": 33.55321,
+     "lng": 133.53451,
+     "distKm": 0.8,
+     "sitelinks": 2,
+     "kind": "shrine",
+     "category": "문화",
+     "stayMin": 60,
+     "bestTime": "09:30-11:00",
+     "area": "고치시",
+     "areaEn": "Kōchi-shi",
+     "areaJa": "高知市",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/7/7a/Ushioe-tenmangu_Haiden_and_rope_torii.jpg/500px-Ushioe-tenmangu_Haiden_and_rope_torii.jpg",
+     "filePage": "https://commons.wikimedia.org/wiki/File:Ushioe-tenmangu_Haiden_and_rope_torii.jpg",
+     "license": "CC BY 2.5",
+     "artist": "663highland"
     }
    ]
   },
@@ -10306,10 +10367,13 @@
      "artist": "MK Products"
     },
     {
-     "name": "레이간도",
-     "nameFrom": "translit",
+     "name": "레이간 동굴",
+     "nameFrom": "fix",
      "en": "Reigandō",
      "ja": "霊巌洞",
+     "aliases": [
+      "레이간도"
+     ],
      "wikidata": "Q1856438",
      "lat": 32.82,
      "lng": 130.62139,
@@ -10658,10 +10722,13 @@
      "artist": ""
     },
     {
-     "name": "자쿠신산노 구스",
-     "nameFrom": "translit",
+     "name": "자쿠신의 녹나무",
+     "nameFrom": "fix",
      "en": "Jakushin-san no Kusu",
      "ja": "寂心さんのクス",
+     "aliases": [
+      "자쿠신산노 구스"
+     ],
      "wikidata": "Q17213982",
      "lat": 32.87189,
      "lng": 130.68472,
@@ -12501,26 +12568,6 @@
      "artist": "663highland"
     },
     {
-     "name": "이네코키 다리",
-     "nameFrom": "translit",
-     "en": "Inekoki Bridge",
-     "ja": "稲核橋",
-     "wikidata": "Q11596666",
-     "lat": 36.16847,
-     "lng": 137.77264,
-     "distKm": 19.5,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "마쓰모토",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/68/Inekoki-bashi_bridges.jpg/500px-Inekoki-bashi_bridges.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Inekoki-bashi_bridges.jpg",
-     "license": "CC BY-SA 3.0",
-     "artist": "Qurren"
-    },
-    {
      "name": "마쓰모토시 박물관",
      "nameFrom": "translit",
      "en": "Matsumoto City Museum",
@@ -12584,10 +12631,13 @@
      "artist": "Saigen Jiro"
     },
     {
-     "name": "나가노켄고코쿠 신사",
+     "name": "나가노 현 고코쿠 신사",
      "nameFrom": "translit",
      "en": "Nagano Gokoku Shrine",
      "ja": "長野縣護國神社",
+     "aliases": [
+      "나가노켄고코쿠 신사"
+     ],
      "wikidata": "Q11654831",
      "lat": 36.25802,
      "lng": 137.97808,
@@ -12646,6 +12696,28 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:%E5%B0%82%E7%A8%B1%E5%AF%BA_-_panoramio_(1).jpg",
      "license": "CC BY 3.0",
      "artist": "くろふね"
+    },
+    {
+     "name": "마쓰모토 안요지",
+     "nameFrom": "translit",
+     "en": "Matsumoto An'yo-ji Temple",
+     "ja": "松本安養寺",
+     "wikidata": "Q11451684",
+     "lat": 36.21242,
+     "lng": 137.88931,
+     "distKm": 7.9,
+     "sitelinks": 2,
+     "kind": "temple",
+     "category": "문화",
+     "stayMin": 60,
+     "bestTime": "09:00-11:00",
+     "area": "마쓰모토시",
+     "areaEn": "Matsumoto",
+     "areaJa": "松本市",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Anyoji.JPG/500px-Anyoji.JPG",
+     "filePage": "https://commons.wikimedia.org/wiki/File:Anyoji.JPG",
+     "license": "CC BY-SA 3.0",
+     "artist": "Mountainlife"
     },
     {
      "name": "오바스테산",
@@ -13602,10 +13674,13 @@
      "artist": "国土地理院"
     },
     {
-     "name": "히가시모코토 뉴라쿠관",
-     "nameFrom": "translit",
+     "name": "히가시모코토 유제품관",
+     "nameFrom": "fix",
      "en": "Higashimokoto Nyurakukan",
      "ja": "ひがしもこと乳酪館",
+     "aliases": [
+      "히가시모코토 뉴라쿠관"
+     ],
      "wikidata": "Q22337430",
      "lat": 43.83836,
      "lng": 144.28492,
@@ -13863,10 +13938,13 @@
      "artist": "Wakkubox"
     },
     {
-     "name": "오다나이 누마",
-     "nameFrom": "translit",
+     "name": "오다나이누마",
+     "nameFrom": "fix",
      "en": "Odanai Numa",
      "ja": "小田内沼",
+     "aliases": [
+      "오다나이 누마"
+     ],
      "wikidata": "Q136504606",
      "lat": 40.73836,
      "lng": 141.36797,
@@ -15530,26 +15608,26 @@
      "artist": "ぱちょぴ（投稿者）撮影"
     },
     {
-     "name": "메가미 대교",
+     "name": "가미노시마 교회",
      "nameFrom": "translit",
-     "en": "Megami Bridge",
-     "ja": "女神大橋",
-     "wikidata": "Q11446565",
-     "lat": 32.72139,
-     "lng": 129.84953,
-     "distKm": 4.2,
+     "en": "Kaminoshima Church",
+     "ja": "神ノ島教会",
+     "wikidata": "Q11588646",
+     "lat": 32.7185,
+     "lng": 129.82641,
+     "distKm": 6,
      "sitelinks": 3,
-     "kind": "heritage",
+     "kind": "church",
      "category": "문화",
      "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "나가사키현",
-     "areaEn": "Nagasaki Prefecture",
-     "areaJa": "長崎県",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/Megami_Bridge_1020753_2.jpg/500px-Megami_Bridge_1020753_2.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Megami_Bridge_1020753_2.jpg",
-     "license": "CC BY 2.0",
-     "artist": "Hiroshi Nakai"
+     "bestTime": "13:00-14:30",
+     "area": "나가사키시",
+     "areaEn": "Nagasaki",
+     "areaJa": "長崎市",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e0/Kaminoshima_Church_20221201.jpg/500px-Kaminoshima_Church_20221201.jpg",
+     "filePage": "https://commons.wikimedia.org/wiki/File:Kaminoshima_Church_20221201.jpg",
+     "license": "CC BY-SA 4.0",
+     "artist": "Marine-Blue"
     }
    ]
   },
@@ -15788,50 +15866,6 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Suemori_castle_hori2.JPG",
      "license": "CC BY-SA 3.0",
      "artist": "上条ジョー"
-    },
-    {
-     "name": "메이코니시 대교",
-     "nameFrom": "kowiki",
-     "en": "Meiko Nishi Ohashi roadway bridges",
-     "ja": "名港西大橋",
-     "wikidata": "Q11415494",
-     "lat": 35.0518,
-     "lng": 136.835,
-     "distKm": 13.9,
-     "sitelinks": 5,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "나고야시",
-     "areaEn": "Nagoya",
-     "areaJa": "名古屋市",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Meiko_Nishi_Bridges-3.jpg/500px-Meiko_Nishi_Bridges-3.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Meiko_Nishi_Bridges-3.jpg",
-     "license": "CC BY-SA 3.0",
-     "artist": "Gnsin"
-    },
-    {
-     "name": "메이코추오 대교",
-     "nameFrom": "kowiki",
-     "en": "Meiko-Chuo Bridge",
-     "ja": "名港中央大橋",
-     "wikidata": "Q11415490",
-     "lat": 35.05344,
-     "lng": 136.85988,
-     "distKm": 13.2,
-     "sitelinks": 4,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "나고야시",
-     "areaEn": "Nagoya",
-     "areaJa": "名古屋市",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/29/Meiko_Central_Bridge_20160904A.jpg/500px-Meiko_Central_Bridge_20160904A.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Meiko_Central_Bridge_20160904A.jpg",
-     "license": "Public domain",
-     "artist": "Oka21000"
     },
     {
      "name": "쓰시마 신사",
@@ -16127,6 +16161,48 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Nagoya_City_Museum1.jpg",
      "license": "CC BY-SA 3.0",
      "artist": "At by At"
+    },
+    {
+     "name": "나고야 고쇼지",
+     "nameFrom": "translit",
+     "en": "Nagoya Kōshō-ji Temple",
+     "ja": "名古屋興正寺",
+     "wikidata": "Q3201314",
+     "lat": 35.14056,
+     "lng": 136.9625,
+     "distKm": 8.1,
+     "sitelinks": 5,
+     "kind": "temple",
+     "category": "문화",
+     "stayMin": 60,
+     "bestTime": "09:00-11:00",
+     "area": "나고야",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/4d/Koshoji_Yagoto_Nagoya_3.JPG/500px-Koshoji_Yagoto_Nagoya_3.JPG",
+     "filePage": "https://commons.wikimedia.org/wiki/File:Koshoji_Yagoto_Nagoya_3.JPG",
+     "license": "CC BY-SA 3.0",
+     "artist": "Gryffindor"
+    },
+    {
+     "name": "마마 간논",
+     "nameFrom": "fix",
+     "en": "Mama Kannon Temple",
+     "ja": "間々観音",
+     "wikidata": "Q11655359",
+     "lat": 35.29501,
+     "lng": 136.90946,
+     "distKm": 14,
+     "sitelinks": 5,
+     "kind": "temple",
+     "category": "문화",
+     "stayMin": 60,
+     "bestTime": "09:00-11:00",
+     "area": "고마키시",
+     "areaEn": "Komaki",
+     "areaJa": "小牧市",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/b/be/Mama_Kannon_ac_%281%29.jpg/500px-Mama_Kannon_ac_%281%29.jpg",
+     "filePage": "https://commons.wikimedia.org/wiki/File:Mama_Kannon_ac_(1).jpg",
+     "license": "CC BY-SA 4.0",
+     "artist": "Asturio Cantabrio"
     }
    ]
   },
@@ -16700,10 +16776,13 @@
      "imageNote": "bath photo not reviewed"
     },
     {
-     "name": "미나베 바이린",
-     "nameFrom": "translit",
+     "name": "미나베 매화림",
+     "nameFrom": "fix",
      "en": "Minabe Bairin",
      "ja": "南部梅林",
+     "aliases": [
+      "미나베 바이린"
+     ],
      "wikidata": "Q11408564",
      "lat": 33.78322,
      "lng": 135.34397,
@@ -16720,10 +16799,13 @@
      "artist": "663highland"
     },
     {
-     "name": "우메 신코관",
-     "nameFrom": "translit",
+     "name": "미나베 매실 진흥관",
+     "nameFrom": "fix",
      "en": "Ume Shinkokan",
      "ja": "うめ振興館",
+     "aliases": [
+      "우메 신코관"
+     ],
      "wikidata": "Q11260764",
      "lat": 33.79069,
      "lng": 135.32708,
@@ -16875,10 +16957,13 @@
      "artist": "Nankou Oronain (as36…"
     },
     {
-     "name": "히키이와군",
-     "nameFrom": "translit",
+     "name": "히키 바위군",
+     "nameFrom": "fix",
      "en": "Hikiiwa-gun",
      "ja": "ひき岩群",
+     "aliases": [
+      "히키이와군"
+     ],
      "wikidata": "Q11276147",
      "lat": 33.76272,
      "lng": 135.37533,
@@ -17147,31 +17232,6 @@
      "artist": "Strelitziaaugusta"
     },
     {
-     "name": "지토세 대교",
-     "nameFrom": "translit",
-     "en": "Chitose-o-hashi",
-     "ja": "千歳大橋",
-     "aliases": [
-      "지토세오하시"
-     ],
-     "wikidata": "Q11405635",
-     "lat": 37.90574,
-     "lng": 139.02298,
-     "distKm": 1.6,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "니가타시",
-     "areaEn": "Niigata",
-     "areaJa": "新潟市",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/ca/%E5%8D%83%E6%AD%B3%E5%A4%A7%E6%A9%8B.JPG/500px-%E5%8D%83%E6%AD%B3%E5%A4%A7%E6%A9%8B.JPG",
-     "filePage": "https://commons.wikimedia.org/wiki/File:%E5%8D%83%E6%AD%B3%E5%A4%A7%E6%A9%8B.JPG",
-     "license": "CC BY-SA 3.0",
-     "artist": "Altomarina"
-    },
-    {
      "name": "니가타시 역사 박물관",
      "nameFrom": "translit",
      "en": "Niigata City History Museum",
@@ -17196,6 +17256,28 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:160716_Niigata_City_History_Museum_Main_Building_Niigata_Japan01bs5.jpg",
      "license": "CC BY 2.5",
      "artist": "663highland"
+    },
+    {
+     "name": "후루쓰 하치만야마 유적",
+     "nameFrom": "fix",
+     "en": "Furutsu Hachimanyama Site",
+     "ja": "古津八幡山遺跡",
+     "wikidata": "Q11411419",
+     "lat": 37.76397,
+     "lng": 139.11456,
+     "distKm": 18.3,
+     "sitelinks": 3,
+     "kind": "heritage",
+     "category": "문화",
+     "stayMin": 45,
+     "bestTime": "10:00-11:30",
+     "area": "아키하구",
+     "areaEn": "Akiha-ku",
+     "areaJa": "秋葉区",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/%E5%8F%A4%E6%B4%A5%E5%85%AB%E5%B9%A1%E5%B1%B1%E9%81%BA%E8%B7%A1%E5%89%8D%E6%96%B9%E5%BE%8C%E6%96%B9%E5%BD%A2%E5%91%A8%E6%BA%9D%E5%A2%93.JPG/500px-%E5%8F%A4%E6%B4%A5%E5%85%AB%E5%B9%A1%E5%B1%B1%E9%81%BA%E8%B7%A1%E5%89%8D%E6%96%B9%E5%BE%8C%E6%96%B9%E5%BD%A2%E5%91%A8%E6%BA%9D%E5%A2%93.JPG",
+     "filePage": "https://commons.wikimedia.org/wiki/File:%E5%8F%A4%E6%B4%A5%E5%85%AB%E5%B9%A1%E5%B1%B1%E9%81%BA%E8%B7%A1%E5%89%8D%E6%96%B9%E5%BE%8C%E6%96%B9%E5%BD%A2%E5%91%A8%E6%BA%9D%E5%A2%93.JPG",
+     "license": "CC BY 4.0",
+     "artist": "小池 隆"
     },
     {
      "name": "니가타 고코쿠 신사",
@@ -17395,28 +17477,6 @@
      "filePage": null,
      "license": null,
      "artist": ""
-    },
-    {
-     "name": "후루쓰 하치만야마 유적",
-     "nameFrom": "fix",
-     "en": "Furutsu Hachimanyama Site",
-     "ja": "古津八幡山遺跡",
-     "wikidata": "Q11411419",
-     "lat": 37.76397,
-     "lng": 139.11456,
-     "distKm": 18.3,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "아키하구",
-     "areaEn": "Akiha-ku",
-     "areaJa": "秋葉区",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/90/%E5%8F%A4%E6%B4%A5%E5%85%AB%E5%B9%A1%E5%B1%B1%E9%81%BA%E8%B7%A1%E5%89%8D%E6%96%B9%E5%BE%8C%E6%96%B9%E5%BD%A2%E5%91%A8%E6%BA%9D%E5%A2%93.JPG/500px-%E5%8F%A4%E6%B4%A5%E5%85%AB%E5%B9%A1%E5%B1%B1%E9%81%BA%E8%B7%A1%E5%89%8D%E6%96%B9%E5%BE%8C%E6%96%B9%E5%BD%A2%E5%91%A8%E6%BA%9D%E5%A2%93.JPG",
-     "filePage": "https://commons.wikimedia.org/wiki/File:%E5%8F%A4%E6%B4%A5%E5%85%AB%E5%B9%A1%E5%B1%B1%E9%81%BA%E8%B7%A1%E5%89%8D%E6%96%B9%E5%BE%8C%E6%96%B9%E5%BD%A2%E5%91%A8%E6%BA%9D%E5%A2%93.JPG",
-     "license": "CC BY 4.0",
-     "artist": "小池 隆"
     },
     {
      "name": "니쓰 기념관",
@@ -17632,28 +17692,6 @@
      "artist": "663highland"
     },
     {
-     "name": "도카치 대교",
-     "nameFrom": "translit",
-     "en": "Tokachi Ohashi Bridge",
-     "ja": "十勝大橋",
-     "wikidata": "Q22119627",
-     "lat": 42.9375,
-     "lng": 143.20222,
-     "distKm": 1.6,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "오토후케정",
-     "areaEn": "Otofuke",
-     "areaJa": "音更町",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/5/58/%E5%8D%81%E5%8B%9D%E5%A4%A7%E6%A9%8B%EF%BC%88Tokachiohhashi%EF%BC%89_-_panoramio.jpg/500px-%E5%8D%81%E5%8B%9D%E5%A4%A7%E6%A9%8B%EF%BC%88Tokachiohhashi%EF%BC%89_-_panoramio.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:%E5%8D%81%E5%8B%9D%E5%A4%A7%E6%A9%8B%EF%BC%88Tokachiohhashi%EF%BC%89_-_panoramio.jpg",
-     "license": "CC BY 3.0",
-     "artist": "pakku"
-    },
-    {
      "name": "오비히로 동물원",
      "nameFrom": "translit",
      "en": "Obihiro Zoo",
@@ -17762,10 +17800,13 @@
      "artist": "Towacoco"
     },
     {
-     "name": "오비히로노 모리",
-     "nameFrom": "translit",
+     "name": "오비히로 숲",
+     "nameFrom": "fix",
      "en": "Obihiro no Mori",
      "ja": "帯広の森",
+     "aliases": [
+      "오비히로노 모리"
+     ],
      "wikidata": "Q20043558",
      "lat": 42.88528,
      "lng": 143.15194,
@@ -17784,10 +17825,13 @@
      "artist": ""
     },
     {
-     "name": "혼간지 오비히로베쓰인",
-     "nameFrom": "translit",
+     "name": "혼간지 오비히로 별원",
+     "nameFrom": "fix",
      "en": "Hongan-ji Obihiro-betsu-in Temple",
      "ja": "本願寺帯広別院",
+     "aliases": [
+      "혼간지 오비히로베쓰인"
+     ],
      "wikidata": "Q119927205",
      "lat": 42.92723,
      "lng": 143.20864,
@@ -18177,10 +18221,13 @@
      "artist": "掬茶"
     },
     {
-     "name": "다카노스 주오 공원",
-     "nameFrom": "translit",
+     "name": "다카노스 중앙 공원",
+     "nameFrom": "fix",
      "en": "Takanosu Chuo Park",
      "ja": "鷹巣中央公園",
+     "aliases": [
+      "다카노스 주오 공원"
+     ],
      "wikidata": "Q53808041",
      "lat": 40.215,
      "lng": 140.38,
@@ -18389,10 +18436,13 @@
      "artist": ""
     },
     {
-     "name": "오다이코노 야카타",
-     "nameFrom": "translit",
+     "name": "오다이코관",
+     "nameFrom": "fix",
      "en": "Ōdaiko no Yakata",
      "ja": "大太鼓の館",
+     "aliases": [
+      "오다이코노 야카타"
+     ],
      "wikidata": "Q136647394",
      "lat": 40.25104,
      "lng": 140.37619,
@@ -18936,10 +18986,13 @@
      "artist": "JKT-c"
     },
     {
-     "name": "기지마 고겐 공원",
-     "nameFrom": "translit",
+     "name": "기지마 고원 파크",
+     "nameFrom": "fix",
      "en": "Kijima Kōgen Park",
      "ja": "城島高原パーク",
+     "aliases": [
+      "기지마 고겐 공원"
+     ],
      "wikidata": "Q3196520",
      "lat": 33.2644,
      "lng": 131.427,
@@ -19907,10 +19960,13 @@
      "artist": "Copyright © National Land Image Information (Color Aerial Photographs), Ministry of Land, Infrastru…"
     },
     {
-     "name": "만토미 도다이지 가요 유적",
-     "nameFrom": "translit",
+     "name": "만토미 도다이지 기와 가마 유적",
+     "nameFrom": "fix",
      "en": "Mantomi Todaiji Gayo Site",
      "ja": "万富東大寺瓦窯跡",
+     "aliases": [
+      "만토미 도다이지 가요 유적"
+     ],
      "wikidata": "Q11353811",
      "lat": 34.762,
      "lng": 134.07881,
@@ -20166,26 +20222,6 @@
      "artist": "Fjkelfeimvvn"
     },
     {
-     "name": "신쿄 다리",
-     "nameFrom": "fix",
-     "en": "Shin-Kyo Bridge",
-     "ja": "新京橋",
-     "wikidata": "Q11501301",
-     "lat": 34.65619,
-     "lng": 133.93231,
-     "distKm": 1.7,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "오카야마",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/1/10/Shinkyoubashi_2.jpg/500px-Shinkyoubashi_2.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Shinkyoubashi_2.jpg",
-     "license": "CC BY-SA 3.0",
-     "artist": "Bio06940"
-    },
-    {
      "name": "오카야마 고쿠세이지",
      "nameFrom": "fix",
      "en": "Okayama Kokusei Temple",
@@ -20250,6 +20286,28 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Obosan_Kofun_(Kurashiki),_funkyu.jpg",
      "license": "CC0",
      "artist": "Saigen Jiro"
+    },
+    {
+     "name": "다테쓰키 유적",
+     "nameFrom": "translit",
+     "en": "Tatetsuki Site",
+     "ja": "楯築遺跡",
+     "wikidata": "Q11541408",
+     "lat": 34.66306,
+     "lng": 133.82549,
+     "distKm": 8.5,
+     "sitelinks": 4,
+     "kind": "heritage",
+     "category": "문화",
+     "stayMin": 45,
+     "bestTime": "10:00-11:30",
+     "area": "구라시키시",
+     "areaEn": "Kurashiki",
+     "areaJa": "倉敷市",
+     "image": null,
+     "filePage": null,
+     "license": null,
+     "artist": ""
     }
    ]
   },
@@ -21057,28 +21115,6 @@
      "artist": "Saigen Jiro"
     },
     {
-     "name": "미나토 대교",
-     "nameFrom": "translit",
-     "en": "Minato Bridge",
-     "ja": "港大橋",
-     "wikidata": "Q3397064",
-     "lat": 34.64407,
-     "lng": 135.43763,
-     "distKm": 8.4,
-     "sitelinks": 10,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "미나토구",
-     "areaEn": "Minato-ku",
-     "areaJa": "港区",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d7/Minato_Ohashi_Osaka_JPN_001.jpg/500px-Minato_Ohashi_Osaka_JPN_001.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Minato_Ohashi_Osaka_JPN_001.jpg",
-     "license": "CC BY-SA 3.0",
-     "artist": "ignis"
-    },
-    {
      "name": "오사카 텐만구",
      "nameFrom": "translit",
      "en": "Ōsaka Tenmangū",
@@ -21100,28 +21136,6 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Osaka_Tenmangu01n3390.jpg",
      "license": "CC BY 2.5",
      "artist": "663highland"
-    },
-    {
-     "name": "고노하나 대교",
-     "nameFrom": "translit",
-     "en": "Konohana Bridge",
-     "ja": "此花大橋",
-     "wikidata": "Q3362657",
-     "lat": 34.66639,
-     "lng": 135.41306,
-     "distKm": 8.6,
-     "sitelinks": 9,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "고노하나구",
-     "areaEn": "Konohana-ku",
-     "areaJa": "此花区",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d1/Konohana_Ohashi_Osaka_JPN_002-edit.jpg/500px-Konohana_Ohashi_Osaka_JPN_002-edit.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Konohana_Ohashi_Osaka_JPN_002-edit.jpg",
-     "license": "CC BY-SA 3.0",
-     "artist": "ignis"
     },
     {
      "name": "아마가사키성",
@@ -21691,10 +21705,13 @@
      "artist": "Pekachu"
     },
     {
-     "name": "돈돈돈노 모리",
+     "name": "돈돈돈 숲",
      "nameFrom": "fix",
      "en": "Don-Don-Don no Mori",
      "ja": "どんどんどんの森",
+     "aliases": [
+      "돈돈돈노 모리"
+     ],
      "wikidata": "Q11273947",
      "lat": 33.2603,
      "lng": 130.2912,
@@ -22979,10 +22996,13 @@
      "artist": ""
     },
     {
-     "name": "라이라이쿄",
-     "nameFrom": "translit",
+     "name": "라이라이 협곡",
+     "nameFrom": "fix",
      "en": "Rairai-kyo",
      "ja": "磊々峡",
+     "aliases": [
+      "라이라이쿄"
+     ],
      "wikidata": "Q11587847",
      "lat": 38.22389,
      "lng": 140.72933,
@@ -23699,10 +23719,13 @@
      "artist": ""
     },
     {
-     "name": "히로노 가이간 공원",
-     "nameFrom": "translit",
+     "name": "히로노 해안 공원",
+     "nameFrom": "fix",
      "en": "Hirono Kaigan Park",
      "ja": "広野海岸公園",
+     "aliases": [
+      "히로노 가이간 공원"
+     ],
      "wikidata": "Q11485760",
      "lat": 34.92483,
      "lng": 138.37869,
@@ -23827,10 +23850,13 @@
      "artist": "S. Shooklyn"
     },
     {
-     "name": "호우다이인",
-     "nameFrom": "translit",
+     "name": "호다이인",
+     "nameFrom": "fix",
      "en": "Houdai-in Temple",
      "ja": "宝台院",
+     "aliases": [
+      "호우다이인"
+     ],
      "wikidata": "Q11452350",
      "lat": 34.97003,
      "lng": 138.38331,
@@ -24087,28 +24113,6 @@
      "artist": "MChew"
     },
     {
-     "name": "데와 대교",
-     "nameFrom": "fix",
-     "en": "Dewa Bridge",
-     "ja": "出羽大橋",
-     "wikidata": "Q28690428",
-     "lat": 38.90478,
-     "lng": 139.82881,
-     "distKm": 19.7,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "사카타시",
-     "areaEn": "Sakata",
-     "areaJa": "酒田市",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8e/Route112_Dewa_Ohashi_1.jpg/500px-Route112_Dewa_Ohashi_1.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Route112_Dewa_Ohashi_1.jpg",
-     "license": "CC BY-SA 4.0",
-     "artist": "Ebiebi2"
-    },
-    {
      "name": "쓰루오카 가톨릭 성당",
      "nameFrom": "fix",
      "en": "Catholic Tsuruoka Church",
@@ -24131,10 +24135,13 @@
      "artist": "Ippukucho"
     },
     {
-     "name": "호다시노 게야키",
-     "nameFrom": "translit",
+     "name": "호다시의 느티나무",
+     "nameFrom": "fix",
      "en": "Hodashi no Keyaki",
      "ja": "文下のケヤキ",
+     "aliases": [
+      "호다시노 게야키"
+     ],
      "wikidata": "Q110777276",
      "lat": 38.76539,
      "lng": 139.85153,
@@ -24153,10 +24160,13 @@
      "artist": "さかおり"
     },
     {
-     "name": "하구로산 지지스기",
-     "nameFrom": "translit",
+     "name": "하구로산의 할아버지 삼나무",
+     "nameFrom": "fix",
      "en": "Hagurosan Jijisugi",
      "ja": "羽黒山の爺スギ",
+     "aliases": [
+      "하구로산 지지스기"
+     ],
      "wikidata": "Q112080442",
      "lat": 38.70514,
      "lng": 139.967,
@@ -24246,10 +24256,13 @@
      "artist": "Yasu"
     },
     {
-     "name": "조카이노 모리",
-     "nameFrom": "translit",
+     "name": "조카이 숲",
+     "nameFrom": "fix",
      "en": "Chōkai no Mori",
      "ja": "眺海の森",
+     "aliases": [
+      "조카이노 모리"
+     ],
      "wikidata": "Q48756792",
      "lat": 38.85814,
      "lng": 139.9805,
@@ -24445,10 +24458,13 @@
      "artist": "ブルーノ・プラス"
     },
     {
-     "name": "아토쿠센세이노 야카타",
-     "nameFrom": "translit",
+     "name": "아토쿠 선생관",
+     "nameFrom": "fix",
      "en": "Atoku-sensei no Yakata",
      "ja": "アトク先生の館",
+     "aliases": [
+      "아토쿠센세이노 야카타"
+     ],
      "wikidata": "Q30933069",
      "lat": 38.79333,
      "lng": 139.85075,
@@ -24532,6 +24548,28 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Chu-ren-ji.jpg",
      "license": "CC BY-SA 3.0",
      "artist": "funioti-taro"
+    },
+    {
+     "name": "다이니치보",
+     "nameFrom": "fix",
+     "en": "Dainichibō Temple",
+     "ja": "大日坊",
+     "wikidata": "Q11435616",
+     "lat": 38.59253,
+     "lng": 139.90036,
+     "distKm": 16.3,
+     "sitelinks": 1,
+     "kind": "temple",
+     "category": "문화",
+     "stayMin": 60,
+     "bestTime": "09:00-11:00",
+     "area": "쓰루오카시",
+     "areaEn": "Tsuruoka",
+     "areaJa": "鶴岡市",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/9/99/Dainichibou.jpg/500px-Dainichibou.jpg",
+     "filePage": "https://commons.wikimedia.org/wiki/File:Dainichibou.jpg",
+     "license": "CC BY-SA 4.0",
+     "artist": "東京都下おじさん"
     }
    ]
   },
@@ -24831,10 +24869,13 @@
      "artist": "663highland"
     },
     {
-     "name": "이즈시 가로 야시키",
-     "nameFrom": "translit",
+     "name": "이즈시 가로 저택",
+     "nameFrom": "fix",
      "en": "Izushi Karō Yashiki",
      "ja": "豊岡市立出石家老屋敷",
+     "aliases": [
+      "이즈시 가로 야시키"
+     ],
      "wikidata": "Q11633437",
      "lat": 35.46183,
      "lng": 134.87286,
@@ -25581,10 +25622,13 @@
      "artist": "Aikaleido"
     },
     {
-     "name": "사누키 고도모노쿠니",
-     "nameFrom": "translit",
+     "name": "사누키 어린이의 나라",
+     "nameFrom": "fix",
      "en": "Sanuki Kodomonokuni",
      "ja": "さぬきこどもの国",
+     "aliases": [
+      "사누키 고도모노쿠니"
+     ],
      "wikidata": "Q11268158",
      "lat": 34.21215,
      "lng": 134.01726,
@@ -26261,28 +26305,6 @@
      "artist": ""
     },
     {
-     "name": "고나루토 다리",
-     "nameFrom": "translit",
-     "en": "Konaruto Bridge",
-     "ja": "小鳴門橋",
-     "wikidata": "Q11464471",
-     "lat": 34.1925,
-     "lng": 134.61222,
-     "distKm": 14.7,
-     "sitelinks": 3,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "나루토시",
-     "areaEn": "Naruto",
-     "areaJa": "鳴門市",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Konarutobashi-BRDG_20110908.jpg/500px-Konarutobashi-BRDG_20110908.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Konarutobashi-BRDG_20110908.jpg",
-     "license": "CC BY-SA 3.0",
-     "artist": "Rsa"
-    },
-    {
      "name": "도쿠시마 효탄섬",
      "nameFrom": "translit",
      "en": "Tokushima Hyōtanjima",
@@ -26459,10 +26481,13 @@
      "artist": "Reggaeman"
     },
     {
-     "name": "도쿠시마 조우라쿠지",
-     "nameFrom": "translit",
+     "name": "도쿠시마 조라쿠지",
+     "nameFrom": "fix",
      "en": "Tokushima Jouraku-ji Temple",
      "ja": "徳島常楽寺",
+     "aliases": [
+      "도쿠시마 조우라쿠지"
+     ],
      "wikidata": "Q11481422",
      "lat": 34.05033,
      "lng": 134.47564,
@@ -26525,10 +26550,35 @@
      "artist": "Naokijp"
     },
     {
-     "name": "아사히가 마루",
+     "name": "이도지",
      "nameFrom": "translit",
+     "en": "Ido-ji Temple",
+     "ja": "井戸寺",
+     "wikidata": "Q11373550",
+     "lat": 34.08517,
+     "lng": 134.48544,
+     "distKm": 6.3,
+     "sitelinks": 5,
+     "kind": "temple",
+     "category": "문화",
+     "stayMin": 60,
+     "bestTime": "09:00-11:00",
+     "area": "도쿠시마시",
+     "areaEn": "Tokushima",
+     "areaJa": "徳島市",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/af/Idozi02.jpg/500px-Idozi02.jpg",
+     "filePage": "https://commons.wikimedia.org/wiki/File:Idozi02.jpg",
+     "license": "CC BY-SA 3.0",
+     "artist": "Dokudami"
+    },
+    {
+     "name": "아사히가마루",
+     "nameFrom": "fix",
      "en": "Asahiga Maru",
      "ja": "旭ヶ丸",
+     "aliases": [
+      "아사히가 마루"
+     ],
      "wikidata": "Q11511630",
      "lat": 33.95161,
      "lng": 134.40261,
@@ -28614,28 +28664,6 @@
      "artist": "Higa4"
     },
     {
-     "name": "미야노우라 대교",
-     "nameFrom": "translit",
-     "en": "Miyanoura Ōhashi",
-     "ja": "宮之浦大橋",
-     "wikidata": "Q130282414",
-     "lat": 30.42268,
-     "lng": 130.57215,
-     "distKm": 0.6,
-     "sitelinks": 1,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "야쿠시마정",
-     "areaEn": "Yakushima",
-     "areaJa": "屋久島町",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/00/Miyanoura_%C5%8CHashi_%28Yakushima%29_02.jpg/500px-Miyanoura_%C5%8CHashi_%28Yakushima%29_02.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Miyanoura_%C5%8CHashi_(Yakushima)_02.jpg",
-     "license": "CC0",
-     "artist": "Higa4"
-    },
-    {
      "name": "나고리노 마쓰바라",
      "nameFrom": "translit",
      "en": "Nagori no Matsubara",
@@ -28735,10 +28763,13 @@
      "artist": "Higa4"
     },
     {
-     "name": "시토고 가주마루 바냔 공원",
-     "nameFrom": "translit",
+     "name": "시토고 가주마루 공원",
+     "nameFrom": "fix",
      "en": "Shitogo Gajumaru Banyan Park",
      "ja": "志戸子ガジュマル公園",
+     "aliases": [
+      "시토고 가주마루 바냔 공원"
+     ],
      "wikidata": "Q129676500",
      "lat": 30.44837,
      "lng": 130.52036,
@@ -28911,28 +28942,6 @@
      "filePage": "https://commons.wikimedia.org/wiki/File:Morihisa-jinja_(Yakushima)_13.jpg",
      "license": "CC0",
      "artist": "Higa4"
-    },
-    {
-     "name": "안보 대교",
-     "nameFrom": "translit",
-     "en": "Anbō Ōhashi",
-     "ja": "安房大橋",
-     "wikidata": "Q130296648",
-     "lat": 30.3128,
-     "lng": 130.6552,
-     "distKm": 14.3,
-     "sitelinks": 1,
-     "kind": "heritage",
-     "category": "문화",
-     "stayMin": 45,
-     "bestTime": "10:00-11:30",
-     "area": "야쿠시마정",
-     "areaEn": "Yakushima",
-     "areaJa": "屋久島町",
-     "image": "https://upload.wikimedia.org/wikipedia/commons/thumb/a/ac/Anbo_%2831983731430%29.jpg/500px-Anbo_%2831983731430%29.jpg",
-     "filePage": "https://commons.wikimedia.org/wiki/File:Anbo_(31983731430).jpg",
-     "license": "CC BY 2.0",
-     "artist": "David Stanley from Nanaimo, Canada"
     },
     {
      "name": "하루타하마 해변",
@@ -29458,10 +29467,13 @@
      "artist": ""
     },
     {
-     "name": "니시자오우 공원",
-     "nameFrom": "translit",
+     "name": "니시자오 공원",
+     "nameFrom": "fix",
      "en": "Nishizaou Park",
      "ja": "西蔵王公園",
+     "aliases": [
+      "니시자오우 공원"
+     ],
      "wikidata": "Q21654041",
      "lat": 38.205,
      "lng": 140.35528,
@@ -30142,10 +30154,13 @@
      "artist": ""
     },
     {
-     "name": "야마구치 류조우지",
-     "nameFrom": "translit",
+     "name": "야마구치 류조지",
+     "nameFrom": "fix",
      "en": "Yamaguchi Ryuzou-ji Temple",
      "ja": "山口龍蔵寺",
+     "aliases": [
+      "야마구치 류조우지"
+     ],
      "wikidata": "Q21655166",
      "lat": 34.16772,
      "lng": 131.41222,
@@ -30752,10 +30767,13 @@
      "artist": ""
     },
     {
-     "name": "가미요도 하이지",
-     "nameFrom": "translit",
+     "name": "가미요도 폐사지",
+     "nameFrom": "fix",
      "en": "Kamiyodo Haiji",
      "ja": "上淀廃寺跡",
+     "aliases": [
+      "가미요도 하이지"
+     ],
      "wikidata": "Q3192451",
      "lat": 35.45444,
      "lng": 133.44611,

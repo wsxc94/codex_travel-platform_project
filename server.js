@@ -5690,6 +5690,2005 @@ async function parseTravelChatWithGemini(message, context, history, prevParsed) 
   return parsed;
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// 대화로 일정 일부만 고치기(②)와 애매하면 되묻기(③) — docs/handoff.md 4절 1번
+// 화면이 지금 일정(itinerary: { lang, cityKey, routeCities, days: [{ day, date, blocks }] })을 채팅 요청에 함께 보내면,
+// 후속 말이 '편집 명령'(빼기·넣기·옮기기·바꾸기·시간)인지 먼저 본다. 편집이면 일정 전체를 다시 만들지 않고
+//   { mode: 'edit', edit: { status: 'ask'|'none', question, choices, confirm }, reply, sourceInfo }
+// 를 돌려준다. 화면은 사용자가 선택지를 누르거나 글로 골랐을 때만 직접 배치 함수(placeBlock·fitSightTime 등)로 그 칸을 바꾸고 ↩ 되돌리기를 붙인다.
+//  - 일수·도시·경로·날짜·조건이 바뀌는 말('하루 더', '오사카도 추가', '삿포로 대신 하코다테')은 편집이 아니다 → null(지금처럼 다시 만들기).
+//  - 해석: OpenAI 호환(Groq)만 쓴다. Gemini는 부르지 않는다(일정 생성 한도 보존). Groq가 없거나 실패하면 규칙 해석(ko/en/ja).
+//  - 규칙 6: 넣거나 바꾸는 장소는 그날 도시의 후보(도시 명소·대표 명소·추가 명소·도시 주변 실제 명소·큐레이션 맛집)에서 찾은 것만.
+//    못 찾은 이름, AI가 말에 없는 장소를 고른 경우는 넣지 않고 '찾지 못했어요' + 비슷한 후보를 선택지로 준다.
+//  - 애매하면(같은 장소가 여러 날, 날짜 없이 넣을 날이 여럿, 한 칸에 일정이 여럿) 선택지를 돌려주고 고르기 전에는 바꾸지 않는다.
+// ops: { op:'remove', day, block } | { op:'add', day, slot, name, area, kind } | { op:'move', fromDay, block, day, slot }
+//      | { op:'replace', day, block, name, area, kind } | { op:'time', day, block, start } | { op:'swap', day, block, day2, block2 }(두 블록의 장소만 맞바꾸기)
+//   편집은 절대 바로 적용하지 않는다(K1 '항상 확인 후 적용'). 확정된 편집도 status 'ask' + confirm:true로
+//   '이렇게 바꿀까요?'와 바꿀 것 한 줄씩(날·칸·시각·장소)을 보이고 [이대로 바꾸기](편집이 여럿이면 편집마다 + [모두])·[취소]로 묻는다(editConfirmResult).
+//   넣거나 바꿀 것이 장소 이름이 아니라 종류·음식 낱말('라멘 넣어줘'·'add an onsen')이면 편집이 아니다 → 지금처럼 다시 만들기(EDIT_CATEGORY_RE).
+//   block = 화면이 보낸 블록 문자열 그대로(화면이 그 블록을 찾는다), slot = morning·afternoon·allday·night·breakfast·lunch·dinner
+// ══════════════════════════════════════════════════════════════════════
+const EDIT_SLOT_OF_PERIOD = Object.freeze({ '오전': 'morning', '오후': 'afternoon', '종일': 'allday', '아침': 'breakfast', '점심': 'lunch', '저녁': 'dinner' });
+const EDIT_PERIOD_OF_SLOT = Object.freeze({ morning: '오전', afternoon: '오후', allday: '종일', night: '오후', breakfast: '아침', lunch: '점심', dinner: '저녁' });
+const EDIT_MEAL_PERIODS = new Set(['아침', '점심', '저녁']);
+// 말 속 칸 낱말: early = '아침'(맛집이면 아침 식사, 장소면 오전), evening = '저녁·밤'(식사가 있으면 저녁 식사, 장소면 저녁 이후)
+const EDIT_SLOT_WORDS = new Set(['morning', 'afternoon', 'evening', 'allday', 'breakfast', 'lunch', 'dinner', 'early']);
+const EDIT_ACTIONS = new Set(['remove', 'add', 'move', 'replace', 'time']);
+const EDIT_MAX_OPS = 6;
+const EDIT_MAX_CHOICES = 6;
+const EDIT_TRANSFER_LINE_RE = /^(?:도시 이동: |Transfer: |都市間移動：)(.+?) -> (.+?)\s*[(（]/;
+// 확인 문구의 블록 한 줄: a = { d: 일차, p: 칸, t: 'HH:MM-HH:MM'(모르면 ''), n: 장소 }
+const editAtKo = (a) => `${a.d} ${a.p}${a.t ? `(${a.t})` : ''} ${a.n}`;
+const editAtEn = (a) => `${a.n} (${a.d} ${a.p}${a.t ? ` ${a.t}` : ''})`;
+const editAtJa = (a) => `${a.d}${a.p}${a.t ? `（${a.t}）` : ''}の${a.n}`;
+// 바꿀 것 목록: 한 줄에 하나씩
+const editBullets = (list) => list.map((l) => `· ${l}`).join('\n');
+const EDIT_TEXT = {
+  ko: {
+    period: { '오전': '오전', '오후': '오후', '종일': '종일', '아침': '아침', '점심': '점심', '저녁': '저녁', night: '저녁 이후' },
+    day: (n) => `${n}일차`,
+    // 되묻기 끝 문장은 할 일(빼기·옮기기·시각·바꾸기)을 밝힌다(검토 K1c 사소한 의견 1: 라벨에는 할 일이 없어 말과 다른 동작을 고르지 않게)
+    which: { remove: '어느 것을 뺄까요?', move: '어느 것을 옮길까요?', time: '어느 것의 시작 시각을 바꿀까요?', replace: '어느 것을 바꿀까요?', change: '어느 것을 고칠까요?' },
+    askWhich: (name, n, q) => `'${name}'${koTopicParticle(name)} 일정에 ${n}번 있어요. ${q}`,
+    askWhichSlot: (n, q) => `해당하는 일정이 ${n}개예요. ${q}`,
+    askDay: (name) => `'${name}'${koObjectParticle(name)} 며칠째에 넣을까요?`,
+    otherCity: (name, city) => `'${name}'${koTopicParticle(name)} ${city} 장소예요. ${city} 일정이 있는 날에 넣을까요?`,
+    otherCityNoDay: (name, city) => `'${name}'${koTopicParticle(name)} ${city} 장소라 이 일정에 넣지 않았어요.`,
+    notFound: (name, city) => `'${name}'${koTopicParticle(name)} ${city} 후보에서 찾지 못해 넣지 않았어요.`,
+    pickInstead: '대신 이 중에서 고를까요?',
+    confirmPick: (name) => `'${name}'${koObjectParticle(name)} 넣을까요? 아래에서 골라 주세요.`,
+    targetMissing: (name) => `지금 일정에서 '${name}'${koObjectParticle(name)} 찾지 못했어요.`,
+    slotEmpty: '말씀하신 칸에서 고칠 일정을 찾지 못했어요.',
+    dayMissing: (n) => `${n}일차는 이 일정에 없어요.`,
+    kindMismatch: '맛집은 식사 칸끼리, 장소는 장소 칸끼리만 바꿀 수 있어요.',
+    duplicate: (name, d) => `'${name}'${koTopicParticle(name)} 이미 ${d} 일정에 있어요.`,
+    sameSlot: (name) => `'${name}'${koTopicParticle(name)} 이미 그 칸에 있어요.`,
+    sameTime: (name, t) => `'${name}'${koTopicParticle(name)} 이미 ${t}에 시작해요.`,
+    badTime: "시간을 알아듣지 못했어요. '7시'나 '19:30'처럼 말해 주세요.",
+    noName: '넣을 장소 이름을 알려 주세요.',
+    unclear: "어느 칸을 어떻게 고칠지 알아듣지 못했어요. '2일째 오후 금각사 빼줘'처럼 말해 주세요.",
+    exceptUnclear: "남길 곳 말고 나머지를 빼려면 날이나 시간대도 말해 주세요('3일째는 금각사 빼고 다 빼줘'). 아니면 뺄 곳을 하나씩 말해 주세요.",
+    ackOnly: '네. 일정은 그대로 두었어요. 바꿀 곳이 있으면 말씀해 주세요.',
+    later: '나머지는 고른 뒤에 다시 말씀해 주세요.',
+    all: (n) => `모두(${n}곳)`,
+    answerPicked: (label) => `'${label}'${koObjectParticle(label.replace(/\s*\([^()]*\)\s*$/, ''))} 골랐어요.`,
+    answerNarrow: (n) => `맞는 선택지가 ${n}개예요. 아래에서 골라 주세요.`,
+    answerChoose: '위 선택지에서 하나를 골라 주세요.',
+    answerNoMatch: "맞는 선택지를 찾지 못했어요. 위 선택지에서 골라 주시거나, 그만두려면 '취소'라고 말해 주세요.",
+    answerCancelled: '알겠어요. 일정은 그대로 둘게요.',
+    confirmAll: (list) => `이렇게 바꿀까요?\n${editBullets(list)}`,
+    confirmEach: (n, list) => `이렇게 알아들었어요.\n${editBullets(list)}\n바꿀 것을 하나 고르거나 '모두(${n}곳)'를 골라 주세요.`,
+    confirmApply: '이대로 바꾸기',
+    cancelChoice: '취소',
+    alsoChanges: (list) => `(함께 바뀌는 것: ${list})`,
+    swapUnclear: "어느 두 곳의 자리를 바꿀지 알아듣지 못했어요. '금각사랑 기요미즈데라 자리 바꿔줘'처럼 일정에 있는 두 곳을 말해 주세요.",
+    swapAllDay: '하루 종일 일정은 반나절 칸과 자리를 바꿀 수 없어요.',
+    op: {
+      remove: (a) => `${editAtKo(a)} 빼기`,
+      add: (d, p, n) => `${d} ${p}에 ${n} 넣기`,
+      move: (a, d, p) => `${editAtKo(a)} → ${d} ${p} 옮기기`,
+      replace: (a, n) => `${editAtKo(a)} → ${n}`,
+      time: (a, t) => `${editAtKo(a)} → ${t} 시작`,
+      swap: (a, b) => `${editAtKo(a)} ↔ ${editAtKo(b)} 자리 바꾸기`
+    }
+  },
+  en: {
+    period: { '오전': 'Morning', '오후': 'Afternoon', '종일': 'All day', '아침': 'Breakfast', '점심': 'Lunch', '저녁': 'Dinner', night: 'Evening' },
+    day: (n) => `Day ${n}`,
+    which: { remove: 'Which one should I remove?', move: 'Which one should I move?', time: 'Which one should get the new start time?', replace: 'Which one should I replace?', change: 'Which one should I change?' },
+    askWhich: (name, n, q) => `'${name}' is in your plan ${n} times. ${q}`,
+    askWhichSlot: (n, q) => `${n} items match. ${q}`,
+    askDay: (name) => `Which day should I add '${name}' to?`,
+    otherCity: (name, city) => `'${name}' is in ${city}. Add it to one of your ${city} days?`,
+    otherCityNoDay: (name, city) => `'${name}' is in ${city}, so I did not add it to this plan.`,
+    notFound: (name, city) => `I couldn't find '${name}' among the ${city} places, so I didn't add it.`,
+    pickInstead: 'Pick one of these instead?',
+    confirmPick: (name) => `Add '${name}'? Pick one below.`,
+    targetMissing: (name) => `I couldn't find '${name}' in your current plan.`,
+    slotEmpty: "I couldn't find anything to change in that slot.",
+    dayMissing: (n) => `Your plan has no day ${n}.`,
+    kindMismatch: 'Restaurants can only replace meals, and places can only replace places.',
+    duplicate: (name, d) => `'${name}' is already in your plan on ${d}.`,
+    sameSlot: (name) => `'${name}' is already in that slot.`,
+    sameTime: (name, t) => `'${name}' already starts at ${t}.`,
+    badTime: "I couldn't read the time. Try '7 pm' or '19:30'.",
+    noName: 'Tell me the name of the place to add.',
+    unclear: "I couldn't tell what to change. Try 'remove Kinkaku-ji from day 2'.",
+    exceptUnclear: "To remove everything except some places, also say the day or time of day ('remove day 3 except Kinkaku-ji'), or name the places to remove one by one.",
+    ackOnly: 'OK. Your plan stays as it is. Tell me if you want to change something.',
+    later: 'Tell me the rest again after you choose.',
+    all: (n) => `All (${n})`,
+    answerPicked: (label) => `Picked '${label}'.`,
+    answerNarrow: (n) => `${n} options match. Pick one below.`,
+    answerChoose: 'Pick one of the options above.',
+    answerNoMatch: "I couldn't match that to an option. Pick one above, or say 'cancel' to stop.",
+    answerCancelled: 'OK. I left your plan as it is.',
+    confirmAll: (list) => `Should I make this change?\n${editBullets(list)}`,
+    confirmEach: (n, list) => `Here is what I understood:\n${editBullets(list)}\nPick one change, or 'All (${n})'.`,
+    confirmApply: 'Yes, change it',
+    cancelChoice: 'Cancel',
+    alsoChanges: (list) => `(This also changes: ${list})`,
+    swapUnclear: "I couldn't tell which two places to swap. Name two places in your plan, like 'swap Kinkaku-ji and Kiyomizu-dera'.",
+    swapAllDay: "An all-day plan can't swap places with a half-day slot.",
+    op: {
+      remove: (a) => `remove ${editAtEn(a)}`,
+      add: (d, p, n) => `add ${n} (${d} ${p})`,
+      move: (a, d, p) => `move ${editAtEn(a)} to ${d} ${p}`,
+      replace: (a, n) => `${editAtEn(a)} → ${n}`,
+      time: (a, t) => `${editAtEn(a)}: start at ${t}`,
+      swap: (a, b) => `swap ${editAtEn(a)} ↔ ${editAtEn(b)}`
+    }
+  },
+  ja: {
+    period: { '오전': '午前', '오후': '午後', '종일': '終日', '아침': '朝食', '점심': '昼食', '저녁': '夕食', night: '夜' },
+    day: (n) => `${n}日目`,
+    which: { remove: 'どれを削除しますか？', move: 'どれを移動しますか？', time: 'どれの開始時刻を変えますか？', replace: 'どれを入れ替えますか？', change: 'どれを変更しますか？' },
+    askWhich: (name, n, q) => `「${name}」は日程に${n}回あります。${q}`,
+    askWhichSlot: (n, q) => `該当する予定が${n}件あります。${q}`,
+    askDay: (name) => `「${name}」を何日目に入れますか？`,
+    otherCity: (name, city) => `「${name}」は${city}の場所です。${city}の日に入れますか？`,
+    otherCityNoDay: (name, city) => `「${name}」は${city}の場所なので、この日程には入れませんでした。`,
+    notFound: (name, city) => `「${name}」は${city}の候補に見つからなかったため入れていません。`,
+    pickInstead: '代わりにこちらから選びますか？',
+    confirmPick: (name) => `「${name}」を入れますか？下から選んでください。`,
+    targetMissing: (name) => `今の日程に「${name}」が見つかりませんでした。`,
+    slotEmpty: 'その枠に変更できる予定が見つかりませんでした。',
+    dayMissing: (n) => `この日程に${n}日目はありません。`,
+    kindMismatch: 'お店は食事の枠どうし、スポットはスポットの枠どうしでしか入れ替えられません。',
+    duplicate: (name, d) => `「${name}」はすでに${d}の日程にあります。`,
+    sameSlot: (name) => `「${name}」はすでにその枠にあります。`,
+    sameTime: (name, t) => `「${name}」はすでに${t}開始です。`,
+    badTime: '時刻が分かりませんでした。「19時」や「19:30」のように書いてください。',
+    noName: '入れたい場所の名前を教えてください。',
+    unclear: 'どの枠をどう変えるか分かりませんでした。「2日目の午後の金閣寺を外して」のように書いてください。',
+    exceptUnclear: '残す場所以外をまとめて外すときは、日にちか時間帯も書いてください（「3日目は金閣寺以外を外して」）。または外す場所を一つずつ書いてください。',
+    ackOnly: 'はい。日程はそのままにしています。変えたいところがあれば教えてください。',
+    later: '残りは選んだあとでもう一度お知らせください。',
+    all: (n) => `すべて（${n}件）`,
+    answerPicked: (label) => `「${label}」を選びました。`,
+    answerNarrow: (n) => `当てはまる選択肢が${n}件あります。下から選んでください。`,
+    answerChoose: '上の選択肢から一つ選んでください。',
+    answerNoMatch: '当てはまる選択肢が見つかりませんでした。上の選択肢から選ぶか、やめる場合は「キャンセル」と書いてください。',
+    answerCancelled: 'わかりました。日程はそのままにします。',
+    confirmAll: (list) => `この内容で変更しますか？\n${editBullets(list)}`,
+    confirmEach: (n, list) => `このように受け取りました。\n${editBullets(list)}\n変更するものを一つ選ぶか、「すべて（${n}件）」を選んでください。`,
+    confirmApply: 'この内容で変更',
+    cancelChoice: 'キャンセル',
+    alsoChanges: (list) => `（あわせて変わるもの：${list}）`,
+    swapUnclear: '入れ替える2か所が分かりませんでした。「金閣寺と清水寺を入れ替えて」のように、日程にある2か所を書いてください。',
+    swapAllDay: '終日の予定は半日の枠と入れ替えられません。',
+    op: {
+      remove: (a) => `${editAtJa(a)}を削除`,
+      add: (d, p, n) => `${d}${p}に${n}を追加`,
+      move: (a, d, p) => `${editAtJa(a)}を${d}${p}へ移動`,
+      replace: (a, n) => `${editAtJa(a)}→${n}`,
+      time: (a, t) => `${editAtJa(a)}を${t}開始に`,
+      swap: (a, b) => `${editAtJa(a)}と${editAtJa(b)}を入れ替え`
+    }
+  }
+};
+
+// 화면이 보낸 일정: 날 12개·블록 60줄(각 300자)까지. 시간대 블록이 하나도 없으면 null(편집할 일정이 없다).
+function sanitizeEditItinerary(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const seen = new Set();
+  const days = [];
+  for (const d of (Array.isArray(raw.days) ? raw.days : []).slice(0, 12)) {
+    const n = Number(d && d.day);
+    if (!Number.isInteger(n) || n < 1 || n > 30 || seen.has(n)) continue;
+    seen.add(n);
+    days.push({
+      day: n,
+      date: typeof d.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : '',
+      blocks: (Array.isArray(d.blocks) ? d.blocks : []).filter((b) => typeof b === 'string').slice(0, 60).map((b) => b.slice(0, 300))
+    });
+  }
+  days.sort((a, b) => a.day - b.day);
+  if (!days.some((d) => d.blocks.some((b) => ITINERARY_MAIN_BLOCK_RE.test(b)))) return null;
+  return {
+    days,
+    lang: normalizeLang(raw.lang),
+    cityKey: typeof raw.cityKey === 'string' && CITY_DATA[raw.cityKey] ? raw.cityKey : '',
+    routeCities: (Array.isArray(raw.routeCities) ? raw.routeCities : []).filter((c) => typeof c === 'string' && c.trim()).slice(0, 10).map((c) => c.trim().slice(0, 40))
+  };
+}
+
+// 블록 한 줄 → { index, block, period, start, end(분), name, area } (시간대 블록이 아니면 null)
+function editBlockInfo(block, index) {
+  const m = ITINERARY_MAIN_BLOCK_RE.exec(String(block || ''));
+  if (!m) return null;
+  const placeText = m[4].trim();
+  const withArea = /^(.+?)\s*\(([^()]*)\)\s*$/.exec(placeText);
+  return { index, block, period: m[1], start: clockToMin(m[2]), end: clockToMin(m[3]), name: (withArea ? withArea[1] : placeText).trim(), area: withArea ? withArea[2].trim() : '' };
+}
+
+// 이름이 표기 목록 중 하나와 같은 장소인지(같거나, 3자 이상 표기를 포함하거나, 충분히 긴 이름이 표기에 들어 있음)
+// 로마자 표기의 포함 비교는 단어 경계에서만 본다('Uji'는 'Omen Ginkakuji' 안의 글자가 아니라 단어여야 한다).
+const EDIT_LATIN_RE = /^[\x20-\x7eÀ-ɏḀ-ỿ]+$/;
+function editLatinWords(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/['’.\-]/g, '').split(/[^a-z0-9]+/).filter(Boolean);
+}
+// hay 안에 needle이 들어 있는지(키 기준). 로마자 needle은 hay의 단어 몇 개와 그대로 맞아야 한다.
+function editLabelContains(hay, needle) {
+  const hk = placeNameKey(hay);
+  const nk = placeNameKey(needle);
+  if (!hk || !nk || nk.length < 3 || !hk.includes(nk)) return false;
+  if (!EDIT_LATIN_RE.test(String(needle))) return true;
+  const hw = editLatinWords(hay);
+  const nw = editLatinWords(needle);
+  if (!nw.length) return false;
+  for (let i = 0; i + nw.length <= hw.length; i += 1) if (nw.every((w, j) => hw[i + j] === w)) return true;
+  return false;
+}
+function editNameMatches(name, labels) {
+  const k = placeNameKey(name);
+  if (!k) return false;
+  return (labels || []).some((l) => {
+    const lk = placeNameKey(l);
+    if (!lk) return false;
+    return lk === k || editLabelContains(name, l) || (k.length * 2 >= lk.length && editLabelContains(l, name));
+  });
+}
+// 블록이 식사 칸인지(맛집 후보와만 포함 비교한다)
+function editBlockKind(info) {
+  return EDIT_MEAL_PERIODS.has(info && info.period) ? 'food' : 'dest';
+}
+
+// 그 도시의 편집 후보(규칙 6). 관광 = 도시 명소 풀(curatedCityPool: 도시 명소·대표 명소·추가 명소·도시 주변 실제 명소),
+// 맛집 = 도시 큐레이션 맛집. 이름은 일정 언어(lang)로, 비교용 표기(labels)는 한글 원래 이름·en/ja 이름·별칭까지.
+const _editCandidateCache = new Map();
+function editCandidatesForCity(ck, lang) {
+  const cacheKey = `${ck}|${lang}`;
+  if (_editCandidateCache.has(cacheKey)) return _editCandidateCache.get(cacheKey);
+  const city = CITY_DATA[ck];
+  if (!city) return [];
+  const out = [];
+  const seen = new Set();
+  const add = (entry, labelList) => {
+    const labels = [...new Set(labelList.map((l) => String(l || '').trim()).filter(Boolean))];
+    out.push({ ...entry, labels, keys: [...new Set(labels.map(placeNameKey).filter(Boolean))] });
+  };
+  const cityName = localizedCityName(ck, lang);
+  for (const p of curatedCityPool(ck, lang)) {
+    const ko = placeOriginalName(p);
+    const k = placeNameKey(ko);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    const must = MUST_ATTRACTIONS.find((m) => m.cityKey === ck && m.name === ko);
+    const extra = EXTRA_PLACES.find((e) => e.cityKey === ck && e.name === ko);
+    add({ kind: 'dest', ko, name: p.name, area: p.area || cityName, city: ck, allDay: Boolean(allDayPlaceKind(p, ck)), bestTime: String(p.bestTime || ''), generated: Boolean(extra && extra.generated) },
+      [ko, p.name, localizePlaceLabel(ko, [ck], 'en'), localizePlaceLabel(ko, [ck], 'ja'), ...(must ? must.aliases || [] : []), ...(extra ? [extra.en, extra.ja, ...(extra.aliases || [])] : [])]);
+  }
+  for (const f of city.foods || []) {
+    const k = placeNameKey(f.name);
+    if (!k || seen.has(`food|${k}`)) continue;
+    seen.add(`food|${k}`);
+    add({ kind: 'food', ko: f.name, name: localizeCuratedFoodName(f.name, ck, lang), area: localizeCuratedArea(f.area, lang, cityName), city: ck, generic: Boolean(f.generic) },
+      [f.name, localizeCuratedFoodName(f.name, ck, lang), localizeCuratedFoodName(f.name, ck, 'en'), localizeCuratedFoodName(f.name, ck, 'ja')]);
+  }
+  _editCandidateCache.set(cacheKey, out);
+  return out;
+}
+
+// 편집 문맥: 경로 도시, 도시별 후보, 날마다 블록 정보와 그날 도시
+// 그날 도시 = 도시 이동 줄('도시 이동: A -> B')의 도착 도시 → 그날 장소가 가장 많이 든 경로 도시 → 전날 도시
+function buildEditContext(it, replyLang) {
+  const routeKeys = [];
+  const pushKey = (k) => { if (k && CITY_DATA[k] && !routeKeys.includes(k)) routeKeys.push(k); };
+  pushKey(it.cityKey);
+  it.routeCities.forEach((c) => pushKey(cityKeyForExactLabel(c) || detectCityKeyByInput(c)));
+  if (!routeKeys.length) detectAllCityKeysFromText(it.days.flatMap((d) => d.blocks).join('\n')).slice(0, 3).forEach(pushKey);
+  if (!routeKeys.length) pushKey('tokyo');
+  const cands = new Map(routeKeys.map((ck) => [ck, editCandidatesForCity(ck, it.lang)]));
+  const days = it.days.map((d) => ({ day: d.day, date: d.date, blocks: d.blocks, infos: d.blocks.map((b, i) => editBlockInfo(b, i)).filter(Boolean), city: '' }));
+  let prev = routeKeys[0];
+  for (const d of days) {
+    let ck = '';
+    if (routeKeys.length > 1) {
+      for (const b of d.blocks) {
+        const m = EDIT_TRANSFER_LINE_RE.exec(String(b || '').trim());
+        if (!m) continue;
+        const k = cityKeyForExactLabel(m[2]) || detectCityKeyByInput(m[2]);
+        if (routeKeys.includes(k)) ck = k;
+      }
+      if (!ck) {
+        let best = 0;
+        for (const k of routeKeys) {
+          const n = d.infos.filter((info) => cands.get(k).some((c) => c.kind === editBlockKind(info) && editNameMatches(info.name, c.labels))).length;
+          if (n > best) { best = n; ck = k; }
+        }
+      }
+    }
+    d.city = ck || prev;
+    prev = d.city;
+  }
+  return { lang: it.lang, replyLang: normalizeLang(replyLang), routeKeys, cands, days, lastDay: days.length ? days[days.length - 1].day : 1 };
+}
+
+// ── 말 나누기(규칙 해석): 장소·일차·칸·시각·동사·바꾸기 표지의 위치 ──
+function editRanges(re, text, fn) {
+  const out = [];
+  const r = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+  let m;
+  while ((m = r.exec(text))) {
+    if (!m[0]) { r.lastIndex += 1; continue; }
+    const v = fn ? fn(m) : {};
+    if (v) out.push({ start: m.index, end: m.index + m[0].length, raw: m[0], ...v });
+  }
+  return out;
+}
+function editOverlaps(a, list) {
+  return list.some((b) => a.start < b.end && b.start < a.end);
+}
+// 긴 것부터 남기고 겹치는 짧은 것은 버린다(위치 순으로 돌려준다)
+function editKeepLongest(list) {
+  const kept = [];
+  for (const t of [...list].sort((a, b) => (b.end - b.start) - (a.end - a.start) || a.start - b.start)) if (!editOverlaps(t, kept)) kept.push(t);
+  return kept.sort((a, b) => a.start - b.start);
+}
+
+// 글 속 표기 자리: 로마자는 단어 경계(4자 이상), 한글·한자·가나는 띄어쓰기를 무시하고(2자 이상, 두 글자 한글은 앞에 한글이 붙지 않을 때만)
+function editTextIndex(text) {
+  // 로마자만 소문자로(글자 수가 그대로여야 원문 위치와 맞는다)
+  const lower = String(text || '').replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const map = [];
+  let compact = '';
+  for (let i = 0; i < lower.length; i += 1) {
+    if (/\s/.test(lower[i])) continue;
+    compact += lower[i];
+    map.push(i);
+  }
+  return { lower, compact, map };
+}
+function editLabelSpans(index, label) {
+  const a = String(label || '').toLowerCase().trim();
+  if (!a) return [];
+  if (/^[a-z0-9 .'&-]+$/.test(a)) {
+    if (a.replace(/[^a-z0-9]/g, '').length < 4) return [];
+    return aliasHitPositions(index.lower, a).map((idx) => ({ start: idx, end: idx + a.length }));
+  }
+  const c = a.replace(/\s+/g, '');
+  if (c.length < 2) return [];
+  const shortKo = /^[가-힣]{2}$/.test(c);
+  const out = [];
+  let from = 0;
+  while (from <= index.compact.length - c.length) {
+    const i = index.compact.indexOf(c, from);
+    if (i < 0) break;
+    from = i + 1;
+    if (shortKo && i > 0 && /[가-힣]/.test(index.compact[i - 1]) && index.map[i - 1] === index.map[i] - 1) continue;
+    out.push({ start: index.map[i], end: index.map[i + c.length - 1] + 1 });
+  }
+  return out;
+}
+
+// 말 속 장소: 일정에 든 장소(블록 이름)와 경로 도시 후보. 같은 후보에 묶인 블록(다른 표기·여러 날)은 한 장소로 본다.
+// 반환: [{ type:'place', start, end, text, blocks: [{ day, info }], cand }]
+function findEditPlaceMentions(text, ctx) {
+  const index = editTextIndex(text);
+  let ents = [];
+  const byKey = new Map();
+  for (const d of ctx.days) {
+    for (const info of d.infos) {
+      const k = placeNameKey(info.name);
+      if (!k) continue;
+      let e = byKey.get(k);
+      if (!e) { e = { key: k, labels: [info.name], blocks: [], cand: null }; byKey.set(k, e); ents.push(e); }
+      e.blocks.push({ day: d.day, info });
+    }
+  }
+  // 블록 ↔ 후보: 이름이 같은 것(키 일치)을 먼저 묶고, 남은 블록만 포함 비교로 묶는다. 포함 비교는 같은 종류끼리만
+  // (식사 칸 ↔ 맛집, 관광 칸 ↔ 관광지: 'おめん 銀閣寺本店' 저녁은 관광지 銀閣寺가 아니다).
+  const blockEnts = ents.slice();
+  const entKind = (e) => (e.blocks.every((b) => editBlockKind(b.info) === 'food') ? 'food' : (e.blocks.every((b) => editBlockKind(b.info) === 'dest') ? 'dest' : ''));
+  const bind = (cand, matched) => {
+    const head = matched[0];
+    head.cand = cand;
+    head.labels.push(...cand.labels);
+    for (const other of matched.slice(1)) { head.blocks.push(...other.blocks); head.labels.push(...other.labels); other.dead = true; }
+  };
+  const allCands = ctx.routeKeys.flatMap((ck) => ctx.cands.get(ck) || []);
+  const bound = new Set();
+  for (const cand of allCands) {
+    const matched = blockEnts.filter((e) => !e.cand && !e.dead && cand.keys.includes(e.key));
+    if (matched.length) { bind(cand, matched); bound.add(cand); }
+  }
+  for (const cand of allCands) {
+    if (bound.has(cand)) continue;
+    const matched = blockEnts.filter((e) => !e.cand && !e.dead && entKind(e) === cand.kind && editNameMatches(e.labels[0], cand.labels));
+    if (matched.length) { bind(cand, matched); bound.add(cand); continue; }
+    ents.push({ key: '', labels: cand.labels.slice(), blocks: [], cand });
+  }
+  ents = ents.filter((e) => !e.dead);
+  const hits = [];
+  ents.forEach((e, ei) => {
+    for (const label of new Set(e.labels)) for (const sp of editLabelSpans(index, label)) hits.push({ ...sp, ei });
+  });
+  return editKeepLongest(hits).map((h) => ({ type: 'place', start: h.start, end: h.end, text: String(text).slice(h.start, h.end), blocks: ents[h.ei].blocks, cand: ents[h.ei].cand }));
+}
+
+const EDIT_KO_ORDINAL = { '첫': 1, '첫째': 1, '둘째': 2, '두째': 2, '셋째': 3, '세째': 3, '넷째': 4, '네째': 4, '다섯째': 5, '여섯째': 6, '일곱째': 7, '여덟째': 8, '아홉째': 9, '열째': 10 };
+const EDIT_EN_ORDINAL = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
+// 일차: '2일째'·'2일차'·'둘째 날'·'첫날'·'마지막 날'·'3일에'·'day 2'·'2nd day'·'the last day'·'2日目'·'二日目'·'初日'·'最終日'
+function findEditDayRefs(text, lastDay) {
+  const last = Math.max(1, Number(lastDay) || 1);
+  const list = [
+    ...editRanges(/(\d{1,2})\s*(?:일\s*째|일\s*차|번째\s*날|째\s*날|日目)/g, text, (m) => ({ day: Number(m[1]) })),
+    ...editRanges(/(첫째|둘째|두째|셋째|세째|넷째|네째|다섯째|여섯째|일곱째|여덟째|아홉째|열째|첫)\s*날/g, text, (m) => ({ day: EDIT_KO_ORDINAL[m[1]] })),
+    ...editRanges(/이튿날/g, text, () => ({ day: 2 })),
+    ...editRanges(/마지막\s*날|最終日|最後の日|\b(?:the\s+)?(?:last|final)\s+day\b/gi, text, () => ({ day: last })),
+    ...editRanges(/初日/g, text, () => ({ day: 1 })),
+    ...editRanges(/([一二三四五六七八九十])\s*日目/g, text, (m) => ({ day: JA_NUMBER_CHARS[m[1]] })),
+    ...editRanges(/\bday\s*(\d{1,2})\b(?!\s*(?:days?|nights?)\b)/gi, text, (m) => ({ day: Number(m[1]) })),
+    ...editRanges(/\b(\d{1,2})(?:st|nd|rd|th)\s+day\b/gi, text, (m) => ({ day: Number(m[1]) })),
+    ...editRanges(/\b(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+day\b/gi, text, (m) => ({ day: EDIT_EN_ORDINAL[m[1].toLowerCase()] })),
+    // '3일에'·'3일의'(날짜 '10월 3일에'는 아니다). 한국어로는 'N일'이 보통 날짜(그달 N일)라 일정에 날짜가 있으면 그 날로 바꾼다(tokenizeItineraryEdit).
+    ...editRanges(/(?<!월\s*)(?<!\d)(\d{1,2})\s*일(?=\s*(?:에는|에|엔|의)(?![가-힣]))/g, text, (m) => ({ day: Number(m[1]), dom: Number(m[1]) }))
+  ];
+  return editKeepLongest(list.filter((d) => Number.isInteger(d.day) && d.day >= 1).map((d) => ({ ...d, type: 'day' })));
+}
+
+const EDIT_SLOT_RES = [
+  [/아침\s*(?:식사|밥)|조식|\bbreakfast\b|朝食|朝ごはん|朝ご飯/gi, 'breakfast'],
+  // '昼に'·'昼の'도 점심 칸('昼間'·'昼過ぎ'·'昼前'·'昼頃'은 아니다)
+  [/점심|런치|\blunch\b|昼食|昼ごはん|昼ご飯|ランチ|昼(?!間|過ぎ|すぎ|前|頃|ごろ)/gi, 'lunch'],
+  // '저녁 이후'·'저녁 먹고'·'after dinner'·'夕食後'는 화면의 '🌙 저녁 이후' 칸(장소)
+  [/저녁\s*(?:식사\s*)?(?:이후|후|뒤|먹고)|\bafter\s+dinner\b|夕食後|夕食の後/gi, 'evening'],
+  [/저녁\s*(?:식사|밥)|석식|디너|\bdinner\b|夕食|晩ごはん|晩ご飯|夕ご飯|ディナー/gi, 'dinner'],
+  [/하루\s*종일|종일|\ball[\s-]?day\b|終日|一日中/gi, 'allday'],
+  [/오전|\bmorning\b|午前/gi, 'morning'],
+  [/오후|\bafternoon\b|午後/gi, 'afternoon'],
+  [/저녁|밤|\b(?:evening|night|tonight)\b|夕方|夜/gi, 'evening'],
+  [/아침|朝/g, 'early']
+];
+function findEditSlotRefs(text) {
+  return editKeepLongest(EDIT_SLOT_RES.flatMap(([re, slot]) => editRanges(re, text, () => ({ slot, type: 'slot' }))));
+}
+
+// 시각: '7시'·'7시 반'·'19시 30분'·'오후 7시'·'7:30'·'7pm'·'at 7'·'19時'·'午後7時半' → { h, m, ampm: 'am'|'pm'|'' }
+// '2시간'·'2時間'(걸리는 시간)은 시각이 아니다.
+function findEditTimes(text) {
+  // 시각 앞 낱말('저녁 8시'의 저녁)은 칸도 알려 준다(장소 없이 '2일째 저녁 8시로'면 저녁 식사 칸)
+  const SLOT_HINT = { '저녁': 'evening', '밤': 'evening', '夜': 'evening', '夕方': 'evening', '아침': 'early', '朝': 'early', '오전': 'morning', '午前': 'morning', '오후': 'afternoon', '午後': 'afternoon', '낮': 'afternoon' };
+  const mk = (h, m, ampm, word) => (h >= 0 && h <= 23 && m >= 0 && m <= 59 ? { type: 'time', h, m, ampm, slotHint: SLOT_HINT[word] || '' } : null);
+  const amOf = (w) => {
+    const s = String(w || '').toLowerCase();
+    if (!s) return '';
+    if (/^p/.test(s) || /^(?:오후|저녁|밤|낮|午後|夜|夕方)$/.test(s)) return 'pm';
+    if (/^a/.test(s) || /^(?:오전|아침|새벽|午前|朝)$/.test(s)) return 'am';
+    return '';
+  };
+  return editKeepLongest([
+    ...editRanges(/(?:(오전|오후|저녁|밤|아침|낮|새벽|午前|午後|夜|朝|夕方)\s*)?(\d{1,2})\s*(?:시|時)(?!\s*(?:간|間))\s*(?:(\d{1,2})\s*(?:분|分)|(반|半))?/g, text,
+      (m) => mk(Number(m[2]), m[4] ? 30 : Number(m[3] || 0), amOf(m[1]), m[1])),
+    ...editRanges(/(?:(오전|오후|저녁|밤|아침|午前|午後|夜|朝)\s*)?(\d{1,2}):([0-5]\d)(?:\s*([ap])\.?m\.?(?![a-z]))?/gi, text,
+      (m) => mk(Number(m[2]), Number(m[3]), amOf(m[4] || m[1]), m[1])),
+    ...editRanges(/\b(\d{1,2})\s*([ap])\.?m\.?(?![a-z])/gi, text, (m) => mk(Number(m[1]), 0, amOf(m[2]))),
+    ...editRanges(/\b(?:at|to|around)\s+(\d{1,2})(?:\s*o'?clock)?(?![\d:.]|\s*(?:st|nd|rd|th|days?|nights?|[ap]\.?m)\b)/gi, text, (m) => mk(Number(m[1]), 0, ''))
+  ]);
+}
+
+const EDIT_VERB_RES = [
+  // '뺄래'·'넣지 마'·'外さないで'처럼 부정이 붙는 꼴도 동사로 잡아 둔다(뒤의 부정을 보고 그대로 두기로 바꾼다)
+  // 들르는·가는 뜻의 구동사('drop by/in/into'·'drop me/us at'·'skip to'·'take off for')와 'Xでやめて'(X에서 그만 = 거기까지 하고 끝)는 빼기가 아니다(검토 F7·F8)
+  ['remove', /빼|뺄|제외|지워|지우고|지우자|삭제|없애|취소해|취소하|안\s*갈래|안\s*가도|\bremove\b|\bdelete\b|\bdrop\b(?!\s+(?:by|in|into|me|us|off\s+at|over)\b)|\bskip\b(?!\s+(?:to|over\s+to|ahead\s+to)\b)|\bcancel\b|\btake\s+out\b|\btake\s+off\b(?!\s+for\b)|\bget\s+rid\s+of\b|外して|外す|削除|消して|(?<!で\s*)やめて|抜いて|なしで|行かない|(?:外さ|消さ|抜か|やめ|取ら)(?=な|ず)/gi],
+  ['add', /넣어|넣고|넣자|넣을|넣기|넣으|넣(?=지|진)|추가|포함|끼워|\badd\b|\binclude\b|\binsert\b|\bput\b|入れて|入れる|入れたい|入れ(?=な|ず)|追加|加えて/gi],
+  // 바람('가고 싶어'·'visit'·'行きたい')은 여행 요청에도 흔하다: 경로 도시 후보이고 일차·칸을 말했을 때만 넣기로 본다(parseItineraryEditRules)
+  ['wish', /들러|들르|가고\s*싶|\bvisit\b|\bsee\b|行きたい|寄りたい|寄って/gi],
+  ['move', /옮겨|옮기|옮길|이동해|이동시|이동하|미뤄|미루|당겨|당기|\bmove\b|\bshift\b|\breschedule\b|\bpush\b|移して|移す|移動|ずらして|動かして|(?:移さ|動かさ)(?=な|ず)/gi],
+  ['change', /바꿔|바꾸|바꿀|변경|교체|교환|\breplace\b|\bswap\b|\bchange\b|\bswitch\b|変えて|変更|替えて|入れ替え|交換|(?:変え|替え)(?=な|ず)/gi],
+  // 그대로 두기('금각사는 그대로 두고', '금각사는 두고·냅둬·살리고', 'keep Kinkaku-ji', '金閣寺は残して'): 그 절의 장소는 고치지 않는다
+  ['keep', /그대로|남겨|남기|유지|냅두|냅둬|놔두|놔둬|살리|살려|(?<![가-힣])(?:두고|둬|둬요|두자|둘래|둘게|두세요)(?![가-힣])|\bkeep\b|\bstays?\b|残して|残す|そのまま/gi]
+];
+// 부정('안 빼도 돼'·'빼지 마'·'빼지 말고'·'빼면 안 돼'·"don't remove"·'do not drop'·'削除しないで'): 그 동사는 그대로 두기(keep)로 본다.
+// 동사 뒤(한국어·일본어)와 동사 앞(한국어 '안·못', 영어 don't·do not·never …)을 본다.
+const EDIT_NEG_AFTER_RES = [
+  /^\s*(?:하|해)?\s*지(?:는|도|만)?\s*(?:마|말(?:고|아)?|않|못)/,
+  /^\s*(?:하|해)?\s*진\s*(?:마|말(?:고|아)?|않)/,
+  /^\s*(?:하|해)?\s*(?:으)?면\s*안\s*(?:돼|되|됩|된)/,
+  /^\s*(?:し|さ|せ)?(?:ないで|ない|なくて|なくても|ません|ずに|ちゃだめ|ては(?:いけ|だめ)|るな)/
+];
+const EDIT_NEG_BEFORE_RES = [
+  /(?:^|[^가-힣])(?:안|못)\s*$/,
+  /\b(?:don['’]?t|do\s+not|doesn['’]?t|does\s+not|didn['’]?t|never|not|no\s+need\s+to|needn['’]?t|shouldn['’]?t|should\s+not|won['’]?t|will\s+not|can['’]?t|cannot|mustn['’]?t|must\s+not)\s+(?:(?:please|really|ever|need\s+to|have\s+to|want\s+to|wanna)\s+)*$/i
+];
+// 바꾸기 표지: 'A 대신 B'·'A 말고 B'·'Aの代わりにB'(앞이 원래 장소) / 'B instead of A'(뒤가 원래 장소)
+const EDIT_INSTEAD_RES = [
+  [new RegExp(`${INSTEAD_WORD_SRC}|말고`, 'g'), 'before'],
+  [/の?代わりに|の?かわりに|じゃなくて|ではなく/g, 'before'],
+  [/\binstead\s+of\b|\brather\s+than\b/gi, 'after']
+];
+// ── 바로 적용은 '단순한 명령'만(검토 K1 U1~U11) ──
+// 말투를 하나씩 막지 않고, 아래 표지가 하나라도 있으면(장소·일차·칸·시각 이름 속 글자는 보지 않는다) 고치기 전에 '이렇게 바꿀까요?'로 묻는다.
+// neg 부정·거절, keep 그대로 두기, cond 조건, question 질문, contrast 대조('말고'·'instead of'·'じゃなくて'), swap 맞바꾸기, clauses 절이 여럿(쉼표·접속어·문장 둘)
+const EDIT_POLITE_ASK_RE = /줄래|줄\s*수|주실|주세요|주겠|줘|해\s*줄|\bcan\s+you\b|\bcould\s+you\b|\bwould\s+you\b|\bwill\s+you\b|\bplease\b|くれ|もらえ|ください|いただけ/i;
+const EDIT_CONFIRM_MARKERS = [
+  // '안 갈래'·'안 가도'는 그 자체가 빼기 동사다(부정 표지로 세지 않는다)
+  ['neg', /(?<![가-힣])(?:안|못)(?!\s*(?:갈래|가도))(?=\s|$|[.,!?~]|빼|뺄|넣|옮|바꾸|바꿔|가|갈|해|할|돼|되|지우|없애|취소)|않|(?:지|진|지는|지도|질)\s*(?:마|말)|(?<![가-힣])마(?:세요|요|라)?(?![가-힣])|없(?!애)|싫|아니|아닌|아냐|아님|그만/],
+  ['neg', /\b(?:not|no|never|neither|nor|none|nothing|without|hate|rather)\b|n['’]t\b/i],
+  ['neg', /ない|なく|ません|ぬ(?=$|[。、！!？?\s])|(?<=[さかがたなばらわれめえけげせてねべ])ず(?:に|と)?(?![らっ])|[うくぐすつぬぶむる]な(?=$|[。、！!？?\s」』])|の[はを]\s*(?:やめ|よし|止め)|不要|だめ|ダメ|いけない|嫌/],
+  ['keep', /그대로|남겨|남기|유지|냅두|냅둬|놔두|놔둬|살리|살려|괜찮|좋아|건드리|(?<![가-힣])(?:두고|둬|둬요|두자|둘래|둘게)(?![가-힣])/],
+  ['keep', /\b(?:keep|keeps|kept|stay|stays|staying|leave|untouched|fine|as\s+is)\b/i],
+  ['keep', /そのまま|このまま|残し|残す|まま/],
+  ['cond', /(?<=[가-힣])(?:으)?면(?=$|[\s,.!?~])|거든|경우|\b(?:if|unless|whether|in\s+case)\b|たら|なら|れば|場合|ときは|時は/i],
+  // '빼지 말고'의 '말고'는 부정(neg)이지 대조가 아니다
+  ['contrast', /(?<!(?:지|진)(?:는|도|만)?\s*)말고|아니라|아니고|\binstead\b|\brather\s+than\b|\bbut\b|\bexcept\b|\bother\s+than\b|じゃなくて|じゃなく|ではなく|でなく/i],
+  ['swap', /순서|자리|서로|맞바꾸|맞바꿔|교환|위치|\b(?:swap|switch|exchange|trade)\b|入れ替|交換|順番|逆に/i],
+  // 쉼표·마침표로 나뉜 절은 editMarkerReasons가 따로 센다('remove Kinkaku-ji, thanks'처럼 인사만 붙은 것은 절이 아니다)
+  ['clauses', /그리고|그\s*다음|다음에|하고\s*나서|\b(?:and|then|also|plus)\b|そして|それから|および/i],
+  // 장소 바로 뒤의 '랑·하고·와·と'(장소 자리는 비워 둔다): 여러 곳을 말했다('금각사랑 철도박물관 빼줘'에서 뒤 장소를 못 알아들었을 수 있다)
+  ['clauses', /(?<![가-힣぀-ヿ一-鿿])(?:이랑|랑|하고|와|과|및)(?=\s|$)|(?<![぀-ヿ一-鿿])[とや]/],
+  // 끝나는 시각('4시에 끝나게', 'until 4', '16時まで'): 시작 시각 바꾸기로 나타낼 수 없다
+  ['end', /끝나|끝내|끝날|까지|\buntil\b|\btill\b|\bend(?:s|ing)?\s+(?:at|by)\b|まで|終わ/i]
+];
+// 질문('빼야 할까?'·'Should I drop …?'·'外すべき？'). '?'가 있어도 부탁('빼 줄래?'·'can you …?')이면 질문으로 보지 않는다.
+function editIsQuestion(s) {
+  const t = String(s || '').trim();
+  if (/[?？]/.test(t) && !EDIT_POLITE_ASK_RE.test(t)) return true;
+  return /까요?\s*[.!~]*$/.test(t) || /べき|ほうがいい|方がいい/.test(t) || /\bshould\s+(?:i|we)\b|\bwhat\s+if\b|\bis\s+it\s+ok/i.test(t);
+}
+// 인사·맞장구만 있는 조각('thanks'·'please'·'고마워'·'네'·'お願いします')은 절로 세지 않는다
+const EDIT_POLITE_ONLY_RE = /^(?:\s|please|pls|thanks?|thank\s+you|ok(?:ay)?|yes|sure|감사(?:해요|합니다)?|고마워(?:요)?|고맙습니다|부탁(?:해|해요|드려요|합니다)?|네|응|좋아요?|ありがとう(?:ございます)?|お願い(?:します)?|よろしく(?:お願いします)?|はい|うん)*$/i;
+// 말 속 표지(장소·일차·칸·시각 토큰 자리는 비운 뒤 본다)
+function editMarkerReasons(text, tokens) {
+  const raw = String(text || '');
+  let s = raw;
+  for (const t of tokens) if (['place', 'day', 'slot', 'time'].includes(t.type)) s = s.slice(0, t.start) + ' '.repeat(t.end - t.start) + s.slice(t.end);
+  const out = new Set(EDIT_CONFIRM_MARKERS.filter(([, re]) => re.test(s)).map(([r]) => r));
+  // 쉼표·마침표로 나뉜 조각 중 내용이 있는 것(인사만 있는 조각 빼고)이 둘 이상이면 절이 여럿이다. 나누는 자리는 이름 밖에서만 찾는다.
+  const cuts = [...s.matchAll(/[,，、;；.。!！?？]+/g)].map((m) => [m.index, m.index + m[0].length]);
+  let from = 0;
+  let pieces = 0;
+  for (const [a, b] of [...cuts, [raw.length, raw.length]]) {
+    const piece = raw.slice(from, a).replace(/[.,!?~…'"“”‘’()]/g, ' ').trim();
+    if (piece && !EDIT_POLITE_ONLY_RE.test(piece)) pieces += 1;
+    from = b;
+  }
+  if (pieces >= 2) out.add('clauses');
+  if (editIsQuestion(s)) out.add('question');
+  if (tokens.some((t) => t.type === 'verb' && t.verb === 'keep')) out.add('keep');
+  return [...out];
+}
+// 구조 표지: 절이 여럿(동사 둘 이상, 단 '빼고 + 넣어'를 바꾸기 하나로 합친 것은 아니다)·편집 여럿·편집 하나에 장소가 너무 많음
+function editStructureReasons(tokens, rawOps) {
+  const out = [];
+  const verbs = tokens.filter((t) => t.type === 'verb');
+  const mergedOne = rawOps.length === 1 && rawOps[0].merged;
+  if (verbs.length >= 2 && !mergedOne) out.push('clauses');
+  if (rawOps.length >= 2) out.push('multi');
+  const seen = new Set();
+  for (const t of tokens) if (t.type === 'place') seen.add(t.cand ? `c|${t.cand.city}|${t.cand.ko}|${t.cand.kind}` : (t.blocks.length ? `b|${placeNameKey(t.blocks[0].info.name)}` : `t|${placeNameKey(t.text)}`));
+  const allowed = rawOps.length === 1 && ['replace', 'swap'].includes(rawOps[0].action) ? 2 : 1;
+  if (seen.size > allowed) out.push('places');
+  return out;
+}
+// ── 단순한 명령인지 거꾸로 센다: 알아들은 것 밖에 남는 낱말(검토 K1 재검토 2) ──
+// 표지 낱말 목록으로만 막으면 목록에 없는 말('금각사 삭제 취소'·'금각사 다음 일정'·'빼야 하나'·'以外'·'when it rains')이 새어 나간다.
+// 그래서 알아들은 것(장소·일차·칸·시각·동사·바꾸기 표지·경로 도시)과 아래 군말(조사·동사 꼬리·부탁·인사)을 지우고도 낱말이 남으면
+// 단순한 명령이 아니라고 본다(바로 고치지 않고 확인). 모르는 말은 늘 확인 쪽으로 간다.
+const EDIT_KO_PARTICLE_SRC = '(?:은|는|이|가|을|를|에|에서|의|도|로|으로|만|에다|에다가|쯤|엔|께|요|이요)';
+const EDIT_JA_PARTICLE_SRC = '(?:を|は|が|に|で|の|へ|も)';
+const EDIT_REST_RES = {
+  // 장소·일차·칸·시각·도시 바로 뒤('금각사는'·'3일째에'·'7시로'·'金閣寺を'·'3日目の')
+  particle: new RegExp(`^(?:${EDIT_KO_PARTICLE_SRC}+|${EDIT_JA_PARTICLE_SRC}+|s)$`),
+  // 동사 바로 뒤('빼줘'·'삭제해'·'옮겨줄래'·'빼고'·'넣어주세요'·'外してください'·'削除で'). '빼야'·'빼도'·'빼는'·'外すの'는 아니다.
+  tail: /^(?:(?:어|아|여)?(?:서)?(?:시켜)?(?:해|하)?(?:줘|줘요|주세요|주셔요|주실래요|주시겠어요|주라|줄래|줄래요|주렴|주십시오|버려|버려요|버려줘|버리자|자|요|라|고|해|해요|해라|하자|할래|할게|할게요|합시다|기|두고|둬)?|(?:して|する|します|しよう|しといて|しておいて|ください|下さい|くれ|ほしい|欲しい|ちょうだい|お願い|お願いします|です|ます|で|ね|よ)+)$/,
+  // 띄어 쓴 부탁 꼬리('빼 줘'·'삭제해 주세요'·'外して ください')
+  politeAux: /^(?:(?:해|하)?(?:줘|줘요|주세요|주셔요|주실래요|주시겠어요|줄래|줄래요|주십시오)|해|해요|ください|下さい|お願い(?:します)?)$/,
+  // 따로 선 군말(부탁·인사·'좀'·'일정에서'·'please'·'from my plan')
+  fillerKo: new RegExp(`^(?:좀|제발|그냥|꼭|네|넵|예|응|그럼|이제|싶어|싶어요|싶다|싶습니다|부탁(?:해|해요|드려요|드립니다|합니다)?|감사(?:해요|합니다)?|고마워(?:요)?|고맙습니다|일정${EDIT_KO_PARTICLE_SRC}*)$`),
+  fillerJa: new RegExp(`^(?:(?:日程|予定|プラン)(?:から|${EDIT_JA_PARTICLE_SRC})*|お願い(?:します)?|ください|はい|うん)$`),
+  fillerEn: /^(?:the|a|an|from|to|on|in|at|of|for|with|by|into|onto|my|our|this|plan|itinerary|schedule|please|pls|kindly|can|could|would|will|you|me|us|i|we|want|wanna|like|id|lets|let|it|just|now|thanks|thank|ok|okay|yes|sure|hi|hey)$/i,
+  // 이름 없이 일차·칸으로 가리키는 말('2일째 오후에 있는 그 절', 'that temple on day 2', '2日目の午後のお寺'): 말에 장소 이름이 없을 때만
+  genericKo: new RegExp(`^(?:그|저|이|거|것|곳|데|장소|절|신사|일정|관광지|명소|가게|식당|맛집|있는|있던|잡힌|거기|저기|여기)${EDIT_KO_PARTICLE_SRC}*$`),
+  genericJa: new RegExp(`^(?:${EDIT_JA_PARTICLE_SRC}|その|この|あの|それ|これ|あれ|そこ|ここ|お寺|寺|神社|場所|ところ|所|お店|店|スポット|予定)+$`),
+  genericEn: /^(?:that|this|the|one|place|spot|temple|shrine|restaurant|sight|stop|thing|activity|there)$/i
+};
+// 알아들은 것과 군말을 지우고 남는 낱말 [{ start, end, raw }]
+function editExtraWords(text, tokens, ctx) {
+  const src = String(text || '');
+  const R = EDIT_REST_RES;
+  const anyPlace = tokens.some((t) => t.type === 'place');
+  const spans = tokens.map((t) => ({ type: t.type, start: t.start, end: t.type === 'verb' && t.negEnd ? t.negEnd : t.end }));
+  // 경로 도시 이름('교토에서 은각사 빼줘')은 그 일정의 도시라 알아들은 말이다
+  for (const h of cityMentionHits(src)) {
+    const sp = { type: 'city', start: h.idx, end: h.idx + h.len };
+    if (ctx.routeKeys.includes(h.key) && !editOverlaps(sp, spans)) spans.push(sp);
+  }
+  let s = src;
+  const blank = (a, b) => { s = s.slice(0, a) + ' '.repeat(b - a) + s.slice(b); };
+  for (const sp of spans) blank(sp.start, sp.end);
+  for (const m of [...s.matchAll(/줄\s*수\s*(?:있어요?|있나요?|있니|있습니까)/g)]) blank(m.index, m.index + m[0].length);
+  // 낱말 속 따옴표("let's"·"I'd")는 붙이고(글자 수는 그대로), 나머지 문장 부호는 빈칸으로
+  s = s.replace(/([A-Za-z])['’]([A-Za-z])/g, '$1$2 ').replace(/[.,!?~…'"“”‘’「」『』()（）、。！？·・:;]/g, ' ');
+  const out = [];
+  for (const c of editRanges(/\S+/g, s)) {
+    const w = c.raw;
+    const prev = spans.find((sp) => sp.end === c.start) || null;
+    const lang = /[가-힣]/.test(w) ? 'Ko' : (/[぀-ヿ一-鿿]/.test(w) ? 'Ja' : 'En');
+    const ok = (prev && ['place', 'day', 'slot', 'time', 'city'].includes(prev.type) && R.particle.test(w))
+      || (prev && (prev.type === 'verb' || prev.type === 'instead') && R.tail.test(w))
+      || R.politeAux.test(w) || R[`filler${lang}`].test(w) || (!anyPlace && R[`generic${lang}`].test(w));
+    if (!ok) out.push({ start: c.start, end: c.end, raw: w });
+  }
+  return out;
+}
+// 남는 낱말 중 그대로 두기 절('금각사는 그대로 두고'·'빼지 말고'·"don't remove …,") 밖에 있는 것. 넣기만 있는 말은 이것만 본다.
+// 한국어·일본어는 낱말 뒤의 동사(바로 붙은 꼬리는 앞 동사), 영어는 낱말 앞의 동사 몫이다.
+function editLiveExtra(extra, tokens, style) {
+  const verbs = tokens.filter((t) => t.type === 'verb');
+  if (!verbs.length) return extra;
+  return extra.filter((c) => {
+    const v = style === 'sov'
+      ? (verbs.find((x) => (x.negEnd || x.end) === c.start) || verbs.find((x) => x.start >= c.end) || verbs[verbs.length - 1])
+      : ([...verbs].reverse().find((x) => x.start < c.start) || verbs[0]);
+    return v.verb !== 'keep';
+  });
+}
+// 일수·날짜·조건·여행 전체를 바꾸는 말(편집이 아니다 → 다시 만들기)
+const EDIT_TRIP_LEVEL_RE = /다시\s*(?:짜|만들)|새로\s*(?:짜|만들)|처음부터|일정\s*(?:을|를)?\s*(?:짜|만들)|여행\s*(?:을|를)?\s*(?:짜|계획)|실내\s*위주|예산|테마(?!\s*파크)|\bstart\s+over\b|\bfrom\s+scratch\b|\bre-?plan\b|\bnew\s+(?:plan|itinerary)\b|\bbudget\b|\bindoor\b|作り直|最初から|新しいプラン|予算|屋内|도착|출발|비행기|항공|공항|시작|\barriv|\bdepart|\bflight|\bairport|\bland(?:s|ing)?\b|\bstart|到着|出発|飛行機|空港|便|開始|スタート/i;
+// '여행'·'trip'·'旅行'은 일차를 말하지 않았으면 여행 전체 요청으로 본다('디즈니랜드 빼고 도쿄 여행')
+const EDIT_TRIP_WORD_RE = /여행|\btrip\b|\btravel|\bvacation\b|\bholiday\b|旅行/i;
+// 종류·음식·테마 낱말(장소 이름이 아니다): 넣거나 바꿀 것이 이것이면('라멘 넣어줘'·'2일차 점심에 라멘 넣어줘'·'센소지 근처 맛집 추가해줘'·
+// 'add an onsen'·'ラーメン屋を追加して'·'買い物を入れて') 한 칸 편집이 아니라 지금처럼 조건(테마·음식)으로 다시 만든다(검토 R1, 6da5de3과 같이).
+// 일정·후보에 있는 장소 이름('아후리 라멘'·'쿠사츠 온천') 속 글자는 보지 않는다(장소 자리를 비운 뒤 본다).
+const EDIT_CATEGORY_RE = /라멘|라면|스시|초밥|이자카야|술집|야키니쿠|야키토리|우동|소바|돈카츠|규카츠|카레|타코야키|오코노미야키|텐동|규동|덮밥|맛집|먹거리|음식|식당|레스토랑|카페|디저트|빵집|베이커리|쇼핑|아울렛|백화점|기념품|온천|야경|\b(?:ramen|sushi|izakaya|yakiniku|yakitori|udon|soba|tonkatsu|curry|takoyaki|okonomiyaki|tempura|restaurants?|food|eatery|cafes?|coffee|desserts?|sweets|bakery|bars?|pubs?|shopping|shops?|outlets?|malls?|souvenirs?|onsen|hot\s+springs?|night\s+views?)\b|café|ラーメン|寿司|すし|居酒屋|焼肉|焼き鳥|うどん|とんかつ|カレー|たこ焼き|お好み焼き|天ぷら|グルメ|レストラン|食堂|カフェ|喫茶|スイーツ|買い物|ショッピング|お土産|温泉|夜景/i;
+// 이름 대신 가리키는 말('그 절', '거기', 'that place', 'それ'): 일차·칸으로 대상을 찾는다
+const EDIT_GENERIC_REF_RE = /^(?:(?:그|저|이)\s*)?(?:거|것|곳|데|장소|절|신사|일정|관광지|명소|가게|식당|맛집|거기|저기|여기)$|^(?:it|that|this|there|(?:that|the|this)\s+(?:place|one|spot|temple|shrine|restaurant|sight))$|^(?:それ|そこ|あれ|あそこ|この|その)/i;
+const EDIT_FILLER_WORDS = new Set(['에', '에는', '엔', '에다', '에다가', '을', '를', '은', '는', '이', '가', '도', '좀', '꼭', '그리고', '일정', '일정에', '일정을', '일정은', '하나', '더', '다시', '한번', '로', '으로', '해', '해줘', '줘', '주세요', '줄래', '할래', '하고', '싶어', '의', '있는', '하는', '가는',
+  'to', 'on', 'in', 'at', 'for', 'the', 'a', 'an', 'please', 'my', 'plan', 'and', 'into', 'onto', 'of', 'it', 'there', 'also', 'too', 'some', 'with', 'from', 'can', 'you', 'could', 'would', 'me', 'us', 'i', 'want']);
+
+// 칸·시각 낱말을 지운 덩어리에서 이름처럼 보이는 말('호그와트 성', 'Hogwarts Castle', 'ホグワーツ城'). 2~40자가 아니면 ''.
+// 덩어리 첫머리·일차·칸·시각 낱말 바로 뒤의 일본어 조사('金閣寺をホグワーツ城に'의 を, '3日目の夕食に寿司'의 の·に)는 이름이 아니다
+// (검토 R4: 「に寿司」로 답하지 않게). 조사만으로 된 낱말은 버리고, 끝 낱말 뒤의 조사 한 글자('寿司を')를 지운다.
+const EDIT_JA_AFTER_TOKEN_RE = /^(?:には|では|への|での|との|にも|でも|の|に|を|は|へ|も|で|と|が)/;
+function editLooseName(text, start, end, tokens) {
+  let s = '';
+  const hi = Math.min(text.length, end);
+  let from = Math.max(0, start);
+  if (from > 0) {
+    const lead = EDIT_JA_AFTER_TOKEN_RE.exec(text.slice(from, hi));
+    if (lead) from += lead[0].length;
+  }
+  for (let i = from; i < hi; i += 1) {
+    const tok = tokens.find((t) => t.type !== 'place' && i >= t.start && i < t.end);
+    if (!tok) { s += text[i]; continue; }
+    const p = EDIT_JA_AFTER_TOKEN_RE.exec(text.slice(tok.end, hi));
+    const next = Math.min(hi, tok.end + (p ? p[0].length : 0));
+    s += ' '.repeat(next - i);
+    i = next - 1;
+  }
+  s = s.replace(/[.,!?'"“”‘’「」『』()（）、。！？~…]/g, ' ');
+  const words = s.split(/\s+/).filter(Boolean).filter((w) => !EDIT_FILLER_WORDS.has(w.toLowerCase()) && !/^[のにをはへもでとが]+$/.test(w));
+  if (words.length) words[words.length - 1] = words[words.length - 1].replace(/(?<=[가-힣]{2})(?:을|를|은|는|이|가|도|에|에서|으로|로)$/, '').replace(/(?<=\S)[のにをはへもでが]$/, '');
+  const name = words.join(' ').trim();
+  return name.length >= 2 && name.length <= 40 ? name : '';
+}
+
+// 말 → 토큰(위치 순). 장소를 먼저 찾고, 그 밖 낱말은 장소 이름과 겹치지 않을 때만 센다('하코다테 아침시장'의 '아침').
+function tokenizeItineraryEdit(text, ctx) {
+  const places = findEditPlaceMentions(text, ctx);
+  const outside = (list) => list.filter((t) => !editOverlaps(t, places));
+  const times = outside(findEditTimes(text));
+  const days = outside(findEditDayRefs(text, ctx.lastDay)).filter((t) => !editOverlaps(t, times));
+  // '5일에'(날짜): 일정에 날짜가 있으면 그 날짜의 일차로. 일정 안에 그 날짜가 없으면 다시 만들기(editRegenSignal 'date').
+  const dated = ctx.days.filter((d) => d.date);
+  for (const t of days) {
+    if (!t.dom || !dated.length) continue;
+    const hit = dated.find((d) => Number(d.date.slice(8, 10)) === t.dom);
+    if (hit) t.day = hit.day;
+    else t.badDate = true;
+  }
+  const slots = outside(findEditSlotRefs(text)).filter((t) => !editOverlaps(t, times) && !editOverlaps(t, days));
+  const taken = [...places, ...times, ...days, ...slots];
+  const verbs = editKeepLongest(EDIT_VERB_RES.flatMap(([verb, re]) => editRanges(re, text, () => ({ type: 'verb', verb })))).filter((t) => !editOverlaps(t, taken));
+  // 부정된 동사는 그대로 두기(keep). '빼지 말고'의 '말고'는 바꾸기 표지가 아니므로 그 자리를 기억해 둔다.
+  const negSpans = [];
+  for (const v of verbs) {
+    if (v.verb === 'keep') continue;
+    const after = text.slice(v.end);
+    const negAfter = EDIT_NEG_AFTER_RES.map((re) => re.exec(after)).find(Boolean);
+    const negBefore = EDIT_NEG_BEFORE_RES.some((re) => re.test(text.slice(0, v.start)));
+    if (!negAfter && !negBefore) continue;
+    v.verb = 'keep';
+    v.negated = true;
+    if (negAfter) {
+      negSpans.push({ start: v.end, end: v.end + negAfter[0].length });
+      v.negEnd = v.end + negAfter[0].length; // 부정 꼬리('지 말고'·'しないで')까지가 이 동사다(editExtraWords)
+    }
+  }
+  const instead = editKeepLongest(EDIT_INSTEAD_RES.flatMap(([re, dir]) => editRanges(re, text, () => ({ type: 'instead', dir }))))
+    .filter((t) => !editOverlaps(t, taken) && !editOverlaps(t, negSpans));
+  const withs = editRanges(/\b(?:with|for|by)\b/gi, text, () => ({ type: 'with' })).filter((t) => !editOverlaps(t, taken));
+  // 바람 동사는 넣기로 다루되 표시를 남긴다(weak)
+  for (const v of verbs) if (v.verb === 'wish') { v.verb = 'add'; v.weak = true; }
+  const tokens = [...places, ...times, ...days, ...slots, ...verbs, ...instead, ...withs].sort((a, b) => a.start - b.start);
+  // 목적지 표지: 뒤에 '로·으로·に·へ'가 붙거나 앞에 'to·into'가 온 일차·칸·시각·장소. 출발 표지: 'from'·'에서·から'.
+  for (const t of tokens) {
+    const after = text.slice(t.end, t.end + 4);
+    const before = text.slice(Math.max(0, t.start - 8), t.start);
+    t.dest = /^\s*(?:으로|로|에다|に|へ|まで)/.test(after) || /\b(?:to|into|onto)\s+(?:the\s+)?$/i.test(before);
+    t.from = /\bfrom\s+(?:the\s+)?$/i.test(before) || /^\s*(?:에서|から)/.test(after);
+  }
+  return tokens;
+}
+
+// 토큰 → 절(동사 하나씩). 한국어·일본어는 동사 앞의 말이, 영어는 동사 뒤의 말이 그 동사 몫이다.
+function splitEditClauses(tokens, text, style) {
+  const verbs = tokens.filter((t) => t.type === 'verb');
+  if (!verbs.length) return [{ verb: null, tokens: tokens.slice(), segStart: 0, segEnd: text.length }];
+  const clauses = verbs.map((v, i) => ({
+    verb: v,
+    tokens: [],
+    segStart: style === 'sov' ? (i > 0 ? verbs[i - 1].end : 0) : v.end,
+    segEnd: style === 'sov' ? v.start : (i + 1 < verbs.length ? verbs[i + 1].start : text.length)
+  }));
+  for (const t of tokens) {
+    if (t.type === 'verb') continue;
+    let ci;
+    if (style === 'sov') {
+      ci = verbs.findIndex((v) => t.start < v.start);
+      if (ci < 0) ci = verbs.length - 1;
+    } else {
+      ci = 0;
+      verbs.forEach((v, i) => { if (v.start <= t.start) ci = i; });
+    }
+    clauses[ci].tokens.push(t);
+  }
+  return clauses;
+}
+
+// 절 하나 → 규칙 해석 편집(raw op). raw op 모양은 AI 해석과 같다(resolveEditOp가 함께 쓴다).
+function editRawOp(extra) {
+  return { action: '', day: 0, slot: '', place: '', placeMention: null, newPlace: '', newMention: null, toDay: 0, toSlot: '', time: null, ...extra };
+}
+function editClauseOps(cl, text, style, opts = {}) {
+  const of = (type) => cl.tokens.filter((t) => t.type === type);
+  const places = of('place');
+  const days = of('day');
+  const slots = of('slot');
+  const times = of('time');
+  const instead = of('instead')[0] || null;
+  const verb = cl.verb ? cl.verb.verb : '';
+  // 장소마다 가장 가까운 앞쪽(영어는 뒤쪽 포함) 일차·칸
+  const nearest = (list, p) => {
+    if (!list.length) return null;
+    if (!p) return list[0];
+    const beforeP = list.filter((x) => x.end <= p.start);
+    return beforeP.length ? beforeP[beforeP.length - 1] : list[0];
+  };
+  const dayFor = (p) => { const d = nearest(days.filter((x) => !x.dest), p) || nearest(days, p); return d ? d.day : 0; };
+  const slotFor = (p) => { const s = nearest(slots.filter((x) => !x.dest), p) || nearest(slots, p); return s ? s.slot : ''; };
+  // (0) 그대로 두기·부정('금각사는 안 빼도 돼', "don't remove Kinkaku-ji"): 이 절은 아무것도 고치지 않는다
+  if (verb === 'keep') return [];
+  // 시각과 함께 넣기·빼기('2일째 저녁 7시에 이자카야 넣어줘', '오후 2시 이후는 빼줘'), 시각과 장소 둘·바꾸기 표지('A 대신 3시에 B'),
+  // 다른 날로 옮기면서 시각('금각사를 3일째 오후 3시로 옮겨')은 한 칸의 시각 바꾸기로 나타낼 수 없다 → 다시 만들기(지금처럼 조건으로)
+  if (times.length) {
+    const p0 = places[0] || null;
+    const destDay = days.some((d) => d.dest || (style === 'sov' && p0 && d.start >= p0.end));
+    if (verb === 'add' || verb === 'remove' || places.length > 1 || instead || (p0 && destDay)) return [editRawOp({ action: 'regen' })];
+  }
+  // (0-1) 맞바꾸기('후시미 이나리랑 아라시야마 순서 바꿔줘'·'swap A with B'·'AとBを入れ替えて'): 두 곳의 시각·칸은 두고 장소만 서로 바꾼다.
+  // 'A를 B로 바꾸기'로 읽지 않는다(한 곳이 지워지고 다른 곳이 두 번 들어가지 않게). 일정에 있는 두 곳이 아니면 알아듣지 못했다고 답한다.
+  // 두 곳 중 한 곳만 일정에 있으면('금각사 자리에 은각사로 바꿔줘'·'switch Kinkaku-ji for Ginkaku-ji'·'금각사 자리에 은각사 넣어줘') 맞바꾸기가 아니라
+  // 그 자리를 새 장소로 바꾸기다(아래 바꾸기로). 맞바꾸기 표지가 있으니 확인을 거친다.
+  const intoSlot = opts.swap && places.length === 2 && places[0].blocks.length > 0 && !places[1].blocks.length;
+  if (intoSlot && verb === 'add') {
+    return [editRawOp({ action: 'replace', day: dayFor(places[0]), slot: slotFor(places[0]), place: places[0].text, placeMention: places[0], newPlace: places[1].text, newMention: places[1] })];
+  }
+  if (opts.swap && verb === 'change' && !intoSlot) {
+    const inPlan = places.filter((p) => p.blocks.length);
+    if (inPlan.length !== 2) return [editRawOp({ action: 'swapUnclear' })];
+    const [a, b] = inPlan;
+    const near = (list, p, lo) => list.filter((x) => x.end <= p.start && x.start >= lo).pop() || null;
+    const da = near(days, a, 0);
+    const sa = near(slots, a, 0);
+    const db = near(days, b, a.end);
+    const sb = near(slots, b, a.end);
+    return [editRawOp({ action: 'swap', day: da ? da.day : 0, slot: sa ? sa.slot : '', place: a.text, placeMention: a, newPlace: b.text, newMention: b, toDay: db ? db.day : 0, toSlot: sb ? sb.slot : '' })];
+  }
+  // (1) 'A 대신 B'·'A 말고 B'·'B instead of A'
+  if (instead) {
+    const before = places.filter((p) => p.end <= instead.start);
+    const after = places.filter((p) => p.start >= instead.end);
+    const oldP = instead.dir === 'after' ? after[0] : before[before.length - 1];
+    const newP = instead.dir === 'after' ? before[before.length - 1] : after[0];
+    // 'A 말고 B 빼줘'·'remove B instead of A': 빼라는 것은 B뿐이다(A는 대조일 뿐 고치지 않는다).
+    // B가 장소가 아니면('금각사 말고 다른 건 다 빼줘') A를 바꾸거나 빼지 않고 알아듣지 못했다고 답한다.
+    if (verb === 'remove') return [newP ? editRawOp({ action: 'remove', day: dayFor(newP), slot: slotFor(newP), place: newP.text, placeMention: newP }) : editRawOp({ action: 'unclear' })];
+    if (oldP) {
+      const newText = newP ? newP.text : (instead.dir === 'after'
+        ? editLooseName(text, cl.segStart, instead.start, cl.tokens)
+        : editLooseName(text, instead.end, cl.verb && cl.verb.start > instead.end ? cl.verb.start : text.length, cl.tokens));
+      return [editRawOp({ action: 'replace', day: dayFor(oldP), slot: slotFor(oldP), place: oldP.text, placeMention: oldP, newPlace: newText, newMention: newP || null })];
+    }
+    // '금각사 빼고 대신 은각사 넣어줘'의 뒤 절('대신 은각사 넣어줘')은 넣기다(앞 절의 빼기와 합쳐 바꾸기가 된다)
+    if (!(verb === 'add' && newP)) return [];
+  }
+  // (2) 시각: '2일째 저녁을 7시로', '금각사를 오후 3시로', 'change day 2 dinner to 7pm'
+  if (times.length) {
+    const p = places[0] || null;
+    const t = times[times.length - 1];
+    // 장소 바로 뒤에 조사 없이 '저녁·밤·아침 N시'가 오면('금각사 저녁 7시로') 그날 저녁(아침) 칸을 말한 것일 수도 있다(검토 F1):
+    // 칸 낱말로도 넘겨 그 장소가 그 칸에 없으면 묻는다. '금각사를 저녁 7시로'(장소가 목적어)·'오후 3시'(오전·오후 표시)는 시각만이다.
+    const bare = p && !/^\s*(?:을|를|은|는|이|가|도|を|は|が|も)/.test(text.slice(p.end));
+    const hint = p ? (bare && ['evening', 'early'].includes(t.slotHint) ? t.slotHint : '') : t.slotHint;
+    if (!p && !days.length && !slots.length && !hint) return [];
+    return [editRawOp({ action: 'time', day: dayFor(p), slot: slotFor(p) || hint, place: p ? p.text : '', placeMention: p, time: t })];
+  }
+  const destDays = days.filter((d) => d.dest);
+  const destSlots = slots.filter((s) => s.dest);
+  // (3) 'A를 B로 바꿔'·'replace A with B'·'AをBに変えて'
+  if (verb === 'change' && places.length >= 2) {
+    return [editRawOp({ action: 'replace', day: dayFor(places[0]), slot: slotFor(places[0]), place: places[0].text, placeMention: places[0], newPlace: places[1].text, newMention: places[1] })];
+  }
+  if (verb === 'change' && places.length === 1 && !destDays.length && !destSlots.length) {
+    const p = places[0];
+    const w = of('with').find((x) => x.start >= p.end);
+    const name = style === 'svo'
+      ? (w ? editLooseName(text, w.end, cl.segEnd, cl.tokens) : '')
+      : editLooseName(text, p.end, cl.verb.start, cl.tokens);
+    if (name) return [editRawOp({ action: 'replace', day: dayFor(p), slot: slotFor(p), place: p.text, placeMention: p, newPlace: name })];
+    return [];
+  }
+  // (4) 옮기기: '금각사를 3일째로', '금각사를 3일째 오후로 옮겨', 'move Kinkaku-ji to day 3', '金閣寺を3日目に移して'
+  const moveLike = verb === 'move' || (verb === 'change' && (destDays.length || destSlots.length)) || (!verb && places.length && (destDays.length || destSlots.length));
+  if (moveLike) {
+    const p = places[0] || null;
+    const toDayTok = destDays[0] || (p ? days.find((d) => d.start >= p.end && !d.from) : days[1]) || null;
+    const fromDayTok = days.find((d) => d !== toDayTok && (d.from || !p || d.end <= p.start)) || null;
+    const toSlotTok = destSlots[0] || (p ? slots.find((s) => s.start >= p.end && !s.from) : (toDayTok ? slots.find((s) => s.start > toDayTok.start) : null)) || null;
+    const fromSlotTok = slots.find((s) => s !== toSlotTok && (!p || s.end <= p.start)) || null;
+    if (!p && !fromDayTok && !fromSlotTok) return [];
+    if (!toDayTok && !toSlotTok) return [];
+    return [editRawOp({ action: 'move', day: fromDayTok ? fromDayTok.day : 0, slot: fromSlotTok ? fromSlotTok.slot : '', place: p ? p.text : '', placeMention: p,
+      toDay: toDayTok ? toDayTok.day : 0, toSlot: toSlotTok ? toSlotTok.slot : '' })];
+  }
+  // (5) 빼기. 일정·후보에 없는 이름을 말했으면('3일째 센소지 빼줘') 그날 다른 장소를 빼지 않고 '찾지 못했어요'로 답한다.
+  if (verb === 'remove') {
+    if (places.length) return places.map((p) => editRawOp({ action: 'remove', day: dayFor(p), slot: slotFor(p), place: p.text, placeMention: p }));
+    if (!days.length && !slots.length) return [];
+    const loose = style === 'svo' ? editLooseName(text, cl.verb.end, cl.segEnd, cl.tokens) : editLooseName(text, cl.segStart, cl.verb.start, cl.tokens);
+    const named = loose && !EDIT_GENERIC_REF_RE.test(loose.replace(/(?<=[가-힣])(?:은|는|을|를|이|가|도)$/, '')) ? loose : '';
+    return [editRawOp({ action: 'remove', day: dayFor(null), slot: slotFor(null), place: named })];
+  }
+  // (6) 넣기(후보에 없는 이름도 그대로 넘겨 '찾지 못했어요'로 답한다)
+  if (verb === 'add') {
+    const weak = Boolean(cl.verb.weak);
+    if (places.length) return places.map((p) => editRawOp({ action: 'add', day: dayFor(p), slot: slotFor(p), newPlace: p.text, newMention: p, weak }));
+    const name = style === 'svo' ? editLooseName(text, cl.verb.end, cl.segEnd, cl.tokens) : editLooseName(text, cl.segStart, cl.verb.start, cl.tokens);
+    return [editRawOp({ action: 'add', day: dayFor(null), slot: slotFor(null), newPlace: name, weak })];
+  }
+  return [];
+}
+
+// 편집이 아니라 다시 만들어야 하는 말인지: 일수·날짜·경로 밖 도시(또는 장소 없이 도시만)·조건·여행 전체
+function editRegenSignal(text, tokens, ctx) {
+  const blankOut = (src, spans) => {
+    let out = src;
+    for (const s of spans) out = out.slice(0, s.start) + ' '.repeat(s.end - s.start) + out.slice(s.end);
+    return out;
+  };
+  const places = tokens.filter((t) => t.type === 'place');
+  const noRefs = blankOut(text, tokens.filter((t) => t.type === 'place' || t.type === 'day' || t.type === 'time'));
+  if (parseGlobalDayDelta(noRefs) !== 0 || parseCityDayDeltas(noRefs).length) return 'days';
+  if (parseExplicitDaysFromText(noRefs) !== null) return 'days';
+  if (KO_MONTH_DAY_RE.test(noRefs) || EN_MONTH_DAY_RE.test(noRefs)) return 'date';
+  if (tokens.some((t) => t.type === 'day' && t.badDate)) return 'date';
+  // 다른 도시의 장소 이름(대표 명소 별칭·추가 명소: '도쿄 타워', '오타루') 속 도시 이름은 도시로 세지 않는다
+  const lower = text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const otherPlaceSpans = [
+    ...MUST_ATTRACTIONS.flatMap((m) => [m.name, ...(m.aliases || [])].flatMap((a) => aliasHitPositions(lower, String(a).toLowerCase()).map((i) => ({ start: i, end: i + String(a).length })))),
+    ...extraPlaceHits(text).map((h) => ({ start: h.idx, end: h.idx + h.len }))
+  ];
+  const cityHits = cityMentionHits(blankOut(text, [...places, ...otherPlaceSpans]));
+  if (cityHits.some((h) => !ctx.routeKeys.includes(h.key))) return 'city';
+  if (cityHits.length && !places.length) return 'city';
+  if (NEG_SHOPPING_RE.test(text) || EDIT_TRIP_LEVEL_RE.test(noRefs)) return 'trip';
+  if (EDIT_TRIP_WORD_RE.test(noRefs) && !tokens.some((t) => t.type === 'day')) return 'trip';
+  return '';
+}
+
+// ── 'X 빼고 … 다 빼줘'(X는 남기라는 말) — 검토 K1c 막는 문제 4 ──
+// '금각사 빼고 오후 일정 다 빼줘'·'3일째는 금각사 빼고 다 빼줘'·'금각사 외에 2일째 다 빼줘'·'remove day 3 except Kinkaku-ji'·'drop everything on day 3 but Kinkaku-ji'·
+// 'remove day 3 but keep Kinkaku-ji'·'金閣寺以外の午後を外して'·'金閣寺を除いて3日目を外して'은 X 하나만 빼라는 말이 아니다(그렇게 읽으면 확인 문구가 말과 반대가 된다).
+// 남길 것(X: 장소, 장소가 없으면 그쪽의 일차·칸)을 뺀 범위(일차·칸) 안의 일정을 하나씩 빼는 확인으로 만든다(editExceptResult).
+// 범위(일차·칸)가 없거나('기요미즈데라 빼고 다 빼') 대상이 너무 많으면 알아듣지 못했다고 답한다(일정 전체를 지우는 확인을 만들지 않는다).
+const EDIT_EXCEPT_KO_RE = /(?<![가-힣])(?:외에(?:는|도)?|외엔|빼놓고|빼고(?:는|서)?|제외하고(?:는|서)?|말고(?:는)?)(?![가-힣])/g;
+const EDIT_EXCEPT_JA_RE = /以外(?:の|は|を|で|に)?|を?(?:除いて|除き|除く|のぞいて|のぞき)/g;
+const EDIT_EXCEPT_EN_RE = /\b(?:except(?:\s+for)?|other\s+than|apart\s+from|besides|but(?:\s+(?:not|keep|leave))?)\b/gi;
+// 한국어는 X 뒤에 '다·전부·모두·나머지·다른'이 있어야 한다(없으면 'X 빼고 Y도 빼줘'처럼 차례로 빼는 말일 수 있다)
+const EDIT_EXCEPT_ALL_KO_RE = /(?<![가-힣])(?:전부|모두|나머지|싹|몽땅|죄다|다|다른)(?:는|은|도|를|을|만|요)?(?![가-힣])/;
+function editBlankTokens(text, tokens, from, types = ['place', 'day', 'slot', 'time']) {
+  let s = text;
+  for (const t of tokens) {
+    if (!types.includes(t.type)) continue;
+    const a = Math.max(t.start - from, 0);
+    const b = Math.min(t.end - from, s.length);
+    if (a < b) s = s.slice(0, a) + ' '.repeat(b - a) + s.slice(b);
+  }
+  return s;
+}
+// 남기라는 표지 { start, end, dir }(dir 'before' = X가 표지 앞, 'after' = X가 표지 뒤). 없으면 null.
+// 표지 뒤(영어는 앞)에는 빼기 동사만 있어야 하고(넣기·옮기기가 섞이면 다른 말이다), 뺄 곳을 이름으로 말한 자리에는 장소가 없어야 한다
+// ('금각사 빼고 은각사 넣어줘'는 바꾸기, 'remove Kinkaku-ji but not Ginkaku-ji'는 금각사 빼기).
+function editExceptMarker(text, tokens, style) {
+  const places = tokens.filter((t) => t.type === 'place');
+  const verbs = tokens.filter((t) => t.type === 'verb');
+  const removeAt = (v) => v.verb === 'remove' && !v.negated;
+  const onlyRemoveAfter = (pos) => verbs.every((v) => v.start < pos || removeAt(v) || v.verb === 'keep');
+  if (style === 'sov') {
+    for (const m of editRanges(EDIT_EXCEPT_KO_RE, text)) {
+      if (editOverlaps(m, places) || places.some((p) => p.start >= m.end) || !onlyRemoveAfter(m.end)) continue;
+      const later = verbs.find((v) => v.start >= m.end && removeAt(v));
+      if (!later || !EDIT_EXCEPT_ALL_KO_RE.test(editBlankTokens(text.slice(m.end, later.start), tokens, m.end))) continue;
+      return { start: m.start, end: m.end, dir: 'before' };
+    }
+    for (const m of editRanges(EDIT_EXCEPT_JA_RE, text)) {
+      if (editOverlaps(m, places) || places.some((p) => p.start >= m.end) || !onlyRemoveAfter(m.end)) continue;
+      if (!verbs.some((v) => v.start >= m.end && removeAt(v))) continue;
+      return { start: m.start, end: m.end, dir: 'before' };
+    }
+    return null;
+  }
+  for (const m of editRanges(EDIT_EXCEPT_EN_RE, text)) {
+    if (editOverlaps(m, places)) continue;
+    const v = [...verbs].reverse().find((x) => x.end <= m.start);
+    if (!v) {
+      // 표지가 앞에 온 말('apart from Kinkaku-ji, remove day 3'·'except Kinkaku-ji, drop everything on day 3'): X는 표지와 빼기 동사 사이
+      const w = verbs.find((x) => x.start >= m.end);
+      if (!w || !removeAt(w) || /^but\b/i.test(m.raw) || verbs.some((x) => x !== w && !removeAt(x) && x.verb !== 'keep')) continue;
+      if (places.some((p) => p.start >= w.end) || !places.some((p) => p.start >= m.end && p.end <= w.start)) continue;
+      return { start: m.start, end: m.end, dir: 'after', xEnd: w.start };
+    }
+    if (!removeAt(v) || places.some((p) => p.start >= v.end && p.end <= m.start)) continue;
+    if (verbs.some((x) => x.start >= m.end && !removeAt(x) && x.verb !== 'keep')) continue;
+    if (!tokens.some((t) => ['place', 'day', 'slot'].includes(t.type) && t.start >= m.end)) continue;
+    return { start: m.start, end: m.end, dir: 'after' };
+  }
+  return null;
+}
+// 남길 것을 뺀 범위의 일정을 하나씩 빼는 편집(장소 블록을 그대로 가리킨다). 고르기 전에는 아무것도 바꾸지 않는다(확인 + 모두 + 취소).
+function editExceptResult(tokens, exc, ctx, base) {
+  const onX = (t) => (exc.dir === 'before' ? t.end <= exc.start : t.start >= exc.end && (!exc.xEnd || t.end <= exc.xEnd));
+  const of = (type) => tokens.filter((t) => t.type === type);
+  const xPlaces = of('place').filter(onX);
+  // 남길 것이 장소면 일차·칸은 모두 범위다('3일째는 금각사 빼고 다'). 장소가 없으면 그쪽 일차·칸이 남길 것이다('1일째 빼고 저녁 다 빼줘'·'remove dinner except day 1').
+  const xDays = xPlaces.length ? [] : of('day').filter(onX);
+  const xSlots = xPlaces.length ? [] : of('slot').filter(onX);
+  const scopeDays = of('day').filter((t) => !xDays.includes(t));
+  const scopeSlots = of('slot').filter((t) => !xSlots.includes(t));
+  const fail = (action) => ({ ...base, ops: [editRawOp({ action })] });
+  if (!xPlaces.length && !xDays.length && !xSlots.length) return fail('exceptUnclear');
+  if (!scopeDays.length && !scopeSlots.length) return fail('exceptUnclear');
+  const kept = new Set(xPlaces.flatMap((p) => p.blocks.map((b) => `${b.day}|${b.info.index}`)));
+  const targets = [];
+  for (const d of ctx.days) {
+    if ((scopeDays.length && !scopeDays.some((t) => t.day === d.day)) || xDays.some((t) => t.day === d.day)) continue;
+    for (const info of d.infos) {
+      if (FREE_TIME_TITLES.has(info.name) || kept.has(`${d.day}|${info.index}`)) continue;
+      if (scopeSlots.length && !scopeSlots.some((t) => editSlotMatches(info, t.slot, d))) continue;
+      if (xSlots.some((t) => editSlotMatches(info, t.slot, d))) continue;
+      targets.push({ d, info });
+    }
+  }
+  if (!targets.length) return fail('slotEmpty');
+  if (targets.length > EDIT_MAX_CHOICES) return fail('exceptUnclear');
+  return { ...base, ops: targets.map(({ d, info }) => editRawOp({ action: 'remove', day: d.day, place: info.name,
+    placeMention: { type: 'place', start: -1, end: -1, text: info.name, blocks: [{ day: d.day, info }], cand: null } })) };
+}
+
+// 넣거나 바꿀 '대상'이 종류·음식 낱말인지(검토 R1·K1c 막는 문제 2). 문장 전체가 아니라 새 장소 자리만 본다.
+//  - 일정·후보에서 알아본 장소: 그 장소와 동사 사이(한국어·일본어는 장소 뒤 ~ 동사, 영어는 동사 ~ 장소)에 종류 낱말이 있을 때만 종류 요청이다
+//    ('센소지 근처 맛집 추가해줘'·'add a ramen place near Senso-ji'·'銀閣寺の近くのカフェを追加して').
+//    목적·때('야경 보러 도쿄 타워 넣어줘'·'카페 들르기 전에 은각사 넣어줘'·'add Tokyo Skytree for the night view'·'夜景を見に銀閣寺を入れて')와
+//    다른 절('…오멘 긴카쿠지, 라멘 말고'·'…, I want souvenirs')의 종류 낱말은 그 장소를 넣는 편집을 막지 않는다.
+//  - 알아보지 못한 이름: 그 이름이나 문장(장소 자리는 비움)에 종류 낱말이 있으면 종류 요청이다('라멘 넣어줘'·'add an onsen'·'3日目の夕食に寿司を入れて').
+const EDIT_CATEGORY_CUT_RE = /[,，、.。!！?？;；]|말고|아니고|아니라|じゃなく|ではなく|\binstead\b|\brather\b|\bnot\b/gi;
+function editTargetIsCategory(op, text, tokens, style) {
+  const m = op.newMention;
+  if (m && (m.cand || m.blocks.length)) {
+    const verbs = tokens.filter((t) => t.type === 'verb' && ['add', 'change', 'move'].includes(t.verb));
+    let from;
+    let span;
+    if (style === 'sov') {
+      const v = verbs.find((x) => x.start >= m.end);
+      from = m.end;
+      span = editBlankTokens(text.slice(from, v ? v.start : text.length), tokens, from);
+      const cut = new RegExp(EDIT_CATEGORY_CUT_RE.source, 'i').exec(span);
+      if (cut) span = span.slice(0, cut.index);
+    } else {
+      const v = [...verbs].reverse().find((x) => x.end <= m.start);
+      from = v ? v.end : 0;
+      span = editBlankTokens(text.slice(from, m.start), tokens, from);
+      const cuts = [...span.matchAll(new RegExp(EDIT_CATEGORY_CUT_RE.source, 'gi'))];
+      if (cuts.length) { const last = cuts[cuts.length - 1]; span = span.slice(last.index + last[0].length); }
+    }
+    return EDIT_CATEGORY_RE.test(span);
+  }
+  if (EDIT_CATEGORY_RE.test(m ? m.text : String(op.newPlace || ''))) return true;
+  return EDIT_CATEGORY_RE.test(editBlankTokens(text, tokens, 0, ['place']));
+}
+
+// 규칙 해석: { regen, edit(편집처럼 보이는지), ops }
+function parseItineraryEditRules(message, ctx) {
+  const text = String(message || '').normalize('NFKC');
+  const tokens = tokenizeItineraryEdit(text, ctx);
+  const regen = editRegenSignal(text, tokens, ctx);
+  const has = (type) => tokens.some((t) => t.type === type);
+  const refs = has('place') || has('day') || has('slot');
+  const looksEdit = (has('instead') && has('place')) || (has('verb') && refs) || tokens.some((t) => t.type === 'verb' && t.verb === 'add')
+    || (has('time') && refs) || (has('place') && tokens.some((t) => (t.type === 'day' || t.type === 'slot') && t.dest));
+  if (regen || !looksEdit) return { regen, edit: false, ops: [] };
+  const style = /[가-힣぀-ヿ一-鿿]/.test(text) ? 'sov' : 'svo';
+  // 'X 빼고 … 다 빼줘'·'remove day 3 except X'·'X以外の午後を外して': X는 남기라는 말이다(검토 K1c 막는 문제 4). Groq에 맡기지 않는다(except).
+  const exc = editExceptMarker(text, tokens, style);
+  if (exc) {
+    const reasons = [...new Set([...editMarkerReasons(text, tokens), 'contrast'])];
+    return editExceptResult(tokens, exc, ctx, { regen: '', edit: true, keep: false, except: true, slotMismatch: false, reasons, aiMarkers: reasons, tokens, extra: [] });
+  }
+  // 마지막 동사가 '빼고·제외하고'이고 뒤에 장소가 오면('금각사 빼고 은각사') 바꾸기 표지다.
+  // 일본어 て형('大阪城をやめて海遊館に'·'金閣寺を外して清水寺へ')도 뒤 장소에 に·へ가 붙으면 바꾸기 표지다(뒤 장소를 지우지 않게).
+  const verbs = tokens.filter((t) => t.type === 'verb');
+  const lastVerb = verbs[verbs.length - 1];
+  const placeAfterLast = (needDest) => tokens.some((t) => t.type === 'place' && lastVerb && t.start >= lastVerb.end && (!needDest || t.dest));
+  if (style === 'sov' && lastVerb && lastVerb.verb === 'remove'
+    && ((/^(?:고|하고)/.test(text.slice(lastVerb.end)) && placeAfterLast(false)) || (/て$/.test(text.slice(lastVerb.start, lastVerb.end)) && placeAfterLast(true)))) {
+    lastVerb.type = 'instead';
+    lastVerb.dir = 'before';
+  }
+  const markers = editMarkerReasons(text, tokens);
+  const clauses = splitEditClauses(tokens, text, style);
+  const merged = mergeEditRemoveAdd(clauses.flatMap((cl) => editClauseOps(cl, text, style, { swap: markers.includes('swap') })));
+  if (merged.some((op) => op.action === 'regen')) return { regen: 'trip', edit: false, ops: [] };
+  // 부정·그대로 두기가 있었는지(있으면 AI 해석 없이 규칙 해석만 쓴다 — interpretItineraryEdit)
+  const keep = tokens.some((t) => t.type === 'verb' && t.verb === 'keep');
+  // 그대로 두라는 절의 장소('금각사는 두고 3일째 다 빼줘'): 일차·칸으로 찾는 편집 대상에서 뺀다(resolveEditTargets의 exclude)
+  const keptPlaces = clauses.filter((cl) => cl.verb && cl.verb.verb === 'keep').flatMap((cl) => cl.tokens.filter((t) => t.type === 'place' && t.blocks.length));
+  // 넣을 장소가 경로 도시 후보가 아니면: 경로 밖 도시의 장소는 경로가 바뀌는 말이라 다시 만든다(일차·칸까지 말한 '넣어줘'만 편집으로 두고
+  // 규칙 6으로 거절). 바람('가고 싶어')은 경로 도시 후보 + 일차·칸을 말했을 때만 편집이다(그 밖에는 여행 요청).
+  const ops = [];
+  for (const op of merged) {
+    // 일정에 없는 장소를 빼거나 바꾸라는 말(일차·칸 없이: '디즈니랜드는 빼줘', '유니버설 대신 수족관')은 고칠 칸이 없다 → 지금처럼 조건으로 다시 만든다
+    if ((op.action === 'remove' || op.action === 'replace') && op.placeMention && !op.placeMention.blocks.length && !(op.day || op.slot)) continue;
+    // 이미 일정에 든 장소를 바라는 말('도쿄 타워는 밤에 가고 싶어')은 하나 더 넣지 않고 말한 날·칸으로 옮긴다
+    if (op.action === 'add' && op.weak && op.newMention && op.newMention.blocks.length) {
+      if (op.day || op.slot) ops.push(editRawOp({ action: 'move', place: op.newMention.text, placeMention: op.newMention, toDay: op.day, toSlot: op.slot }));
+      continue;
+    }
+    if (op.action === 'add' || op.action === 'replace') {
+      const known = Boolean(op.newMention && op.newMention.cand);
+      if (!known) {
+        const otherCity = editKnownPlaceCity(op.newMention ? op.newMention.text : op.newPlace);
+        if (otherCity && !ctx.routeKeys.includes(otherCity) && (op.weak || !(op.day || op.slot))) return { regen: 'city', edit: false, ops: [] };
+      }
+      if (op.action === 'add' && op.weak && !(known && (op.day || op.slot))) continue;
+    }
+    if (keptPlaces.length && ['remove', 'move', 'time'].includes(op.action) && !op.placeMention && !op.place) op.exclude = keptPlaces;
+    ops.push(op);
+  }
+  // 넣거나 바꿀 '대상'이 종류·음식 낱말이면 편집이 아니다 → 지금처럼 조건으로 다시 만들기(검토 R1). 문장 전체가 아니라 대상 자리만 본다
+  // (K1c 막는 문제 2: '야경 보러 도쿄 타워 넣어줘'는 도쿄 타워 넣기). regen 'category'면 화면이 일정 전체를 바꾸기 전에 묻는다(editRegen).
+  if (ops.some((op) => (op.action === 'add' || op.action === 'replace') && editTargetIsCategory(op, text, tokens, style))) return { regen: 'category', edit: false, ops: [] };
+  // 고칠 칸을 못 만든 넣기·바꾸기 말에 종류 낱말만 있으면('3일째 저녁은 스시로 바꿔줘'·'change day 1 dinner to ramen')도 같다
+  if (!ops.length) {
+    const wants = tokens.some((t) => t.type === 'verb' && (t.verb === 'add' || t.verb === 'change'));
+    return { regen: wants && EDIT_CATEGORY_RE.test(editBlankTokens(text, tokens, 0, ['place'])) ? 'category' : 'trip', edit: false, ops: [] };
+  }
+  // 단순한 명령이 아니라는 표지(되묻는 선택지에 [취소]를 붙일지 본다 — interpretItineraryEdit). aiMarkers·tokens는 Groq 해석에도 같은 기준을 쓰려고 함께 돌려준다.
+  // extra = 알아들은 것 밖에 남는 낱말이 있음, extraLive = 그 낱말이 그대로 두기 절 밖에도 있음(넣기만 있는 말은 이것으로 본다)
+  // 규칙이 이름으로 쓴 말(장소로 못 알아본 줄인 이름: '이튿날 철도박물관 빼줘'·'오다이바 빼고 팀랩')은 알아들은 것이다
+  // (일정·후보에서 못 찾으면 그 편집이 '찾지 못했어요'가 된다). 편집에 쓰지 않은 이름('금각사는 꼭 갈 거니까 철도박물관 빼줘')은 남는다.
+  // Groq 해석에는 이 예외를 두지 않는다(Groq가 그 말을 어떻게 읽었는지 모르므로 남는 낱말이 있으면 확인한다 — aiMarkers).
+  const looseWords = ops.flatMap((op) => [op.placeMention ? '' : op.place, op.newMention ? '' : op.newPlace]).filter(Boolean).flatMap((n) => String(n).split(/\s+/)).filter(Boolean);
+  const extraAll = editExtraWords(text, tokens, ctx);
+  const extra = extraAll.filter((c) => !looseWords.some((w) => c.raw === w || (c.raw.startsWith(w) && EDIT_REST_RES.particle.test(c.raw.slice(w.length)))));
+  const senseOf = (list) => [...markers, ...(list.length ? ['extra'] : []), ...(editLiveExtra(list, tokens, style).length ? ['extraLive'] : [])];
+  const reasons = [...new Set([...senseOf(extra), ...editStructureReasons(tokens, ops)])];
+  // 말한 장소가 말한 칸에 없는 말('금각사 저녁 빼줘'·'drop Kinkaku-ji dinner'): 규칙이 그 칸 일정과 장소를 함께 묻는다(검토 F1).
+  // Groq에 맡기지 않는다(Groq가 칸을 버리거나 다른 장소로 읽어 확인 문구가 말과 달라지지 않게).
+  const slotMismatch = ops.some((op) => op.slot && op.placeMention && op.placeMention.blocks.length
+    && !op.placeMention.blocks.some((b) => editSlotMatches(b.info, op.slot, ctx.days.find((d) => d.day === b.day))));
+  return { regen: '', edit: true, ops, keep, slotMismatch, reasons, aiMarkers: senseOf(extraAll), tokens, extra: extra.map((c) => c.raw) };
+}
+
+// 경로 밖 도시의 장소인지 볼 때 쓰는 그 장소의 도시(대표 명소·추가 명소·도시 주변 실제 명소 이름이 들어 있으면). 모르면 ''.
+function editKnownPlaceCity(name) {
+  const n = String(name || '').trim();
+  if (!n) return '';
+  const exact = editPlaceCityOf(n);
+  if (exact) return exact;
+  const must = matchMustAttractions(n);
+  if (must.length) return must[0].cityKey;
+  const hits = extraPlaceHits(n);
+  return hits.length ? hits[0].place.cityKey : '';
+}
+
+// ── AI 해석(OpenAI 호환 = Groq만) ──
+const EDIT_AI_RULES = [
+  'You read a traveler\'s follow-up message about an EXISTING Japan itinerary and return JSON that matches the schema.',
+  'kind "edit": the message changes only some blocks — remove a place, add a place, move a place to another day or slot, replace one place with another, or change a block\'s start time.',
+  'kind "regenerate": the message changes the trip itself — number of days ("하루 더", "one more day"), cities or route ("오사카도 추가", "삿포로 대신 하코다테"), dates, theme, budget or conditions for the whole trip.',
+  'kind "other": anything else (a question, thanks). For regenerate and other, ops is [].',
+  'ops: one entry per change, in the order said. action is remove, add, move, replace or time.',
+  'day: the day number the change is about (0 if not said). slot: morning, afternoon, evening, allday, breakfast, lunch, dinner or "" (not said).',
+  'place: the existing itinerary place to change, copied exactly from the itinerary when you can tell which one; "" for add or when only day/slot identify it.',
+  'newPlace: the place to add or put instead, written as the traveler wrote it; "" otherwise. Never invent a place the traveler did not name.',
+  'toDay and toSlot: the destination of a move (0 and "" when not said). time: the new start time as 24-hour HH:MM for action time, "" otherwise.',
+  'Never guess a day or slot the traveler did not say.'
+];
+const EDIT_PERIOD_EN = { '오전': 'morning', '오후': 'afternoon', '종일': 'all day', '아침': 'breakfast', '점심': 'lunch', '저녁': 'dinner' };
+function normalizeAiEditOutput(p) {
+  const kind = ['edit', 'regenerate', 'other'].includes(p && p.kind) ? p.kind : '';
+  if (!kind || !Array.isArray(p.ops)) throw new AiOutputError('AI_INVALID_OUTPUT', 'itinerary edit parser returned an unexpected shape');
+  const slot = (s) => { const v = String(s || '').toLowerCase().replace(/\s+/g, ''); return v === 'allday' || EDIT_SLOT_WORDS.has(v) ? v : ''; };
+  const int = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= 1 && n <= 30 ? n : 0; };
+  const str = (v) => (typeof v === 'string' ? v.trim().slice(0, 80) : '');
+  const ops = p.ops.slice(0, EDIT_MAX_OPS).map((o) => (o && EDIT_ACTIONS.has(o.action)
+    ? editRawOp({ action: o.action, day: int(o.day), slot: slot(o.slot), place: str(o.place), newPlace: str(o.newPlace), toDay: int(o.toDay), toSlot: slot(o.toSlot), time: clockOrEmpty(o.time) || null, fromAi: true })
+    : null)).filter(Boolean);
+  if (kind === 'edit' && !ops.length) throw new AiOutputError('AI_INVALID_OUTPUT', 'itinerary edit parser returned an edit without usable ops');
+  return { kind, ops };
+}
+async function parseItineraryEditWithOpenAI(message, ctx, history) {
+  if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is missing');
+  const lines = ctx.days.map((d) => `Day ${d.day} (${localizedCityName(d.city, 'en')}): ${d.infos.length
+    ? d.infos.map((b) => `${EDIT_PERIOD_EN[b.period] || b.period} ${b.start !== null ? minToClock(b.start) : '?'}-${b.end !== null ? minToClock(b.end) : '?'} ${b.name}`).join(' | ')
+    : '(empty)'}`);
+  const input = [{ role: 'system', content: [{ type: 'input_text', text: EDIT_AI_RULES.join(' ') }] }];
+  // 직전 대화(무엇을 가리키는지 알게). 지난 말은 문자열 content로 보낸다(Responses API는 assistant의 input_text 조각을 거절).
+  for (const h of (Array.isArray(history) ? history : []).slice(-4)) input.push({ role: h.role === 'user' ? 'user' : 'assistant', content: String(h.content || '') });
+  input.push({ role: 'user', content: [{ type: 'input_text', text: JSON.stringify({ message, itinerary: lines }) }] });
+  const opSchema = {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      action: { type: 'string' }, day: { type: 'integer' }, slot: { type: 'string' }, place: { type: 'string' }, newPlace: { type: 'string' },
+      toDay: { type: 'integer' }, toSlot: { type: 'string' }, time: { type: 'string' }
+    },
+    required: ['action', 'day', 'slot', 'place', 'newPlace', 'toDay', 'toSlot', 'time']
+  };
+  const body = {
+    input,
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'itinerary_edit',
+        schema: { type: 'object', additionalProperties: false, properties: { kind: { type: 'string' }, ops: { type: 'array', items: opSchema } }, required: ['kind', 'ops'] },
+        strict: true
+      }
+    }
+  };
+  const { parsed, model } = await callOpenAiResponses(body, { accept: (p) => normalizeAiEditOutput(p) });
+  return { ...parsed, model };
+}
+
+// ── 해석 결과 → 확정 편집(ops)·되묻기 ──
+function editIsNight(info, d) {
+  if (!info || info.period !== '오후' || info.start === null) return false;
+  const dinner = d.infos.find((x) => x.period === '저녁');
+  const cut = dinner && dinner.start !== null ? dinner.start : 18 * 60;
+  return info.start >= cut;
+}
+function editSlotMatches(info, slot, d) {
+  const night = editIsNight(info, d);
+  switch (slot) {
+    case 'morning': return info.period === '오전';
+    case 'afternoon': return info.period === '오후' && !night;
+    case 'allday': return info.period === '종일';
+    case 'breakfast': return info.period === '아침';
+    case 'lunch': return info.period === '점심';
+    case 'dinner': return info.period === '저녁';
+    case 'evening': return info.period === '저녁' || night;
+    case 'early': return info.period === '아침' || info.period === '오전';
+    default: return true;
+  }
+}
+function editBlockLabel(x, T) {
+  const key = editIsNight(x.info, x.d) ? 'night' : x.info.period;
+  return `${T.day(x.day)} ${T.period[key] || key} · ${x.info.name}`;
+}
+// 대상 블록 찾기: 말한 장소(블록·후보 표기) → 없으면 일차·칸. { targets: [{ day, d, info }], named, forceAsk, slotMismatch }
+function resolveEditTargets(raw, ctx) {
+  const all = ctx.days.flatMap((d) => d.infos.map((info) => ({ day: d.day, d, info })));
+  let pool;
+  let named = '';
+  if (raw.placeMention && raw.placeMention.blocks.length) {
+    const keys = new Set(raw.placeMention.blocks.map((b) => `${b.day}|${b.info.index}`));
+    pool = all.filter((x) => keys.has(`${x.day}|${x.info.index}`));
+    named = raw.placeMention.blocks[0].info.name;
+  } else if (raw.placeMention) {
+    return { targets: [], named: raw.placeMention.cand ? raw.placeMention.cand.name : raw.placeMention.text };
+  } else if (raw.place) {
+    named = raw.place;
+    const k = placeNameKey(raw.place);
+    const labels = [raw.place];
+    const kinds = new Set();
+    for (const ck of ctx.routeKeys) for (const c of ctx.cands.get(ck) || []) if (c.keys.includes(k)) { labels.push(...c.labels); kinds.add(c.kind); }
+    // 이름이 같은 블록, 또는 같은 종류(식사 칸 ↔ 맛집, 관광 칸 ↔ 관광지)이면서 이름을 포함하는 블록
+    pool = all.filter((x) => placeNameKey(x.info.name) === k || (editNameMatches(x.info.name, labels) && (!kinds.size || kinds.has(editBlockKind(x.info)))));
+  } else {
+    if (!raw.day && !raw.slot) return { targets: [], named: '' };
+    pool = all;
+    // 같은 말에서 남기라고 한 곳('금각사는 두고 3일째 다 빼줘'·'remove day 3 but keep Kinkaku-ji')은 일차·칸으로 찾은 대상에서 뺀다
+    if (Array.isArray(raw.exclude) && raw.exclude.length) {
+      const kept = new Set(raw.exclude.flatMap((m) => (m.blocks || []).map((b) => `${b.day}|${b.info.index}`)));
+      pool = pool.filter((x) => !kept.has(`${x.day}|${x.info.index}`));
+    }
+  }
+  let forceAsk = false;
+  let slotMismatch = false;
+  if (raw.day) {
+    const onDay = pool.filter((x) => x.day === raw.day);
+    // 장소를 말했는데 그날에는 없으면 다른 날 것을 묻는다(말없이 다른 날을 고치지 않게)
+    if (!onDay.length && named && pool.length) forceAsk = true;
+    else pool = onDay;
+  }
+  if (raw.slot && !forceAsk) {
+    const bySlot = pool.filter((x) => editSlotMatches(x.info, raw.slot, x.d));
+    if (bySlot.length || !named) pool = bySlot;
+    else if (pool.length) {
+      // 장소를 말했는데 그 장소가 말한 칸에 없으면('금각사 저녁 빼줘'·'skip lunch for Kinkaku-ji'·'金閣寺の夕食を外して') 칸 낱말을 버리지 않고 묻는다(검토 F1·F4):
+      // 그 장소가 있는 날의 그 칸 일정을 먼저, 말한 장소를 뒤에 둔다(일차가 안 맞을 때처럼). 그날 그 칸이 비었으면 '그 칸에서 찾지 못했어요'.
+      const onDays = new Set(pool.map((x) => x.day));
+      const inSlot = all.filter((x) => onDays.has(x.day) && editSlotMatches(x.info, raw.slot, x.d) && !pool.includes(x));
+      if (!inSlot.length) return { targets: [], named: '', forceAsk: false, slotMismatch: true };
+      const namedTargets = pool;
+      pool = [...inSlot, ...pool];
+      return { targets: pool, named, forceAsk: true, slotMismatch: true, namedTargets };
+    }
+    if (!named && raw.slot === 'evening' && pool.some((x) => x.info.period === '저녁')) pool = pool.filter((x) => x.info.period === '저녁');
+  }
+  return { targets: pool, named, forceAsk, slotMismatch };
+}
+function editTargetMissing(found, T) {
+  return { note: found.named ? T.targetMissing(found.named) : T.slotEmpty };
+}
+// 대상이 여럿이면 되묻기. withAll: '모두' 선택지(빼기·시간). 칸이 안 맞아 묻는 것(그 칸 일정 + 말한 장소)에는 '모두'를 두지 않는다.
+// action: 되묻는 문장에 밝힐 할 일(remove·move·time·replace). noop: 칸이 안 맞아 묻는데 말한 장소가 이미 그렇게 되어 있으면(바꿀 것 없음) 줄 안내.
+function editAskTargets(found, T, opFor, withAll, action, noop) {
+  const choices = [];
+  let namedChoice = false;
+  for (const x of found.targets.slice(0, EDIT_MAX_CHOICES)) {
+    const ops = opFor(x);
+    if (!ops || !ops.length) continue;
+    choices.push({ label: editBlockLabel(x, T), ops });
+    if (found.namedTargets && found.namedTargets.includes(x)) namedChoice = true;
+  }
+  // 칸이 안 맞아 묻는데 말한 장소는 고칠 것이 없으면(이미 그 칸·그 시각: '오전 금각사를 오후로'인데 금각사는 이미 오후) 말하지 않은 그 칸 일정만 남는다.
+  // 그것을 묻지 않고(답 '네'가 말하지 않은 일정을 고르지 않게) 이미 그렇다고 알린다(검토 K1c 사소한 의견 2).
+  if (found.slotMismatch && !namedChoice) return { note: noop ? noop() : T.unclear };
+  if (!choices.length) return { note: T.unclear };
+  // all: true = '모두' 선택지(화면이 글로 한 답으로 좁힐 때 원래 '모두'를 다시 보이지 않고 좁힌 것만 합친 '모두'를 새로 만든다 — 검토 F5)
+  if (withAll && !found.slotMismatch && choices.length > 1) choices.push({ label: T.all(choices.length), ops: choices.flatMap((c) => c.ops), all: true });
+  const sameName = found.named && found.targets.every((x) => placeNameKey(x.info.name) === placeNameKey(found.targets[0].info.name));
+  const q = (T.which && T.which[action]) || (T.which ? T.which.change : '');
+  // 개수는 실제로 보이는 선택지 수('3개예요'인데 버튼이 둘이지 않게 — 이미 그 칸인 것은 선택지에서 빠진다)
+  const n = choices.filter((c) => !c.all).length;
+  return { ask: { question: sameName ? T.askWhich(found.targets[0].info.name, n, q) : T.askWhichSlot(n, q), choices } };
+}
+// 새 장소를 그 도시 후보에서 찾는다(규칙 6). 말 속 후보가 그 도시 것이면 그대로, 아니면 표기로(같은 키 → 포함).
+function findEditCandidate(text, mention, ck, ctx) {
+  const list = ctx.cands.get(ck) || editCandidatesForCity(ck, ctx.lang);
+  if (mention && mention.cand && mention.cand.city === ck) return mention.cand;
+  const keys = [placeNameKey(text), ...(mention && mention.cand ? mention.cand.keys : [])].filter(Boolean);
+  if (!keys.length) return null;
+  const names = [text, ...(mention && mention.cand ? mention.cand.labels : [])].filter(Boolean);
+  return list.find((c) => keys.some((k) => c.keys.includes(k)))
+    || list.find((c) => names.some((n) => editNameMatches(n, c.labels)))
+    || null;
+}
+// 장소 이름의 도시(경로 밖 도시의 대표 명소·추가 명소·도시 명소). 모르면 ''.
+function editPlaceCityOf(name) {
+  const k = placeNameKey(name);
+  if (!k) return '';
+  const must = MUST_ATTRACTIONS.find((m) => [m.name, ...(m.aliases || [])].some((a) => placeNameKey(a) === k));
+  if (must) return must.cityKey;
+  const extra = extraPlaceByName(name);
+  if (extra) return extra.cityKey;
+  for (const [ck, c] of Object.entries(CITY_DATA)) if ((c.highlights || []).some((h) => placeNameKey(h.name) === k)) return ck;
+  return '';
+}
+// AI가 고른 새 장소는 말에 그 이름(또는 후보의 다른 표기)이 있을 때만 바로 쓴다
+function editHasEvidence(message, name, cand) {
+  const index = editTextIndex(String(message || '').normalize('NFKC'));
+  if (name && editLabelSpans(index, name).length) return true;
+  return Boolean(cand) && cand.labels.some((l) => editLabelSpans(index, l).length > 0);
+}
+// 이미 일정에 든 장소는 비슷한 후보에서 뺀다. 이름 글자가 겹치는 후보 → 큐레이션(생성 장소·하루짜리가 아닌) 명소 순으로 3곳.
+function suggestEditCandidates(name, ck, ctx, kind) {
+  const list = (ctx.cands.get(ck) || editCandidatesForCity(ck, ctx.lang)).filter((c) => c.kind === kind && !c.generic);
+  const used = new Set(ctx.days.flatMap((d) => d.infos.map((i) => placeNameKey(i.name))));
+  const fresh = list.filter((c) => !c.keys.some((k) => used.has(k)));
+  const letters = nameLetters(name);
+  const scored = fresh.map((c, i) => ({ c, i, s: Math.max(0, ...c.labels.map((l) => sharedLetterCount(letters, nameLetters(l)))) }));
+  const similar = scored.filter((x) => x.s >= 2).sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.c);
+  const rest = fresh.filter((c) => !similar.includes(c) && !c.generated && !c.allDay);
+  return [...similar, ...rest].slice(0, 3);
+}
+function editKindHint(slotWord, name) {
+  if (['breakfast', 'lunch', 'dinner'].includes(slotWord)) return 'food';
+  if (['morning', 'afternoon', 'allday'].includes(slotWord)) return 'dest';
+  return FOOD_WORD_RE.test(String(name || '')) ? 'food' : 'dest';
+}
+// 넣을 칸: 말한 칸(종류에 맞게) → 하루짜리면 종일 → 추천 시작 17시 이후면 저녁 이후 → 관광이 적은 반나절 칸 → 추천 시간
+function editPickSlot(slotWord, cand, d) {
+  if (cand.kind === 'food') {
+    const mapFood = { breakfast: 'breakfast', early: 'breakfast', morning: 'lunch', lunch: 'lunch', afternoon: 'lunch', evening: 'dinner', dinner: 'dinner' };
+    if (mapFood[slotWord]) return mapFood[slotWord];
+    return ['lunch', 'dinner', 'breakfast'].find((s) => !d.infos.some((i) => i.period === EDIT_PERIOD_OF_SLOT[s])) || 'dinner';
+  }
+  // 하루짜리(테마파크·먼 당일치기)는 말한 칸과 상관없이 종일 칸(규칙 일정과 같다)
+  if (cand.allDay) return 'allday';
+  const mapDest = { morning: 'morning', early: 'morning', breakfast: 'morning', afternoon: 'afternoon', lunch: 'afternoon', allday: 'allday', evening: 'night', dinner: 'night' };
+  if (mapDest[slotWord]) return mapDest[slotWord];
+  const startH = Number((/^(\d{1,2}):/.exec(cand.bestTime || '') || [])[1]);
+  if (startH >= 17) return 'night';
+  // 화면 배치(fitSightTime)와 같이 60분 이상 빈 시간이 있는 반나절 칸을 먼저(없으면 화면이 겹침을 묻는다)
+  const gapAm = editSlotGap(d, 'morning');
+  const gapPm = editSlotGap(d, 'afternoon');
+  if ((gapAm >= 60) !== (gapPm >= 60)) return gapAm >= 60 ? 'morning' : 'afternoon';
+  if (gapAm < 60) return gapAm >= gapPm ? 'morning' : 'afternoon';
+  const am = d.infos.filter((i) => i.period === '오전').length;
+  const pm = d.infos.filter((i) => i.period === '오후' && !editIsNight(i, d)).length;
+  if (am !== pm) return am < pm ? 'morning' : 'afternoon';
+  return Number.isFinite(startH) && startH < 12 ? 'morning' : 'afternoon';
+}
+// 반나절 칸(화면 SLOT_DEFS: 오전 09:00-12:00, 오후 13:00-17:00) 안에서 그날 관광 블록과 겹치지 않는 가장 긴 빈 시간(분)
+const EDIT_SLOT_WINDOW = { morning: [9 * 60, 12 * 60], afternoon: [13 * 60, 17 * 60] };
+function editSlotGap(d, slot) {
+  const [s0, e0] = EDIT_SLOT_WINDOW[slot];
+  const busy = d.infos.filter((i) => !EDIT_MEAL_PERIODS.has(i.period) && !FREE_TIME_TITLES.has(i.name) && i.start !== null && i.end !== null && i.end > i.start && i.start < e0 && s0 < i.end)
+    .sort((a, b) => a.start - b.start);
+  let cursor = s0;
+  let best = 0;
+  for (const b of busy) { best = Math.max(best, b.start - cursor); cursor = Math.max(cursor, b.end); }
+  return Math.max(best, e0 - cursor);
+}
+function editSlotLabel(slot, T) {
+  return slot === 'night' ? T.period.night : (T.period[EDIT_PERIOD_OF_SLOT[slot]] || slot);
+}
+// 블록이 그 후보와 같은 장소인지: 이름이 같거나, 같은 종류(식사 칸 ↔ 맛집, 관광 칸 ↔ 관광지)이면서 이름을 포함
+function editInfoIsCand(info, cand) {
+  return cand.keys.includes(placeNameKey(info.name)) || (editBlockKind(info) === cand.kind && editNameMatches(info.name, cand.labels));
+}
+// 그 후보가 일정의 다른 칸(skip 블록 말고)에 이미 있으면 { day } (없으면 null)
+function editCandElsewhere(ctx, cand, skipDay, skipIndex) {
+  for (const d of ctx.days) for (const info of d.infos) {
+    if (d.day === skipDay && (skipIndex === undefined || info.index === skipIndex)) continue;
+    if (editInfoIsCand(info, cand)) return { day: d.day };
+  }
+  return null;
+}
+function editAddOp(d, cand, slotWord, T) {
+  if (d.infos.some((i) => editInfoIsCand(i, cand))) return { note: T.duplicate(cand.name, T.day(d.day)) };
+  return { ops: [{ op: 'add', day: d.day, slot: editPickSlot(slotWord, cand, d), name: cand.name, area: cand.area, kind: cand.kind }] };
+}
+// 그 도시 날 중 관광이 가장 적은 날
+function editBestDayFor(cand, ctx) {
+  const days = ctx.days.filter((d) => d.city === cand.city);
+  const pool = days.length ? days : ctx.days;
+  return [...pool].sort((a, b) => a.infos.filter((i) => !EDIT_MEAL_PERIODS.has(i.period)).length - b.infos.filter((i) => !EDIT_MEAL_PERIODS.has(i.period)).length || a.day - b.day)[0];
+}
+// 못 찾은 새 장소: 경로의 다른 도시 장소면 그 도시 날을, 아니면 그 도시의 비슷한 후보를 선택지로(고르기 전에는 넣지 않는다).
+// opts.confirmPick: AI가 고른 후보가 말에 없는 이름이면 '이곳을 넣을까요?'로 묻고 그 후보를 첫 선택지로 둔다.
+function editNotFound(name, raw, ctx, T, opts) {
+  const dayCity = opts.dayCity;
+  const kind = opts.kind || editKindHint(raw.slot, name);
+  const choicesFrom = (first) => [...(first ? [first] : []), ...suggestEditCandidates(name, dayCity, ctx, kind)]
+    .filter((c, i, arr) => c && arr.findIndex((x) => x.ko === c.ko && x.kind === c.kind) === i).slice(0, 3)
+    .map((c) => opts.makeChoice(c)).filter(Boolean);
+  if (opts.confirmPick && opts.first) {
+    const choices = choicesFrom(opts.first);
+    return choices.length ? { ask: { question: T.confirmPick(opts.first.name), choices } } : { note: T.unclear };
+  }
+  const otherCk = ctx.routeKeys.find((ck) => ck !== dayCity && findEditCandidate(name, raw.newMention, ck, ctx)) || '';
+  if (otherCk && opts.allowOtherCityDays) {
+    const cand = findEditCandidate(name, raw.newMention, otherCk, ctx);
+    const choices = ctx.days.filter((d) => d.city === otherCk).slice(0, EDIT_MAX_CHOICES).map((d) => {
+      const r = editAddOp(d, cand, raw.slot, T);
+      return r.ops ? { label: `${T.day(d.day)} ${editSlotLabel(r.ops[0].slot, T)}`, ops: r.ops } : null;
+    }).filter(Boolean);
+    if (choices.length) return { ask: { question: T.otherCity(cand.name, localizedCityName(otherCk, ctx.replyLang)), choices } };
+  }
+  const realCity = otherCk || editPlaceCityOf(name);
+  const head = realCity && realCity !== dayCity
+    ? T.otherCityNoDay(name, localizedCityName(realCity, ctx.replyLang))
+    : T.notFound(name, localizedCityName(dayCity, ctx.replyLang));
+  const choices = choicesFrom(null);
+  if (!choices.length) return { note: head };
+  return { ask: { question: `${head} ${T.pickInstead}`, choices } };
+}
+
+function resolveEditAdd(raw, ctx, T, meta) {
+  const name = raw.newMention ? raw.newMention.text : raw.newPlace;
+  if (!name) return { note: T.noName };
+  const wantDays = raw.day ? ctx.days.filter((d) => d.day === raw.day) : ctx.days;
+  const hits = wantDays.map((d) => ({ d, cand: findEditCandidate(name, raw.newMention, d.city, ctx) })).filter((x) => x.cand);
+  const trusted = hits.filter((h) => !raw.fromAi || editHasEvidence(meta.message, name, h.cand));
+  // 그 장소가 이미 다른 날에 있으면 확인 문구에 알린다(같은 장소가 두 번 들어가는 것을 알고 고르게)
+  const direct = (d, cand) => {
+    const r = editAddOp(d, cand, raw.slot, T);
+    const other = r.ops ? editCandElsewhere(ctx, cand, d.day) : null;
+    return other ? { ...r, note: T.duplicate(cand.name, T.day(other.day)) } : r;
+  };
+  if (trusted.length) {
+    if (raw.day || trusted.length === 1) return direct(trusted[0].d, trusted[0].cand);
+    const choices = trusted.slice(0, EDIT_MAX_CHOICES).map((h) => {
+      const r = editAddOp(h.d, h.cand, raw.slot, T);
+      return r.ops ? { label: `${T.day(h.d.day)} ${editSlotLabel(r.ops[0].slot, T)}`, ops: r.ops } : null;
+    }).filter(Boolean);
+    if (!choices.length) return editAddOp(trusted[0].d, trusted[0].cand, raw.slot, T);
+    if (choices.length === 1) {
+      const h = trusted.find((t) => t.d.day === choices[0].ops[0].day) || trusted[0];
+      return direct(h.d, h.cand);
+    }
+    return { ask: { question: T.askDay(trusted[0].cand.name), choices } };
+  }
+  const targetDay = wantDays.length === 1 ? wantDays[0] : null;
+  // 여기까지 온 후보(hits)는 AI가 말에 없는 이름으로 고른 것뿐이다 → 넣을지 묻는다
+  const aiPick = hits[0] ? hits[0].cand : null;
+  return editNotFound(name, raw, ctx, T, {
+    dayCity: aiPick ? aiPick.city : (targetDay || ctx.days[0]).city,
+    allowOtherCityDays: true,
+    first: aiPick,
+    confirmPick: Boolean(aiPick),
+    makeChoice: (c) => {
+      const d = targetDay || editBestDayFor(c, ctx);
+      const r = editAddOp(d, c, raw.slot, T);
+      return r.ops ? { label: `${c.name} · ${T.day(d.day)} ${editSlotLabel(r.ops[0].slot, T)}`, ops: r.ops } : null;
+    }
+  });
+}
+
+function editReplaceOps(x, cand, T) {
+  if (EDIT_MEAL_PERIODS.has(x.info.period) !== (cand.kind === 'food')) return { note: T.kindMismatch };
+  if (x.d.infos.some((i) => i.index !== x.info.index && editInfoIsCand(i, cand))) return { note: T.duplicate(cand.name, T.day(x.day)) };
+  // 하루짜리(테마파크·당일치기)를 반나절 칸에 넣으면 그 칸을 빼고 종일 칸으로 넣는다(시간 겹침은 화면이 묻는다)
+  if (cand.kind === 'dest' && cand.allDay && x.info.period !== '종일') {
+    return { ops: [{ op: 'remove', day: x.day, block: x.info.block }, { op: 'add', day: x.day, slot: 'allday', name: cand.name, area: cand.area, kind: 'dest' }] };
+  }
+  return { ops: [{ op: 'replace', day: x.day, block: x.info.block, name: cand.name, area: cand.area, kind: cand.kind }] };
+}
+function resolveEditReplace(raw, ctx, T, meta) {
+  const name = raw.newMention ? raw.newMention.text : raw.newPlace;
+  if (!name) return { note: T.noName };
+  const found = resolveEditTargets(raw, ctx);
+  if (!found.targets.length) return editTargetMissing(found, T);
+  const candFor = (x) => {
+    const c = findEditCandidate(name, raw.newMention, x.d.city, ctx);
+    return c && (!raw.fromAi || editHasEvidence(meta.message, name, c)) ? c : null;
+  };
+  // 대상이 하나이거나, 여럿이어도 새 장소를 어느 날 도시에서도 못 찾으면 첫 대상 기준으로 '찾지 못했어요' + 비슷한 후보
+  if ((found.targets.length === 1 && !found.forceAsk) || !found.targets.some((x) => candFor(x))) {
+    const x = found.targets[0];
+    const cand = candFor(x);
+    if (cand) {
+      // 새 장소가 이미 다른 날(칸)에 있으면 확인 문구에 알린다(한 곳이 두 번 들어가는 것을 알고 고르게)
+      const r = editReplaceOps(x, cand, T);
+      const other = r.ops ? editCandElsewhere(ctx, cand, x.day, x.info.index) : null;
+      return other ? { ...r, note: T.duplicate(cand.name, T.day(other.day)) } : r;
+    }
+    // 그 도시 후보지만 AI가 말에 없는 이름으로 고른 경우 → 바꿀지 묻는다
+    const aiPick = findEditCandidate(name, raw.newMention, x.d.city, ctx);
+    return editNotFound(name, raw, ctx, T, {
+      dayCity: x.d.city,
+      allowOtherCityDays: false,
+      kind: EDIT_MEAL_PERIODS.has(x.info.period) ? 'food' : 'dest',
+      first: aiPick,
+      confirmPick: Boolean(aiPick),
+      makeChoice: (c) => { const r = editReplaceOps(x, c, T); return r.ops ? { label: `${x.info.name} → ${c.name}`, ops: r.ops } : null; }
+    });
+  }
+  return editAskTargets(found, T, (x) => { const c = candFor(x); const r = c ? editReplaceOps(x, c, T) : null; return r && r.ops ? r.ops : null; }, false, 'replace');
+}
+
+function resolveEditRemove(raw, ctx, T) {
+  const found = resolveEditTargets(raw, ctx);
+  if (!found.targets.length) return editTargetMissing(found, T);
+  const opFor = (x) => [{ op: 'remove', day: x.day, block: x.info.block }];
+  if (found.targets.length === 1 && !found.forceAsk) return { ops: opFor(found.targets[0]) };
+  return editAskTargets(found, T, opFor, true, 'remove');
+}
+
+// 옮길 칸: 말한 칸(블록 종류에 맞게). 말하지 않았으면 원래 시간대(저녁 이후 항목은 저녁 이후)
+function editMoveSlot(slotWord, x) {
+  if (EDIT_MEAL_PERIODS.has(x.info.period)) {
+    const m = { breakfast: 'breakfast', early: 'breakfast', lunch: 'lunch', dinner: 'dinner', evening: 'dinner' }[slotWord];
+    return m || EDIT_SLOT_OF_PERIOD[x.info.period];
+  }
+  const m = { morning: 'morning', early: 'morning', afternoon: 'afternoon', allday: 'allday', evening: 'night', dinner: 'night', lunch: 'afternoon', breakfast: 'morning' }[slotWord];
+  if (m) return m;
+  return editIsNight(x.info, x.d) ? 'night' : EDIT_SLOT_OF_PERIOD[x.info.period];
+}
+function resolveEditMove(raw, ctx, T) {
+  const found = resolveEditTargets({ ...raw, toDay: 0, toSlot: '' }, ctx);
+  if (!found.targets.length) return editTargetMissing(found, T);
+  const opFor = (x) => {
+    const day = raw.toDay || x.day;
+    const slot = editMoveSlot(raw.toSlot, x);
+    const cur = editIsNight(x.info, x.d) ? 'night' : EDIT_SLOT_OF_PERIOD[x.info.period];
+    if (day === x.day && slot === cur) return null;
+    return [{ op: 'move', fromDay: x.day, block: x.info.block, day, slot }];
+  };
+  if (found.targets.length === 1 && !found.forceAsk) {
+    const ops = opFor(found.targets[0]);
+    return ops ? { ops } : { note: T.sameSlot(found.targets[0].info.name) };
+  }
+  return editAskTargets(found, T, opFor, false, 'move', () => T.sameSlot(found.named));
+}
+
+// 시각(분): 오전·오후 표시가 없으면 저녁(식사·저녁 이후)은 오후로, 아침 식사·오전 칸은 6~11시를 오전 그대로(1~5시는 오후로),
+// 그 밖에는 6시 이하와 오후 칸의 1~9시를 오후로 본다. 새벽(5시 전) 일정은 없다: '0시'·'저녁을 12시로'처럼 애매하면 null(시간을 다시 묻는다).
+// Groq가 낸 'HH:MM'도 같은 검사를 한다(검토 F6: '저녁 7시'를 07:00, '금각사 3시'를 03:00으로 넣지 않게). 13시 이후는 그대로,
+// 12시까지는 오전·오후 표시가 없는 시각처럼 칸에 맞춰 오후로 보정하고, 맞지 않으면(0시·저녁 12시) null.
+function editClockFor(time, info, slotWord) {
+  if (typeof time === 'string') {
+    const min = clockToMin(time);
+    if (min === null) return null;
+    const h = Math.floor(min / 60);
+    return editClockFor({ h, m: min % 60, ampm: h >= 13 ? 'pm' : '' }, info, slotWord);
+  }
+  if (!time) return null;
+  let h = time.h;
+  const m = time.m;
+  const evening = info.period === '저녁' || ['evening', 'dinner'].includes(slotWord);
+  const early = !evening && (info.period === '아침' || info.period === '오전' || ['morning', 'early', 'breakfast'].includes(slotWord));
+  // '0시'·'저녁 0시'(자정)·'저녁(을) 12시로'는 오전·오후 표시가 있어도 애매하다(저녁 식사를 낮 12시로 옮기지 않게)
+  if (h === 0 || (h === 12 && evening)) return null;
+  if (time.ampm === 'pm' && h < 12) h += 12;
+  else if (time.ampm === 'am' && h === 12) h = 0;
+  else if (!time.ampm && h < 12) {
+    if (evening) h += 12;
+    else if (early) { if (h < 6) h += 12; }
+    else if (h <= 6 || ((info.period === '오후' || slotWord === 'afternoon') && h <= 9)) h += 12;
+  }
+  const min = h * 60 + m;
+  return h <= 23 && min >= 5 * 60 ? min : null;
+}
+function resolveEditTime(raw, ctx, T) {
+  const found = resolveEditTargets(raw, ctx);
+  if (!found.targets.length) return editTargetMissing(found, T);
+  const opFor = (x) => {
+    const start = editClockFor(raw.time, x.info, raw.slot);
+    if (start === null || start === x.info.start) return null;
+    return [{ op: 'time', day: x.day, block: x.info.block, start: minToClock(start) }];
+  };
+  if (found.targets.length === 1 && !found.forceAsk) {
+    const x = found.targets[0];
+    const start = editClockFor(raw.time, x.info, raw.slot);
+    if (start === null) return { note: T.badTime };
+    if (start === x.info.start) return { note: T.sameTime(x.info.name, minToClock(start)) };
+    return { ops: opFor(x) };
+  }
+  return editAskTargets(found, T, opFor, true, 'time', () => {
+    const x = (found.namedTargets || [])[0];
+    const start = x ? editClockFor(raw.time, x.info, raw.slot) : null;
+    return x && start !== null ? T.sameTime(x.info.name, minToClock(start)) : T.badTime;
+  });
+}
+
+// 맞바꾸기: 두 블록의 시각·칸은 그대로 두고 장소만 서로 바꾼다({ op:'swap', day, block, day2, block2 }).
+// 두 곳이 일정에 하나씩 있고 칸 종류(식사·관광)가 같을 때만. 아니면 고치지 않고 알린다.
+function resolveEditSwap(raw, ctx, T) {
+  const a = resolveEditTargets({ ...raw, toDay: 0, toSlot: '' }, ctx);
+  const b = resolveEditTargets({ ...raw, day: raw.toDay, slot: raw.toSlot, place: raw.newPlace, placeMention: raw.newMention }, ctx);
+  if (!a.targets.length) return editTargetMissing(a, T);
+  if (!b.targets.length) return editTargetMissing(b, T);
+  if (a.targets.length !== 1 || b.targets.length !== 1 || a.forceAsk || b.forceAsk) return { note: T.swapUnclear };
+  const x = a.targets[0];
+  const y = b.targets[0];
+  if (x.day === y.day && x.info.index === y.info.index) return { note: T.swapUnclear };
+  if (editBlockKind(x.info) !== editBlockKind(y.info)) return { note: T.kindMismatch };
+  // 도시가 다른 날끼리는 각 장소가 상대 날 도시의 후보일 때만(규칙 6: 오사카 날에 교토 금각사를 넣지 않는다)
+  for (const [p, q] of [[x, y], [y, x]]) {
+    if (p.d.city !== q.d.city && !findEditCandidate(p.info.name, null, q.d.city, ctx)) {
+      return { note: T.otherCityNoDay(p.info.name, localizedCityName(p.d.city, ctx.replyLang)) };
+    }
+  }
+  // 하루짜리(종일 칸·테마파크)는 반나절 칸과 맞바꾸지 않는다
+  const allDay = (p) => p.info.period === '종일' || Boolean((findEditCandidate(p.info.name, null, p.d.city, ctx) || {}).allDay);
+  if (allDay(x) !== allDay(y) || ((x.info.period === '종일') !== (y.info.period === '종일'))) return { note: T.swapAllDay };
+  return { ops: [{ op: 'swap', day: x.day, block: x.info.block, day2: y.day, block2: y.info.block }] };
+}
+
+function resolveEditOp(raw, ctx, T, meta) {
+  const hasDay = (n) => ctx.days.some((d) => d.day === n);
+  if (raw.day && !hasDay(raw.day)) return { note: T.dayMissing(raw.day) };
+  if (raw.toDay && !hasDay(raw.toDay)) return { note: T.dayMissing(raw.toDay) };
+  if (raw.action === 'remove') return resolveEditRemove(raw, ctx, T);
+  if (raw.action === 'add') return resolveEditAdd(raw, ctx, T, meta);
+  if (raw.action === 'move') return resolveEditMove(raw, ctx, T);
+  if (raw.action === 'replace') return resolveEditReplace(raw, ctx, T, meta);
+  if (raw.action === 'time') return raw.time ? resolveEditTime(raw, ctx, T) : { note: T.badTime };
+  if (raw.action === 'swap') return resolveEditSwap(raw, ctx, T);
+  if (raw.action === 'swapUnclear') return { note: T.swapUnclear };
+  if (raw.action === 'exceptUnclear') return { note: T.exceptUnclear };
+  if (raw.action === 'slotEmpty') return { note: T.slotEmpty };
+  return { note: T.unclear };
+}
+
+// '금각사 빼고 은각사 넣어줘'처럼 빼기 바로 뒤의 넣기(날짜·칸을 따로 말하지 않음)는 그 자리 바꾸기로 합친다
+function mergeEditRemoveAdd(rawOps) {
+  const out = [];
+  for (let i = 0; i < rawOps.length; i += 1) {
+    const a = rawOps[i];
+    const b = rawOps[i + 1];
+    if (a.action === 'remove' && (a.place || a.placeMention) && b && b.action === 'add' && !b.day && !b.slot && (b.newPlace || b.newMention)) {
+      out.push({ ...a, action: 'replace', newPlace: b.newPlace, newMention: b.newMention, fromAi: a.fromAi || b.fromAi, weak: false, merged: true });
+      i += 1;
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+// 결과: apply { ops, groups(말 속 편집마다 확정된 ops) } | ask | none. apply도 화면에 바로 보내지 않고 확인으로 바꾼다(editConfirmResult).
+function resolveEditRawOps(rawOps, ctx, meta) {
+  const T = EDIT_TEXT[ctx.replyLang] || EDIT_TEXT.ko;
+  const ok = [];
+  const groups = [];
+  const notes = [];
+  let ask = null;
+  for (const raw of mergeEditRemoveAdd(rawOps).slice(0, EDIT_MAX_OPS)) {
+    const r = resolveEditOp(raw, ctx, T, meta) || {};
+    if (r.ask) {
+      if (!ask) ask = { ...r.ask, at: ok.length };
+      else if (!notes.includes(T.later)) notes.push(T.later);
+    }
+    if (r.ops) {
+      const fresh = r.ops.filter((op) => !ok.some((o) => JSON.stringify(o) === JSON.stringify(op)));
+      ok.push(...fresh);
+      if (fresh.length) groups.push(fresh);
+    }
+    if (r.note && !notes.includes(r.note)) notes.push(r.note);
+  }
+  if (ask) {
+    // 선택지마다 확정된 다른 편집도 함께 싣는다(고르면 한 번에 적용, 고르기 전에는 아무것도 바꾸지 않는다)
+    const choices = ask.choices.slice(0, EDIT_MAX_CHOICES + 1).map((c) => ({ label: c.label, ops: [...ok.slice(0, ask.at), ...c.ops, ...ok.slice(ask.at)], ...(c.all ? { all: true } : {}) }));
+    return { status: 'ask', question: ask.question, choices, notes, bundled: ok.slice() };
+  }
+  if (ok.length) return { status: 'apply', ops: ok, groups, notes };
+  return { status: 'none', notes: notes.length ? notes : [T.unclear] };
+}
+
+// 확인 문구용 편집 한 줄(날·칸·시각·장소: '2일차 오후(14:00-15:30) 금각사 빼기', 'remove Kinkaku-ji Temple (Day 3 Afternoon 13:00-17:00)',
+// '3日目午後（13:00-17:00）の金閣寺を削除'). 시각 바꾸기는 새 시작 시각, 옮기기는 옮길 날·칸까지.
+function editOpText(op, ctx, T) {
+  const at = (day, block) => {
+    const d = ctx.days.find((x) => x.day === day);
+    const info = (d && d.infos.find((i) => i.block === block)) || editBlockInfo(block, -1);
+    const key = d && info && editIsNight(info, d) ? 'night' : (info ? info.period : '');
+    const t = info && info.start !== null && info.end !== null ? `${minToClock(info.start)}-${minToClock(info.end)}` : '';
+    return { d: T.day(day), p: T.period[key] || key, t, n: info ? info.name : String(block || '') };
+  };
+  if (op.op === 'remove') return T.op.remove(at(op.day, op.block));
+  if (op.op === 'add') return T.op.add(T.day(op.day), editSlotLabel(op.slot, T), op.name);
+  if (op.op === 'move') return T.op.move(at(op.fromDay, op.block), T.day(op.day), editSlotLabel(op.slot, T));
+  if (op.op === 'replace') return T.op.replace(at(op.day, op.block), op.name);
+  if (op.op === 'time') return T.op.time(at(op.day, op.block), op.start);
+  if (op.op === 'swap') return T.op.swap(at(op.day, op.block), at(op.day2, op.block2));
+  return '';
+}
+// apply → '이렇게 바꿀까요?' + 바꿀 것 한 줄씩(편집이 하나면 [이대로 바꾸기]·[취소], 여럿이면 하나씩·[모두]·[취소]).
+// 편집은 늘 이렇게 묻는다(K1 '항상 확인 후 적용'). 고르기 전에는 아무것도 바꾸지 않는다.
+function editConfirmResult(result, ctx, T) {
+  const groups = result.groups.length ? result.groups : [result.ops];
+  const lines = groups.map((g) => g.map((op) => editOpText(op, ctx, T)).filter(Boolean));
+  const cancel = { label: T.cancelChoice, ops: [], cancel: true };
+  if (groups.length === 1) {
+    return { status: 'ask', confirm: true, question: T.confirmAll(lines[0]), choices: [{ label: T.confirmApply, ops: result.ops }, cancel], notes: result.notes };
+  }
+  const list = groups.slice(0, EDIT_MAX_CHOICES).map((g, i) => ({ label: lines[i].join(', ').slice(0, 120), ops: g }));
+  return { status: 'ask', confirm: true, question: T.confirmEach(list.length, lines.slice(0, list.length).flat()), choices: [...list, { label: T.all(list.length), ops: list.flatMap((c) => c.ops), all: true }, cancel], notes: result.notes };
+}
+
+// ── 되묻기에 글로 답하기(③) ──
+// 화면은 아직 고르지 않은 마지막 선택지를 editChoices: [{ label, kinds }]로 함께 보낸다(kinds = 그 선택지의 편집 종류 remove·add·move·replace·time).
+// 짧은 답('2일째'·'2일째로'·'둘째 날'·'오전'·'두 번째'·'모두'·'은각사로 해줘'·'취소')이면 다시 만들지 않고
+//   edit: { status: 'pick', picks: [선택지 번호] }  — 1개면 그것을 고르고, 여럿이면 그중에서 고르게, 0개면 선택지를 그대로 두고 다시 고르게
+//   edit: { status: 'cancel' }                     — '취소'·'아니'·'never mind': 선택지를 닫고 일정은 그대로
+// 를 돌려준다(Gemini·Groq 0회). 선택지에 없는 장소·시각·도시·일수·'다시 짜줘'처럼 답이 아닌 말이 섞이면 null(지금처럼 해석한다).
+// kinds의 'cancel' = '이렇게 바꿀까요?'의 [취소] 선택지(편집 없음)
+const EDIT_CHOICE_KINDS = new Set(['remove', 'add', 'move', 'replace', 'time', 'swap', 'cancel']);
+const EDIT_CHOICE_ALL_RE = /^(?:모두\(\d+곳\)|All \(\d+\)|すべて（\d+件）)$/;
+const EDIT_CANCEL_LABELS = new Set(Object.values(EDIT_TEXT).map((T) => T.cancelChoice));
+function sanitizeEditChoices(raw) {
+  if (!Array.isArray(raw) || !raw.length) return null;
+  const out = raw.slice(0, EDIT_MAX_CHOICES + 2).map((c) => {
+    const label = typeof c === 'string' ? c : (c && typeof c.label === 'string' ? c.label : '');
+    const kinds = c && Array.isArray(c.kinds) ? [...new Set(c.kinds.filter((k) => EDIT_CHOICE_KINDS.has(k)))] : [];
+    return { label: label.trim().slice(0, 120), kinds };
+  });
+  return out.every((c) => c.label) ? out : null;
+}
+const EDIT_ANSWER_CANCEL_RE = /^(?:취소|그만|그만둘래|됐어|됐어요|괜찮아|괜찮아요|아니|아니요|아니야|아뇨|안\s*할래|no|nope|cancel|never\s*mind|forget\s*it|none|いいえ|やめて|やめます|やめる|キャンセル|やっぱりいい|いらない)(?:\s*(?:할게요?|해\s*줘|해|요|thanks|thank\s+you|です|します|ください))?$/i;
+const EDIT_ANSWER_ORDINAL_RES = [
+  [/(첫|두|세|네|다섯|여섯|일곱|여덟)\s*번\s*째/g, (m) => ({ '첫': 1, '두': 2, '세': 3, '네': 4, '다섯': 5, '여섯': 6, '일곱': 7, '여덟': 8 })[m[1]]],
+  [/(?<!\d)(\d)\s*번(?:\s*째)?/g, (m) => Number(m[1])],
+  [/첫째|둘째|셋째|넷째|다섯째|여섯째/g, (m) => EDIT_KO_ORDINAL[m[0]]],
+  [/\b(first|second|third|fourth|fifth|sixth|seventh|eighth)\b/gi, (m) => EDIT_EN_ORDINAL[m[1].toLowerCase()]],
+  [/(?:\b(?:option|choice|number|no\.?)\s*|#\s*)(\d)\b/gi, (m) => Number(m[1])],
+  [/\b(\d)(?:st|nd|rd|th)\b/gi, (m) => Number(m[1])],
+  [/(\d|[一二三四五六七八])\s*(?:つ目|番目|番)/g, (m) => Number(m[1]) || JA_NUMBER_CHARS[m[1]]],
+  [/最初/g, () => 1],
+  [/마지막|\blast\b|最後/gi, () => -1]
+];
+const EDIT_ANSWER_ALL_RE = /모두|전부|나머지|(?:둘|셋|넷|두\s*개|세\s*개|네\s*개)\s*다|(?<![가-힣])다(?![가-힣])|\ball\b|\bboth\b|\beverything\b|\bthe\s+rest\b|全部|すべて|全て|両方|残り/gi;
+// 끝의 되묻는 꼬리('?'·'?!'·'?.'·'？！'·'?…'·'?~'·'?;;'·'?ㅠ'): ? 뒤에 문장 부호·자모 웃음·울음·그림 글자만 있으면 되묻는 말이다(검토 F2·K1c 막는 문제 3)
+// (자모: 호환 ㅋ·ㅎ·ㅠ·ㅜ와 NFKC가 바꾼 조합용 모음 두 개)
+const EDIT_ANSWER_QTAIL_RE = /[?？][\s.,!?~…。、！？;；:：'"“”‘’「」『』()（）\[\]·・\u314B\u314E\u3160\u315C\u1172\u116E\uFE0F\p{Extended_Pictographic}]*$/u;
+// 'A 빼고 다'·'A 제외하고 전부'·'all except A'·'everything but A'·'A以外全部'·'Aを除いて全部': 'A 말고 다'와 같이 A를 뺀 나머지(검토 K1c 막는 문제 4)
+const EDIT_ANSWER_EXCEPT_EN_RE = /\b(?:except(?:\s+for)?|other\s+than|apart\s+from|besides|but(?:\s+not)?)\b/gi;
+// 답에 붙는 군말(조사·어미·'해줘'·'please'·'でお願いします')
+const EDIT_ANSWER_FILLER_RES = [
+  /^(?:(?:그|저|이)?(?:거|걸|것|꺼|곳|쪽|날|칸|선택지|옵션)?(?:으로|로|에|에서|요|이요|에요|예요|이에요|이야|야|을|를|은|는|이|가|도|만)?(?:해|해줘|해주세요|해줄래|해요|할게|할게요|할래|줘|주세요|줄래|부탁해|부탁해요|부탁드려요|좋아|좋아요|좋겠어|좋겠어요|가자|갈게|갈래)?)$/,
+  /^(?:네|넵|넹|예|응|웅|ㅇㅇ|ㅇㅋ|그래|그래요|오케이|아니|아니요|아니야|음|그럼|그냥|그걸로|그거로|그것으로|이대로|그렇게|좋습니다)$/,
+  /^(?:ok|okay|yes|yeah|yep|sure|please|pls|the|one|ones|that|this|on|to|in|for|go|ahead|with|pick|choose|it|option|choice|do|let'?s|i'?ll|take|a|an|at|of|them|is|fine|thanks|thank|you|make|then|just|no|i|want|like|would|prefer|put|use)$/i,
+  /^(?:それ|これ|あれ|その|この|方|ほう|やつ)?(?:に|で|を|は|が|の|も|へ)*(?:して|する|します|しよう|お願い|お願いします|してください|ください|にして|がいい|でいい|です)?(?:ください|ね|よ|な)?$/,
+  /^(?:はい|うん|ええ|いいよ)$/,
+  // 두 답을 잇는 말('1일째랑 2일째'·'day 2 and day 3'·'2日目と3日目')
+  /^(?:랑|이랑|와|과|하고|및|and|or|と|や)$/i
+];
+const EDIT_ANSWER_YES_RE = /^(?:네|넵|넹|예|응|웅|ㅇㅇ|ㅇㅋ|그래|그래요|오케이|좋아|좋아요|좋습니다|이대로|그렇게|ok|okay|yes|yeah|yep|sure|はい|うん|ええ|いいよ)$/i;
+// 철회·보류('응 취소해'·'기요미즈데라 삭제 취소'·'빼는 건 보류'·'yes, cancel it'·'はい、キャンセル'·'取り消して'·'stop'·'leave it'):
+// '이렇게 바꿀까요?'(선택지에 [취소]가 있음)에는 '네'가 섞여도, 장소를 말해도 바꾸지 않고 닫는다
+const EDIT_ANSWER_WITHDRAW_RE = /취소|철회|보류|번복|무르|ㄴㄴ|노노|하지\s*마|\bcancel|\bstop\b|\bleave\s+it\b|\bundo\b|\bhold\s+off\b|キャンセル|取り消|取消|撤回|保留|やめ|ストップ/i;
+// NFKC는 'ㅇㅇ'·'ㄴㄴ'(호환 자모)을 조합용 자모로 바꾼다. 답을 비교하기 전에 되돌린다.
+const EDIT_COMPAT_JAMO = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+// 거절('아니 됐어'·'안 넣을래'·'그냥 둬'·'필요 없어'·'넣지 마'·"never mind, don't add it"·'要らない'·'やめておく'·'入れないで'):
+// 고를 것(일차·칸·장소·번호·모두)을 말하지 않았으면 선택지를 닫는다(일정을 다시 만들지 않는다)
+const EDIT_ANSWER_REJECT_RE = /아니|아뇨|됐어|됐다|됐습니다|그만|필요\s*없|싫|(?<![가-힣])안\s*(?:할|해|넣|빼|옮|바꾸|바꿀|갈)|(?<![가-힣])(?:그냥|그대로)\s*(?:둬|두|놔|냅)|(?<![가-힣])(?:둬|둬요|냅둬|놔둬)(?![가-힣])|\bno\b|\bnope\b|\bnot\s+now\b|never\s*mind|forget\s*it|\bcancel\b|\bneither\b|\bnone\b|n['’]t\b|やめ|いらない|要らない|いいえ|結構|キャンセル|ないで/i;
+const EDIT_ANSWER_VERB_KINDS = { remove: ['remove'], add: ['add'], move: ['move', 'time'], change: ['replace', 'time', 'move', 'swap'] };
+// 칸 낱말끼리 맞는지('아침' = 오전·아침 식사, '저녁' = 저녁 식사·저녁 이후)
+const EDIT_SLOT_COMPAT = { early: ['early', 'morning', 'breakfast'], morning: ['morning', 'early'], breakfast: ['breakfast', 'early'], evening: ['evening', 'dinner'], dinner: ['dinner', 'evening'] };
+
+// 답의 남기라는 표지를 바꾸기 표지(instead)로 바꾼다: 'A 빼고 다'·'A 제외하고 전부'(빼기 동사 + 고, 뒤에 '다·전부·모두·나머지')·'A 외에 다'·
+// 'all except A'·'everything but A'·'A以外全部'·'Aを除いて全部'(검토 K1c 막는 문제 4). 그러면 'A 말고 다'처럼 A를 뺀 나머지로 좁힌다(F5).
+// 뒤에 '다' 같은 말이 없는 '2일째 빼고'는 그대로 빼기 동사다(그 선택지를 고른다).
+function editAnswerExceptTokens(text, tokens) {
+  const out = tokens.slice();
+  const allAfter = (pos) => new RegExp(EDIT_ANSWER_ALL_RE.source, 'i').test(editBlankTokens(text.slice(pos), out, pos));
+  for (const v of out) {
+    if (v.type !== 'verb' || v.verb !== 'remove' || v.negated) continue;
+    const tail = /^(?:놓|하)?고(?:는|서)?(?![가-힣])/.exec(text.slice(v.end));
+    if (!tail || !allAfter(v.end + tail[0].length)) continue;
+    v.type = 'instead';
+    v.dir = 'before';
+    v.end += tail[0].length;
+  }
+  const extra = [
+    ...editRanges(/(?<![가-힣])(?:외에(?:는|도)?|외엔)(?![가-힣])/g, text, () => ({ type: 'instead', dir: 'before' })),
+    ...editRanges(EDIT_EXCEPT_JA_RE, text, () => ({ type: 'instead', dir: 'before' })),
+    ...editRanges(EDIT_ANSWER_EXCEPT_EN_RE, text, () => ({ type: 'instead', dir: 'after' }))
+  ].filter((t) => !editOverlaps(t, out));
+  return [...out, ...extra].sort((a, b) => a.start - b.start);
+}
+function answerEditQuestion(message, choices, ctx) {
+  const T = EDIT_TEXT[ctx.replyLang] || EDIT_TEXT.ko;
+  const text = String(message || '').normalize('NFKC').replace(/[ᄀ-ᄒ]/g, (c) => EDIT_COMPAT_JAMO[c.charCodeAt(0) - 0x1100]).trim();
+  if (!text || text.length > 80) return null;
+  if (EDIT_ANSWER_CANCEL_RE.test(text.replace(/[\s.,!?~…。、！？]+$/g, ''))) return { status: 'cancel', reply: T.answerCancelled };
+  const tokens = editAnswerExceptTokens(text, tokenizeItineraryEdit(text, ctx));
+  const verbs = tokens.filter((t) => t.type === 'verb');
+  // 거절·그대로 두기·부정된 넣기: 고를 것을 말하지 않았으면 닫는다('아니 3일째로'처럼 고를 것이 있으면 아래에서 고른다)
+  const pickInfo = tokens.some((t) => ['day', 'slot', 'place', 'time'].includes(t.type)) || /\d/.test(text)
+    || EDIT_ANSWER_ORDINAL_RES.some(([re]) => new RegExp(re.source, re.flags.replace('g', '')).test(text)) || new RegExp(EDIT_ANSWER_ALL_RE.source, 'i').test(text);
+  // '네'가 섞여도 거절·철회 말이 있으면 바꾸지 않는다('응 취소해'·'네? 아니요'·'좋아 근데 하지 마').
+  // '이렇게 바꿀까요?'([취소] 선택지가 있음)에는 고를 것을 말해도 닫는다('기요미즈데라 삭제 취소': 그 삭제를 하지 말라는 말이다).
+  const confirmCtx = choices.some((c) => c.kinds.includes('cancel') || EDIT_CANCEL_LABELS.has(c.label));
+  const rejects = EDIT_ANSWER_REJECT_RE.test(text) || EDIT_ANSWER_WITHDRAW_RE.test(text) || editMarkerReasons(text, tokens).includes('neg') || verbs.some((v) => v.verb === 'keep');
+  if (rejects && (confirmCtx || !pickInfo)) return { status: 'cancel', reply: T.answerCancelled };
+  if (tokens.some((t) => t.type === 'time')) return null;
+  // 고를 것을 말하면서 그대로 두라는 말('2일째 거는 빼지 마'): 고르지 않고 선택지를 그대로 둔다. 다른 장소를 말한 새 명령이면 지금처럼 해석한다.
+  if (verbs.some((v) => v.verb === 'keep')) return tokens.some((t) => t.type === 'place') ? null : { status: 'pick', picks: [], reply: T.answerNoMatch };
+  // 'A 말고 B'('2일째 말고 3일째')·'B instead of A': 바꾸기 표지 뒤(영어는 앞)의 말만 고르는 답으로 본다.
+  // 표지 반대쪽(exRegion)은 고르지 말라는 것이다('기요미즈데라 말고 전부'·'2日目じゃなくて全部' — 아래 F5).
+  const instead = tokens.find((t) => t.type === 'instead') || null;
+  const region = !instead ? [0, text.length] : (instead.dir === 'after' ? [0, instead.start] : [instead.end, text.length]);
+  const exRegion = !instead ? null : (instead.dir === 'after' ? [instead.end, text.length] : [0, instead.start]);
+  const within = (r) => (t) => Boolean(r) && t.start >= r[0] && t.end <= r[1];
+  const inRegion = within(region);
+  const inEx = within(exRegion);
+  const ordinals = EDIT_ANSWER_ORDINAL_RES.flatMap(([re, fn]) => editRanges(re, text, (m) => ({ n: fn(m) }))).filter((r) => r.n && !editOverlaps(r, tokens));
+  const alls = editRanges(EDIT_ANSWER_ALL_RE, text).filter((r) => !editOverlaps(r, tokens) && !editOverlaps(r, ordinals));
+  let rest = text;
+  for (const s of [...tokens, ...ordinals, ...alls]) rest = rest.slice(0, s.start) + ' '.repeat(s.end - s.start) + rest.slice(s.end);
+  // 끝의 되묻는 꼬리('?!'·'?ㅠ')는 낱말로 보지 않는다(아래에서 되묻는 말로 다룬다)
+  const qTail = EDIT_ANSWER_QTAIL_RE.exec(text);
+  if (qTail) rest = rest.slice(0, qTail.index) + ' '.repeat(rest.length - qTail.index);
+  // 낱말 속 따옴표("let's")는 지우고(글자 수를 맞추려고 뒤에 빈칸), 나머지 문장 부호는 빈칸으로
+  rest = rest.replace(/([A-Za-z])['’]([A-Za-z])/g, '$1$2 ').replace(/[.,!?~…'"“”‘’「」『』()（）、。！？·・:;]/g, ' ');
+  // 답의 일차: '2일째'·'둘째 날'·'day 2'(그리고 '2일에'·'2일로'·'2일'·'2日'은 날짜가 아니라 선택지의 N일차로 본다)
+  const bareDays = [];
+  const numWords = [];
+  let yes = false;
+  for (const w of editRanges(/\S+/g, rest)) {
+    const bareDay = /^(\d{1,2})\s*(?:일|日)(?:로|으로|이요|요|이에요|이야|에|째|차|に|で|目)?$/.exec(w.raw);
+    const num = /^\d{1,2}$/.test(w.raw);
+    if (!bareDay && !num && !EDIT_ANSWER_FILLER_RES.some((re) => re.test(w.raw))) return null; // 답이 아닌 말이 섞였다 → 지금처럼 해석
+    if (bareDay) bareDays.push({ start: w.start, end: w.end, day: Number(bareDay[1]) });
+    else if (num) numWords.push({ start: w.start, end: w.end, n: Number(w.raw) });
+    else if (inRegion(w) && EDIT_ANSWER_YES_RE.test(w.raw)) yes = true;
+  }
+  if (numWords.filter(inRegion).length > 1) return null;
+  const infos = choices.map((c, i) => {
+    const dayPart = c.label.split(' · ').find((p) => findEditDayRefs(p, ctx.lastDay).length) || '';
+    const dayRefs = dayPart ? findEditDayRefs(dayPart, ctx.lastDay) : [];
+    let slotText = dayPart;
+    for (const d of dayRefs) slotText = slotText.slice(0, d.start) + ' '.repeat(d.end - d.start) + slotText.slice(d.end);
+    const isCancel = c.kinds.includes('cancel') || EDIT_CANCEL_LABELS.has(c.label);
+    return { i, kinds: c.kinds, isAll: EDIT_CHOICE_ALL_RE.test(c.label), isCancel, days: dayRefs.map((d) => d.day), slots: slotText.trim() ? findEditSlotRefs(slotText).map((s) => s.slot) : [], index: editTextIndex(c.label) };
+  });
+  // [취소] 선택지는 고를 대상이 아니다('네'는 [이대로 바꾸기], '취소'는 위에서 닫는다)
+  const listed = infos.filter((x) => !x.isAll && !x.isCancel);
+  // 선택지에 없는 장소를 말했으면('센소지 넣어줘'·'하코네에서 2일') 답이 아니라 새 요청이다
+  const inLabel = (x, p) => [p.text, ...(p.cand ? p.cand.labels : []), ...p.blocks.map((b) => b.info.name)].some((n) => editLabelSpans(x.index, n).length > 0);
+  if (tokens.some((t) => t.type === 'place' && !listed.some((x) => inLabel(x, t)))) return null;
+  // 끝에 ?가 붙은 답('네?'·'ok?'·'you sure?'·'ええ？'·'다?'·'全部？'·'the second?')은 되묻는 말이지 승낙이 아니다(검토 F2):
+  // 고르지 않고 선택지를 그대로 둔다. ? 뒤에 다른 부호가 붙어도('네?!'·'yes?.'·'はい？！'·'다?!'·'네?;;') 같다(K1c 막는 문제 3).
+  // 부탁('2일째로 해 줄래?'·'can you do day 2?')은 묻는 말이 아니다.
+  if (qTail && !EDIT_POLITE_ASK_RE.test(text)) return { status: 'pick', picks: [], reply: T.answerChoose };
+  // 한쪽(region 또는 exRegion)에서 말한 고를 것: 일차·번호·칸·장소
+  const pickOf = (inR) => {
+    const days = [...tokens.filter((t) => t.type === 'day' && inR(t)).map((t) => t.dom || t.day), ...bareDays.filter(inR).map((d) => d.day)];
+    const nums = numWords.filter(inR).map((x) => x.n);
+    const ordinalHit = ordinals.find(inR);
+    let ordinal = ordinalHit ? ordinalHit.n : 0;
+    if (nums.length) {
+      if (!days.length && listed.some((x) => x.days.includes(nums[0]))) days.push(nums[0]);
+      else if (!ordinal) ordinal = nums[0];
+    }
+    return { days, ordinal, slots: tokens.filter((t) => t.type === 'slot' && inR(t)).map((t) => t.slot), places: tokens.filter((t) => t.type === 'place' && inR(t)) };
+  };
+  const narrow = (list, c) => {
+    let out = list;
+    if (c.ordinal) {
+      const target = listed[c.ordinal === -1 ? listed.length - 1 : c.ordinal - 1];
+      out = out.filter((x) => x === target);
+    }
+    if (c.days.length) out = out.filter((x) => x.days.some((d) => c.days.includes(d)));
+    if (c.slots.length) out = out.filter((x) => c.slots.every((s) => x.slots.some((ls) => (EDIT_SLOT_COMPAT[s] || [s]).includes(ls))));
+    if (c.places.length) out = out.filter((x) => c.places.every((p) => inLabel(x, p)));
+    return out;
+  };
+  // 다른 종류의 편집을 말했으면('넣을까요?'에 '2일째 오전 빼줘') 답이 아니라 새 편집 명령이다
+  const allowed = new Set(verbs.flatMap((v) => EDIT_ANSWER_VERB_KINDS[v.verb] || []));
+  const byVerb = (list) => (verbs.length ? list.filter((x) => !x.kinds.length || x.kinds.some((k) => allowed.has(k))) : list);
+  // 'A 말고 다'·'Aじゃなくて全部'·'all instead of A'(검토 F5): [모두]를 고르지 않는다. A에 맞는 선택지를 뺀 나머지로 좁히고
+  // (하나면 그것, 여럿이면 그것만 다시 보여 준다), A를 알 수 없으면 선택지를 그대로 둔다.
+  if (exRegion && alls.some(inRegion)) {
+    const ex = pickOf(inEx);
+    const excluded = ex.ordinal || ex.days.length || ex.slots.length || ex.places.length ? narrow(listed, ex) : [];
+    const left = byVerb(listed.filter((x) => !excluded.includes(x)));
+    if (!excluded.length || !left.length || left.length === listed.length) return { status: 'pick', picks: [], reply: T.answerNoMatch };
+    if (left.length === 1) return { status: 'pick', picks: [left[0].i], reply: T.answerPicked(choices[left[0].i].label) };
+    return { status: 'pick', picks: left.map((x) => x.i), reply: T.answerNarrow(left.length) };
+  }
+  const sel = pickOf(inRegion);
+  // '모두'·'둘 다': '모두' 선택지가 없으면('1일째 2일째 둘 다') 말한 일차 등으로 좁힌다
+  const wantAll = alls.some(inRegion) && infos.some((x) => x.isAll);
+  let pool = byVerb(wantAll ? infos.filter((x) => x.isAll) : listed.slice());
+  if (verbs.length && !pool.length) return null;
+  pool = narrow(pool, sel);
+  const constrained = Boolean(sel.ordinal || wantAll || sel.days.length || sel.slots.length || sel.places.length);
+  // 고를 것을 말하지 않은 답('네'·'ok'): 선택지가 하나면 그것, 아니면 위 선택지에서 고르게(모두에 맞는 답 '오전'도 같다)
+  if (!constrained && !(yes && listed.length === 1)) pool = listed.length > 1 ? listed.slice() : [];
+  const picks = pool.map((x) => x.i);
+  if (picks.length > 1 && picks.length === listed.length && !wantAll) return { status: 'pick', picks: [], reply: T.answerChoose };
+  if (picks.length === 1) return { status: 'pick', picks, reply: T.answerPicked(choices[picks[0]].label) };
+  if (picks.length > 1) return { status: 'pick', picks, reply: T.answerNarrow(picks.length) };
+  return { status: 'pick', picks: [], reply: T.answerNoMatch };
+}
+function editAnswerResponse(ans) {
+  return {
+    mode: 'edit',
+    edit: ans.status === 'cancel' ? { status: 'cancel' } : { status: 'pick', picks: ans.picks },
+    reply: ans.reply,
+    source: 'rule_edit_parser_v1',
+    sourceInfo: sourceInfo('rule', 'rule', null),
+    aiModel: null,
+    aiNote: summarizeAiErrors([]),
+    aiErrors: []
+  };
+}
+
+// 편집 명령이면 응답 객체, 아니면 null(지금처럼 조건을 해석해 다시 만든다). Gemini는 부르지 않는다.
+async function interpretItineraryEdit(message, it, opts = {}) {
+  const ctx = buildEditContext(it, opts.lang);
+  // 되묻기에 글로 답했으면(화면이 아직 고르지 않은 선택지를 보냄) 그 선택지를 고른다
+  if (opts.choices) {
+    const ans = answerEditQuestion(message, opts.choices, ctx);
+    if (ans) return editAnswerResponse(ans);
+  }
+  // 맞장구·인사만 있는 말('네'·'고마워'·'ok thanks'·'はい'·'お願いします')은 일정을 다시 만들지 않는다
+  // ('이미 그 칸에 있어요'·확인을 닫은 뒤의 '네'가 일정 전체를 새로 만들지 않게). 고르는 중이면 위에서 고르라고 답한다.
+  const bare = String(message || '').normalize('NFKC').replace(/[\s.,!?~…。、！？'"“”‘’()（）]+/g, ' ').trim();
+  if (bare && EDIT_POLITE_ONLY_RE.test(bare)) {
+    const T0 = EDIT_TEXT[ctx.replyLang] || EDIT_TEXT.ko;
+    return { ...editAnswerResponse({ status: 'none', reply: opts.choices ? T0.answerChoose : T0.ackOnly }), edit: { status: 'none' } };
+  }
+  const rules = parseItineraryEditRules(message, ctx);
+  if (!rules.edit) {
+    // 다시 만드는 까닭(화면이 일정 전체를 바꾸기 전에 물을지 본다: 'category' = 넣을 것이 종류·음식 낱말)
+    if (opts.info) opts.info.regen = rules.regen || '';
+    return null;
+  }
+  let rawOps = null;
+  let source = 'rule';
+  let aiModel = null;
+  const aiErrors = [];
+  // 부정·그대로 두기('금각사 빼지 말고 은각사 넣어줘')가 있는 말은 규칙 해석만 쓴다(AI가 부정을 놓쳐 남기라는 장소를 지우지 않게).
+  // 장소와 칸이 안 맞는 말('금각사 저녁 빼줘')도 규칙으로 그 칸 일정과 장소를 묻는다(검토 F1).
+  // 'X 빼고 다 빼줘'·'except X'(남기라는 말)도 규칙만 쓴다(검토 K1c 막는 문제 4).
+  if (OPENAI_API_KEY && !rules.keep && !rules.slotMismatch && !rules.except) {
+    try {
+      const ai = await parseItineraryEditWithOpenAI(String(message || ''), ctx, opts.history);
+      if (ai.kind !== 'edit') return null;
+      // 말 속 시각이 하나면 Groq의 'HH:MM' 대신 그것(오전·오후 표시 포함)을 쓴다(검토 F6: '저녁 7시'를 07:00으로 읽지 않게).
+      // 그 밖의 Groq 시각도 editClockFor가 규칙 시각과 같이 검사한다.
+      // Groq가 같은 장소를 고치면서 말한 일차·칸을 빠뜨렸으면 규칙이 알아들은 일차·칸으로 채운다(검토 F1: '금각사 저녁 빼줘'를
+      // Groq가 '금각사 빼기'로만 읽어도 그 장소가 저녁 칸에 없으면 묻는다). 말하지 않은 일차·칸은 채우지 않는다.
+      const ruleTimes = rules.tokens.filter((t) => t.type === 'time');
+      rawOps = ai.ops.map((o) => {
+        let out = ruleTimes.length === 1 && o.action === 'time' ? { ...o, time: ruleTimes[0] } : o;
+        if (['remove', 'time', 'move', 'replace'].includes(o.action) && o.place && (!o.day || !o.slot)) {
+          const same = rules.ops.find((r) => r.action === o.action && r.placeMention && editNameMatches(o.place, [r.placeMention.text, ...r.placeMention.blocks.map((b) => b.info.name)]));
+          if (same) out = { ...out, day: out.day || same.day, slot: out.slot || same.slot };
+        }
+        return out;
+      });
+      source = 'ai';
+      aiModel = ai.model;
+    } catch (err) {
+      const classified = classifyAiError(OPENAI_PROVIDER_LABEL, err);
+      aiErrors.push(classified);
+      warnThrottled(`chat-edit:openai:${classified.code}`, `[chat-edit] ${OPENAI_PROVIDER_LABEL} 편집 해석 실패(${classified.code}) → 규칙 해석: ${String(err?.message || err).slice(0, 200)}`.replace(/\s+/g, ' '));
+    }
+  }
+  if (!rawOps) rawOps = rules.ops;
+  if (!rawOps.length) return null;
+  let result = resolveEditRawOps(rawOps, ctx, { message: String(message || '') });
+  const T = EDIT_TEXT[ctx.replyLang] || EDIT_TEXT.ko;
+  // 확정된 편집도 바로 적용하지 않는다(K1 '항상 확인 후 적용'): '이렇게 바꿀까요?' + 바꿀 것 한 줄씩 + [이대로 바꾸기]·[취소].
+  // 화면은 사용자가 고른 뒤에만 바꾼다.
+  if (result.status === 'apply') result = editConfirmResult(result, ctx, T);
+  else if (result.status === 'ask') {
+    // 되묻기: 단순한 명령이 아니면(부정·그대로 두기·조건·질문·대조·맞바꾸기·절이나 장소가 여럿·남는 낱말) 고르지 않고 그만둘 수 있게 [취소]를 두고,
+    // 선택지에 함께 실린 다른 편집을 문구에 밝힌다. Groq 해석이면 남는 낱말을 모두 세고(Groq가 그 말을 어떻게 읽었는지 모르므로) Groq 편집 수·장소 수도 본다.
+    // Groq가 규칙과 다른 동작(빼기·옮기기·시각…)으로 읽었으면 [취소]를 둔다(검토 K1c 사소한 의견 1: 'move dinner to 7pm'을 빼기로 읽은 경우)
+    // 고칠 장소를 Groq가 말에 없는 곳으로 골랐을 때도 같다('기요미즈데라 빼줘'인데 Groq가 금각사).
+    const actionsOf = (list) => [...new Set(list.map((o) => o.action))].sort().join(',');
+    const ruleNames = rules.ops.filter((r) => r.placeMention).flatMap((r) => [r.placeMention.text, ...r.placeMention.blocks.map((b) => b.info.name)]);
+    const aiOffTarget = source === 'ai' && rawOps.some((o) => o.place && !editHasEvidence(message, o.place, null) && !editNameMatches(o.place, ruleNames));
+    const aiDiffers = source === 'ai' && ((rules.ops.length > 0 && actionsOf(mergeEditRemoveAdd(rawOps)) !== actionsOf(rules.ops)) || aiOffTarget);
+    const reasons = source === 'ai'
+      ? [...new Set([...rules.aiMarkers, ...editStructureReasons(rules.tokens, mergeEditRemoveAdd(rawOps)), ...(aiDiffers ? ['aiAction'] : [])])]
+      : rules.reasons;
+    if (reasons.length && result.choices.some((c) => c.ops.some((o) => o.op !== 'add'))) {
+      const also = (result.bundled || []).map((op) => editOpText(op, ctx, T)).filter(Boolean);
+      result = { ...result, confirm: true, question: also.length ? `${result.question} ${T.alsoChanges(also.join(', '))}` : result.question,
+        choices: [...result.choices, { label: T.cancelChoice, ops: [], cancel: true }] };
+    }
+  }
+  const sep = ctx.replyLang === 'ja' ? '' : ' ';
+  const reply = result.status === 'ask' ? [...result.notes, result.question].join(sep) : result.notes.join(sep);
+  const edit = { status: result.status };
+  if (result.status === 'ask') { edit.question = result.question; edit.choices = result.choices; if (result.confirm) edit.confirm = true; }
+  return {
+    mode: 'edit',
+    edit,
+    reply,
+    source: source === 'ai' ? 'openai_edit_parser_v1' : 'rule_edit_parser_v1',
+    // 규칙 해석은 오류가 아니다(편집에는 Gemini를 쓰지 않는다). Groq가 실패했을 때만 그 이유를 싣는다.
+    sourceInfo: source === 'ai' ? sourceInfo('ai', 'openai', null) : sourceInfo('rule', 'rule', aiErrors[0]?.reasonCode || null),
+    aiModel: source === 'ai' ? aiModel : null,
+    aiNote: summarizeAiErrors(aiErrors),
+    aiErrors: publicAiErrors(aiErrors)
+  };
+}
+
 // 화면 응답에서 내부용 필드(_로 시작)를 뺀다.
 function publicChatParsed(parsed) {
   const out = {};
@@ -5707,6 +7706,13 @@ async function buildTravelChatPlan(payload = {}) {
   const lang = normalizeLang(payload.lang);
   const message = String(payload.message || '');
   const history = sanitizeChatHistory(payload.history);
+  // 일정이 있을 때(화면이 itinerary를 보냄) 일부만 고치는 말이면 다시 만들지 않고 편집·되묻기를 돌려준다(Gemini 0회, 위 interpretItineraryEdit)
+  const editItinerary = sanitizeEditItinerary(payload.itinerary);
+  const editInfo = {};
+  if (editItinerary) {
+    const edit = await interpretItineraryEdit(message, editItinerary, { lang, history, choices: sanitizeEditChoices(payload.editChoices), info: editInfo });
+    if (edit) return edit;
+  }
   const prevParsed = sanitizePrevParsed(payload.prevParsed);
   const isFollowUp = Boolean(prevParsed) && history.length > 0;
   // 후속 대화는 이전 조건(도시·일수·테마·출발일)을 폼 대신 기본값으로 쓴다.
@@ -5894,7 +7900,9 @@ async function buildTravelChatPlan(payload = {}) {
       : sourceInfo('rule', 'rule', noAiConfigured ? 'AI_KEY_MISSING' : (aiErrors[0]?.reasonCode || 'AI_INVALID_OUTPUT')),
     aiModel: usedAi ? aiModel : null,
     aiNote: summarizeAiErrors(aiErrors),
-    aiErrors: publicAiErrors(aiErrors)
+    aiErrors: publicAiErrors(aiErrors),
+    // 일정이 있는데 넣거나 바꿀 것이 종류·음식 낱말이라 일정 전체를 다시 만드는 답: 화면이 지금 일정을 바꾸기 전에 묻는다(검토 R1 수정안 (a))
+    ...(editInfo.regen === 'category' ? { editRegen: 'category' } : {})
   };
 }
 
@@ -8285,14 +10293,16 @@ function createItinerary(payload) {
 
   // 도시의 명소 풀(highlights + 대표 명소 + 추가 명소). 지어낸 "추천 명소 N" 같은 채움 장소는 넣지 않는다.
   // 실내 위주면 실내 명소만, 저예산이면 유료 전망대·테마파크를 뒤로.
+  // outdoor = true: 실내 위주 일정에서 실내 명소를 다 쓴 뒤 쓰는 바깥 명소(실내가 아닌 곳)만. 다른 조건(제외·쇼핑 빼기·저예산)은 같다.
   const isPaidSight = (p) => isPaidSightPlace(p, key);
-  const buildCityAttractionPool = (cityLabel) => {
+  const buildCityAttractionPool = (cityLabel, outdoor = false) => {
     const seen = new Set();
     return curatedCityPool(cityKeyByLabel(cityLabel), lang).filter((x) => {
       const k = placeNameKey(placeKey(x));
       if (!k || seen.has(k)) return false;
       seen.add(k);
-      return notExcluded(x) && !(prefs.removeShopping && isLikelyShopping(x)) && (!prefs.indoorFocus || isLikelyIndoor(x))
+      return notExcluded(x) && !(prefs.removeShopping && isLikelyShopping(x))
+        && (outdoor ? !isLikelyIndoor(x) : (!prefs.indoorFocus || isLikelyIndoor(x)))
         && !(prefs.lowBudget && isPaidSight(x));
     });
   };
@@ -8547,6 +10557,34 @@ function createItinerary(payload) {
     const dayLateGenerated = lateGeneratedPicks.filter((p) => !isAllDayPlace(p) && inDayCity(p));
     const fromCityPool = (pick, seed, banned) => choosePlace(pick(cityExpandedPool), [], seed, banned) || choosePlace(pick(cityGeneratedPool), [], 0, banned)
       || choosePlace(pick(dayLateGenerated), [], 0, banned);
+    // 실내 후보만 쓰기로 한 실내 위주 일정(indoorOnly)에서 실내 후보(카드·실내 명소 풀)를 다 쓴 칸: 자유 일정 전에 그날 도시의 바깥 명소를
+    // 하루 1곳까지 넣는다(큐레이션 명소 → 도시 주변 실제 명소 순, 하루가 다 드는 곳 제외). AI 일정 후처리(g-1b·takeUnused)의
+    // '하루 바깥 관광은 하나까지'와 같은 기준이다. 예전에는 구마모토 5일 실내 위주(실내 3곳)가 셋째 날부터 오전·오후 모두 자유 일정이었다(2026-10-03).
+    // 야경·석양 같은 저녁 명소는 쓰지 않는다(낮 칸에 넣는다: 저녁 명소가 오후 칸을 차지하면 비 오는 날의 낮이 빈다).
+    // open = 그 칸이 이날 일정에 실제로 들어가는지(들어가지 않는 칸이 이날 몫을 쓰지 않게). 바깥 명소 풀은 처음 필요할 때만 만든다.
+    // 도시 주변 실제 명소(위키데이터 인기순)는 큐레이션 명소 뒤에 문화(신사·절·성) → 그 밖(공원·정원·온천 …) → 자연(산·섬·호수) 순으로 쓴다.
+    // 인기순 그대로 쓰면 비 오는 날에 구마모토 긴보산·나가사키 하시마섬·삿포로 모이와산 같은 산·섬이 신사·절보다 먼저 들어갔다(검토 반영 2026-10-03).
+    let outdoorPool = null;
+    let outdoorTaken = false;
+    const outdoorOnce = (pick, banned, open) => {
+      if (!indoorOnly || !open || outdoorTaken) return null;
+      if (!outdoorPool) {
+        const list = buildCityAttractionPool(dayCity, true).filter((p) => !isAllDayPlace(p));
+        const genRank = (p) => { const c = extraPlaceByName(placeOriginalName(p), dayCityKey)?.category; return c === '문화' ? 0 : (c === '자연' ? 2 : 1); };
+        const generated = list.filter((p) => isGeneratedCityPlace(p, dayCityKey)).map((p) => [genRank(p), p]);
+        outdoorPool = [...list.filter((p) => !isGeneratedCityPlace(p, dayCityKey)), ...[0, 1, 2].flatMap((r) => generated.filter((x) => x[0] === r).map((x) => x[1]))];
+      }
+      const p = choosePlace(pick(outdoorPool), [], 0, banned);
+      if (p) outdoorTaken = true;
+      return p;
+    };
+    // 그날 바깥 몫으로 세는 요청한 바깥 장소(고른 카드. 꼭 갈 곳은 세지 않는다. AI 후처리 g-1b와 같은 기준).
+    // 실내 후보만 쓰는 일정의 후보(카드·실내 명소 풀)에서 실내가 아닌 곳은 요청한 곳뿐이다.
+    const requestedOutdoor = (p) => Boolean(p) && !p.freeTime && !isLikelyIndoor(p) && !mustNames.has(placeNameKey(placeKey(p)));
+    // 바깥 명소로 채우기 전에 아직 넣지 않은 그날 도시의 꼭 갈 곳을 먼저 넣는다. 바깥 명소가 자유 일정 칸을 먼저 차지하면 뒤의 꼭 갈 곳 넣기
+    // (postProcessItinerary (e))가 다른 관광 칸을 바꿔, 구마모토 5일 실내 위주 + 꼭 갈 곳 7곳에서 구마모토 현립 미술관이 빠졌다(검토 반영 2026-10-03).
+    const mustLeft = (pick, banned, open) => (indoorOnly && open
+      ? choosePlace(pick(dayFallbackPool.filter((p) => mustNames.has(placeNameKey(placeKey(p))))), [], 0, banned) : null);
     // 경로 도시가 여럿이면 그날 도시 후보만 쓴다: 그날 도시 후보가 비어도 다른 도시 후보(전체 오전·오후·대체 목록)로 넘어가지 않고
     // 그 도시 명소 풀(큐레이션 → 생성 장소, fromCityPool)·자유 일정으로 채운다. 실내 위주에서 실내 명소가 모두 생성 장소인 도시
     // (히로시마)는 생성 장소를 후보에서 빼면 그날 후보가 비어, 히로시마 날에 오사카 주택박물관·구로몬 시장이 들어갔다(2026-10-03 R1).
@@ -8581,28 +10619,48 @@ function createItinerary(payload) {
       blocks.push(`종일(${formatRange(allDayRange)}): ${blockPlace(allDay, dayCityName)}`);
       placed.push(allDay);
     } else {
-      const a = aFromPicks
-        || fromCityPool(notEvening, i * 5 + 11, recentSet)
-        || freeTimeSlot(dayCity);
-      noteDayQid(a);
-      const banForB = new Set([...(recentNamesByCity.get(dayCity) || []), a.freeTime ? '' : placeKey(a)].filter(Boolean));
-      let b = choosePlace(poolB, fitsB(anyFallbackPool), i * 3 + 2, banForB)
-        || fromCityPool(fitsB, i * 5 + 17, banForB)
-        || freeTimeSlot(dayCity);
-      if (!a.freeTime && !b.freeTime && placeKey(a) === placeKey(b)) {
-        const alt = choosePlace(fitsB(dayFallbackPool), fitsB(anyFallbackPool), i * 7 + 3, new Set([placeKey(a)]))
-          || fromCityPool(fitsB, i * 7 + 5, new Set([placeKey(a)]));
-        b = alt || freeTimeSlot(dayCity);
-      }
-      noteDayQid(b);
       const morningRaw = clampRange(baseRanges.morning, minStart, maxEnd, 60);
       // 출국일 아침에 1시간도 안 남으면 관광 대신 체크아웃·공항 이동 안내로 둔다(아래 빈 날 처리).
       const morningRange = morningRaw && (i === days - 1 && Number.isFinite(lastDayMaxEnd) && morningRaw[1] - morningRaw[0] < 60) ? null : morningRaw;
+      const afternoonRange = clampRange(baseRanges.afternoon, minStart, maxEnd, 60);
+      const afternoonOpen = Boolean(afternoonRange) && maxPlacesPerDay >= 2;
+      const aBase = aFromPicks || fromCityPool(notEvening, i * 5 + 11, recentSet);
+      // 오전 칸을 바깥 명소로 채우기 전에, 오전이 자유 일정일 때 오후 칸(b)에 들어갈 장소를 아래 b와 같은 방법으로 미리 골라 본다.
+      // 그 장소가 요청한 바깥 장소(고른 카드)이면 그날 바깥 몫은 그 카드가 쓰고 오전은 자유 일정으로 둔다(바깥 명소는 다른 날에 넣는다).
+      // 예전에는 구마모토 6일 실내 위주(고른 카드 6곳) 다섯째 날이 오전 구마모토성 + 오후 고른 카드 레이간도로 바깥 2곳이었다(검토 반영 2026-10-03).
+      // 미리 고른 오후 장소는 오전 후보에서 뺀다(같은 곳이 두 칸에 들어가지 않게).
+      let aBan = recentSet;
+      if (!aBase && indoorOnly && morningRange) {
+        const b0 = choosePlace(poolB, fitsB(anyFallbackPool), i * 3 + 2, recentSet) || fromCityPool(fitsB, i * 5 + 17, recentSet);
+        if (b0 && (afternoonRange || (isEveningPlace(b0) && eveningRangeFor(b0))) && maxPlacesPerDay >= 2) {
+          aBan = new Set([...recentSet, placeKey(b0)]);
+          if (requestedOutdoor(b0)) outdoorTaken = true;
+        }
+      }
+      const a = aBase
+        || mustLeft(notEvening, aBan, Boolean(morningRange))
+        || outdoorOnce(notEvening, aBan, Boolean(morningRange))
+        || freeTimeSlot(dayCity);
+      noteDayQid(a);
+      // 오전 칸에 들어간 요청한 바깥 장소(고른 카드)도 그날 바깥 몫으로 센다
+      if (indoorOnly && morningRange && requestedOutdoor(a)) outdoorTaken = true;
+      const banForB = new Set([...(recentNamesByCity.get(dayCity) || []), a.freeTime ? '' : placeKey(a)].filter(Boolean));
+      let b = choosePlace(poolB, fitsB(anyFallbackPool), i * 3 + 2, banForB)
+        || fromCityPool(fitsB, i * 5 + 17, banForB)
+        || mustLeft(fitsB, banForB, afternoonOpen)
+        || outdoorOnce(notEvening, banForB, afternoonOpen)
+        || freeTimeSlot(dayCity);
+      if (!a.freeTime && !b.freeTime && placeKey(a) === placeKey(b)) {
+        const alt = choosePlace(fitsB(dayFallbackPool), fitsB(anyFallbackPool), i * 7 + 3, new Set([placeKey(a)]))
+          || fromCityPool(fitsB, i * 7 + 5, new Set([placeKey(a)]))
+          || outdoorOnce(notEvening, new Set([placeKey(a)]), afternoonOpen);
+        b = alt || freeTimeSlot(dayCity);
+      }
+      noteDayQid(b);
       if (morningRange) {
         blocks.push(`오전(${formatRange(morningRange)}): ${blockPlace(a, dayCityName)}`);
         placed.push(a);
       }
-      const afternoonRange = clampRange(baseRanges.afternoon, minStart, maxEnd, 60);
       // 저녁 명소(야경 등)는 낮 칸이 없어도(늦은 도착 날) 저녁 시간에 들어가면 넣는다
       const bEveningRange = b && !b.freeTime && isEveningPlace(b) ? eveningRangeFor(b) : null;
       if ((afternoonRange || bEveningRange) && maxPlacesPerDay >= 2) {
@@ -9320,7 +11378,7 @@ function postProcessItinerary(itinerary, opts = {}) {
     && !mustOf(b.name) && !isIndoorBlockName(b.name)).length;
   // pred(p): 더 고를 조건(예: 실내). 맞는 후보가 없으면 null. replacing: 이 후보로 바꿀 칸(바깥 관광 수에서 뺀다)
   // 실내 위주이고 실내 후보가 넉넉하면(indoorStrict) 그날 바깥 관광이 이미 있을 때 바깥 후보를 쓰지 않는다(하루 바깥 관광은 하나까지, g-1b).
-  // 실내 후보가 없으면 null이라 칸이 비거나 그대로다(규칙 일정이 실내 후보만 쓰기로 한 일정에서 모자란 날을 자유 일정으로 두는 것과 같다).
+  // 실내 후보가 없으면 null이라 칸이 비거나 그대로다(규칙 일정이 실내 후보를 다 쓴 날에 바깥 명소를 하루 1곳까지만 넣고 남은 칸을 자유 일정으로 두는 것과 같다).
   // 예전에는 빈 낮 채우기(h)·바꾸기가 남은 야외 후보로 구마모토 날 하나에 스이젠지 공원·레이간도·가토 신사를 넣었다(2026-10-03 R6).
   const takeUnused = (di, pred = null, replacing = null) => {
     if (!unused) unused = unusedPool();
@@ -11542,6 +13600,13 @@ function toDateKey(dateLike) {
   return String(dateLike || '').replace(/-/g, '');
 }
 
+// Skyscanner 주소의 날짜는 YYMMDD(2026-10-20 → 261020). 예전에는 YYYYMMDD를 넣었다.
+function skyscannerDateKey(dateLike) {
+  return toDateKey(dateLike).slice(2);
+}
+
+// API 응답의 deeplinkKayak·deeplinkSkyscanner(호환용). 화면 카드의 사이트 링크(구글·네이버·스카이스캐너·카약·Trip.com)는
+// public/app.js의 flightSiteLinks가 만든다(직접 입력한 항공편·저장한 일정에도 같은 링크를 달기 위해).
 function buildFlightDeeplink(provider, tripType, legs) {
   const safeProvider = provider === 'KAYAK' ? 'KAYAK' : 'Skyscanner';
   const first = legs[0];
@@ -11559,16 +13624,15 @@ function buildFlightDeeplink(provider, tripType, legs) {
     return `https://www.kayak.co.kr/flights/${first.from}-${first.to}/${first.date}`;
   }
 
+  // Skyscanner (KR). 다구간은 flights-multi-city/<출발>/<도착>/<YYMMDD>/… (예전에는 KAYAK 주소를 돌려줬다)
   if (tripType === 'multicity' && legs.length >= 2) {
-    const path = legs.map((l) => `${l.from}-${l.to}/${l.date}`).join('/');
-    return `https://www.kayak.co.kr/flights/${path}`;
+    const path = legs.map((l) => `${l.from.toLowerCase()}/${l.to.toLowerCase()}/${skyscannerDateKey(l.date)}`).join('/');
+    return `https://www.skyscanner.co.kr/transport/flights-multi-city/${path}/`;
   }
-
-  // Skyscanner (KR)
   if (tripType === 'roundtrip' && legs.length >= 2) {
-    return `https://www.skyscanner.co.kr/transport/flights/${first.from.toLowerCase()}/${first.to.toLowerCase()}/${toDateKey(first.date)}/${toDateKey(last.date)}/`;
+    return `https://www.skyscanner.co.kr/transport/flights/${first.from.toLowerCase()}/${first.to.toLowerCase()}/${skyscannerDateKey(first.date)}/${skyscannerDateKey(last.date)}/`;
   }
-  return `https://www.skyscanner.co.kr/transport/flights/${first.from.toLowerCase()}/${first.to.toLowerCase()}/${toDateKey(first.date)}/`;
+  return `https://www.skyscanner.co.kr/transport/flights/${first.from.toLowerCase()}/${first.to.toLowerCase()}/${skyscannerDateKey(first.date)}/`;
 }
 
 function buildFlightDeeplinks(tripType, legs) {
@@ -11664,6 +13728,9 @@ class ProviderError extends Error {
 const TP_NEARBY_DAYS = 7;
 const TP_STAY_TOLERANCE_DAYS = 3;
 const TP_CACHE_TTL_MS = 30 * 60_000;
+// grouped_prices(날짜별 최저가)는 덧붙이는 정보라 짧게 기다린다. 가격순 목록과 함께 부르므로, 늦거나 응답이 없어도
+// 가까운 날짜 조회 시간은 가격순 목록(AI_REQUEST_TIMEOUT_MS)보다 길어지지 않는다(화면의 /api/flights 제한은 30초).
+const TP_GROUPED_TIMEOUT_MS = 4000;
 const _tpCache = new Map();
 
 function redactTravelpayoutsToken(text) {
@@ -11671,17 +13738,35 @@ function redactTravelpayoutsToken(text) {
   return TRAVELPAYOUTS_TOKEN ? s.split(TRAVELPAYOUTS_TOKEN).join('***') : s;
 }
 
-async function travelpayoutsPricesForDates(params, label) {
-  const query = new URLSearchParams({ sorting: 'price', direct: 'false', currency: 'krw', ...params });
-  const cacheKey = query.toString();
+// 응답 통화 확인: 요청은 늘 currency=krw다. 응답의 currency가 krw가 아니면(실제로 그런지는 scripts/travelpayouts-check.mjs로 확인)
+// usd·jpy·eur는 지금 환율로 원화로 바꾸고, 바꿀 수 없는 통화(rub 등)는 원화로 잘못 보이지 않게 가격을 쓰지 않는다.
+const TP_CONVERTIBLE_CURRENCIES = new Set(['USD', 'JPY', 'EUR']);
+
+function travelpayoutsRowsInKrw(rows, currency, label) {
+  const cur = String(currency || '').trim().toUpperCase() || 'KRW';
+  if (cur === 'KRW') return rows;
+  if (!TP_CONVERTIBLE_CURRENCIES.has(cur)) {
+    warnThrottled(`travelpayouts:currency:${cur}`, `[travelpayouts] ${label} 응답 통화가 ${cur}(요청은 krw)라 가격을 쓰지 않음`);
+    throw new ProviderError('PROVIDER_UNAVAILABLE', `travelpayouts currency ${cur}`);
+  }
+  warnThrottled(`travelpayouts:currency:${cur}`, `[travelpayouts] ${label} 응답 통화가 ${cur}(요청은 krw) → 환율로 원화 환산`);
+  return rows.map((r) => ({ ...r, price: Math.round(convertToKRW(r.price, cur)) }));
+}
+
+// Aviasales Data API v3 GET 공통: 토큰은 주소에만(로그·응답에는 가림), 30분 캐시, 응답 통화 확인.
+// toRows: 응답 JSON → 항공권 행 배열(엔드포인트마다 data 모양이 다르다). timeoutMs: 호출 하나의 제한
+async function travelpayoutsGet(endpoint, query, label, toRows, timeoutMs = AI_REQUEST_TIMEOUT_MS) {
+  const cacheKey = `${endpoint}?${query}`;
   const cached = _tpCache.get(cacheKey);
   if (cached && (Date.now() - cached.at) < TP_CACHE_TTL_MS) return cached.rows;
-  query.set('token', TRAVELPAYOUTS_TOKEN);
+  const withToken = new URLSearchParams(query);
+  withToken.set('token', TRAVELPAYOUTS_TOKEN);
   let res;
   try {
-    res = await fetchWithTimeout(`${TRAVELPAYOUTS_BASE}/prices_for_dates?${query}`, {}, AI_REQUEST_TIMEOUT_MS);
+    res = await fetchWithTimeout(`${TRAVELPAYOUTS_BASE}/${endpoint}?${withToken}`, {}, timeoutMs);
   } catch (err) {
-    warnThrottled('travelpayouts:network', `[travelpayouts] ${label} 요청 실패(네트워크/타임아웃): ${redactTravelpayoutsToken(err?.cause?.code || err?.message || err)}`);
+    // 엔드포인트마다 따로 줄인다(grouped_prices 시간 초과 경고가 prices_for_dates 실패 경고를 가리지 않게)
+    warnThrottled(`travelpayouts:network:${endpoint}`, `[travelpayouts] ${label} 요청 실패(네트워크/타임아웃): ${redactTravelpayoutsToken(err?.cause?.code || err?.message || err)}`);
     throw new ProviderError('PROVIDER_UNAVAILABLE', 'travelpayouts network error');
   }
   const text = await res.text().catch(() => '');
@@ -11691,10 +13776,27 @@ async function travelpayoutsPricesForDates(params, label) {
     warnThrottled(`travelpayouts:http:${res.status}`, `[travelpayouts] ${label} → HTTP ${res.status} ${redactTravelpayoutsToken(text).replace(/\s+/g, ' ').slice(0, 200)}`);
     throw new ProviderError('PROVIDER_UNAVAILABLE', `travelpayouts HTTP ${res.status}`);
   }
-  const rows = Array.isArray(json.data) ? json.data : [];
+  const rows = travelpayoutsRowsInKrw(toRows(json).filter((r) => r && typeof r === 'object' && !Array.isArray(r)), json.currency, label);
   _tpCache.set(cacheKey, { at: Date.now(), rows });
   while (_tpCache.size > 200) _tpCache.delete(_tpCache.keys().next().value);
   return rows;
+}
+
+async function travelpayoutsPricesForDates(params, label) {
+  const query = new URLSearchParams({ sorting: 'price', direct: 'false', currency: 'krw', ...params });
+  return travelpayoutsGet('prices_for_dates', query, label, (json) => (Array.isArray(json.data) ? json.data : []));
+}
+
+// grouped_prices: 한 달의 출발일마다 가장 싼 1건(data = { 'YYYY-MM-DD': 행 }). prices_for_dates 가격순 100건은 싼 날에 몰려
+// 요청 날짜 가까운 날이 빠질 수 있어, 가까운 날짜 조회에서 함께 본다. 왕복은 return_at(달)을 같이 보낸다.
+// 제한은 TP_GROUPED_TIMEOUT_MS(짧게): 늦으면 빼고 가격순 목록만 쓴다.
+async function travelpayoutsGroupedPrices(params, label) {
+  const query = new URLSearchParams({ currency: 'krw', group_by: 'departure_at', direct: 'false', ...params });
+  return travelpayoutsGet('grouped_prices', query, label, (json) => {
+    const data = json.data;
+    if (Array.isArray(data)) return data;
+    return data && typeof data === 'object' ? Object.values(data) : [];
+  }, TP_GROUPED_TIMEOUT_MS);
 }
 
 // 가까운 날짜 조회에 쓸 (출발 월, 귀국 월) 조합. 요청 날짜의 달을 먼저, 창(±7일)이 달을 넘으면 이웃 달까지 최대 2개.
@@ -11788,9 +13890,10 @@ async function fetchTravelpayoutsFlights(payload) {
   const destination = flightDestinationAirport(payload, legs);
   const base = { origin, destination, one_way: isRound ? 'false' : 'true' };
   // dateOffsetDays: 요청 날짜와의 차이(출발일 차이 + 왕복 체류 일수 차이). 순위에서 가까운 날짜를 앞에 둔다.
+  // 가까운 날짜 조회에서도 날짜가 요청과 같으면(날짜별 최저가에 그날이 있으면) '다른 날짜'가 아니다.
   const normalizeAll = (entries, nearby) => entries.map((e, idx) => ({
     ...normalizeTravelpayoutsFlight(e.row, idx, tripType),
-    nearbyDate: nearby,
+    nearbyDate: nearby && e.distance > 0,
     dateOffsetDays: e.distance
   }));
 
@@ -11807,20 +13910,31 @@ async function fetchTravelpayoutsFlights(payload) {
     return { items: normalizeAll(exactRows.map((row) => ({ row, distance: 0 })), false), dateMatch: 'exact' };
   }
 
-  // ② 가까운 날짜: 월 단위 캐시 가격에서 고른다.
+  // ② 가까운 날짜: 달마다 ⓐ 날짜별 최저가(grouped_prices, 출발일마다 1건)와 ⓑ 가격순 목록(prices_for_dates 100건, 같은 날 다른 편)을
+  //    모아서 고른다. ⓐ가 실패하거나 늦으면(경고만 남김) ⓑ만으로 예전처럼 고른다.
+  //    ⓐ·ⓑ와 두 달을 모두 함께 부른다(차례로 기다리면 외부 호출이 최대 5번 쌓여 화면의 30초 제한을 넘는다).
+  //    ⓑ가 하나라도 실패하면 예전처럼 전체 실패(→ 예시 데이터). 모으는 순서는 달 순서, 달 안에서는 ⓐ 다음 ⓑ로 늘 같다.
+  const monthParamsList = tpNearbyMonthQueries(departDate, returnDate, isRound, today)
+    .map((q) => ({ departure_at: q.depMonth, ...(isRound ? { return_at: q.retMonth } : {}) }));
+  const groupedJobs = monthParamsList.map((monthParams) => travelpayoutsGroupedPrices({ origin, destination, ...monthParams }, 'nearby-grouped')
+    .catch(() => null)); // travelpayoutsGet이 경고를 남겼다 → 그 달은 가격순 목록만 쓴다
+  const listJobs = monthParamsList.map((monthParams) => travelpayoutsPricesForDates({ ...base, ...monthParams, limit: '100' }, 'nearby'));
+  const [groupedByMonth, listByMonth] = await Promise.all([Promise.all(groupedJobs), Promise.all(listJobs)]);
   const monthRows = [];
-  for (const q of tpNearbyMonthQueries(departDate, returnDate, isRound, today)) {
-    const rows = await travelpayoutsPricesForDates({
-      ...base,
-      departure_at: q.depMonth,
-      ...(isRound ? { return_at: q.retMonth } : {}),
-      limit: '100'
-    }, 'nearby');
-    monthRows.push(...rows);
-  }
+  let groupedCount = 0;
+  monthParamsList.forEach((_, i) => {
+    if (groupedByMonth[i]) {
+      // 편도 요청에 왕복 운임(return_at 있음)이 섞이면 편도 가격으로 보이면 안 되므로 뺀다(왕복은 귀국일이 있는 것만).
+      const usable = groupedByMonth[i].filter((r) => (isRound ? Boolean(r.return_at) : !r.return_at));
+      groupedCount += usable.length;
+      monthRows.push(...usable);
+    }
+    monthRows.push(...listByMonth[i]);
+  });
   const picked = pickNearbyTravelpayoutsRows(monthRows, departDate, returnDate, isRound, today);
-  console.log(`[travelpayouts] ${origin}→${destination} ${departDate}${isRound ? `~${returnDate}` : ''}: 요청 날짜 0건 → 가까운 날짜 ${picked.length}건`);
-  if (picked.length > 0) return { items: normalizeAll(picked, true), dateMatch: 'nearby' };
+  console.log(`[travelpayouts] ${origin}→${destination} ${departDate}${isRound ? `~${returnDate}` : ''}: 요청 날짜 0건 → 가까운 날짜 ${picked.length}건 (날짜별 최저가 ${groupedCount}건 + 가격순 ${monthRows.length - groupedCount}건에서)`);
+  // picked는 날짜 차이가 작은 순 → 맨 앞이 0이면 요청 날짜의 가격이 있다('exact', 안내 문구 없음. 다른 날짜 카드는 칩으로 표시)
+  if (picked.length > 0) return { items: normalizeAll(picked, true), dateMatch: picked[0].distance === 0 ? 'exact' : 'nearby' };
   return { items: [], dateMatch: null };
 }
 
@@ -11902,10 +14016,11 @@ function normalizeTravelpayoutsFlight(item, idx, tripType) {
   const depMinute = depTime ? parseInt(depTime.split(':')[0]) * 60 + parseInt(depTime.split(':')[1] || 0) : 0;
   const priceKRW = Math.round(Number(item.price || 0));
 
-  // 예약 링크 생성
+  // 예약 링크 생성. KAYAK·Skyscanner는 예시 데이터와 같은 함수로(왕복이면 귀국일까지 넣는다. 예전에는 늘 편도 주소였다)
   const tpLink = item.link ? `https://www.aviasales.com${item.link}` : '#';
-  const kayakUrl = `https://www.kayak.com/flights/${origin}-${dest}/${depDate}/`;
-  const ssUrl = `https://www.skyscanner.co.kr/transport/flights/${origin.toLowerCase()}/${dest.toLowerCase()}/${depDate.replace(/-/g, '').slice(2)}/`;
+  const siteLinks = buildFlightDeeplinks(tripType, validLegs.map((l) => ({ from: l.from, to: l.to, date: l.date })));
+  const kayakUrl = siteLinks.kayak;
+  const ssUrl = siteLinks.skyscanner;
 
   return {
     id: `tp_${idx}`,
@@ -12280,7 +14395,7 @@ function buildLegCandidates(leg, index) {
     priceKRW: b.priceKRW + (index * 18000),
     deeplink: providers[i] === 'KAYAK'
       ? `https://www.kayak.com/flights/${leg.from}-${leg.to}/${leg.date}`
-      : `https://www.skyscanner.co.kr/transport/flights/${leg.from.toLowerCase()}/${leg.to.toLowerCase()}/${toDateKey(leg.date)}/`
+      : `https://www.skyscanner.co.kr/transport/flights/${leg.from.toLowerCase()}/${leg.to.toLowerCase()}/${skyscannerDateKey(leg.date)}/`
   }));
 }
 
@@ -13944,6 +16059,14 @@ async function handleApi(req, res, parsedUrl) {
       if (payload.prevParsed !== undefined && payload.prevParsed !== null) {
         if (typeof payload.prevParsed !== 'object' || Array.isArray(payload.prevParsed)) return sendJson(res, 400, { error: 'prevParsed must be an object' });
         if (Buffer.byteLength(JSON.stringify(payload.prevParsed), 'utf8') > 4096) return sendJson(res, 400, { error: 'prevParsed exceeds 4KB' });
+      }
+      // 지금 일정(대화로 일부만 고치기): 객체(아니면 400). 날 12개·블록 60줄(각 300자)까지만 쓴다(sanitizeEditItinerary).
+      if (payload.itinerary !== undefined && payload.itinerary !== null && (typeof payload.itinerary !== 'object' || Array.isArray(payload.itinerary))) {
+        return sendJson(res, 400, { error: 'itinerary must be an object' });
+      }
+      // 아직 고르지 않은 되묻기 선택지(글로 답하기): 배열(아니면 400). 8개·각 120자까지만 쓴다(sanitizeEditChoices).
+      if (payload.editChoices !== undefined && payload.editChoices !== null && !Array.isArray(payload.editChoices)) {
+        return sendJson(res, 400, { error: 'editChoices must be an array' });
       }
       return sendJson(res, 200, await buildTravelChatPlan(payload));
     }

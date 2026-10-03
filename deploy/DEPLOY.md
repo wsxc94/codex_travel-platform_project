@@ -4,7 +4,7 @@
 - 저장소: https://github.com/wsxc94/tabimaru-japan-travel-planner
 - 이름 변경(JapanTravel Suite → Tabimaru)은 코드·문서의 표기만 바꿨습니다. 운영 주소와 Render 서비스(`japanjapantravel`, render.yaml 안의 이름은 `japantravel-suite`), OAuth 콜백 주소, Rakuten에 등록한 사이트 주소, 세션 쿠키 이름(`sid`), 브라우저 저장소(localStorage) 키는 그대로이므로 콘솔 설정을 다시 할 필요가 없습니다.
 
-기본 설정(키 없음)으로도 앱 전체가 동작합니다. 장소 추천은 무료 모드(내장 큐레이션 + 위키미디어 사진), 지도는 OpenStreetMap, 항공·숙소는 키가 없으면 "예시 데이터"로 표시됩니다.
+기본 설정(키 없음)으로도 앱 전체가 동작합니다. 장소 추천은 무료 모드(내장 큐레이션 + 위키미디어 사진), 지도는 OpenFreeMap 벡터(실패하면 OpenStreetMap 타일), 항공·숙소는 키가 없으면 "예시 데이터"로 표시됩니다.
 
 ## 1) 배포 직후 확인(체크리스트)
 
@@ -28,7 +28,7 @@
 4. 사이트에서 [일정 만들기]를 눌러 확인합니다(요청칸에 "오사카 3일, 유니버셜은 꼭, 도톤보리는 빼고"처럼 써 보면 채팅 해석까지 한 번에 확인됩니다).
    - 카드에 사진과 "사진: 저작자 · 라이선스" 표기가 나온다. 도시 대표 사진·음식 예시 사진에는 앞에 "도시 대표 사진" / "음식 예시 사진"이 붙는다.
    - 채팅 말풍선 아래 의도 칩(꼭 갈 곳·제외·조건)이 나오고, 일정에 꼭 갈 곳이 들어가고 제외한 곳이 없다. AI 한도가 바닥나 있으면 "AI 사용량이 잠시 몰려 기본 일정으로 만들었어요" 안내와 함께 규칙 기반 일정이 나온다(정상 동작).
-   - 일정 지도(OpenStreetMap)가 뜨고 "© OpenStreetMap contributors"가 보인다.
+   - 일정 지도가 뜨고 지명이 화면 언어로 나오며 "OpenFreeMap © OpenMapTiles Data from OpenStreetMap"이 보인다(OpenFreeMap이 실패하면 OSM 타일과 "© OpenStreetMap contributors").
    - 페이지 제목과 머리글이 "Tabimaru — AI 일본 여행 플래너"다(영어·일본어로 바꾸면 제목도 바뀜). 휴대폰 다크 모드에서는 어두운 화면이 된다.
    - 첫 화면만 열었을 때는 일정·항공·숙소 조회가 일어나지 않는 것이 정상입니다.
    - 정적 파일(html/js/css)은 `Cache-Control: no-cache` + `ETag`라서 배포 직후에도 새 화면을 받습니다(따로 캐시를 비울 필요 없음).

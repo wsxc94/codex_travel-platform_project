@@ -1,113 +1,46 @@
-# Tabimaru 작업 규칙 (AI 어시스턴트용)
+# Tabimaru 작업 규칙
 
-혼자 쓰는 AI 일본 여행 플래너다. 운영 주소는 https://japanjapantravel.onrender.com 이다.
-Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통과한 뒤 자동으로 배포된다.
-
-이 문서는 **하지 말아야 할 것**과 작업 습관만 적는다. 나머지는 아래 문서가 단일 출처다.
-- **이어서 작업할 때 먼저 읽기: `docs/handoff.md`**(지금 상태, 진행 중인 작업, 협의 중·결정 대기, 알려진 문제, 사용자가 할 일). 세션을 마칠 때 갱신한다.
-- 구조·데이터 흐름·변경 이력: `ARCHITECTURE.md`
-- 환경변수·API·테스트: `README.md`
-- 배포: `deploy/DEPLOY.md`
-- 외부 API 다음 작업: `docs/api-review-2026-10-02.md`
+혼자 쓰는 AI 일본 여행 플래너(https://japanjapantravel.onrender.com, Render 무료). `main` 푸시 = CI 후 운영 배포.
+이어서 작업할 때 `docs/handoff.md`(상태·결정 대기·다음 작업)를 먼저 읽고, 세션을 마칠 때 갱신한다.
 
 ## 절대 규칙
+1. 도메인 값은 바꾸지 않는다: 운영 주소, Render 서비스 이름(`japanjapantravel`, render.yaml `japantravel-suite`), OAuth 콜백, Rakuten Referer, Travelpayouts marker, 쿠키 `sid`, localStorage 키, Supabase 표 `travel_plans`, `start_url`.
+2. 첫 화면에서는 유료·AI 호출을 하지 않는다(버튼을 눌렀을 때만).
+3. 무료 모드(`PLACES_PROVIDER=free`, `MAP_PROVIDER=osm`, Google 호출 0)가 기본이다. Google 경로는 지우지 않고, 결제를 권하지 않는다.
+4. 긴급 번호는 화면의 숫자와 `tel:` 링크가 같아야 한다.
+5. 비밀값: `.env`·`data/`는 허락 없이 고치지 않고, 키 값을 화면·로그·커밋·응답에 내지 않는다. `.env.example`은 빈 값만.
+6. AI 일정은 서버가 넘긴 후보 장소만 쓴다. `postProcessItinerary`를 느슨하게 하지 않는다.
+7. 데이터 출처: 사진은 Commons 자유 라이선스 + 저작자 표시, 명소는 위키데이터 QID·좌표 필수, Google Places 결과를 OSM 지도에 표시 금지, 핫페퍼는 원문 그대로 + 크레딧 + 24시간 안 갱신 + AI 문장에 섞지 않기.
+8. 커밋: Claude 표기 줄(Co-Authored-By 등) 금지, 작성자는 로컬 git 설정, 커밋·푸시는 사용자가 요청할 때만.
 
-1. **도메인에 묶인 값은 바꾸지 않는다.** 바꾸면 로그인·저장 데이터·배포가 깨지고, 테스트가 고정하고 있다.
-   - 운영 주소 `japanjapantravel.onrender.com`, Render 운영 서비스 `japanjapantravel`(대시보드에서 만듦)과 `render.yaml` 안의 서비스 이름 `japantravel-suite`(테스트 고정) — 둘 다 그대로
-   - OAuth 콜백 `/api/auth/<공급자>/callback`
-   - Rakuten 요청 Referer, Travelpayouts marker·ID
-   - 쿠키 `sid`
-   - localStorage 키: `travelLang`·`travelWishlist`·`travelSearchHistory`·`travelPreferences`·`travelChecklist`·`placeMemos`·`tabimaru.draft.v1`
-   - Supabase 표 `travel_plans`, 매니페스트 `start_url`
-2. **첫 화면에서는 유료·AI 호출을 하지 않는다.** 일정·항공·숙소·맛집은 사용자가 버튼을 눌렀을 때만 부른다.
-3. **무료 모드가 기본이다.** `PLACES_PROVIDER=free`, `MAP_PROVIDER=osm`이고 Google 호출은 0이다.
-   - Google 경로는 지우지 말고 다시 켤 수 있게 둔다(README "Google로 다시 전환하기").
-   - 결제를 먼저 켜라고 권하지 않는다.
-4. **긴급 전화번호는 화면에 보이는 숫자와 `tel:` 링크가 같아야 한다.**
-5. **비밀값을 다루는 원칙**
-   - `.env`와 `data/`는 사용자 허락 없이 고치지 않는다.
-   - 키 값을 화면·로그·커밋·응답에 출력하지 않는다.
-   - 실제 키는 `.env`(git 제외)와 Render 환경변수에만 둔다. `.env.example`에는 빈 값만 둔다.
-6. **AI 일정은 서버가 넘긴 후보 장소만 쓴다.** 지어낸 장소는 금지이고, 후처리(`postProcessItinerary`)가 이 계약을 강제한다. 이 경로를 느슨하게 만들지 않는다.
-7. **데이터 출처를 지킨다.**
-   - 사진은 위키미디어 Commons의 자유 라이선스만 쓰고, 저작자·라이선스를 함께 표시한다.
-   - 도시 명소는 위키데이터 QID와 좌표가 있는 것만 넣는다(`scripts/build-city-places.js`).
-   - Google Places 결과를 OSM 지도 위에 표시하지 않는다(Google 약관).
-   - ホットペッパー 맛집(`HOTPEPPER_API_KEY`)은 가게 이름·예산 등을 원문 그대로 보여 주고, 목록 아래 "Powered by ホットペッパー Webサービス" 크레딧을 둔다. 캐시는 24시간 안에 갱신하고(서버는 6시간), AI 일정 문장에 섞지 않는다.
-8. **커밋 규칙**
-   - "Co-Authored-By: Claude"나 "Generated with Claude Code" 줄을 넣지 않는다.
-   - 작성자는 저장소 로컬 git 설정을 그대로 쓴다.
-   - 커밋·푸시는 사용자가 요청할 때만 한다. 푸시하면 곧바로 운영에 배포된다.
+## 수정 후 확인 (완료 보고 전에)
+- 고친 JS마다 `node --check`, 그리고 `npm test` 0 failures(포트 13581·3205가 비어 있어야 함). 테스트가 깨지면 위 규칙을 건드렸다는 신호다.
+- 화면을 고쳤으면 요소 ID(index.html)·이벤트·함수·ko/en/ja 사전 키를 직접 따라가 본다.
+- 사용자가 실패를 찾게 하지 않는다.
 
-## 수정 후 확인 (보고 전에 반드시)
+## 함정
+- JS에 서로게이트 제거 정규식 금지(예전에 app.js가 0바이트가 됨).
+- 일괄 치환이 `I18N` 사전 안까지 바꾸지 않게. `t()`는 사전 밖에서만, 식사 시간 키(아침·점심·저녁·오전·오후)는 `t()`로 바꾸지 않는다.
+- Render는 15분 쉬면 잠들고 메모리·디스크가 지워진다 → 오래 남을 상태를 서버 메모리·디스크에 두지 않는다.
+- Supabase 무료는 7일 무요청이면 정지된다 → `keepalive.yml`(3일마다). 저장소가 60일 조용하면 GitHub가 예약 작업을 끈다.
+- 로컬 `.env`의 Supabase는 운영과 같은 프로젝트다(파일 저장만 바꾸려면 `TABIMARU_DATA_DIR`).
+- PowerShell 5.1: `&&` 대신 `;`, 한글 경로는 Bash 대신 PowerShell, 커밋 메시지는 UTF-8 파일 + `git commit -F`, curl에 한국어 인자 금지(UTF-8 파일로 `--data-binary @파일`), `$env:X=''`는 변수를 지워 `.env` 값이 다시 들어간다(끌 때는 `' '`).
 
-1. 고친 JS 파일마다 `node --check server.js`, `node --check public/app.js`로 구문을 검사한다.
-2. `npm test`(= `node test_all.js`)로 전체 테스트를 돌린다.
-   - 2026-10-03 기준 1,103개가 모두 통과하는 것이 정상이다.
-   - 외부 패키지가 없어 `npm install`은 필요 없다. Node 20 이상이 필요하다.
-   - 실제 네트워크와 `.env` 값을 쓰지 않는다(가짜 벤더 서버, 네트워크 차단).
-   - 포트 13581·3205가 비어 있어야 한다.
-3. 화면 기능을 고쳤다면 실제 경로를 따라가 본다. 이벤트가 맞는 요소 ID에 붙는지, 그 ID가 `index.html`에 있는지, 불리는 함수가 있는지 확인한다.
-4. 사용자가 직접 실패를 찾아내게 하지 않는다. 확인이 끝나기 전에는 "완료"라고 보고하지 않는다.
-
-테스트는 다음도 고정한다. 테스트가 깨지면 규칙을 건드린 것일 수 있다.
-- 도메인 값
-- 환경변수 목록: 코드가 읽는 변수는 `render.yaml`·`.env.example`·README 세 곳에 모두 있어야 한다
-- ko/en/ja 사전 키
-- 긴급 번호, 첫 화면 무호출
-
-## 실수 잦은 지점
-
-- **JS 파일에 서로게이트 제거 정규식을 쓰지 않는다.** 예전에 그 방법으로 `app.js`가 0바이트가 됐다. 이모지는 문자열을 그대로 바꿔서 고친다.
-- **문자열을 일괄 치환할 때는 `I18N` 사전 안까지 바뀌지 않게 범위를 확인한다.**
-  - `t()`는 사전 밖에서만 쓴다.
-  - 식사 시간 같은 내부 키(아침·점심·저녁·오전·오후)는 비교용이라 `t()`로 바꾸지 않는다.
-- **Render 무료 플랜은 15분 쉬면 잠들고, 다시 시작할 때 메모리와 디스크가 지워진다.**
-  - 그래서 로그인은 서명 쿠키(`SESSION_SECRET`)로, 내 일정은 Supabase에 둔다.
-  - 오래 남아야 하는 상태를 서버 메모리나 디스크에 새로 두지 않는다.
-- **Supabase 무료 프로젝트는 7일 동안 요청이 없으면 일시 정지된다.**
-  - `.github/workflows/keepalive.yml`이 3일마다 `/api/keepalive`를 부른다.
-  - 공개 저장소에 60일 동안 활동이 없으면 GitHub가 예약 작업을 끈다. 그러면 Actions 탭에서 다시 켠다.
-- **Windows PowerShell 5.1 환경**
-  - `&&` 대신 `;`를 쓴다.
-  - 경로에 한글이 있으면 Bash 도구가 실패할 수 있으니 PowerShell을 쓴다.
-  - 커밋 메시지는 UTF-8 파일로 만들어 `git commit -F`로 넣는다.
-  - `curl`에 한국어를 인자로 넣으면 글자가 깨진 채 전송된다. 요청 본문은 UTF-8 파일로 만들어 `--data-binary @파일`로 보낸다.
-  - `.gitattributes`가 .js·.md·.yml·.yaml·.json·.css·.html을 LF로 고정한다. 나머지(`.env.example`·`scripts/*.mjs` 등)는 PC의 `core.autocrlf`를 따른다(원래 PC는 CRLF). 스크립트로 고칠 때 줄바꿈을 맞춘다.
-  - **PowerShell 5.1에서 `$env:X=''`는 변수를 지운다.** 그러면 서버가 `.env` 값을 다시 채워 운영 Supabase에 쓰고 AI 한도를 쓴다. 로컬 점검용으로 키를 끌 때는 빈 값 대신 공백 한 칸(`$env:GEMINI_API_KEY=' '`)을 넣고, 대체 이름(`GOOGLE_API_KEY`·`OPENAI_API_KEY`·`OPENAI_KEY`)도 같이 막는다. 띄운 뒤 `/api/health`의 `supabaseConfigured: false`를 먼저 본다.
-
-## AI 한도와 키 (실측)
-
-- **Gemini 무료 한도는 모델마다 하루 20회이고, 프로젝트 단위로 센다.** 키를 여러 개 만들어도 늘지 않는다.
-  - 운영과 로컬이 같은 한도를 나눠 쓴다.
-  - 한국 시간 16시(미국 표준시 기간에는 17시)에 다시 찬다.
-  - 실제 AI 점검(`scripts/prompt-matrix.mjs`는 약 32회)을 돌리면 운영에서 쓸 한도가 준다.
-- 모델 순서와 시간 예산은 README의 `GEMINI_FALLBACK_MODELS`·`GEMINI_TOTAL_BUDGET_MS`를 본다. 실제 순서는 `/api/health`의 `ai.geminiModelChain`이다.
-- **Groq 키는 `GROQ_API_KEY`에 둔다.** 서버는 이 키를 `OPENAI_BASE_URL`이 Groq 주소일 때만 보낸다.
-  - `OPENAI_API_KEY` 없이 `GROQ_API_KEY`만 있으면 주소는 Groq, 모델은 `openai/gpt-oss-120b`가 기본이다.
-  - Groq 키를 `OPENAI_API_KEY`에 넣지 않는다. 넣으면 서버가 api.openai.com에 보내지 않고 경고만 남긴다(OpenAI 키도 Groq로 보내지 않는다).
-  - 어느 키를 쓰는지는 `/api/health`의 `ai.openaiKeySource`, 모델 순서는 `ai.openaiModelChain`이다.
-  - Render 설정값(대체 모델·출력 상한·reasoning·채팅 순서)은 README "Groq 무료 연결"에 있다.
-  - Groq 무료는 모델마다 분당 8천 토큰이라, 채팅 해석(약 3.6천) 직후 일정(약 7천)을 같은 모델로 부르면 429가 난다. 그래서 일정은 Gemini가 먼저다(2026-10-02 같은 요청 5개 비교: 품질은 비슷, Groq만 쓰면 5건 중 3건이 한도에 걸림).
-  - Groq로 실제 점검할 때는 `prompt-matrix.mjs --gap 25000`처럼 간격을 둔다. 이렇게 하면 Gemini 한도는 쓰지 않는다(로컬 서버를 `GEMINI_API_KEY=` 빈 값으로 띄움).
-- **로컬 `.env`의 Supabase는 운영과 같은 프로젝트다.** 로컬에서 저장한 일정도 운영 표에 들어간다. 파일 저장 위치만 바꾸려면 `TABIMARU_DATA_DIR`을 쓴다.
+## AI 한도 (실측)
+- Gemini 무료는 모델마다 하루 20회, 프로젝트 단위(키를 늘려도 같음), 운영·로컬 공유, 한국 시간 16시(표준시 17시)에 다시 찬다. 실제 AI 점검은 운영 한도를 쓰니 먼저 알린다.
+- Groq 키는 `GROQ_API_KEY`에(`OPENAI_API_KEY` 아님). Groq는 분당 8천 토큰이라 일정은 Gemini가 먼저다.
 
 ## 배포 후 확인
+`/api/health`: `ok`, `app: "tabimaru"`, `supabaseCheck: "ok"`, `sessionSecretConfigured: true`, `sessionSecretWeak: false`.
 
-- 푸시하면 CI가 통과한 뒤 Render가 자동 배포한다.
-- `/api/health`에서 다음 값을 확인한다.
-  - `ok: true`, `app: "tabimaru"`
-  - `supabaseCheck: "ok"`
-  - `sessionSecretConfigured: true`, `sessionSecretWeak: false`
-- AI 일정이 실제로 만들어지는지 볼 때는 무료 한도를 쓴다는 점을 사용자에게 먼저 알린다.
+## 사용자
+- 한국어로, 쉬운 말로 짧게. 혼자 쓰는 앱이라 여러 사용자·수익화 관점 제안은 하지 않는다.
+- 결과에는 다음 작업 가이드(뜻, 권장 다음 작업과 이유, 사용자가 할 일, 완료 기준)를 붙인다.
+- 합의한 결정은 기록한다(큰 변경 → ARCHITECTURE.md 13절, 규칙 → 이 파일, 진행 → handoff).
+- `ALLOWED_LOGINS`는 꼭 필요할 때만 설정한다.
 
-## 사용자에 대해
-
-- 한국어로 답한다. 쉬운 말로 짧게 쓴다.
-- 혼자 쓰는 앱이다. 여러 사용자·수익화 관점의 제안은 하지 않는다. 예를 들어 Open-Meteo의 비상업 조건은 문제 삼지 않는다.
-- 다음은 사용자가 정한 것이다.
-  - `ALLOWED_LOGINS`는 꼭 필요한 경우가 아니면 설정하지 않는다.
-  - 무료 모드를 유지하되 Google로 다시 전환할 수 있게 둔다.
-- 작업 결과에는 다음 작업 가이드를 붙인다. 지금 결과가 뜻하는 것, 권장하는 다음 작업과 이유, 사용자가 할 일, 완료 기준이다.
-- 사용자와 합의한 결정은 기록한다. 큰 변경은 `ARCHITECTURE.md` 13절 변경 이력에, 작업 규칙은 이 파일에 적는다.
-- 다음 작업 순서는 `docs/handoff.md` 7절을 따른다(외부 API 작업의 세부는 `docs/api-review-2026-10-02.md` 5절). 하지 말 것 목록은 api-review 4절에 있다.
+## Coding Guidelines (Karpathy 가이드 요약, 사소한 일은 판단껏)
+- 코딩 전에 생각한다: 가정은 밝히고, 해석이 여러 개면 고르기 전에 묻는다. 더 단순한 방법이 있으면 제안하고, 헷갈리면 멈추고 묻는다.
+- 단순하게: 요청한 것만 만든다. 한 번 쓰는 코드에 추상화·설정값을 만들지 않고, 일어날 수 없는 경우의 예외 처리를 넣지 않는다.
+- 필요한 곳만 고친다: 옆 코드·주석·서식을 '개선'하지 않고 기존 스타일을 따른다. 관계없는 죽은 코드는 지우지 말고 알리며, 내 변경으로 안 쓰게 된 것만 치운다. 바뀐 줄마다 요청과 이어져야 한다.
+- 목표를 검증할 수 있게: 버그는 재현 테스트를 먼저 쓰고 통과시킨다. 여러 단계 작업은 "단계 → 확인 방법" 짧은 계획을 먼저 말한다(완료 확인은 위 '수정 후 확인').

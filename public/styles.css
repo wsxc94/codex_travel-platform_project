@@ -924,6 +924,29 @@ button:hover {
   background: var(--bg-3);
   border-color: var(--line-3);
 }
+/* 다른 사이트에서 찾기(항공 카드 아래·숙소 결과 위): 작은 글자 링크 한 줄, 좁으면 줄바꿈 */
+.site-links {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.site-links-label {
+  color: var(--fg-3);
+  flex-basis: 100%;
+}
+.site-links a {
+  color: var(--fg-2);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.site-links a:hover { color: var(--fg-1); }
+.stay-site-links .site-links { margin: 4px 0 12px; }
 /* 카드 버튼 가로 배치: [+ 일정에 넣기] = 보조 알약(옅은 주홍), [추천에 추가] = 고스트 알약 */
 .add-to-plan-btn, .promote-to-rec-btn {
   flex: 1 1 0;
@@ -3403,7 +3426,8 @@ body:has(.login-modal-overlay:not(.hidden)) .memo-toast {
 
 /* === 지도 · 사진 · 빈 상태 · 모바일 헤더 (2026-10 점검) === */
 
-/* 일정 지도(OpenStreetMap/Leaflet 또는 Google). Leaflet 내부 z-index(최대 1000)가
+/* 일정 지도(Leaflet + OpenFreeMap 벡터 또는 OSM 타일, 또는 Google). 벡터 지도 캔버스도 .leaflet-tile-pane 안에 있어
+   아래 타일 색 보정·다크 테마 반전이 그대로 적용된다. Leaflet 내부 z-index(최대 1000)가
    고정 헤더·사이드 패널 위로 올라오지 않도록 지도 안에 쌓임 맥락을 가둔다. */
 .itin-map {
   position: relative;
@@ -3701,6 +3725,60 @@ button.btn-loading[disabled] {
 }
 .intent-chip.ok { color: var(--ok); }
 .intent-chip.warn { color: var(--warn); }
+
+/* ── 대화로 일정 일부만 고치기: '바뀐 점' 한 줄 + ↩ 되돌리기, 되묻기 선택지 ── */
+.chat-edit-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-right: auto;
+  max-width: 100%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px dashed var(--line-2);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.chat-edit-summary { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.chat-edit-undo,
+.chat-choice-btn {
+  width: auto;
+  flex: 0 1 auto;
+  min-height: 32px;
+  padding: 4px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-2);
+  background: var(--bg-0);
+  color: var(--fg-1);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chat-edit-undo:hover:not(:disabled),
+.chat-choice-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--bg-2);
+}
+.chat-edit-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-right: auto;
+}
+.chat-choice-btn { text-align: left; overflow-wrap: anywhere; }
+/* '이렇게 바꿀까요?'의 [취소]: 바꾸는 선택지와 구분되게 테두리만 점선 */
+.chat-choice-btn.chat-choice-cancel { border-style: dashed; color: var(--fg-2); font-weight: 500; }
+/* 고른 선택지는 잠긴 뒤에도 선택 상태(쪽빛 채움)로 보인다(전역 비활성 회색보다 우선) */
+button.chat-choice-btn.chosen,
+button.chat-choice-btn.chosen:disabled {
+  background: var(--primary) !important;
+  border-color: var(--primary) !important;
+  color: var(--bg-0) !important;
+  cursor: default;
+}
 
 /* ── 일정 보드: 하루 칸 안 배치 ──
    하루 본문을 줄바꿈 flex로 두어 빈 식사 칸 3개가 한 줄에 놓이게 한다. 나머지 항목은 한 줄 전체. */
@@ -4396,7 +4474,9 @@ body.touch-dragging * {
   .itin-memo-btn,
   .side-panel-close,
   .lang-btn,
-  .toolbar-btn {
+  .toolbar-btn,
+  .chat-edit-undo,
+  .chat-choice-btn {
     min-width: 40px;
     min-height: 40px;
   }

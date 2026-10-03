@@ -187,7 +187,30 @@ const EXCLUDE_QIDS = {
   Q11679328: 'Ryūzengū (Shirahama): a small shrine (one sitelink) named 龍神 + 宮; no reading to check its Korean name against',
   Q28504101: 'Kinosaki 千年の湯 古まん: an onsen ryokan (an inn), not a sight for a morning slot',
   // 嵐山公園 (Asahikawa): a small neighbourhood park (one sitelink); "아라시야마 공원" / "Arashiyama Park" in a chat means Kyoto's Arashiyama
-  Q11477252: 'Arashiyama Park (Asahikawa): a neighbourhood park (one sitelink) whose name takes chats about Kyoto Arashiyama'
+  Q11477252: 'Arashiyama Park (Asahikawa): a neighbourhood park (one sitelink) whose name takes chats about Kyoto Arashiyama',
+  // reviewed 2026-10-03 (every bridge of the 30-place build): a bridge is a sight when people walk it and look at it — an old bridge,
+  // a cultural property, a promenade, a bridge known as a tourist sight (旭橋, 渡月橋, 眼鏡橋, 萬代橋, Rainbow Bridge, 伊良部大橋, 江島大橋
+  // stay; 若戸大橋 is cars only but an Important Cultural Property, seen from the Wakato ferry). Expressway bridges and plain road
+  // bridges (no heritage listing, not a tourist sight) are no half-day sight.
+  Q3397064: 'Minato Bridge (Osaka): Hanshin Expressway Bay Route, cars only',
+  Q11415494: 'Meikō-Nishi Bridge (Nagoya): Isewangan Expressway, cars only',
+  Q11415490: 'Meikō-Chūō Bridge (Nagoya): Isewangan Expressway, cars only',
+  Q5753964: 'Higashi Kobe Bridge: Hanshin Expressway Bay Route, cars only',
+  Q3362657: 'Konohana Bridge (Osaka): a port road bridge to Maishima, not a sight',
+  Q11595295: 'Akita Bridge (秋田大橋): a plain road bridge',
+  Q10855023: 'Kashii Kamome Bridge (Fukuoka): a road bridge to Island City',
+  Q11257752: 'Azuma Bridge (Fukushima): a plain road bridge',
+  Q11415551: 'Nagura Bridge (Ishigaki): a plain road bridge (one sitelink)',
+  Q11558256: 'Urado Bridge (Kochi): a prefectural road bridge over Urado Bay',
+  Q11596666: 'Inekoki Bridge (Matsumoto): a Route 158 road bridge',
+  Q11446565: 'Megami Bridge (Nagasaki): a road bridge over the port',
+  Q11405635: 'Chitose Bridge (Niigata): a plain road bridge over the Shinano River',
+  Q22119627: 'Tokachi Bridge (Obihiro): a road bridge over the Tokachi River',
+  Q11501301: 'Shinkyō Bridge (Okayama): a plain road bridge',
+  Q28690428: 'Dewa Bridge (Shonai): a Route 112 road bridge',
+  Q11464471: 'Konaruto Bridge (Tokushima): a plain road bridge',
+  Q130282414: 'Miyanoura Bridge (Yakushima): a plain road bridge (one sitelink)',
+  Q130296648: 'Anbō Bridge (Yakushima): a plain road bridge (one sitelink)'
 };
 // Excluded in one city only: the city's own island ("伊良部島" for shimojishima, which is on Irabu/Shimoji)
 const EXCLUDE_IN_CITY = {
@@ -242,7 +265,6 @@ const NAME_FIXES = {
   Q11396858: { ko: '리시리후지 온천', en: 'Rishiri-Fuji Onsen' },
   Q11396855: { ko: '리시리 후레아이 온천', en: 'Rishiri Fureai Onsen' },
   Q28685850: { ko: '사가 벌룬 뮤지엄' },
-  Q28690428: { ko: '데와 대교', en: 'Dewa Bridge' },
   Q11426145: { ko: '기노사키 짚 공예 전승관' },
   Q11405495: { ko: '지쿠라 동굴' },
   Q11456481: { ko: '도야마현 수묵 미술관' }, // 富山県水墨美術館: 県 (like 도야마현 미술관), not 県立
@@ -263,7 +285,6 @@ const NAME_FIXES = {
   Q2842754: { ko: '홋카이도 대학 식물원' },
   Q21653654: { ko: '쓰루오카 가톨릭 성당' },
   Q7743932: { ko: '가가와 현립 뮤지엄' },
-  Q11257752: { ko: '아즈마 다리', en: 'Azuma Bridge' },
   // 養老牛 is ようろううし (Yōrōushi): the Wikidata kana ようろうし drops an う, so the rules would write 요로시
   Q11666887: { ko: '요로우시 온천', en: 'Yoroushi Onsen' },
   Q11596339: { en: 'Wakkanai Onsen' },
@@ -322,9 +343,8 @@ const NAME_FIXES = {
   Q3193655: { ko: '가사데라 간논' }, // 笠覆寺, called 笠寺観音 ("Kasadera Kannon Temple")
   Q10926942: { ko: '고쿠세이지' }, // 国清寺 こくせいじ (寺 지, like 세이류지)
   Q11610041: { ko: '하보야산' }, // 羽保屋山 ("Haboya San"): 山 산 written with the name
-  Q11501301: { ko: '신쿄 다리' }, // 新京橋 しんきょうばし ("Shin-Kyo Bridge")
   Q11439590: { ko: '오노섬' }, // 大野島 ("Ōno Shima")
-  Q11273947: { ko: '돈돈돈노 모리' }, // どんどんどんの森 ("Don-Don-Don no Mori")
+  Q11273947: { ko: '돈돈돈 숲' }, // どんどんどんの森 ("Don-Don-Don no Mori"): の before the generic word 森 숲 is not written (2026-10-03)
   Q138778326: { ko: '이시가키 호기호기 신사' }, // 石垣宝来宝来神社 ("Ishigaki Hogi Hogi Shrine")
   Q122933328: { ko: '구 후쿠다가', en: 'Former Fukuda Residence' }, // 旧福田家 きゅうふくだけ (the kana reading read as "Kyufukudake")
   Q129675866: { ko: '폰탄관' }, // ぽん・たん館 (Pon Tan Kan): ぽんたん, the citrus
@@ -344,7 +364,61 @@ const NAME_FIXES = {
   Q60987962: { ko: '가미엔야 지조야마 고분' }, // 上塩冶地蔵山古墳 かみえんや (like Q55523209 가미엔야 쓰키야마 고분)
   Q60988648: { ko: '지다 다다시 기념관' }, // 千田正記念館: 千田正 (family name first)
   Q61886172: { ko: '아키타 문학 자료관' }, // あきた文学資料館 (文学 was left out)
-  Q11432542: { ko: '오우치씨관' } // 大内氏館 (오우치시 reads as a city, 市)
+  Q11432542: { ko: '오우치씨관' }, // 大内氏館 (오우치시 reads as a city, 市)
+  // awkward transliterations of the 30-place build (looked at 2026-10-03). A の before the generic word at the end of a name is
+  // not written as 노: a big tree is '<place>의 <tree>' (寂心さんのクス → 자쿠신의 녹나무; さん left out: 자쿠신산 reads as a mountain),
+  // 森 숲 and 館 관 like 千尋の滝 센피로 폭포. The generic word is translated (別院 별원, 工房 공방, 墓 묘, 山荘 산장, 海浜 해변, 緑地 녹지,
+  // 洞 동굴, 湖 호 like 신지호, 梅林 매화림, 振興館 진흥관, 中央 중앙, 高原 고원, 瓦窯 기와 가마, 峡 협곡 like 다치쿠에 협곡, 海岸 해안,
+  // 屋敷 저택, 廃寺跡 폐사지 like 미스 폐사지), and a long o spelled ou in the English label is not written ("Shouryū-ji" 쇼류지).
+  Q17213982: { ko: '자쿠신의 녹나무' }, // 寂心さんのクス
+  Q110777276: { ko: '호다시의 느티나무' }, // 文下のケヤキ ほうだしのけやき
+  Q111585833: { ko: '도가타의 모밀잣밤나무' }, // 堂形のシイノキ
+  Q114774790: { ko: '쇼겐인의 사카사 떡갈나무' }, // 勝源院の逆ガシワ (an "upside-down" kashiwa oak)
+  Q123255605: { ko: '고하타의 큰 삼나무' }, // 木幡の大スギ
+  Q112080442: { ko: '하구로산의 할아버지 삼나무' }, // 羽黒山の爺スギ (Wikidata alias "Grandpa Cedar")
+  Q30933069: { ko: '아토쿠 선생관' }, // アトク先生の館
+  Q136647394: { ko: '오다이코관' }, // 大太鼓の館
+  Q48756792: { ko: '조카이 숲' }, // 眺海の森
+  Q20043558: { ko: '오비히로 숲' }, // 帯広の森
+  Q11268158: { ko: '사누키 어린이의 나라' }, // さぬきこどもの国
+  Q11602688: { ko: '후데노사토 공방' }, // 筆の里工房
+  Q11670235: { ko: '다카무라 산장' }, // 高村山荘
+  Q10922512: { ko: '도진 묘' }, // 唐人墓 (Wikidata alias "Tōjin Tomb")
+  Q11580269: { ko: '시라카미 신사' }, // 白神社 しらかみしゃ: 社 already says shrine (not 시라카미샤 신사)
+  Q285602: { ko: '신슈 오타니파 하코다테 별원' }, // 真宗大谷派函館別院 (派 파)
+  Q109597107: { ko: '혼간지 하코다테 별원' }, // 本願寺函館別院
+  Q106836673: { ko: '혼간지 가고시마 별원' }, // 本願寺鹿児島別院
+  Q106836680: { ko: '혼간지 가나자와 별원' }, // 本願寺金沢別院
+  Q119927205: { ko: '혼간지 오비히로 별원' }, // 本願寺帯広別院
+  Q11364487: { ko: '나카지마 렌바이 시장' }, // 中島廉売 (a market street called Renbai)
+  Q65261124: { ko: '아다치가하라 후루사토 마을' }, // 安達ヶ原ふるさと村
+  Q11585941: { ko: '겐민 해변 공원' }, // 健民海浜公園
+  Q11629615: { ko: '세이부 녹지 공원' }, // 西部緑地公園
+  Q1856438: { ko: '레이간 동굴' }, // 霊巌洞
+  Q22337430: { ko: '히가시모코토 유제품관' }, // ひがしもこと乳酪館 (a cheesery)
+  Q11408564: { ko: '미나베 매화림' }, // 南部梅林
+  Q11260764: { ko: '미나베 매실 진흥관' }, // うめ振興館 (Wikidata alias みなべうめ振興館)
+  Q11276147: { ko: '히키 바위군' }, // ひき岩群
+  Q53808041: { ko: '다카노스 중앙 공원' }, // 鷹巣中央公園
+  Q3196520: { ko: '기지마 고원 파크' }, // 城島高原パーク (パーク 파크 like 아마미 파크)
+  Q11353811: { ko: '만토미 도다이지 기와 가마 유적' }, // 万富東大寺瓦窯跡
+  Q11587847: { ko: '라이라이 협곡' }, // 磊々峡
+  Q11485760: { ko: '히로노 해안 공원' }, // 広野海岸公園
+  Q11633437: { ko: '이즈시 가로 저택' }, // 出石家老屋敷
+  Q129676500: { ko: '시토고 가주마루 공원' }, // 志戸子ガジュマル公園 ("Gajumaru Banyan" says the tree twice)
+  Q3192451: { ko: '가미요도 폐사지' }, // 上淀廃寺跡
+  Q123515864: { ko: '아오모리현 근대 문학관' }, // 青森県近代文学館 (the English label's word order gave 근대 아오모리 문학관)
+  Q136504606: { ko: '오다나이누마' }, // 小田内沼: one name, like 호토케누마
+  Q11511630: { ko: '아사히가마루' }, // 旭ヶ丸: one name
+  Q11424682: { ko: '지조덴 유적' }, // 地蔵田遺跡 ("Jizouden")
+  Q11662839: { ko: '쇼류지' }, // 青龍寺 (土佐市) ("Shouryū-ji"; the build puts 고치 in front)
+  Q11481422: { ko: '조라쿠지' }, // 常楽寺 ("Jouraku-ji"; the build puts 도쿠시마 in front)
+  Q21655166: { ko: '류조지' }, // 龍蔵寺 ("Ryuzou-ji"; the build puts 야마구치 in front)
+  Q11452350: { ko: '호다이인' }, // 宝台院 ("Houdai-in")
+  Q21654041: { ko: '니시자오 공원' }, // 西蔵王公園 ("Nishizaou"; 蔵王 자오)
+  // came in for the excluded bridges: "X Temple" with a temple word of its own (no 절 after the name, like 아라코 간논)
+  Q11655359: { ko: '마마 간논' }, // 間々観音 ("Mama Kannon Temple")
+  Q11435616: { ko: '다이니치보' } // 大日坊 ("Dainichibō Temple": 坊 is the temple)
 };
 // The app's own spelling of a city name, in generated names and areas: the city label 나카시베츠 (中標津; the rules and the
 // Wikidata label of 中標津町 write 나카시베쓰). A place name must not spell its city differently from the city shown above it.
@@ -384,7 +458,7 @@ const FORMER_NAMES = {
   Q30593667: ['미야코지마시 박물관'], // miyako
   Q11366289: ['나카시베쓰 시립 민속 박물관'], Q11366290: ['나카시베쓰 신사'], Q11666887: ['요로시 온천'], Q8536966: ['시베쓰산'], // nakashibetsu
   Q11408352: ['난키시라하마 온천'], Q77700884: ['미스지 유적'], // nanki_shirahama
-  Q11405635: ['지토세오하시'], Q11502895: ['니이가타시 역사 박물관'], Q11503581: ['니이가타 고코쿠 신사'], Q5576152: ['니이가타 현립 식물원'], // niigata
+  Q11502895: ['니이가타시 역사 박물관'], Q11503581: ['니이가타 고코쿠 신사'], Q5576152: ['니이가타 현립 식물원'], // niigata
   Q11402964: ['홋카이도 오비히로 미술관'], // obihiro
   Q110990382: ['아키타이누노사토'], Q11641883: ['닷코모리산'], Q20043438: ['오다테시 박물관'], // odate
   Q16895460: ['이시카와산'], // okinawa
@@ -401,7 +475,20 @@ const FORMER_NAMES = {
   Q6890444: ['모가미 요시아키 역사 박물관'], // yamagata
   Q11412165: ['미기타산'], // yamaguchi_ube
   Q9047014: ['쇼지 우에다 사진 박물관'], // yonago
-  Q31686520: ['우라부산'], Q64589704: ['트이시'] // yonaguni
+  Q31686520: ['우라부산'], Q64589704: ['트이시'], // yonaguni
+  // names of the 30-place build deployed in 6da5de3, renamed on 2026-10-03 (の, untranslated generic words, ou: see NAME_FIXES)
+  Q11424682: ['지조우덴 유적'], Q123515864: ['근대 아오모리 문학관'], Q123255605: ['고하타노 오 스기'], Q65261124: ['아다치가하라 후루사토무라'],
+  Q285602: ['신슈 오타니하 하코다테 베쓰인'], Q109597107: ['혼간지 하코다테 베쓰인'], Q11364487: ['나카지마 렌바이'],
+  Q114774790: ['쇼겐인노 사카사 가시와'], Q11670235: ['다카무라 산소'], Q11602688: ['후데노사토 고보'], Q11580269: ['시라카미샤 신사'],
+  Q10922512: ['도진바카'], Q106836673: ['혼간지 가고시마베쓰인'], Q111585833: ['도가타노 시노키'], Q106836680: ['혼간지 가나자와 베쓰인'],
+  Q11585941: ['겐민카이힌 공원'], Q11629615: ['세이부 료쿠치 공원'], Q11662839: ['고치 쇼우류지'], Q17213982: ['자쿠신산노 구스'], Q1856438: ['레이간도'],
+  Q11654831: ['나가노켄고코쿠 신사'], Q22337430: ['히가시모코토 뉴라쿠관'], Q136504606: ['오다나이 누마'],
+  Q11408564: ['미나베 바이린'], Q11260764: ['우메 신코관'], Q11276147: ['히키이와군'], Q20043558: ['오비히로노 모리'], Q119927205: ['혼간지 오비히로베쓰인'],
+  Q136647394: ['오다이코노 야카타'], Q53808041: ['다카노스 주오 공원'], Q3196520: ['기지마 고겐 공원'], Q11353811: ['만토미 도다이지 가요 유적'],
+  Q11273947: ['돈돈돈노 모리'], Q11587847: ['라이라이쿄'], Q11485760: ['히로노 가이간 공원'], Q11452350: ['호우다이인'], Q110777276: ['호다시노 게야키'],
+  Q112080442: ['하구로산 지지스기'], Q30933069: ['아토쿠센세이노 야카타'], Q48756792: ['조카이노 모리'], Q11633437: ['이즈시 가로 야시키'],
+  Q11268158: ['사누키 고도모노쿠니'], Q11511630: ['아사히가 마루'], Q11481422: ['도쿠시마 조우라쿠지'], Q129676500: ['시토고 가주마루 바냔 공원'],
+  Q21654041: ['니시자오우 공원'], Q21655166: ['야마구치 류조우지'], Q3192451: ['가미요도 하이지']
 };
 // Kinds that stay a sight even with a rejected extra class ("museum" + "company", "temple" + "cemetery").
 const STRONG_KINDS = new Set(['themepark', 'castle', 'temple', 'shrine', 'church', 'aquarium', 'zoo', 'artmuseum', 'museum', 'onsen', 'garden']);

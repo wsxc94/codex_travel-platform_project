@@ -408,7 +408,10 @@ async function runTests() {
     const start = appCode.indexOf('var I18N = {');
     const dict = vm.runInNewContext('(' + extractBalanced(appCode, appCode.indexOf('{', start)) + ')', {});
     if (only.has('sandbox')) { await sandboxSchedulingTests(htmlCode, appCode, dict); await sandboxStorageTests(htmlCode, appCode, dict); }
-    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, chain: phaseGeminiChain, openai: phaseOpenAiCompat, hotpepper: phaseHotpepper, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree, city: phaseCityCoverage };
+    if (only.has('sandbox') || only.has('map')) await sandboxMapTests(htmlCode, appCode);
+    if (only.has('sandbox') || only.has('links')) await sandboxBookingLinkTests(htmlCode, appCode, dict);
+    if (only.has('sandbox') || only.has('editui')) await sandboxChatEditTests(htmlCode, appCode, dict);
+    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, chain: phaseGeminiChain, openai: phaseOpenAiCompat, edit: phaseItineraryEdit, hotpepper: phaseHotpepper, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree, city: phaseCityCoverage, tp: phaseTravelpayouts };
     const chosen = Object.keys(phases).filter((k) => only.has(k));
     if (chosen.length) {
       await mock.start();
@@ -484,7 +487,7 @@ async function runTests() {
 
   const jsFiles = ['server.js', 'public/app.js', 'test_all.js', '_test_api.js',
     'tests/support/mock-vendor.js', 'tests/support/net-guard.js', 'tests/support/browser-sandbox.js']
-    .concat(['build-place-images.js', 'build-city-places.js', 'ja-names.js'].filter((f) => fs.existsSync(path.join(PROJECT, 'scripts', f))).map((f) => `scripts/${f}`));
+    .concat(['build-place-images.js', 'build-city-places.js', 'ja-names.js', 'travelpayouts-check.mjs'].filter((f) => fs.existsSync(path.join(PROJECT, 'scripts', f))).map((f) => `scripts/${f}`));
   for (const f of jsFiles) {
     const r = spawnSync(process.execPath, ['--check', path.join(PROJECT, f)], { encoding: 'utf8' });
     log(r.status === 0, `node --check ${f}`, short(r.stderr, 400));
@@ -665,6 +668,16 @@ async function runTests() {
   // OSM 타일 정책: {s} 서브도메인 없이 tile.openstreetmap.org 한 곳
   log(appCode.includes("var OSM_TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';") && !/\{s\}\.tile\.openstreetmap|subdomains:/.test(appCode),
     'OSM tiles: https://tile.openstreetmap.org/{z}/{x}/{y}.png, no {s} subdomains');
+  // 지도 바탕(docs/api-review-2026-10-02.md 6번): OpenFreeMap liberty + MapLibre GL 5.x 단일 파일 판 + maplibre-gl-leaflet, 판 고정 + SRI
+  const mlJs = /var MAPLIBRE_JS_URL = 'https:\/\/unpkg\.com\/maplibre-gl@(5\.\d+\.\d+)\/dist\/maplibre-gl\.js';/.exec(appCode);
+  const mlCss = /var MAPLIBRE_CSS_URL = 'https:\/\/unpkg\.com\/maplibre-gl@(5\.\d+\.\d+)\/dist\/maplibre-gl\.css';/.exec(appCode);
+  const mlPlugin = /var MAPLIBRE_LEAFLET_JS_URL = 'https:\/\/unpkg\.com\/@maplibre\/maplibre-gl-leaflet@\d+\.\d+\.\d+\/leaflet-maplibre-gl\.js';/.test(appCode);
+  const mlSri = ['MAPLIBRE_JS_SRI', 'MAPLIBRE_CSS_SRI', 'MAPLIBRE_LEAFLET_JS_SRI'].every((n) => new RegExp(`var ${n} = 'sha384-[A-Za-z0-9+/]{64}';`).test(appCode));
+  log(Boolean(mlJs && mlCss) && mlJs[1] === mlCss[1] && mlPlugin && mlSri && appCode.includes("var OFM_STYLE_URL = 'https://tiles.openfreemap.org/styles/liberty';"),
+    'Map base: OpenFreeMap liberty style + MapLibre GL 5.x (js/css same version) + maplibre-gl-leaflet, version-pinned on unpkg with sha384 SRI', short({ js: mlJs && mlJs[1], css: mlCss && mlCss[1], mlPlugin, mlSri }));
+  const ofmAttr = /var OFM_ATTRIBUTION = ([\s\S]*?);\n/.exec(appCode);
+  log(Boolean(ofmAttr) && /https:\/\/openfreemap\.org/.test(ofmAttr[1]) && /OpenMapTiles/.test(ofmAttr[1]) && /openstreetmap\.org\/copyright/.test(ofmAttr[1]),
+    'Map base: OpenFreeMap attribution (OpenFreeMap, OpenMapTiles, OpenStreetMap) is defined');
   // 교통비: AI(Gemini·OpenAI 호환)를 부르지 않고 거리로 추정한다(docs/api-review-2026-10-02.md 2번)
   const rcStart = serverCode.indexOf('async function calculateRouteCost(');
   const rcBody = rcStart >= 0 ? extractBalanced(serverCode, serverCode.indexOf('{', rcStart)) : '';
@@ -769,6 +782,8 @@ async function runTests() {
     log(autoClicks.length === 0, `[${variant.label}] no button is clicked automatically on load`, short(autoClicks));
     const googleScripts = browser.env.scriptSrcs.filter((s) => /maps\.googleapis\.com|maps\.google\.com/.test(s));
     log(googleScripts.length === 0, `[${variant.label}] Google Maps JS is not loaded on first load`, short(googleScripts));
+    const mapLibsAtBoot = browser.env.scriptSrcs.filter((s) => /leaflet|maplibre|openfreemap/i.test(s));
+    log(mapLibsAtBoot.length === 0, `[${variant.label}] Leaflet / MapLibre / OpenFreeMap are not loaded on first load`, short(mapLibsAtBoot));
     const externalFetch = browser.env.fetchCalls.filter((c) => !c.sameOrigin).map((c) => c.url);
     log(externalFetch.length === 0, `[${variant.label}] no cross-origin fetch on first load`, short(externalFetch));
     const bootErrors = browser.env.errors.concat(browser.unhandled);
@@ -804,9 +819,14 @@ async function runTests() {
         log(Boolean(leaflet && /^sha(256|384|512)-/.test(String(leaflet.integrity || '')) && css && /^sha(256|384|512)-/.test(String(css.integrity || ''))),
           '[osm] Leaflet 1.9.4 (js+css from unpkg, with SRI) is loaded only after a plan exists');
         log(!scripts.some((e) => /maps\.googleapis\.com/.test(e.src)), '[osm] Google Maps JS is never loaded in osm mode');
+        // 샌드박스에는 WebGL이 없다 → 벡터 지도(MapLibre·OpenFreeMap)를 부르지 않고 OSM 타일로 간다
+        const vec = scripts.filter((e) => /maplibre/.test(e.src)).map((e) => e.src).concat(browser.env.fetchCalls.filter((c) => /openfreemap/.test(c.url)).map((c) => c.url));
+        log(vec.length === 0, '[osm] browser without WebGL: MapLibre and the OpenFreeMap style are not requested', short(vec));
       } else {
         const gm = scripts.find((e) => /^https:\/\/maps\.googleapis\.com\/maps\/api\/js\?key=BROWSER-KEY-FOR-BOOT-TEST/.test(e.src));
         log(Boolean(gm), '[google] Google Maps JS (browser key) is loaded lazily after a plan exists');
+        const vec = scripts.filter((e) => /leaflet|maplibre/.test(e.src)).map((e) => e.src).concat(browser.env.fetchCalls.filter((c) => /openfreemap/.test(c.url)).map((c) => c.url));
+        log(vec.length === 0, '[google] google map mode never loads Leaflet, MapLibre or the OpenFreeMap style', short(vec));
       }
 
       // 빈 일정(형식은 AI라고 와도) → 친절한 안내, AI로 표시하지 않음
@@ -991,6 +1011,12 @@ async function runTests() {
   // ── 1d. 직접 배치·편집 보호·의도 전달·로그인 버튼·초안 복구 (app.js 샌드박스) ──
   await sandboxSchedulingTests(htmlCode, appCode, i18nDict);
   await sandboxStorageTests(htmlCode, appCode, i18nDict);
+  await sandboxChatEditTests(htmlCode, appCode, i18nDict);
+
+  await sandboxBookingLinkTests(htmlCode, appCode, i18nDict);
+
+  // ── 1e. 일정 지도 바탕(OpenFreeMap 벡터 + OSM 대체) ──
+  await sandboxMapTests(htmlCode, appCode);
 
   // ════════ Server phases ════════
   await mock.start();
@@ -1009,12 +1035,358 @@ async function runTests() {
     await phaseAiItinerary();
     await phaseGeminiChain();
     await phaseOpenAiCompat();
+    await phaseItineraryEdit();
     await phaseHotpepper();
+    await phaseTravelpayouts();
   } finally {
     await stopServer();
     await mock.stop();
   }
   printResults();
+}
+
+// ── 1e. 일정 지도 바탕: OpenFreeMap 벡터 지도(화면 언어 지명) + 실패하면 OSM 래스터(docs/api-review-2026-10-02.md 6번) ──
+// 샌드박스는 스크립트를 실행하지 않으므로 Leaflet·MapLibre·maplibre-gl-leaflet 대신 가짜를 넣고 onload/onerror를 직접 부른다.
+// 실제 브라우저 확인(headless Edge + 실제 OpenFreeMap)은 수동 점검으로 한다(테스트는 네트워크를 쓰지 않는다).
+const OFM_STYLE_URL_TEST = 'https://tiles.openfreemap.org/styles/liberty';
+// 실제 liberty 스타일과 같은 모양: 이름 칸(새 식·옛 {name} 문자열), 도로 번호(ref)·번지 칸, 글자 없는 칸
+const OFM_SAMPLE_STYLE = {
+  version: 8,
+  sources: { openmaptiles: { type: 'vector', url: 'https://tiles.openfreemap.org/planet' } },
+  glyphs: 'https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf',
+  layers: [
+    { id: 'background', type: 'background', paint: { 'background-color': '#f8f4f0' } },
+    { id: 'label_city', type: 'symbol', source: 'openmaptiles', 'source-layer': 'place', layout: { 'text-field': ['case', ['has', 'name:nonlatin'], ['concat', ['get', 'name:latin'], '\n', ['get', 'name:nonlatin']], ['coalesce', ['get', 'name_en'], ['get', 'name']]] } },
+    { id: 'poi_transit', type: 'symbol', source: 'openmaptiles', 'source-layer': 'poi', layout: { 'text-field': ['case', ['has', 'name:nonlatin'], ['concat', ['get', 'name:latin'], ' ', ['get', 'name:nonlatin']], ['coalesce', ['get', 'name_en'], ['get', 'name']]] } },
+    { id: 'legacy_label', type: 'symbol', source: 'openmaptiles', 'source-layer': 'place', layout: { 'text-field': '{name:latin}\n{name:nonlatin}' } },
+    { id: 'highway-shield-non-us', type: 'symbol', source: 'openmaptiles', 'source-layer': 'transportation_name', layout: { 'text-field': ['to-string', ['get', 'ref']] } },
+    { id: 'housenumber', type: 'symbol', source: 'openmaptiles', 'source-layer': 'housenumber', layout: { 'text-field': '{housenumber}' } }
+  ]
+};
+// 가짜 Leaflet: 지도 하나, 층 붙이기·떼기 기록. 화면 위치(setView/fitBounds)를 정해야 붙인 층의 onAdd가 돈다(실제 Leaflet과 같음).
+const FAKE_LEAFLET_SRC = `
+window.__mapLog = [];
+(function () {
+  var log = window.__mapLog;
+  function FakeGl() { this.handlers = {}; this.styles = []; this.removed = false; }
+  FakeGl.prototype.on = function (t, fn) { (this.handlers[t] = this.handlers[t] || []).push(fn); return this; };
+  FakeGl.prototype.fire = function (t, e) { (this.handlers[t] || []).forEach(function (fn) { fn(e); }); };
+  FakeGl.prototype.setStyle = function (s) { this.styles.push(s); log.push(['setStyle']); };
+  FakeGl.prototype.remove = function () { this.removed = true; };
+  window.__FakeGl = FakeGl;
+  function base(kind, extra) {
+    var layer = { kind: kind, _map: null, addTo: function (m) { m.addLayer(this); return this; } };
+    Object.keys(extra || {}).forEach(function (k) { layer[k] = extra[k]; });
+    return layer;
+  }
+  window.__fakeLayer = base;
+  window.L = {
+    map: function (el, opts) {
+      log.push(['map', opts]);
+      return window.__leafletMap = {
+        layers: [], loaded: false,
+        addLayer: function (l) { this.layers.push(l); log.push(['add', l.kind]); if (this.loaded && l.onAdd) { l._added = true; l.onAdd(this); } return this; },
+        removeLayer: function (l) { this.layers = this.layers.filter(function (x) { return x !== l; }); log.push(['remove', l.kind]); if (l._added && l.onRemove) l.onRemove(this); return this; },
+        invalidateSize: function () { return this; },
+        setView: function () { this.ready(); return this; },
+        fitBounds: function () { this.ready(); return this; },
+        ready: function () { var self = this; this.loaded = true; this.layers.forEach(function (l) { if (!l._added && l.onAdd) { l._added = true; l.onAdd(self); } }); }
+      };
+    },
+    layerGroup: function () { return base('group', { addLayer: function () { return this; }, clearLayers: function () { return this; } }); },
+    tileLayer: function (url, opts) { log.push(['tileLayer', url, opts && opts.attribution, opts && opts.maxZoom]); return base('raster', { options: opts }); },
+    divIcon: function (o) { return o; },
+    marker: function () { return base('marker', { bindPopup: function () { return this; } }); },
+    polyline: function () { return base('polyline'); }
+  };
+})();`;
+// 가짜 maplibre-gl-leaflet: 실제 플러그인처럼 onAdd에서 GL 지도를 만들고(WebGL 실패 흉내 가능) onRemove에서 _glMap.remove()를 부른다.
+const FAKE_MAPLIBRE_LEAFLET_SRC = `
+window.L.maplibreGL = function (opts) {
+  window.__mapLog.push(['maplibreGL', opts]);
+  return window.__fakeLayer('vector', {
+    options: opts, _glMap: null,
+    getMaplibreMap: function () { return this._glMap; },
+    onAdd: function () { if (window.__glFail) throw new Error('Failed to initialize WebGL'); this._glMap = window.__gl = new window.__FakeGl(); },
+    onRemove: function () { this._glMap.remove(); this._glMap = null; }
+  });
+};`;
+// WebGL이 있는 브라우저 흉내(샌드박스 기본은 WebGL 없음)
+const WEBGL_STUB_SRC = `window.WebGLRenderingContext = function () {};
+(function () {
+  var ce = document.createElement;
+  document.createElement = function (t) {
+    var e = ce(t);
+    if (String(t).toLowerCase() === 'canvas') e.getContext = function () { return { getExtension: function () { return { loseContext: function () {} }; } }; };
+    return e;
+  };
+})();`;
+
+async function sandboxMapTests(htmlCode, appCode) {
+  section('Itinerary map: OpenFreeMap vector base in the UI language, OSM raster fallback (app.js sandbox)');
+  const ko = ['coalesce', ['get', 'name:ko'], ['get', 'name']];
+  const ja = ['coalesce', ['get', 'name:ja'], ['get', 'name']];
+  const en = ['coalesce', ['get', 'name:en'], ['get', 'name_en'], ['get', 'name:latin'], ['get', 'name']];
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const tfOf = (style, id) => ((style && style.layers || []).find((l) => l.id === id) || {}).layout?.['text-field'];
+  const J = (b, code) => { const s = b.run(`JSON.stringify(${code})`); return s === undefined ? undefined : JSON.parse(String(s)); };
+  const scriptEl = (b, url) => b.env.elements.find((e) => e.tagName === 'SCRIPT' && e.src === url);
+  const cssEl = (b, url) => b.env.elements.find((e) => e.tagName === 'LINK' && e.href === url);
+  const mapLog = (b) => J(b, 'window.__mapLog || []') || [];
+  const state = (b) => J(b, '({ lib: mapLibState, leaflet: leafletLibState, vector: vectorMapState, base: itinBaseKind, lang: itinBaseLang })');
+  const errorsOf = (b) => b.env.errors.concat(b.unhandled);
+  const make = async ({ webgl = true, style = { body: OFM_SAMPLE_STYLE } } = {}) => {
+    const b = createBrowser({ html: htmlCode, fetchRoutes: sandboxRoutes({ [OFM_STYLE_URL_TEST]: style }), location: BASE + '/' });
+    await b.boot(appCode, 'public/app.js');
+    if (webgl) b.run(WEBGL_STUB_SRC);
+    b.urls = J(b, '({ leaflet: LEAFLET_JS_URL, maplibre: MAPLIBRE_JS_URL, maplibreCss: MAPLIBRE_CSS_URL, plugin: MAPLIBRE_LEAFLET_JS_URL, style: OFM_STYLE_URL, osm: OSM_TILE_URL, osmAttr: OSM_ATTRIBUTION })');
+    b.element('btnPlan').click();
+    // 벡터 준비 제한 시간(10초)보다 짧게만 돌린다(일정은 가짜 응답이라 바로 온다).
+    await b.settle(2000);
+    return b;
+  };
+  const loadLeaflet = async (b) => { b.run(FAKE_LEAFLET_SRC); scriptEl(b, b.urls.leaflet).onload(); await b.settle(500); };
+  const loadMaplibre = async (b) => { b.run('window.maplibregl = { Map: function () {} }'); scriptEl(b, b.urls.maplibre).onload(); await b.settle(500); };
+  const loadPlugin = async (b) => { b.run(FAKE_MAPLIBRE_LEAFLET_SRC); scriptEl(b, b.urls.plugin).onload(); await b.settle(1000); };
+  const count = (b, kind) => mapLog(b).filter((e) => e[0] === kind).length;
+  const sri = (e) => Boolean(e) && /^sha(256|384|512)-/.test(String(e.integrity || '')) && e.crossOrigin === '';
+
+  // A. 성공: Leaflet + MapLibre(js+css) + 스타일 → 플러그인 → 한국어 지명 벡터 지도
+  try {
+    const a = await make();
+    const styleCalls = a.env.fetchCalls.filter((c) => c.url === OFM_STYLE_URL_TEST).length;
+    log(a.urls.style === OFM_STYLE_URL_TEST && sri(scriptEl(a, a.urls.leaflet)) && sri(scriptEl(a, a.urls.maplibre)) && sri(cssEl(a, a.urls.maplibreCss)) && styleCalls === 1 && !scriptEl(a, a.urls.plugin),
+      '[vector] after a plan: Leaflet + MapLibre GL (js+css, SRI) requested and the OpenFreeMap style fetched once; the plugin waits for both libraries',
+      short({ styleCalls, plugin: Boolean(scriptEl(a, a.urls.plugin)) }));
+    // 순수 함수: 이름 칸만 화면 언어로, 도로 번호·번지 칸은 그대로, 원본은 바뀌지 않는다
+    const loc = (lang) => J(a, `localizeMapStyle(${JSON.stringify(OFM_SAMPLE_STYLE)}, ${JSON.stringify(lang)})`);
+    const lko = loc('ko');
+    const untouched = J(a, `(function () { var s = ${JSON.stringify(OFM_SAMPLE_STYLE)}; localizeMapStyle(s, 'ko'); return s; })()`);
+    log(['label_city', 'poi_transit', 'legacy_label'].every((id) => same(tfOf(lko, id), ko)) && same(tfOf(loc('ja'), 'label_city'), ja) && same(tfOf(loc('en'), 'poi_transit'), en)
+      && same(tfOf(lko, 'highway-shield-non-us'), ['to-string', ['get', 'ref']]) && tfOf(lko, 'housenumber') === '{housenumber}' && same(untouched, OFM_SAMPLE_STYLE),
+      'localizeMapStyle: name labels -> name:ko / name:ja / name:en (fallback: local name); ref shields + house numbers untouched; input not mutated', short(tfOf(lko, 'label_city')));
+    log(J(a, `[isUsableMapStyle(${JSON.stringify(OFM_SAMPLE_STYLE)}), isUsableMapStyle({}), isUsableMapStyle({ version: 8, layers: [], sources: {} }), isUsableMapStyle(null)]`).join() === 'true,false,false,false',
+      'isUsableMapStyle: accepts a style with layers + sources only');
+    await loadLeaflet(a);
+    const waiting = state(a);
+    log(waiting.lib === 'loading' && waiting.leaflet === 'ready' && waiting.vector === 'loading' && !scriptEl(a, a.urls.plugin) && count(a, 'map') === 0,
+      '[vector] Leaflet loaded first: the map waits for the vector base (no OSM tiles drawn yet)', short(waiting));
+    await loadMaplibre(a);
+    log(sri(scriptEl(a, a.urls.plugin)), '[vector] Leaflet + MapLibre loaded -> maplibre-gl-leaflet requested (SRI)');
+    await loadPlugin(a);
+    const gl = mapLog(a).filter((e) => e[0] === 'maplibreGL');
+    const opts = gl[0] && gl[0][1] || {};
+    const attr = String(opts.attributionControl && opts.attributionControl.customAttribution || '');
+    const st = state(a);
+    log(st.lib === 'ready' && st.vector === 'ready' && st.base === 'vector' && st.lang === 'ko' && gl.length === 1 && count(a, 'tileLayer') === 0
+      && same(tfOf(opts.style, 'label_city'), ko) && same(tfOf(opts.style, 'poi_transit'), ko) && same(tfOf(opts.style, 'highway-shield-non-us'), ['to-string', ['get', 'ref']]),
+      '[vector] ko screen: one OpenFreeMap layer with Korean labels (name:ko -> name), no OSM tile layer', short({ st, gl: gl.length, tiles: count(a, 'tileLayer') }));
+    log(/href="https:\/\/openfreemap\.org"/.test(attr) && /openmaptiles\.org/.test(attr) && /openstreetmap\.org\/copyright/.test(attr) && same((mapLog(a).find((e) => e[0] === 'map') || [])[1]?.maxZoom, 19),
+      '[vector] attribution names OpenFreeMap, OpenMapTiles and OpenStreetMap; the Leaflet map keeps maxZoom 19', short(attr, 200));
+    // 첫 타일이 오면 감시 끝: 지도가 보이는 채로 10초 넘게 지나도 벡터 그대로
+    a.run('__gl.fire("sourcedata", { dataType: "source", tile: {} })');
+    a.element('itinMap').offsetWidth = 600;
+    a.element('itinMap').offsetHeight = 320;
+    await a.settle(12000);
+    log(state(a).base === 'vector' && count(a, 'tileLayer') === 0, '[vector] once a tile arrived, the vector base stays (no fallback after 10 s)', short(state(a)));
+    // 화면 언어를 바꾸면 같은 GL 지도에 지명 칸만 바꾼 스타일을 넣는다(층을 새로 만들지 않음)
+    a.run("applyLanguage('ja')");
+    await a.settle(1000);
+    const jaStyles = J(a, '__gl.styles') || [];
+    a.run("applyLanguage('en')");
+    await a.settle(1000);
+    const enStyles = J(a, '__gl.styles') || [];
+    a.run("applyLanguage('ko')");
+    await a.settle(1000);
+    log(count(a, 'maplibreGL') === 1 && jaStyles.length === 1 && same(tfOf(jaStyles[0], 'label_city'), ja) && enStyles.length === 2 && same(tfOf(enStyles[1], 'label_city'), en) && state(a).lang === 'ko',
+      '[vector] language switch ko -> ja -> en -> ko restyles the same GL map (name:ja, name:en, back to name:ko)', short({ layers: count(a, 'maplibreGL'), styles: enStyles.length }));
+    log(errorsOf(a).length === 0, '[vector] no errors or warnings on the vector path', short(errorsOf(a), 400));
+  } catch (e) {
+    log(false, '[vector] OpenFreeMap success path in sandbox', e.stack || e.message);
+  }
+
+  // B. 첫 타일 전에 타일·소스 오류가 2번 → OSM 래스터로 바꾸고, 다시 그려도 벡터로 돌아가지 않는다
+  try {
+    const b = await make();
+    await loadLeaflet(b); await loadMaplibre(b); await loadPlugin(b);
+    b.run('__gl.fire("error", { error: new Error("sprite") })');
+    b.run('__gl.fire("error", { sourceId: "openmaptiles", error: new Error("AJAXError 503") })');
+    const afterOne = state(b).base;
+    b.run('__gl.fire("error", { sourceId: "openmaptiles", tile: {}, error: new Error("AJAXError 503") })');
+    await b.settle(500);
+    const tl = mapLog(b).filter((e) => e[0] === 'tileLayer');
+    const removedGl = J(b, '__gl.removed');
+    b.run('updateItinMap()');
+    await b.settle(1000);
+    log(afterOne === 'vector' && state(b).base === 'raster' && state(b).vector === 'failed' && removedGl === true && tl.length === 1 && tl[0][1] === b.urls.osm && tl[0][2] === b.urls.osmAttr && tl[0][3] === 19
+      && count(b, 'tileLayer') === 1 && count(b, 'maplibreGL') === 1,
+      '[fallback] 2 tile/source errors before the first tile -> GL layer removed, OSM tiles (with OSM attribution) instead; a sprite error does not count; a redraw stays on OSM',
+      short({ afterOne, st: state(b), removedGl, tiles: count(b, 'tileLayer') }));
+    log(errorsOf(b).length === 0, '[fallback] tile errors: no uncaught errors', short(errorsOf(b), 400));
+  } catch (e) {
+    log(false, '[fallback] tile errors in sandbox', e.stack || e.message);
+  }
+
+  // C. 첫 타일이 10초 안에 안 오면 OSM(지도 칸이 숨겨져 크기 0이면 실패로 보지 않음)
+  try {
+    const c = await make();
+    await loadLeaflet(c); await loadMaplibre(c); await loadPlugin(c);
+    await c.settle(12000);
+    const hiddenBase = state(c).base;
+    c.element('itinMap').offsetWidth = 600;
+    c.element('itinMap').offsetHeight = 320;
+    c.run('updateItinMap()');
+    await c.settle(5000);
+    const midway = state(c).base;
+    // 샌드박스 시계는 실행한 타이머 시각까지만 간다 → 남은 시간을 넉넉히 한 번에 돌린다
+    await c.settle(12000);
+    log(hiddenBase === 'vector' && midway === 'vector' && state(c).base === 'raster' && count(c, 'tileLayer') === 1,
+      '[fallback] no vector tile within 10 s while the map is visible -> OSM tiles (a zero-size hidden map is not a failure)', short({ hiddenBase, midway, now: state(c) }));
+  } catch (e) {
+    log(false, '[fallback] tile timeout in sandbox', e.stack || e.message);
+  }
+
+  // C2. 숨은 탭: 브라우저는 숨은 탭에서 requestAnimationFrame을 멈추고 MapLibre는 그 안에서 타일을 부른다.
+  //     일정을 기다리며 다른 탭에 갔다가 14초 뒤 돌아와도 OSM으로 바뀌지 않고, 돌아온 뒤 첫 타일이 오면 벡터 지도(한국어 지명) 그대로다.
+  //     (검토 재현: headless Edge에서 [일정 만들기] 뒤 다른 탭 14초 → 'no vector tile in 10000ms'로 OSM에 고정됐다)
+  const setVisible = (b, visible, fire = true) => b.run(`document.hidden = ${!visible}; document.visibilityState = '${visible ? 'visible' : 'hidden'}';`
+    + (fire ? " document.dispatchEvent(new Event('visibilitychange'));" : ''));
+  try {
+    const v = await make();
+    await loadLeaflet(v); await loadMaplibre(v);
+    v.element('itinMap').offsetWidth = 600;
+    v.element('itinMap').offsetHeight = 320;
+    setVisible(v, false);
+    await loadPlugin(v);
+    const attachedHidden = state(v).base;
+    await v.settle(14000);
+    const afterHidden = state(v);
+    setVisible(v, true);
+    await v.settle(500);
+    v.run('__gl.fire("sourcedata", { dataType: "source", tile: {} })');
+    await v.settle(12000);
+    log(attachedHidden === 'vector' && afterHidden.base === 'vector' && afterHidden.vector === 'ready' && state(v).base === 'vector' && state(v).lang === 'ko'
+      && count(v, 'tileLayer') === 0 && count(v, 'maplibreGL') === 1 && errorsOf(v).length === 0,
+      '[hidden tab] plan arrives while the tab is hidden: 14 s in the background is not a tile timeout; back on the tab, the first tile keeps the vector base (ko labels)',
+      short({ attachedHidden, afterHidden, now: state(v), errs: errorsOf(v) }, 400));
+  } catch (e) {
+    log(false, '[hidden tab] plan arrives while hidden in sandbox', e.stack || e.message);
+  }
+
+  // C3. 시간은 탭이 보이는 동안만 잰다: 숨으면 멈추고, 다시 보이면 처음부터 10초. 숨김 알림을 놓쳐 타이머가 숨은 채 끝나도 실패로 보지 않는다.
+  //     다시 보인 뒤에도 타일이 오지 않으면 그때는 OSM으로 간다(대체 경로는 그대로).
+  // 샌드박스 시계는 예정된 타이머가 있어야 간다 → 빈 타이머로 시계를 정확히 그만큼 돌린다.
+  const advance = async (b, ms) => { b.run(`setTimeout(function () {}, ${ms})`); await b.settle(ms); };
+  try {
+    // 보이는 채 6초 → 다른 탭 14초 → 돌아와 6초: 보인 시간은 12초지만 다시 보인 뒤로는 6초라 아직 벡터, 그 뒤에도 타일이 없으면 OSM
+    const p = await make();
+    await loadLeaflet(p); await loadMaplibre(p);
+    p.element('itinMap').offsetWidth = 600;
+    p.element('itinMap').offsetHeight = 320;
+    await loadPlugin(p);
+    await advance(p, 6000);
+    setVisible(p, false);
+    await p.settle(14000);
+    const pausedHidden = state(p).base;
+    setVisible(p, true);
+    await advance(p, 6000);
+    const justBack = state(p).base;
+    await p.settle(12000);
+    const pausedFinal = state(p);
+    // 6초 뒤 잠깐 숨었다 바로 돌아옴 → 처음 타이머(10초)는 멈추고 돌아온 때부터 다시 10초
+    const q = await make();
+    await loadLeaflet(q); await loadMaplibre(q);
+    q.element('itinMap').offsetWidth = 600;
+    q.element('itinMap').offsetHeight = 320;
+    await loadPlugin(q);
+    await advance(q, 6000);
+    setVisible(q, false);
+    setVisible(q, true);
+    await advance(q, 6000);
+    const toggled = state(q).base;
+    await q.settle(12000);
+    const toggledFinal = state(q).base;
+    const m = await make();
+    await loadLeaflet(m); await loadMaplibre(m);
+    m.element('itinMap').offsetWidth = 600;
+    m.element('itinMap').offsetHeight = 320;
+    await loadPlugin(m);
+    setVisible(m, false, false);
+    await m.settle(12000);
+    const missedHidden = state(m).base;
+    setVisible(m, true);
+    await m.settle(12000);
+    const missedFinal = state(m);
+    log(pausedHidden === 'vector' && justBack === 'vector' && pausedFinal.base === 'raster' && pausedFinal.vector === 'failed' && count(p, 'tileLayer') === 1
+      && toggled === 'vector' && toggledFinal === 'raster' && count(q, 'tileLayer') === 1
+      && missedHidden === 'vector' && missedFinal.base === 'raster' && count(m, 'tileLayer') === 1
+      && errorsOf(p).length === 0 && errorsOf(q).length === 0 && errorsOf(m).length === 0,
+      '[hidden tab] the 10 s tile timeout counts only while the tab is visible (restarts when the tab comes back, even if the hide event was missed); still no tile after coming back -> OSM tiles',
+      short({ pausedHidden, justBack, pausedFinal, toggled, toggledFinal, missedHidden, missedFinal }, 500));
+  } catch (e) {
+    log(false, '[hidden tab] visible-time-only tile timeout in sandbox', e.stack || e.message);
+  }
+
+  // D. OpenFreeMap 스타일 실패(503) → 플러그인을 받지 않고 바로 OSM
+  try {
+    const d = await make({ style: { status: 503, body: {} } });
+    const vec = state(d).vector;
+    await loadLeaflet(d);
+    log(vec === 'failed' && state(d).lib === 'ready' && state(d).base === 'raster' && count(d, 'maplibreGL') === 0 && count(d, 'tileLayer') === 1 && !scriptEl(d, d.urls.plugin),
+      '[fallback] OpenFreeMap style 503 -> OSM tiles right away (plugin never requested)', short({ vec, st: state(d) }));
+    log(errorsOf(d).length === 0, '[fallback] style failure: no errors or warnings', short(errorsOf(d), 400));
+  } catch (e) {
+    log(false, '[fallback] style failure in sandbox', e.stack || e.message);
+  }
+
+  // E. MapLibre 스크립트 실패 → OSM
+  try {
+    const e1 = await make();
+    scriptEl(e1, e1.urls.maplibre).onerror();
+    await e1.settle(500);
+    await loadLeaflet(e1);
+    log(state(e1).vector === 'failed' && state(e1).base === 'raster' && count(e1, 'maplibreGL') === 0 && !scriptEl(e1, e1.urls.plugin),
+      '[fallback] MapLibre script fails to load -> OSM tiles', short(state(e1)));
+  } catch (e) {
+    log(false, '[fallback] MapLibre script failure in sandbox', e.stack || e.message);
+  }
+
+  // F. 벡터 라이브러리가 10초 안에 안 오면 OSM으로 그린다(Leaflet만 온 경우)
+  try {
+    const f = await make();
+    await loadLeaflet(f);
+    const before = state(f).lib;
+    await f.settle(12000);
+    log(before === 'loading' && state(f).lib === 'ready' && state(f).vector === 'failed' && state(f).base === 'raster' && count(f, 'tileLayer') === 1,
+      '[fallback] MapLibre not ready within 10 s -> the map is drawn with OSM tiles instead of waiting forever', short({ before, now: state(f) }));
+  } catch (e) {
+    log(false, '[fallback] vector load timeout in sandbox', e.stack || e.message);
+  }
+
+  // G. GL 지도를 만들다 실패(WebGL 문맥 실패) → 반쯤 붙은 층을 떼고 OSM, 오류가 밖으로 새지 않는다
+  try {
+    const g = await make();
+    await loadLeaflet(g); await loadMaplibre(g);
+    g.run('window.__glFail = true');
+    await loadPlugin(g);
+    const lg = mapLog(g).map((e) => e[0] + (e[0] === 'add' || e[0] === 'remove' ? ':' + e[1] : ''));
+    log(state(g).base === 'raster' && state(g).vector === 'failed' && lg.includes('remove:vector') && count(g, 'tileLayer') === 1 && !String(g.element('itinMap')?.className || '').includes('hidden') && errorsOf(g).length === 0,
+      '[fallback] GL map creation throws (WebGL) -> half-added layer removed, OSM tiles, map stays visible, no error escapes', short({ st: state(g), lg, errs: errorsOf(g) }, 400));
+  } catch (e) {
+    log(false, '[fallback] GL creation failure in sandbox', e.stack || e.message);
+  }
+
+  // H. WebGL 없는 브라우저: MapLibre·OpenFreeMap을 아예 부르지 않고 OSM
+  try {
+    const h = await make({ webgl: false });
+    const ofmCalls = h.env.fetchCalls.filter((c) => /openfreemap/.test(c.url)).length;
+    const mlScripts = h.env.scriptSrcs.filter((s) => /maplibre/.test(s)).length;
+    await loadLeaflet(h);
+    log(ofmCalls === 0 && mlScripts === 0 && !cssEl(h, h.urls.maplibreCss) && state(h).base === 'raster' && count(h, 'tileLayer') === 1,
+      '[fallback] no WebGL -> MapLibre and the OpenFreeMap style are never requested; OSM tiles', short({ ofmCalls, mlScripts, st: state(h) }));
+  } catch (e) {
+    log(false, '[fallback] no-WebGL path in sandbox', e.stack || e.message);
+  }
 }
 
 // ── 1d. 직접 배치(placeBlock)·추가 창·옮기기·끌어 놓기 공용 경로·편집 보호·의도 전달·로그인 버튼·초안 복구 ──
@@ -1255,9 +1627,9 @@ async function sandboxSchedulingTests(htmlCode, appCode, i18nDict) {
     await sb2.boot(appCode, 'public/app.js');
     const banner = sb2.element('draftRestoreBanner');
     const paid2 = sb2.env.fetchCalls.filter((c) => c.sameOrigin && PAID.test(c.path)).map((c) => c.path);
-    const leaflet2 = sb2.env.scriptSrcs.filter((s) => /leaflet/i.test(s));
+    const leaflet2 = sb2.env.scriptSrcs.filter((s) => /leaflet|maplibre/i.test(s)).concat(sb2.env.fetchCalls.filter((c) => /openfreemap/.test(c.url)).map((c) => c.url));
     log(Boolean(banner) && !banner.hidden && !banner.classList.contains('hidden') && paid2.length === 0 && leaflet2.length === 0,
-      'boot with a saved draft: restore banner shown, no paid call, Leaflet not loaded', short({ banner: Boolean(banner), paid2, leaflet2 }));
+      'boot with a saved draft: restore banner shown, no paid call, Leaflet / MapLibre / OpenFreeMap not loaded', short({ banner: Boolean(banner), paid2, leaflet2 }));
     const restoreBtn = sb2.run(`document.querySelector('.notice-btn[data-notice-action="draft-restore"]')`);
     if (restoreBtn) restoreBtn.click();
     await sb2.settle(5000);
@@ -1476,6 +1848,395 @@ async function sandboxSchedulingTests(htmlCode, appCode, i18nDict) {
     log(nErrs.length === 0, 'night-zone move flows raise no errors', short(nErrs, 400));
   } catch (e) {
     log(false, 'night zone sandbox', e.stack || e.message);
+  }
+}
+
+// ── 대화로 일정 일부만 고치기(②)·되묻기(③) — 화면(app.js 샌드박스) ──
+// 서버 응답(mode 'edit')을 가짜로 주고: 편집이 직접 배치 함수로 적용되는지, 확인 창 없이(손으로 고친 일정 보존), 서버 호출은 채팅 1회뿐인지,
+// ↩ 되돌리기가 한 번에 되돌리는지, 선택지는 고르기 전에 아무것도 바꾸지 않고 고를 때 서버를 부르지 않는지, 다시 만들기는 지금처럼인지 본다.
+async function sandboxChatEditTests(htmlCode, appCode, i18nDict) {
+  section('Chat itinerary edit in the app (handoff 4-1 ②③): ops applied with placeBlock/fitSightTime, ↩ undo in one step, choices, server calls (app.js sandbox)');
+  const ko = i18nDict.ko || {};
+  const en = i18nDict.en || {};
+  const PAID = /^\/api\/(travel-plan|ai-travel-chat|flights|stays|foods|dest-search|route-cost|destinations|itinerary)$/;
+  const D1 = { sensoji: '오전(09:00-11:00): 센소지 (아사쿠사)', ichiran: '점심(12:00-13:00): 이치란 라멘 (신주쿠)', sushi: '저녁(18:00-20:00): 스시다이 (츠키지)' };
+  const D2 = { meiji: '오후(13:00-15:00): 메이지 신궁 (하라주쿠)', tower: '오후(19:00-21:00): 도쿄 타워 야경 (시바)' };
+  const MEIJI_D1 = '오후(13:00-15:00): 메이지 신궁 (하라주쿠)';
+  const editBody = (edit, reply = '말씀하신 부분만 고쳤어요.') => ({ body: { mode: 'edit', edit, reply, source: 'rule_edit_parser_v1', sourceInfo: { kind: 'rule', provider: 'rule', reasonCode: null }, aiErrors: [] } });
+  const ROUTES = {
+    // 빼기 + 넣기 2개(placeBlock 두 번 = 되돌리기 기록 두 칸 → 한 칸으로 합쳐져야 한다)
+    E1: editBody({ status: 'apply', ops: [{ op: 'remove', day: 1, block: D1.sensoji }, { op: 'add', day: 2, slot: 'morning', name: '도쿄 스카이트리', area: '오시아게', kind: 'dest' },
+      { op: 'add', day: 2, slot: 'lunch', name: '아후리 라멘', area: '에비스', kind: 'food' }] }),
+    E2: editBody({ status: 'apply', ops: [{ op: 'time', day: 1, block: D1.sushi, start: '19:00' }] }),
+    E3: editBody({ status: 'apply', ops: [{ op: 'replace', day: 1, block: D1.ichiran, name: '아후리 라멘', area: '에비스', kind: 'food' }] }),
+    E4: editBody({ status: 'apply', ops: [{ op: 'move', fromDay: 2, block: D2.meiji, day: 1, slot: 'afternoon' }] }),
+    E5: editBody({ status: 'ask', question: '어느 것을 뺄까요?', choices: [
+      { label: '2일차 저녁 이후 · 도쿄 타워 야경', ops: [{ op: 'remove', day: 2, block: D2.tower }] },
+      { label: '1일차 오후 · 메이지 신궁', ops: [{ op: 'remove', day: 1, block: MEIJI_D1 }] }
+    ] }, '어느 것을 뺄까요?'),
+    E6: editBody({ status: 'apply', ops: [{ op: 'remove', day: 1, block: '오전(10:00-11:00): 없는 장소 (어딘가)' }] }),
+    E7: editBody({ status: 'apply', ops: [{ op: 'time', day: 1, block: MEIJI_D1, start: '09:30' }] }),
+    E8: editBody({ status: 'apply', ops: [{ op: 'add', day: 2, slot: 'night', name: '시부야 스카이', area: '시부야', kind: 'dest' }] }),
+    E9: editBody({ status: 'ask', question: '어느 날에 넣을까요?', choices: [{ label: '3일차 오전', ops: [{ op: 'add', day: 3, slot: 'morning', name: '센소지', area: '아사쿠사', kind: 'dest' }] }] }, '어느 날에 넣을까요?'),
+    E10: editBody({ status: 'none' }, "지금 일정에서 '호그와트'를 찾지 못했어요."),
+    // 되묻기에 글로 답하기(11): 선택지(E11~E13)와 서버가 고른 결과(A0~A3)
+    E11: editBody({ status: 'ask', question: '며칠째에 넣을까요?', choices: [
+      { label: '1일차 오후', ops: [{ op: 'add', day: 1, slot: 'afternoon', name: '도쿄 스카이트리', area: '오시아게', kind: 'dest' }] },
+      { label: '2일차 오전', ops: [{ op: 'add', day: 2, slot: 'morning', name: '도쿄 스카이트리', area: '오시아게', kind: 'dest' }] }
+    ] }, '며칠째에 넣을까요?'),
+    E12: editBody({ status: 'ask', question: '어느 것을 넣을까요?', choices: [
+      { label: '1일차 오후 · 시부야 스카이', ops: [{ op: 'add', day: 1, slot: 'afternoon', name: '시부야 스카이', area: '시부야', kind: 'dest' }] },
+      { label: '1일차 오후 · 우에노 공원', ops: [{ op: 'add', day: 1, slot: 'afternoon', name: '우에노 공원', area: '우에노', kind: 'dest' }] },
+      { label: '2일차 저녁 이후 · 롯폰기 힐즈', ops: [{ op: 'add', day: 2, slot: 'night', name: '롯폰기 힐즈', area: '롯폰기', kind: 'dest' }] }
+    ] }, '어느 것을 넣을까요?'),
+    E13: editBody({ status: 'ask', question: '넣을까요?', choices: [{ label: '2일차 저녁 이후 · 아메요코', ops: [{ op: 'add', day: 2, slot: 'night', name: '아메요코', area: '우에노', kind: 'dest' }] }] }, '넣을까요?'),
+    A0: editBody({ status: 'pick', picks: [] }, '맞는 선택지를 찾지 못했어요.'),
+    A1: editBody({ status: 'pick', picks: [1] }, "'2일차 오전'을 골랐어요."),
+    A2: editBody({ status: 'pick', picks: [0, 1] }, '맞는 선택지가 2개예요. 아래에서 골라 주세요.'),
+    A3: editBody({ status: 'cancel' }, '알겠어요. 일정은 그대로 둘게요.'),
+    A9: editBody({ status: 'none' }, '알겠어요.')
+  };
+  // K1 재검토(12): 지금 일정의 블록으로 만드는 응답 — '이렇게 바꿀까요?'(confirm + [취소])와 맞바꾸기(swap)
+  const firstSight = (d) => blocksOf(d).find((b) => /^(오전|오후)\(/.test(b));
+  // 1~3일차의 시간대 블록 앞의 세 개({ d, b })
+  const firstThree = () => [1, 2, 3].flatMap((d) => blocksOf(d).filter((b) => /^(오전|오후|종일|점심|저녁)\(\d/.test(b)).map((b) => ({ d, b }))).slice(0, 3);
+  const DYN = {
+    C1: () => editBody({ status: 'ask', confirm: true, question: '이렇게 바꿀까요?', choices: [{ label: '이대로 바꾸기', ops: [{ op: 'remove', day: 1, block: firstSight(1) }] }, { label: '취소', ops: [], cancel: true }] }, '이렇게 바꿀까요?'),
+    S1: () => editBody({ status: 'apply', ops: [{ op: 'swap', day: 1, block: firstSight(1), day2: 2, block2: firstSight(2) }] }),
+    // 둘째 관광 칸을 첫째 관광 칸 시작 시각으로(시간이 겹친다) 바꾸는 확인
+    C2: () => {
+      for (const d of [1, 2, 3]) {
+        const sights = blocksOf(d).filter((b) => /^(오전|오후)\(\d\d:\d\d-\d\d:\d\d\): /.test(b) && !/자유/.test(b));
+        if (sights.length < 2) continue;
+        const start = /\((\d\d:\d\d)-/.exec(sights[0])[1];
+        return editBody({ status: 'ask', confirm: true, question: '이렇게 바꿀까요?', choices: [{ label: '이대로 바꾸기', ops: [{ op: 'time', day: d, block: sights[1], start }] }, { label: '취소', ops: [], cancel: true }] }, '이렇게 바꿀까요?');
+      }
+      return editBody({ status: 'none' }, '관광 칸이 둘인 날이 없어요.');
+    },
+    // 검토 K1c(막는 문제 1): 일정의 시간대 블록 세 개 빼기 + '모두(3곳)'(all: true)
+    C3: () => {
+      const rows = firstThree().map((x) => ({ label: `${x.d}일차 · ${x.b}`, ops: [{ op: 'remove', day: x.d, block: x.b }] }));
+      return editBody({ status: 'ask', question: '해당하는 일정이 3개예요. 어느 것을 뺄까요?', choices: [...rows, { label: '모두(3곳)', ops: rows.flatMap((r) => r.ops), all: true }] }, '해당하는 일정이 3개예요. 어느 것을 뺄까요?');
+    },
+    // 검토 R1 (a): 일정이 있는데 넣을 것이 종류 낱말이라 다시 만드는 답(editRegen 'category')
+    C4: () => ({ body: { reply: '도쿄 3일 여행으로 맞췄어요.', editRegen: 'category', parsed: { cityKey: 'tokyo', cityLabel: '도쿄', days: 3, theme: 'foodie', startDate: futureDate(20), routeCities: ['도쿄'], regionDayPlan: [], wantedPlaces: [], excludedPlaces: [], unsupportedPlaces: [], foodKeyword: '라멘', specialPrefs: {} },
+      selectedDestinations: [], sourceInfo: { kind: 'rule', provider: 'rule', reasonCode: null } } }),
+    // 글로 한 답을 서버가 맞춘 결과(보낸 목록 기준 번호)
+    A4: () => editBody({ status: 'pick', picks: [1, 2] }, '맞는 선택지가 2개예요. 아래에서 골라 주세요.'),
+    A5: () => editBody({ status: 'pick', picks: [2] }, "'모두(2곳)'를 골랐어요."),
+    A6: () => editBody({ status: 'pick', picks: [0] }, "첫째를 골랐어요.")
+  };
+  let chatCalls = 0;
+  const chatRoute = (call) => {
+    chatCalls += 1;
+    let msg = '';
+    try { msg = String(JSON.parse(call.body || '{}').message || ''); } catch { msg = ''; }
+    const key = (/^([EACS]\d+)\b/.exec(msg) || [])[1];
+    if (key && DYN[key]) return DYN[key]();
+    if (key && ROUTES[key]) return ROUTES[key];
+    return { body: { reply: '도쿄 3일 여행으로 맞췄어요.', parsed: { cityKey: 'tokyo', cityLabel: '도쿄', days: 3, theme: 'mixed', startDate: futureDate(20), routeCities: ['도쿄'], regionDayPlan: [], wantedPlaces: [], excludedPlaces: [], unsupportedPlaces: [], foodKeyword: '', specialPrefs: {} },
+      selectedDestinations: [], sourceInfo: { kind: 'rule', provider: 'rule', reasonCode: null } } };
+  };
+  const sb = createBrowser({ html: htmlCode, fetchRoutes: sandboxRoutes({ '/api/ai-travel-chat': chatRoute }), location: BASE + '/' });
+  const J = (code) => { const s = sb.run(`JSON.stringify(${code})`); return s === undefined ? undefined : JSON.parse(String(s)); };
+  const blocksOf = (d) => J(`((findItineraryDay(${d}) || {}).blocks || [])`) || [];
+  const snap = () => JSON.stringify([blocksOf(1), blocksOf(2), blocksOf(3)]);
+  const count = (p) => sb.env.fetchCalls.filter((c) => c.path === p).length;
+  const paid = () => sb.env.fetchCalls.filter((c) => c.sameOrigin && PAID.test(c.path)).length;
+  const toast = () => String(sb.element('memoToast')?.textContent || '');
+  const lastOf = (cls) => J(`(function () { var n = Array.prototype.filter.call(el('aiChatLog').children, function (c) { return c.classList.contains('${cls}'); }).pop(); return n ? n.innerHTML : null; })()`);
+  const say = async (text) => { sb.element('aiRequest').value = text; sb.element('btnPlan').click(); await sb.settle(20000); };
+  const overwriteAsks = () => sb.env.dialogs.filter(([k, m]) => k === 'confirm' && m === ko['confirm-overwrite-edits']).length;
+  try {
+    await sb.boot(appCode, 'public/app.js');
+    sb.run(`el('aiChatLog').insertAdjacentHTML = function (pos, html) { this._capturedHtml = (this._capturedHtml || '') + html; }`);
+    sb.element('btnPlan').click();
+    await sb.settle(20000);
+    const before = { d1: blocksOf(1), d2: blocksOf(2), d3: blocksOf(3) };
+    log(count('/api/travel-plan') === 1 && before.d1.includes(D1.sensoji) && before.d2.includes(D2.meiji) && before.d2.includes(D2.tower),
+      'chat edit setup: a plan exists (form path, 1 travel-plan call)', short(before, 400));
+
+    // (1) 빼기 + 넣기(placeBlock): 서버 호출은 채팅 1회, 일정 다시 만들기 0회, 확인 창 없음
+    const paid0 = paid();
+    const dialogs0 = sb.env.dialogs.length;
+    await say('E1 1일째 센소지 빼고 2일째 오전에 도쿄 스카이트리 넣어줘');
+    const e1Body = JSON.parse(sb.env.fetchCalls.filter((c) => c.path === '/api/ai-travel-chat').pop()?.body || '{}');
+    log(e1Body.itinerary && e1Body.itinerary.cityKey === 'tokyo' && e1Body.itinerary.lang === 'ko' && same3(e1Body.itinerary.days, before),
+      'chat request carries the current plan (itinerary: lang, cityKey, days[].blocks exactly as shown)', short(e1Body.itinerary, 400));
+    log(paid() - paid0 === 1 && count('/api/travel-plan') === 1 && chatCalls === 1,
+      'edit E1: exactly one server call (ai-travel-chat); the plan is not regenerated (0 travel-plan / flights / foods / stays calls)', short({ paid: paid() - paid0, plan: count('/api/travel-plan') }));
+    log(!blocksOf(1).includes(D1.sensoji) && blocksOf(2).includes('오전(09:00-12:00): 도쿄 스카이트리 (오시아게)') && blocksOf(2).includes('점심(12:00-13:30): 아후리 라멘 (에비스)')
+      && blocksOf(2).includes(D2.meiji) && blocksOf(1).includes(D1.sushi),
+      'edit E1 applied only to those slots: 센소지 removed from day 1, 도쿄 스카이트리 (morning 09:00-12:00) and 아후리 라멘 (lunch) placed in day 2 by placeBlock; the rest kept', short([blocksOf(1), blocksOf(2)], 400));
+    const r1 = String(lastOf('chat-edit-result') || '');
+    log(r1.includes(ko['chat-edit-summary'].split('{list}')[0]) && r1.includes('센소지') && r1.includes('도쿄 스카이트리') && r1.includes('아후리 라멘') && /data-chat-edit-undo="e\d+"/.test(r1)
+      && String(J(`el('aiChatLog')._capturedHtml || ''`) || '').includes('말씀하신 부분만 고쳤어요.'),
+      "chat shows the reply and one '바뀐 점' line with a ↩ undo button", short(r1, 400));
+    log(sb.env.dialogs.length === dialogs0 && J('currentItineraryData.userEdited') === true && J('lastParsedConditions') === null && J('chatHistory.length') === 2,
+      'edit E1: no confirm dialog; the plan counts as edited (kept on later regenerate); chat conditions untouched, chat history +2', short({ dialogs: sb.env.dialogs.slice(dialogs0) }));
+    // (2) 채팅의 ↩ 되돌리기: 두 편집을 한 번에 되돌린다(서버 호출 없음)
+    const paid1 = paid();
+    const undoBtn = sb.run(`document.querySelector('[data-chat-edit-undo]')`);
+    if (undoBtn) undoBtn.click();
+    log(Boolean(undoBtn) && same3(J('currentItineraryData.itinerary.map(function (d) { return d.blocks; })'), before) && toast() === ko['chat-edit-undone'] && undoBtn.disabled === true && paid() === paid1,
+      'chat ↩ undo restores the plan before E1 in one step (all 3 ops), disables the button, no server call', short([blocksOf(1), blocksOf(2)], 400));
+    // 언어를 바꾸면 ↩ 버튼 글자도 바뀐다(data-i18n)
+    sb.run(`applyLanguage('en')`);
+    const undoEn = String(sb.run(`document.querySelector('[data-chat-edit-undo]').textContent`) || '');
+    sb.run(`applyLanguage('ko')`);
+    log(undoEn === en['btn-chat-edit-undo'], 'the chat ↩ button label follows the UI language (data-i18n btn-chat-edit-undo)', short(undoEn));
+
+    // (3) 시간 바꾸기·바꾸기·옮기기
+    await say('E2 1일째 저녁을 7시로');
+    log(blocksOf(1).includes('저녁(19:00-21:00): 스시다이 (츠키지)') && !blocksOf(1).includes(D1.sushi), "time edit: day 1 dinner 18:00 -> '저녁(19:00-21:00)' (length kept)", short(blocksOf(1)));
+    await say('E3 1일째 점심 이치란 대신 아후리 라멘');
+    log(blocksOf(1).includes('점심(12:00-13:00): 아후리 라멘 (에비스)') && !blocksOf(1).some((b) => b.includes('이치란')), 'replace edit keeps the slot time: 점심(12:00-13:00) 이치란 라멘 -> 아후리 라멘', short(blocksOf(1)));
+    await say('E4 메이지 신궁을 1일째로');
+    log(blocksOf(1).includes(MEIJI_D1) && !blocksOf(2).some((b) => b.includes('메이지 신궁')), 'move edit (placeBlock move): 메이지 신궁 day 2 -> day 1 afternoon, original removed', short([blocksOf(1), blocksOf(2)], 300));
+    log(sb.env.dialogs.length === dialogs0 && count('/api/travel-plan') === 1, 'time / replace / move edits ask nothing and never regenerate the plan', short(sb.env.dialogs.slice(dialogs0)));
+
+    // (4) 되묻기: 고르기 전에는 바꾸지 않는다. 고를 때 서버 호출 없음. 한 번만 고를 수 있다.
+    const beforeAsk = snap();
+    await say('E5 저녁 이후 일정 빼줘');
+    const btns = J(`Array.prototype.map.call(document.querySelectorAll('[data-chat-choice]'), function (b) { return b.dataset.choiceIndex; })`) || [];
+    log(snap() === beforeAsk && btns.length === 2, 'ask: the reply shows 2 choice buttons and the plan is unchanged before choosing', short({ btns }));
+    const paid2 = paid();
+    sb.run(`document.querySelector('[data-chat-choice][data-choice-index="0"]').click()`);
+    const afterChoice = snap();
+    sb.run(`document.querySelector('[data-chat-choice][data-choice-index="1"]').click()`);
+    log(!blocksOf(2).includes(D2.tower) && blocksOf(1).includes(MEIJI_D1) && snap() === afterChoice && paid() === paid2
+      && J(`Array.prototype.every.call(document.querySelectorAll('[data-chat-choice]'), function (b) { return b.disabled; })`) === true
+      && J(`document.querySelector('[data-chat-choice][data-choice-index="0"]').classList.contains('chosen')`) === true,
+      'choosing applies only that choice (도쿄 타워 야경 removed) with no server call; the other buttons are disabled and do nothing', short([blocksOf(1), blocksOf(2)], 300));
+
+    // (5) 그 사이 바뀐 블록은 적용하지 않고 이유를 알린다(되돌리기 버튼 없음)
+    const beforeStale = snap();
+    await say('E6 없는 장소 빼줘');
+    const r6 = String(lastOf('chat-edit-result') || '');
+    log(snap() === beforeStale && r6.includes(ko['chat-edit-fail-stale']) && r6.includes(ko['chat-edit-nothing']) && !/data-chat-edit-undo/.test(r6),
+      'an op whose block is gone is not applied: the chat says why, nothing changes, no undo button', short(r6, 300));
+    // (6) 시간 겹침은 직접 배치와 같은 확인(fitSightTime): 거절하면 그대로
+    const beforeOverlap = snap();
+    const dialogs1 = sb.env.dialogs.length;
+    await say('E7 메이지 신궁을 9시 반으로');
+    const overlapAsk = sb.env.dialogs.slice(dialogs1).filter(([k]) => k === 'confirm').map(([, m]) => m);
+    const overlapText = String(ko['confirm-time-overlap'] || '').replace('{day}', '1일차').replace('{n}', '센소지').replace('{t}', '09:00–11:00');
+    log(overlapAsk.length === 1 && overlapAsk[0] === overlapText && snap() === beforeOverlap && String(lastOf('chat-edit-result') || '').includes(ko['chat-edit-fail-cancelled']),
+      'time edit that overlaps 센소지 (09:00-11:00) asks with the overlap text (fitSightTime); declining keeps the plan', short({ overlapAsk }, 300));
+    // (7) '저녁 이후' 칸에 넣기(placeBlock + nightDropWindow)
+    await say('E8 2일째 밤에 시부야 스카이 넣어줘');
+    log(blocksOf(2).some((b) => /^오후\(19:00-2\d:\d{2}\): 시부야 스카이 \(시부야\)$/.test(b)), "add into the night slot uses the '저녁 이후' window (오후 19:00~)", short(blocksOf(2)));
+    // (8) 안내만(편집 없음): 일정 그대로, 결과 줄 없음
+    const beforeNone = snap();
+    const results0 = J(`Array.prototype.filter.call(el('aiChatLog').children, function (c) { return c.classList.contains('chat-edit-result'); }).length`);
+    await say('E10 호그와트 빼줘');
+    log(snap() === beforeNone && J(`Array.prototype.filter.call(el('aiChatLog').children, function (c) { return c.classList.contains('chat-edit-result'); }).length`) === results0
+      && String(J(`el('aiChatLog')._capturedHtml || ''`) || '').includes('호그와트'),
+      "status 'none' only shows the reply ('찾지 못했어요'); the plan is unchanged", short(blocksOf(1)));
+
+    // (9) [대화 초기화]: 남은 선택지는 더 이상 아무것도 하지 않는다. 고친 일정은 그대로.
+    await say('E9 센소지 넣어줘');
+    sb.run(`window.__staleChoice = document.querySelector('[data-chat-choice]')`);
+    const beforeReset = snap();
+    sb.element('btnChatReset').click();
+    sb.run(`if (window.__staleChoice) window.__staleChoice.click()`);
+    log(snap() === beforeReset && J('Object.keys(chatEditChoiceSets).length') === 0 && J('Object.keys(chatEditRecords).length') === 0 && J(`document.querySelectorAll('[data-chat-choice]').length`) === 0,
+      '[대화 초기화] keeps the edited plan and clears pending choices/undo buttons; a stale choice button does nothing', short(blocksOf(3)));
+
+    // (10) 다시 만들기 말: 직접 고친 일정이면 그때 묻고(거절하면 일정 그대로, 일정 호출 0), 받아들이면 지금처럼 다시 만든다
+    const plans0 = count('/api/travel-plan');
+    const asks0 = overwriteAsks();
+    await say('하루 더 늘려줘');
+    log(overwriteAsks() === asks0 + 1 && count('/api/travel-plan') === plans0 && String(J(`el('aiChatLog')._capturedHtml || ''`) || '').includes(ko['chat-regen-kept']),
+      'a regenerate answer on an edited plan asks to overwrite after the chat reply; declining keeps the plan (0 travel-plan calls)', short({ asks: overwriteAsks() - asks0, plans: count('/api/travel-plan') - plans0 }));
+    sb.run('var __realConfirm2 = confirm; confirm = function (m) { __realConfirm2(m); return true; };');
+    await say('하루 더 늘려줘');
+    sb.run('confirm = __realConfirm2;');
+    log(count('/api/travel-plan') === plans0 + 1, 'accepting the overwrite regenerates the plan as before (1 travel-plan call)', short({ plans: count('/api/travel-plan') - plans0 }));
+    log(overwriteAsks() >= 2 && sb.env.dialogs.slice(dialogs0).filter(([k, m]) => k === 'confirm' && m === ko['confirm-overwrite-edits']).length === overwriteAsks() - asks0,
+      'the overwrite question appears only for regenerate answers, never for edits', short(overwriteAsks()));
+
+    // (11) 되묻기에 글로 답하기(검토 회귀): 다음 채팅 요청에 남은 선택지(editChoices: 라벨·편집 종류)를 싣고, 서버가 고른 선택지(pick)만 적용한다.
+    // 확인 창·일정 다시 만들기 없음. 맞는 것이 없으면 선택지를 그대로 두고, 여럿이면 그것만 다시 보여 주고, '취소'면 닫는다.
+    const sameJ = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const lastChatBody = () => JSON.parse(sb.env.fetchCalls.filter((c) => c.path === '/api/ai-travel-chat').pop()?.body || '{}');
+    const choiceBtns = (id) => J(`Array.prototype.map.call(document.querySelectorAll('[data-chat-choice="${id}"]'), function (b) { return [b.dataset.choiceIndex, b.disabled, b.classList.contains('chosen')]; })`) || [];
+    const plans11 = count('/api/travel-plan');
+    const dialogs11 = sb.env.dialogs.length;
+    const before11 = snap();
+    await say('E11 도쿄 스카이트리 넣어줘');
+    const id11 = J('chatEditPendingId');
+    await say('A0 아무 말');
+    const body0 = lastChatBody();
+    log(snap() === before11 && J('chatEditPendingId') === id11 && sameJ(body0.editChoices, [{ label: '1일차 오후', kinds: ['add'] }, { label: '2일차 오전', kinds: ['add'] }])
+      && choiceBtns(id11).every(([, dis]) => dis === false),
+      'typed answer: the next chat request carries the open choices (editChoices: label + kinds); no match keeps the plan and the choices open', short({ id11, editChoices: body0.editChoices }, 300));
+    await say('A1 2일째');
+    const body1 = lastChatBody();
+    log(sameJ(body1.editChoices, body0.editChoices) && blocksOf(2).includes('오전(09:00-12:00): 도쿄 스카이트리 (오시아게)') && !blocksOf(1).some((b) => b.includes('도쿄 스카이트리'))
+      && sameJ(choiceBtns(id11), [['0', true, false], ['1', true, true]]) && J('chatEditPendingId') === ''
+      && /data-chat-edit-undo="e\d+"/.test(String(lastOf('chat-edit-result') || '')),
+      "typed answer picked by the server (pick [1]) applies only that choice (day 2 morning), marks it chosen, disables the buttons, adds the ↩ undo line", short([blocksOf(1), blocksOf(2), choiceBtns(id11)], 400));
+    await say('A9 다음 말');
+    log(lastChatBody().editChoices === undefined, 'after a choice is taken, the next chat request no longer carries editChoices', short(lastChatBody().editChoices));
+    await say('E12 1일차 오후에 하나 넣어줘');
+    const id12 = J('chatEditPendingId');
+    await say('A2 1일차');
+    const btn12 = choiceBtns(id12);
+    log(btn12.length === 5 && sameJ(btn12.slice(3).map(([i]) => i), ['0', '1']) && J('chatEditPendingId') === id12,
+      'a typed answer that matches several choices (pick [0,1]) shows only those again (same choice set) and keeps waiting', short(btn12));
+    sb.run(`document.querySelectorAll('[data-chat-choice="${id12}"]')[4].click()`);
+    log(blocksOf(1).some((b) => /^오후\(13:00-17:00\): 우에노 공원 \(우에노\)$/.test(b)) && !blocksOf(1).some((b) => b.includes('시부야 스카이')) && choiceBtns(id12).every(([, dis]) => dis === true)
+      && J('chatEditPendingId') === '',
+      'choosing from the narrowed row applies that choice once; every button of the set (both rows) is disabled', short([blocksOf(1), choiceBtns(id12)], 400));
+    await say('E13 하나 더 넣어줘');
+    const id13 = J('chatEditPendingId');
+    const before13 = snap();
+    await say('A3 취소');
+    log(snap() === before13 && choiceBtns(id13).every(([, dis, chosen]) => dis === true && chosen === false) && J('chatEditPendingId') === '',
+      "typed '취소' closes the open choices without changing the plan", short(choiceBtns(id13)));
+    await say('A9 그다음 말');
+    log(lastChatBody().editChoices === undefined && count('/api/travel-plan') === plans11 && sb.env.dialogs.length === dialogs11,
+      'typed answers never regenerate the plan and never ask to overwrite (0 travel-plan calls, 0 dialogs)', short({ plans: count('/api/travel-plan') - plans11, dialogs: sb.env.dialogs.slice(dialogs11) }));
+
+    // (12) K1 재검토: '이렇게 바꿀까요?'(confirm) — 고르기 전에는 그대로, [취소]는 서버 호출 없이 닫기, [이대로 바꾸기]는 그때 적용.
+    // 맞바꾸기(swap)는 두 블록의 시각은 두고 장소만 바꾼다. 선택지가 열려 있는데 서버가 다시 만들기로 답하면 바로 만들지 않고 묻는다.
+    const captured = () => String(J(`el('aiChatLog')._capturedHtml || ''`) || '');
+    const btnState = (id) => J(`Array.prototype.map.call(document.querySelectorAll('[data-chat-choice="${id}"]'), function (b) { return [b.dataset.choiceIndex, b.disabled, b.classList.contains('chosen'), b.classList.contains('chat-choice-cancel')]; })`) || [];
+    const plans12 = count('/api/travel-plan');
+    const before12 = snap();
+    const target12 = firstSight(1);
+    await say('C1 금각사는 두고 센소지 빼줘');
+    const id12c = J('chatEditPendingId');
+    log(snap() === before12 && sameJ(btnState(id12c), [['0', false, false, false], ['1', false, false, true]]),
+      "confirm: '이렇게 바꿀까요?' shows [이대로 바꾸기] and a dashed [취소] button; nothing changes before choosing", short(btnState(id12c)));
+    await say('A0 음');
+    log(sameJ(lastChatBody().editChoices, [{ label: '이대로 바꾸기', kinds: ['remove'] }, { label: '취소', kinds: ['cancel'] }]) && J('chatEditPendingId') === id12c,
+      "the open confirm is sent with the next message (the cancel choice as kind 'cancel'); a non-answer keeps it open", short(lastChatBody().editChoices));
+    const paid12 = paid();
+    sb.run(`document.querySelector('[data-chat-choice="${id12c}"][data-choice-index="1"]').click()`);
+    log(snap() === before12 && sameJ(btnState(id12c), [['0', true, false, false], ['1', true, true, true]]) && paid() === paid12 && J('chatEditPendingId') === ''
+      && captured().includes(ko['chat-edit-choice-cancelled']),
+      '[취소] closes the confirm without changing the plan or calling the server, and says the plan is kept', short({ btn: btnState(id12c) }));
+    await say('C1 금각사는 두고 센소지 빼줘');
+    const id12d = J('chatEditPendingId');
+    sb.run(`document.querySelector('[data-chat-choice="${id12d}"][data-choice-index="0"]').click()`);
+    log(Boolean(target12) && !blocksOf(1).includes(target12) && /data-chat-edit-undo="e\d+"/.test(String(lastOf('chat-edit-result') || '')) && paid() === paid12 + 1,
+      '[이대로 바꾸기] applies the confirmed change only when clicked (one ↩ undo line; the only server call was the chat message)', short({ target12, d1: blocksOf(1) }, 400));
+    // 맞바꾸기
+    const sa = firstSight(1);
+    const sbk = firstSight(2);
+    const split = (b) => [b.slice(0, b.indexOf(': ')), b.slice(b.indexOf(': ') + 2)];
+    const before12s = snap();
+    await say('S1 자리 바꿔줘');
+    const [preA, restA] = split(sa);
+    const [preB, restB] = split(sbk);
+    log(blocksOf(1).includes(`${preA}: ${restB}`) && blocksOf(2).includes(`${preB}: ${restA}`) && !blocksOf(1).includes(sa) && !blocksOf(2).includes(sbk)
+      && String(lastOf('chat-edit-result') || '').includes('↔') && blocksOf(1).length + blocksOf(2).length === JSON.parse(before12s)[0].length + JSON.parse(before12s)[1].length,
+      'swap op: the two places change places, each keeping the other slot\'s time (no place lost or doubled)', short({ sa, sbk, d1: blocksOf(1), d2: blocksOf(2) }, 600));
+    sb.run(`document.querySelectorAll('[data-chat-edit-undo]')[document.querySelectorAll('[data-chat-edit-undo]').length - 1].click()`);
+    log(snap() === before12s, 'chat ↩ undo restores the plan before the swap in one step', short([blocksOf(1), blocksOf(2)], 300));
+    // 선택지가 열린 채 '다시 만들기' 답: 묻고(거절하면 그대로·선택지 유지), 받아들이면 다시 만들고 선택지를 닫는다
+    await say('E11 도쿄 스카이트리 넣어줘');
+    const id12p = J('chatEditPendingId');
+    const askRegen = () => sb.env.dialogs.filter(([k, m]) => k === 'confirm' && m === ko['confirm-chat-regen-pending']).length;
+    const asks12 = askRegen();
+    const before12p = snap();
+    await say('하루 더 늘려줘');
+    log(askRegen() === asks12 + 1 && count('/api/travel-plan') === plans12 && snap() === before12p && J('chatEditPendingId') === id12p && btnState(id12p).every(([, dis]) => dis === false)
+      && captured().includes(ko['chat-regen-pending-kept'].split("'")[0]),
+      'open choices + a regenerate answer: asks first; declining keeps the plan (0 travel-plan calls) and the choices open', short({ asks: askRegen() - asks12, plans: count('/api/travel-plan') - plans12, btn: btnState(id12p) }));
+    sb.run('var __realConfirm12 = confirm; confirm = function (m) { __realConfirm12(m); return true; };');
+    await say('하루 더 늘려줘');
+    sb.run('confirm = __realConfirm12;');
+    log(count('/api/travel-plan') === plans12 + 1 && btnState(id12p).every(([, dis]) => dis === true) && J('chatEditPendingId') === '' && askRegen() === asks12 + 2,
+      'accepting regenerates the plan once and closes the old choices (they belong to the old plan)', short({ plans: count('/api/travel-plan') - plans12, btn: btnState(id12p) }));
+    // (13) K1 재검토 2: 확인 창이 열린 채 새 편집이 적용되면 예전 선택지는 닫힌다(남은 [취소]가 이미 바뀐 일정을 두고 '그대로 둘게요'라고 하지 않게)
+    await say('C1 금각사는 두고 센소지 빼줘');
+    const id13c = J('chatEditPendingId');
+    const before13c = snap();
+    await say('S1 자리 바꿔줘');
+    const keptMsgs = () => captured().split(ko['chat-edit-choice-cancelled']).length;
+    const kept0 = keptMsgs();
+    sb.run(`document.querySelector('[data-chat-choice="${id13c}"][data-choice-index="1"]').click()`);
+    log(Boolean(id13c) && snap() !== before13c && btnState(id13c).every(([, dis]) => dis === true) && J('chatEditPendingId') === '' && keptMsgs() === kept0,
+      'a new edit applied while a confirm is open closes the old choices; the stale [취소] does nothing (no "plan kept" message)', short({ btn: btnState(id13c) }));
+    sb.run(`document.querySelectorAll('[data-chat-edit-undo]')[document.querySelectorAll('[data-chat-edit-undo]').length - 1].click()`);
+    // 고른 편집이 시간 겹침 확인에서 '취소'되면(샌드박스 confirm = 아니오) 아무것도 바뀌지 않고 선택지가 다시 열린다
+    await say('C2 시간 바꿔줘');
+    const id13t = J('chatEditPendingId');
+    const before13t = snap();
+    const dlg13 = sb.env.dialogs.length;
+    sb.run(`document.querySelector('[data-chat-choice="${id13t}"][data-choice-index="0"]').click()`);
+    log(Boolean(id13t) && snap() === before13t && sb.env.dialogs.slice(dlg13).some(([k, m]) => k === 'confirm' && /겹쳐요/.test(String(m)))
+      && String(lastOf('chat-edit-result') || '').includes(ko['chat-edit-fail-cancelled']) && btnState(id13t).every(([, dis, chosen]) => dis === false && chosen === false) && J('chatEditPendingId') === id13t,
+      'declining the time-overlap question after picking a choice changes nothing and reopens the choices (they can still be picked or cancelled)', short({ btn: btnState(id13t), pending: J('chatEditPendingId') }));
+    sb.run(`document.querySelector('[data-chat-choice="${id13t}"][data-choice-index="1"]').click()`);
+    log(snap() === before13t && btnState(id13t).every(([, dis]) => dis === true) && J('chatEditPendingId') === '', 'the reopened choices still close with [취소]', short(btnState(id13t)));
+    // (14) 검토 R2: 편집으로 답한 글을 [취소] 뒤 요청칸 그대로 [일정 만들기]로 다시 누르면, 앞서 알아들은 의도 없이 일정을 통째로 다시 만들지 않고
+    // 그 글을 채팅으로 다시 보낸다(확인을 다시 묻는다). 조건 칸 다시 만들기·덮어쓰기 질문 없음.
+    await say('C1 금각사는 두고 센소지 빼줘');
+    const idR2a = J('chatEditPendingId');
+    sb.run(`document.querySelector('[data-chat-choice="${idR2a}"][data-choice-index="1"]').click()`);
+    const beforeR2 = snap();
+    const plansR2 = count('/api/travel-plan');
+    const chatsR2 = count('/api/ai-travel-chat');
+    const dialogsR2 = sb.env.dialogs.length;
+    log(String(sb.element('aiRequest').value) === 'C1 금각사는 두고 센소지 빼줘' && J('aiRequestHandledText') === 'C1 금각사는 두고 센소지 빼줘', 'R2 setup: the request box still holds the edit text that was answered', short(J('aiRequestHandledText')));
+    sb.element('btnPlan').click();
+    await sb.settle(20000);
+    const idR2b = J('chatEditPendingId');
+    log(count('/api/travel-plan') === plansR2 && count('/api/ai-travel-chat') === chatsR2 + 1 && lastChatBody().message === 'C1 금각사는 두고 센소지 빼줘'
+      && sb.env.dialogs.length === dialogsR2 && Boolean(idR2b) && idR2b !== idR2a && btnState(idR2b).every(([, dis]) => dis === false) && snap() === beforeR2,
+      'R2: the same edit text pressed again goes to the chat again and a new confirm opens; no travel-plan call, no dialog, the plan is unchanged',
+      short({ plans: count('/api/travel-plan') - plansR2, chats: count('/api/ai-travel-chat') - chatsR2, idR2a, idR2b, dialogs: sb.env.dialogs.slice(dialogsR2) }));
+    // (15) 검토 K1c(막는 문제 1): 글로 한 답으로 좁히면 그 줄(좁힌 선택지 + 그것만 합친 새 '모두(2곳)')만 다음 답에 보낸다.
+    // 서버가 고른 번호는 그 줄 기준이다: '둘 다'(pick [2]) = 새 '모두(2곳)' → 좁힌 두 곳만, '첫 번째'(pick [0]) = 그 줄의 첫째(뺀 1일차가 아니다).
+    const three15 = firstThree();
+    const has15 = (x) => blocksOf(x.d).includes(x.b);
+    await say('C3 첫 관광 칸 빼줘');
+    const id15 = J('chatEditPendingId');
+    const before15 = snap();
+    await say('A4 첫째 말고 다');
+    const row15 = J(`chatEditChoiceSets['${id15}'].visible.map(function (i) { return chatEditChoiceSets['${id15}'].choices[i].label; })`) || [];
+    const btn15 = choiceBtns(id15);
+    await say('A5 둘 다');
+    const sent15 = lastChatBody().editChoices || [];
+    log(three15.length === 3 && snap() !== before15 && sameJ(sent15.map((c) => c.label), [`${three15[1].d}일차 · ${three15[1].b}`, `${three15[2].d}일차 · ${three15[2].b}`, '모두(2곳)'])
+      && sameJ(row15, sent15.map((c) => c.label)) && btn15.length === 7 && has15(three15[0]) && !has15(three15[1]) && !has15(three15[2])
+      && J('chatEditPendingId') === '' && choiceBtns(id15).every(([, dis]) => dis === true),
+      "K1c narrowing: the shown row (2 choices + a new '모두(2곳)') is what the next answer sends; '둘 다' applies only those two (the first is kept), never the old '모두(3곳)'",
+      short({ three15, row15, sent15, btn15 }, 700));
+    sb.run(`document.querySelectorAll('[data-chat-edit-undo]')[document.querySelectorAll('[data-chat-edit-undo]').length - 1].click()`);
+    await say('C3 첫 관광 칸 빼줘');
+    await say('A4 첫째 말고 다');
+    await say('A6 첫 번째');
+    log(has15(three15[0]) && !has15(three15[1]) && has15(three15[2]),
+      "K1c narrowing: '첫 번째' after narrowing (pick [0] of the shown row) removes the second item, not the first one that was left out", short([blocksOf(1), blocksOf(2), blocksOf(3)], 400));
+    sb.run(`document.querySelectorAll('[data-chat-edit-undo]')[document.querySelectorAll('[data-chat-edit-undo]').length - 1].click()`);
+    // (16) 검토 R1 (a): 일정이 있는데 서버가 '종류 낱말이라 일정 전체를 다시 만든다'(editRegen 'category')고 답하면, 고친 적이 없어도 먼저 묻는다.
+    // 거절하면 일정 그대로(travel-plan 0회), 받아들이면 지금처럼 다시 만든다.
+    const plans16 = count('/api/travel-plan');
+    const before16 = snap();
+    const asksCat = () => sb.env.dialogs.filter(([k, m]) => k === 'confirm' && m === ko['confirm-chat-regen-category']).length;
+    const cat0 = asksCat();
+    const keptMsg16 = () => captured().split(ko['chat-edit-choice-cancelled']).length;
+    const kept16 = keptMsg16();
+    await say('C4 라멘 넣어줘');
+    log(asksCat() === cat0 + 1 && count('/api/travel-plan') === plans16 && snap() === before16 && keptMsg16() === kept16 + 1,
+      "K1c category regen ('라멘 넣어줘', editRegen 'category') asks before replacing the whole plan; declining keeps it (0 travel-plan calls)", short({ asks: asksCat() - cat0, plans: count('/api/travel-plan') - plans16 }));
+    sb.run('var __realConfirm16 = confirm; confirm = function (m) { __realConfirm16(m); return true; };');
+    await say('C4 라멘 넣어줘');
+    sb.run('confirm = __realConfirm16;');
+    log(asksCat() === cat0 + 2 && count('/api/travel-plan') === plans16 + 1, 'K1c accepting the category question regenerates the plan once (as before)', short({ plans: count('/api/travel-plan') - plans16 }));
+    const errs = sb.env.errors.concat(sb.unhandled);
+    log(errs.length === 0, 'chat edit flows in the sandbox raise no errors', short(errs, 400));
+  } catch (e) {
+    log(false, 'chat edit sandbox', e.stack || e.message);
+  }
+  function same3(days, ref) {
+    const list = Array.isArray(days) ? days.map((d) => (Array.isArray(d) ? d : d && d.blocks)) : [];
+    return JSON.stringify(list.slice(0, 3)) === JSON.stringify([ref.d1, ref.d2, ref.d3]);
   }
 }
 
@@ -1944,10 +2705,26 @@ async function phaseCityCoverage() {
   // 검토로 뺀 곳(닫은 미술관·상륙할 수 없는 바위섬·주거 섬·스키 점프대·도로 고개·센카쿠 신사)은 다시 들어오지 않는다
   // (30곳 데이터: 사무용 빌딩 NTT 도코모 요요기 빌딩, 증권거래소, 읽기를 확인할 수 없는 작은 신사 龍神宮, 아파트 타워 The Kitahama — 'tower block' 분류,
   //  기노사키의 료칸 千年の湯 古まん, 교토 아라시야마로 가던 채팅을 가로채던 아사히카와의 동네 공원 嵐山公園)
+  // (다리 검토 2026-10-03: 고속도로 다리 미나토 대교·메이코니시/메이코추오 대교·히가시 고베 대교, 문화재도 관광 명소도 아닌 보통 도로 다리 고노하나 대교·아키타 대교 …)
   const REVIEWED_OUT = ['Q6940951', 'Q862944', 'Q11482667', 'Q11589594', 'Q3912774', 'Q11288918', 'Q11476897', 'Q11577742', 'Q11607237', 'Q17230291', 'Q391408',
-    'Q2090752', 'Q217475', 'Q11679328', 'Q2201650', 'Q28504101', 'Q11477252'];
+    'Q2090752', 'Q217475', 'Q11679328', 'Q2201650', 'Q28504101', 'Q11477252',
+    'Q3397064', 'Q11415494', 'Q11415490', 'Q5753964', 'Q3362657', 'Q11595295', 'Q10855023', 'Q11257752', 'Q11415551', 'Q11558256', 'Q11596666',
+    'Q11446565', 'Q11405635', 'Q22119627', 'Q11501301', 'Q28690428', 'Q11464471', 'Q130282414', 'Q130296648'];
   const back = allPlaces.filter(([, p]) => REVIEWED_OUT.includes(p.wikidata)).map(([ck, p]) => `${ck}|${p.name}`);
-  log(back.length === 0, 'city-places.json: reviewed-out items (closed museum, no-landing rocks, residential islands, ski jump, road passes, Senkaku Shrine, office tower, stock exchange, condominium tower, an onsen ryokan, Asahikawa 嵐山公園) are not in the data', back.join(', '));
+  log(back.length === 0, 'city-places.json: reviewed-out items (closed museum, no-landing rocks, residential islands, ski jump, road passes, Senkaku Shrine, office tower, stock exchange, condominium tower, an onsen ryokan, Asahikawa 嵐山公園, expressway and plain road bridges) are not in the data', back.join(', '));
+  // 다리는 걸어서 구경하는 곳만 명소로 둔다: 옛 다리·문화재·보행 산책로·관광지로 알려진 다리(검토한 목록)만 데이터에 있고, 검토하지 않은 다리가
+  // 새 데이터에 들어오면 여기서 걸린다(고속도로 다리 港大橋·名港西大橋, 보통 도로 다리 此花大橋·秋田大橋 같은 곳은 EXCLUDE_QIDS로 뺐다)
+  const BRIDGES_KEPT = {
+    Q11511817: '旭川旭橋 (1932 arch bridge, Hokkaido Heritage)', Q11352108: 'ヴィーナスブリッジ (footbridge, night view)', Q3087620: '三条大橋',
+    Q11561923: '渡月橋', Q74710: '長崎眼鏡橋', Q11395617: '出島橋 (oldest iron bridge in use)', Q4854329: '萬代橋 (Important Cultural Property)',
+    Q11552074: '池田矼 (old stone bridge)', Q1046736: 'レインボーブリッジ (Rainbow Promenade)', Q11550847: '江島大橋 (ベタ踏み坂)',
+    Q4520855: '伊良部大橋 (Miyako sight, sidewalk)', Q4520918: '来間大橋 (Miyako, sidewalk)', Q7960851: '若戸大橋 (Important Cultural Property; cars only, seen from the ferry)'
+  };
+  const isBridgePlace = (p) => /(?:橋|ブリッジ|矼)$/.test(p.ja || '') || /\bbridge\b/i.test(p.en || '');
+  const bridgesInData = allPlaces.filter(([, p]) => isBridgePlace(p));
+  const bridgeUnreviewed = bridgesInData.filter(([, p]) => !BRIDGES_KEPT[p.wikidata]).map(([ck, p]) => `${ck}|${p.name} ${p.ja} ${p.wikidata}`);
+  log(bridgesInData.length >= 8 && bridgeUnreviewed.length === 0, `city-places.json: every bridge is a reviewed one to walk and look at (${bridgesInData.length}: 旭橋, 渡月橋, 眼鏡橋, Rainbow Bridge …); no expressway or plain road bridge`,
+    short(bridgeUnreviewed.slice(0, 8)));
   // 숙박 분류는 온천 낱말이 붙어도 명소가 아니다('onsen ryokan' 古まん, 'hot spring hotel'). 온천·온천 마을은 그대로 명소이고,
   // 료칸을 겸한 진짜 정원(立花氏庭園: daimyō garden + ryōtei + ryokan)은 정원으로 남는다
   try {
@@ -2033,18 +2810,30 @@ async function phaseCityCoverage() {
       [D('楠川天満宮', '', 'くすがわてんまんぐう'), '구스가와 텐만구'],
       [D('小湊フワガネク遺跡', 'Kominato-Fuwaganeku Site'), '고미나토 후와가네쿠 유적'], [D('備前国総社宮', 'Bizen-no-Kuni Sōjagū'), '비젠노쿠니 소자구'],
       // 도시 이름은 앱의 도시 표기대로(中標津 → 나카시베츠: 도시 이름 '나카시베츠')
-      [D('中標津町郷土館', 'Nakashibetsu Municipal Folk Museum'), '나카시베츠 향토관']
+      [D('中標津町郷土館', 'Nakashibetsu Municipal Folk Museum'), '나카시베츠 향토관'],
+      // 옛 글자 縣도 県처럼 현으로 옮긴다(長野縣護國神社 → 나가노 현 고코쿠 신사, 아키타 현 고코쿠 신사처럼; 나가노켄고코쿠가 아니다)
+      [D('長野縣護國神社', 'Nagano Gokoku Shrine', 'ながのけんごこくじんじゃ'), '나가노 현 고코쿠 신사'], [D('秋田県護国神社', 'Akita Gokoku Shrine', 'あきたけんごこくじんじゃ'), '아키타 현 고코쿠 신사']
     ];
     const ruleWrong = rules.filter(([got, want]) => got !== want).map(([got, want]) => `${got} != ${want}`);
     log(ruleWrong.length === 0, 'scripts/ja-names.js: long vowels (新潟 → 니가타), person names family first (土門拳記念館 → 도몬 겐 기념관), Japanese facility words (長島美術館 → 미술관), 岳 다케 / 島 섬 / 館 관', ruleWrong.join(', '));
   } catch (e) { log(false, 'scripts/ja-names.js loads', e.message); }
   // 한국어 이름에 옮기지 않은 일본어 일반 낱말(비주쓰칸·하쿠부쓰칸·긴넨칸 …)·가나·한자·장음 부호(ー)·니이가타가 없다
-  const UNTRANSLATED_RE = /비주쓰칸|하쿠부쓰칸|기넨칸|긴넨칸|분가쿠칸|시료칸|가가쿠칸|레키시칸|교도칸|도부쓰엔|스이조쿠칸|쇼쿠부쓰엔|데이엔|진자|온센|고엔(?=\s|$)|이세키|고훈|겐리쓰|시리쓰|가이즈카|겐세이카엔|칸$/;
+  // (30곳 데이터 검토 2026-10-03: 別院 베쓰인, 工房 고보, 墓 바카, 海岸 가이간, 緑地 료쿠치, 海浜 카이힌, 高原 고겐, 屋敷 야시키, 廃寺 하이지, 瓦窯 가요, 乳酪 뉴라쿠,
+  //  梅林 바이린, 振興 신코, 岩群 이와군, 村 무라, 峡 쿄, 湖 코, 中央 주오, こどもの国 고도모노쿠니, 縣 켄, 이름 끝의 'の + 일반 낱말'(아토쿠센세이노 야카타, 조카이노 모리))
+  const UNTRANSLATED_RE = /비주쓰칸|하쿠부쓰칸|기넨칸|긴넨칸|분가쿠칸|시료칸|가가쿠칸|레키시칸|교도칸|도부쓰엔|스이조쿠칸|쇼쿠부쓰엔|데이엔|진자|온센|고엔(?=\s|$)|이세키|고훈|겐리쓰|시리쓰|가이즈카|겐세이카엔|칸$|베쓰인|고보$|바카$|가이간|료쿠치|카이힌|고겐|야시키|하이지$|가요 유적|뉴라쿠|바이린|신코관|이와군|후루사토무라|쿄$|에즈코|주오 공원|고도모노쿠니|켄고코쿠|바냔|노 (?:야카타|모리|구스|게야키|시노키|가시와|오 스기)$/;
   const KANA_KANJI_RE = /[぀-ヿ一-鿿ー]/;
   const KANA_KANJI_KEPT = []; // 일부러 남긴 가나·한자 이름(없음)
-  const untranslated = allPlaces.filter(([, p]) => UNTRANSLATED_RE.test(p.name) || (KANA_KANJI_RE.test(p.name) && !KANA_KANJI_KEPT.includes(p.wikidata)) || /니이가타|겐 도몬|쇼지 우에다|야스시 이노우에|슈지 데라야마/.test(p.name))
+  // 일부러 남긴 음차 이름: 水前寺江津湖公園(Q11548314)은 '스이젠지 에즈호 공원'으로 옮기면 같은 도시의 다른 장소 '에즈호'(江津湖, 호수)가
+  // 이름 안에 통째로 들어가, 꼭 갈 곳 맞추기(이름 포함 관계)가 두 곳을 같은 곳으로 봐서 공원이 말없이 빠진다(2026-10-03). 그래서 원래 읽기 '에즈코'를 둔다.
+  const UNTRANSLATED_KEPT = ['Q11548314'];
+  const untranslated = allPlaces.filter(([, p]) => (UNTRANSLATED_RE.test(p.name) && !UNTRANSLATED_KEPT.includes(p.wikidata)) || (KANA_KANJI_RE.test(p.name) && !KANA_KANJI_KEPT.includes(p.wikidata)) || /니이가타|겐 도몬|쇼지 우에다|야스시 이노우에|슈지 데라야마/.test(p.name))
     .map(([ck, p]) => `${ck}|${p.name}`);
-  log(untranslated.length === 0, 'city-places.json: Korean names have no transliterated generic word (비주쓰칸, 하쿠부쓰칸 …), no kana/kanji/ー, no 니이가타, no English-order person name', short(untranslated.slice(0, 6)));
+  log(untranslated.length === 0, 'city-places.json: Korean names have no transliterated generic word (비주쓰칸, 하쿠부쓰칸, 베쓰인, 고보, 가이간 …, 이름 끝의 노 야카타·노 모리), no kana/kanji/ー, no 니이가타, no English-order person name', short(untranslated.slice(0, 6)));
+  // 나무(천연기념물 큰 나무)는 '~의 녹나무'처럼 한국어 나무 이름으로: 寂心さんのクス → 자쿠신의 녹나무, 文下のケヤキ → 호다시의 느티나무 (자쿠신산노 구스가 아니다)
+  const TREE_JA_RE = /(?:クス|楠|樟|ケヤキ|欅|スギ|杉|シイノキ|ガシワ|カシワ|柏|イチョウ|銀杏)$/;
+  const treeWrong = allPlaces.filter(([, p]) => TREE_JA_RE.test(p.ja) && (!/나무$/.test(p.name) || (/[のノ]/.test(p.ja) && !/의 /.test(p.name)))).map(([ck, p]) => `${ck}|${p.ja} → ${p.name}`);
+  const trees = allPlaces.filter(([, p]) => TREE_JA_RE.test(p.ja)).length;
+  log(trees >= 4 && treeWrong.length === 0, `city-places.json: big trees are named the Korean way, '<place>의 <tree>' (자쿠신의 녹나무, 호다시의 느티나무; ${trees} trees)`, short(treeWrong));
   // 일본어 이름의 시설·지형 낱말이 한국어 이름에 옮겨져 있다(美術館 → 미술관, 記念館 → 기념관, 島 → 섬, 岳 → 다케 …).
   // 예외(이유): 한국어 위키백과 제목(水城 미즈키, 由布岳 유후산), 굳어진 이름(鹿児島城山 시로야마), 낱말이 다른 뜻(鉱山 = 광산, 斎場御嶽의 御嶽 = 우타키),
   // 山을 せん으로 읽는 이름(扇ノ山 おうぎのせん 오기노센 — 요나고의 大山 다이센처럼 이름째 옮긴다)
@@ -2069,7 +2858,28 @@ async function phaseCityCoverage() {
     // 天神山 덴진야마, 万葉 만요), 영어 낱말을 음차하지 않는다(Mountain Castle → 산성), 빠진 낱말(文学), 인물 이름은 성 먼저(千田正 지다 다다시), 氏 → 씨(시는 市로 읽힌다)
     ['sendai', 'Q11660187', '라이진야마 고분'], ['izumo', 'Q60987962', '가미엔야 지조야마 고분'], ['niigata', 'Q11411419', '후루쓰 하치만야마 유적'],
     ['tottori', 'Q11480764', '돗토리 덴진야마성'], ['tottori', 'Q11420253', '이나바 만요 역사관'], ['okayama', 'Q48748474', '오메구리 고메구리 산성'],
-    ['akita', 'Q61886172', '아키타 문학 자료관'], ['hanamaki', 'Q60988648', '지다 다다시 기념관'], ['yamaguchi_ube', 'Q11432542', '오우치씨관']];
+    ['akita', 'Q61886172', '아키타 문학 자료관'], ['hanamaki', 'Q60988648', '지다 다다시 기념관'], ['yamaguchi_ube', 'Q11432542', '오우치씨관'],
+    // 어색한 음차 정리(2026-10-03): 이름 끝의 の는 '~의 나무'(나무) 또는 빼고 일반 낱말을 옮긴다(森 숲, 館 관), 시설 낱말은 번역(別院 별원, 工房 공방, 墓 묘, 山荘 산장,
+    // 海浜 해변, 緑地 녹지, 洞 동굴, 湖 호, 縣 현, 梅林 매화림, 振興館 진흥관, 中央 중앙, 高原 고원, 瓦窯 기와 가마, 峡 협곡, 海岸 해안, 屋敷 저택, 廃寺跡 폐사지),
+    // 장음 ou는 적지 않는다(쇼우류지 → 쇼류지), 한 이름은 붙여 쓴다(아사히가마루)
+    ['kumamoto', 'Q17213982', '자쿠신의 녹나무'], ['shonai', 'Q110777276', '호다시의 느티나무'], ['kanazawa', 'Q111585833', '도가타의 모밀잣밤나무'],
+    ['hanamaki', 'Q114774790', '쇼겐인의 사카사 떡갈나무'], ['fukushima', 'Q123255605', '고하타의 큰 삼나무'], ['shonai', 'Q112080442', '하구로산의 할아버지 삼나무'],
+    ['shonai', 'Q30933069', '아토쿠 선생관'], ['odate', 'Q136647394', '오다이코관'], ['shonai', 'Q48756792', '조카이 숲'], ['obihiro', 'Q20043558', '오비히로 숲'],
+    ['saga', 'Q11273947', '돈돈돈 숲'], ['takamatsu', 'Q11268158', '사누키 어린이의 나라'], ['hiroshima', 'Q11602688', '후데노사토 공방'],
+    ['hanamaki', 'Q11670235', '다카무라 산장'], ['ishigaki', 'Q10922512', '도진 묘'], ['hiroshima', 'Q11580269', '시라카미 신사'],
+    ['hakodate', 'Q285602', '신슈 오타니파 하코다테 별원'], ['hakodate', 'Q109597107', '혼간지 하코다테 별원'], ['kagoshima', 'Q106836673', '혼간지 가고시마 별원'],
+    ['kanazawa', 'Q106836680', '혼간지 가나자와 별원'], ['obihiro', 'Q119927205', '혼간지 오비히로 별원'], ['hakodate', 'Q11364487', '나카지마 렌바이 시장'],
+    ['fukushima', 'Q65261124', '아다치가하라 후루사토 마을'], ['kanazawa', 'Q11585941', '겐민 해변 공원'], ['kanazawa', 'Q11629615', '세이부 녹지 공원'],
+    ['kumamoto', 'Q1856438', '레이간 동굴'], ['matsumoto', 'Q11654831', '나가노 현 고코쿠 신사'],
+    ['memanbetsu', 'Q22337430', '히가시모코토 유제품관'], ['nanki_shirahama', 'Q11408564', '미나베 매화림'], ['nanki_shirahama', 'Q11260764', '미나베 매실 진흥관'],
+    ['nanki_shirahama', 'Q11276147', '히키 바위군'], ['odate', 'Q53808041', '다카노스 중앙 공원'], ['oita', 'Q3196520', '기지마 고원 파크'],
+    ['okayama', 'Q11353811', '만토미 도다이지 기와 가마 유적'], ['sendai', 'Q11587847', '라이라이 협곡'], ['shizuoka', 'Q11485760', '히로노 해안 공원'],
+    ['tajima', 'Q11633437', '이즈시 가로 저택'], ['yakushima', 'Q129676500', '시토고 가주마루 공원'], ['yonago', 'Q3192451', '가미요도 폐사지'],
+    ['aomori', 'Q123515864', '아오모리현 근대 문학관'], ['misawa', 'Q136504606', '오다나이누마'], ['tokushima', 'Q11511630', '아사히가마루'],
+    ['akita', 'Q11424682', '지조덴 유적'], ['kochi', 'Q11662839', '고치 쇼류지'], ['tokushima', 'Q11481422', '도쿠시마 조라쿠지'],
+    ['yamaguchi_ube', 'Q21655166', '야마구치 류조지'], ['shizuoka', 'Q11452350', '호다이인'], ['yamagata', 'Q21654041', '니시자오 공원'],
+    // 뺀 다리 대신 들어온 곳: 観音·坊은 절이라 '절'을 붙이지 않는다(아라코 간논처럼)
+    ['nagoya', 'Q11655359', '마마 간논'], ['shonai', 'Q11435616', '다이니치보']];
   const renamedWrong = RENAMED.filter(([ck, q, name]) => !(asset.cities?.[ck]?.places || []).some((p) => p.wikidata === q && p.name === name)).map(([ck, q, name]) => `${ck}|${q} ${name}`);
   log(renamedWrong.length === 0, 'city-places.json: renamed places carry the new Korean names (도몬 겐 기념관, 우에다 쇼지 사진 미술관, 니가타 현립 식물원, 가미엔야 쓰키야마 고분, 오기노센, 라이진야마 고분, 가미엔야 지조야마 고분 …)', short(renamedWrong));
   // 위키데이터 P131이 틀린 곳(日南海岸: 宮城県·鹿児島県)은 손으로 고친 지역을 세 언어로 보인다
@@ -2082,7 +2892,9 @@ async function phaseCityCoverage() {
   log(offSpelling.length === 0, "city-places.json: names follow the app's own spellings (city label 나카시베츠, 다자이후 텐만구, 신지호): no 나카시베쓰 / 덴만구 / 신지코", short(offSpelling));
   // 예전 이름(배포본이 보여 주던 이름, 저장된 일정에 남는다)은 별칭으로 남아 말로 찾을 수 있다 — 화면에는 쓰지 않는다
   const FORMER = [['shonai', 'Q3539675', '겐 도몬 사진 박물관'], ['niigata', 'Q5576152', '니이가타 현립 식물원'], ['yonago', 'Q9047014', '쇼지 우에다 사진 박물관'],
-    ['takamatsu', 'Q339004', '메기지마'], ['tottori', 'Q11496825', 'Mount Ōgi'], ['nakashibetsu', 'Q11366290', '나카시베쓰 신사'], ['yakushima', 'Q130283583', '야쿠시마 타이샤']];
+    ['takamatsu', 'Q339004', '메기지마'], ['tottori', 'Q11496825', 'Mount Ōgi'], ['nakashibetsu', 'Q11366290', '나카시베쓰 신사'], ['yakushima', 'Q130283583', '야쿠시마 타이샤'],
+    // 6da5de3(2026-10-03 배포)이 보여 준 이름도 저장된 일정에 남는다
+    ['kumamoto', 'Q17213982', '자쿠신산노 구스'], ['shonai', 'Q30933069', '아토쿠센세이노 야카타'], ['ishigaki', 'Q10922512', '도진바카'], ['kochi', 'Q11662839', '고치 쇼우류지']];
   const formerWrong = FORMER.filter(([ck, q, old]) => !(asset.cities?.[ck]?.places || []).some((p) => p.wikidata === q && (p.aliases || []).includes(old) && p.name !== old)).map(([ck, q, old]) => `${ck}|${q} ${old}`);
   const tooManyAliases = allPlaces.filter(([, p]) => (p.aliases || []).length > 4).map(([ck, p]) => `${ck}|${p.name}`);
   log(formerWrong.length === 0 && tooManyAliases.length === 0, 'city-places.json: former names (겐 도몬 사진 박물관, 니이가타 현립 식물원, 메기지마 …) and the other spelling 타이샤 stay as aliases (<= 4, what the server reads)', short({ formerWrong, tooManyAliases }));
@@ -2403,19 +3215,26 @@ async function phaseCityCoverage() {
     log(bad.length === 0, "chat: '대신' inside a place name (야마노우에 대신궁) is not 'X 대신 Y' (no made-up place '궁', no city switch in a follow-up); '금각사 대신 은각사' still swaps; English names match without macrons (Daijingu, Ino no Hi)", short(bad));
   } catch (e) { log(false, 'chat 대신궁 / instead / macrons', e.message); }
   // 실내 위주(비 오는 날) 규칙 일정: 실내 후보 수에 생성 장소의 실내 명소(무로 사이세이 기념관 등)도 센다 → 실내 명소가 충분한 도시는 야외 큐레이션
-  // 명소(가나자와의 겐로쿠엔·히가시차야 거리·오미초 시장)를 넣지 않고 실내 명소로 채운다. 실내 명소가 거의 없는 섬(리시리)은 예전처럼 야외 명소로 채운다
+  // 명소(가나자와의 겐로쿠엔·히가시차야 거리·오미초 시장)를 실내 명소보다 먼저 넣지 않고 실내 명소로 채운다. 실내 명소가 거의 없는 섬(리시리)은 예전처럼 야외 명소로 채운다.
+  // 실내 명소를 다 쓴 칸(가나자와 셋째 날 오후)은 자유 일정 대신 바깥 명소를 하루 1곳까지 넣는다(검토 반영 2026-10-03, 아래 '실내 위주 긴 규칙 일정' 검사):
+  // 바깥 큐레이션 명소는 실내 명소가 하루를 다 채우는 첫 이틀에는 없고, 하루 1곳까지, 자유 일정 칸이 남지 않는다.
   try {
     const OUTDOOR = { kanazawa: ['겐로쿠엔', '히가시차야 거리', '오미초 시장'], hiroshima: ['평화기념공원', '히로시마성', '이쓰쿠시마 신사'], akita: ['센슈공원', '오가 반도'],
       kobe: ['고베 하버랜드', '누노비키 허브원', '기타노 이진칸'], rishiri: [] };
     const bad = [];
     for (const [ck, outdoorNames] of Object.entries(OUTDOOR)) {
       const r = await postJson('/api/travel-plan', { city: ck, theme: 'mixed', days: 3, budget: 'mid', startDate, lang: 'ko', useAi: false, _specialPrefs: { indoorFocus: true } }, { ip: ip() });
-      const sights = (r.json?.itinerary || []).flatMap((d) => (d.blocks || []).map((b) => PLAN_SIGHT_RE.exec(b)).filter(Boolean)
-        .map((m) => m[4].replace(/\s*\([^()]*\)\s*$/, '').trim())).filter((n) => !FREE_TIME_NAME_RE.test(n));
+      const dayNames = (r.json?.itinerary || []).map((d) => (d.blocks || []).map((b) => PLAN_SIGHT_RE.exec(b)).filter(Boolean)
+        .map((m) => m[4].replace(/\s*\([^()]*\)\s*$/, '').trim()));
+      const sights = dayNames.flat().filter((n) => !FREE_TIME_NAME_RE.test(n));
+      const free = dayNames.flat().length - sights.length;
+      const outdoorByDay = dayNames.map((names) => names.filter((n) => outdoorNames.includes(n)).length);
       const outdoor = sights.filter((n) => outdoorNames.includes(n));
-      if (r.status !== 200 || outdoor.length || sights.length < 4) bad.push(`${ck}: ${sights.length} sights (${sights.join('/')}), outdoor ${outdoor.join('/') || '-'}`);
+      if (r.status !== 200 || sights.length < 4 || outdoorByDay.slice(0, 2).some((n) => n > 0) || outdoorByDay.some((n) => n > 1) || (outdoorNames.length > 0 && free > 0)) {
+        bad.push(`${ck}: ${sights.length} sights (${sights.join('/')}), free ${free}, outdoor ${outdoor.join('/') || '-'} [${outdoorByDay.join(',')}]`);
+      }
     }
-    log(bad.length === 0, 'indoor-focus 3-day rule plans count indoor nearby (generated) places: no outdoor curated sight where indoor ones are enough (가나자와 겐로쿠엔), >= 4 real sights (리시리 still gets its outdoor sights)', short(bad));
+    log(bad.length === 0, 'indoor-focus 3-day rule plans count indoor nearby (generated) places: no outdoor curated sight before the indoor ones run out (가나자와 겐로쿠엔 not on days 1-2), at most one outdoor a day and no free slot left where indoor ones are enough, >= 4 real sights (리시리 still gets its outdoor sights)', short(bad));
   } catch (e) { log(false, 'indoor-focus rule plans', e.message); }
   // 멀리 떨어진 두 도시(도쿄 → 삿포로)는 '대중교통 1~3시간'이 아니라 비행기 이동으로 안내한다
   try {
@@ -3558,6 +4377,149 @@ async function phaseSessionsAndStorage() {
 }
 
 // ── 1e. 재시작 뒤에도 로그인 화면 유지 + 저장소 장애 안내(app.js 샌드박스) ──
+// ── 다른 사이트 링크(api-review 5번): 항공 카드(구글·네이버·스카이스캐너·카약·Trip.com), 숙소 검색(Booking·Agoda·Google 호텔·じゃらん), 투어(KKday) ──
+// 링크는 app.js가 만들기만 한다(호출 없음). 주소 형식은 공식 문서가 없는 곳이 있어 여기서는 '만든 주소가 이 모양인지'만 고정한다.
+async function sandboxBookingLinkTests(htmlCode, appCode, i18nDict) {
+  section('Other-site links: flights (incl. multi-city dates), stays, tours (app.js sandbox)');
+  const PAID = /^\/api\/(travel-plan|ai-travel-chat|flights|stays|foods|dest-search|route-cost|destinations|itinerary)$/;
+  let stayCalls = 0;
+  let stayFail = false;
+  const sb = createBrowser({
+    html: htmlCode,
+    location: BASE + '/',
+    fetchRoutes: sandboxRoutes({
+      '/api/stays': () => {
+        stayCalls += 1;
+        return stayFail ? { status: 500, body: { error: 'boom' } }
+          : { body: { source: 'mock', sourceInfo: { kind: 'mock', provider: 'mock', reasonCode: 'PROVIDER_UNAVAILABLE' }, stays: [], total: 0, filterOptions: { providers: [], amenities: [] } } };
+      }
+    })
+  });
+  const J = (code) => { const s = sb.run(`JSON.stringify(${code})`); return s === undefined ? undefined : JSON.parse(String(s)); };
+  const urls = (links) => Object.fromEntries((links || []).map((l) => [l.site, l.url]));
+  try {
+    await sb.boot(appCode, 'public/app.js');
+    await sb.settle(5000);
+    const bootPaid = sb.env.fetchCalls.filter((c) => c.sameOrigin && PAID.test(c.path)).map((c) => c.path);
+    const stayBox0 = sb.element('staySiteLinks');
+    log(Boolean(stayBox0) && stayBox0.classList.contains('hidden') && !String(stayBox0.innerHTML || '').trim() && bootPaid.length === 0,
+      'first screen: #staySiteLinks exists, hidden and empty; no paid call at boot', short({ bootPaid, html: stayBox0 && stayBox0.innerHTML }));
+
+    // ① 편도
+    const ow = urls(J(`flightSiteLinks('oneway', [{ from: 'ICN', to: 'NRT', date: '2026-11-20' }], 'ko')`));
+    log(Object.keys(ow).join() === 'google,naver,skyscanner,kayak,tripcom'
+      && ow.google === 'https://www.google.com/travel/flights?q=Flights%20from%20ICN%20to%20NRT%20on%202026-11-20%20one%20way&hl=ko&curr=KRW'
+      && ow.naver === 'https://flight.naver.com/flights/international/ICN-NRT-20261120?adult=1&fareType=Y'
+      && ow.skyscanner === 'https://www.skyscanner.co.kr/transport/flights/icn/nrt/261120/'
+      && ow.kayak === 'https://www.kayak.co.kr/flights/ICN-NRT/2026-11-20?sort=bestflight_a'
+      && ow.tripcom === 'https://kr.trip.com/flights/showfarefirst?dcity=icn&acity=nrt&ddate=2026-11-20&triptype=ow&class=y&quantity=1&locale=ko-KR&curr=KRW',
+      'flight links (one-way ICN->NRT 2026-11-20): Google q "one way", Naver ICN-NRT-20261120, Skyscanner YYMMDD, KAYAK, Trip.com triptype=ow', short(ow, 900));
+    // ② 왕복: 마지막 구간 날짜가 귀국일
+    const rt = urls(J(`flightSiteLinks('roundtrip', [{ from: 'ICN', to: 'NRT', date: '2026-11-20' }, { from: 'NRT', to: 'ICN', date: '2026-11-23' }], 'ko')`));
+    log(rt.google === 'https://www.google.com/travel/flights?q=Flights%20from%20ICN%20to%20NRT%20on%202026-11-20%20through%202026-11-23&hl=ko&curr=KRW'
+      && rt.naver === 'https://flight.naver.com/flights/international/ICN-NRT-20261120/NRT-ICN-20261123?adult=1&fareType=Y'
+      && rt.skyscanner === 'https://www.skyscanner.co.kr/transport/flights/icn/nrt/261120/261123/'
+      && rt.kayak === 'https://www.kayak.co.kr/flights/ICN-NRT/2026-11-20/2026-11-23?sort=bestflight_a'
+      && rt.tripcom === 'https://kr.trip.com/flights/showfarefirst?dcity=icn&acity=nrt&ddate=2026-11-20&rdate=2026-11-23&triptype=rt&class=y&quantity=1&locale=ko-KR&curr=KRW',
+      'flight links (round trip 11-20 ~ 11-23): every site gets the return date', short(rt, 900));
+    // ③ 다구간: 모든 구간·날짜를 그대로. 예전 버그 = 첫 구간 왕복 + 2번째 구간 날짜를 귀국일로
+    const MC = `[{ from: 'ICN', to: 'NRT', date: '2026-11-20' }, { from: 'NRT', to: 'KIX', date: '2026-11-22' }, { from: 'KIX', to: 'ICN', date: '2026-11-25' }]`;
+    const mc = urls(J(`flightSiteLinks('multicity', ${MC}, 'ko')`));
+    const mcAll = Object.values(mc).join(' ');
+    log(Object.keys(mc).join() === 'naver,skyscanner,kayak'
+      && mc.naver === 'https://flight.naver.com/flights/international/ICN-NRT-20261120/NRT-KIX-20261122/KIX-ICN-20261125?adult=1&fareType=Y'
+      && mc.skyscanner === 'https://www.skyscanner.co.kr/transport/flights-multi-city/icn/nrt/261120/nrt/kix/261122/kix/icn/261125/'
+      && mc.kayak === 'https://www.kayak.co.kr/flights/ICN-NRT/2026-11-20/NRT-KIX/2026-11-22/KIX-ICN/2026-11-25?sort=bestflight_a'
+      && !/icn\/nrt\/261120\/261122|ICN-NRT\/2026-11-20\/2026-11-22/.test(mcAll),
+      'flight links (multi-city ICN-NRT-KIX-ICN): every leg with its own date (no "first leg round trip + 2nd leg date" link); Google/Trip.com left out', short(mc, 900));
+    // ④ Travelpayouts 다구간 결과(카드마다 구간 1개) → 그 구간의 편도
+    const leg = urls(J(`flightSiteLinks('multicity', [{ from: 'NRT', to: 'KIX', date: '2026-11-22' }], 'ko')`));
+    log(Object.keys(leg).length === 5 && leg.skyscanner === 'https://www.skyscanner.co.kr/transport/flights/nrt/kix/261122/' && leg.kayak === 'https://www.kayak.co.kr/flights/NRT-KIX/2026-11-22?sort=bestflight_a',
+      'flight links: a one-leg multi-city card (Travelpayouts per-leg result) links that leg one-way on its own date', short(leg, 500));
+    // ⑤ 모양이 틀린 구간은 링크를 만들지 않는다(주소 주입 방지)
+    const bad = J(`[flightSiteLinks('oneway', [{ from: '"><img src=x>', to: 'NRT', date: '2026-11-20' }], 'ko').length,
+      flightSiteLinks('oneway', [{ from: 'ICN', to: 'NRT', date: 'tomorrow' }], 'ko').length,
+      flightSiteLinks('multicity', [{ from: 'ICN', to: 'NRT', date: '2026-11-20' }, { from: 'NRT', to: 'K1X', date: '2026-11-22' }], 'ko').length,
+      flightSiteLinks('oneway', [], 'ko').length]`);
+    log(JSON.stringify(bad) === '[0,0,0,0]', 'flight links: bad airport code / date / one bad multi-city leg / no legs -> no links', short(bad));
+    // ⑥ 화면 언어: 영어·일본어 Google·Trip.com
+    const en = urls(J(`flightSiteLinks('oneway', [{ from: 'ICN', to: 'KIX', date: '2026-11-20' }], 'en')`));
+    const ja = urls(J(`flightSiteLinks('oneway', [{ from: 'ICN', to: 'KIX', date: '2026-11-20' }], 'ja')`));
+    log(/&hl=en&/.test(en.google) && en.tripcom.startsWith('https://www.trip.com/') && /locale=en-US/.test(en.tripcom)
+      && /&hl=ja&/.test(ja.google) && ja.tripcom.startsWith('https://jp.trip.com/') && /locale=ja-JP/.test(ja.tripcom),
+      'flight links follow the screen language (Google hl, Trip.com host/locale)', short({ en: en.google, ja: ja.tripcom }));
+
+    // ⑦ 카드에 실제로 그려지는지: 다구간 예시 카드 + 직접 입력 편도
+    sb.run(`flightResults = [{ _id: 'f-mc', tripType: 'multicity', provider: 'Skyscanner', airlines: ['Peach'], legs: ${MC}.map(function (l) { return Object.assign({ departureTime: '09:00', arrivalTime: '11:20', airline: 'Peach', airlineCode: 'MM' }, l); }), totalPriceKRW: 420000, totalDurationMin: 300, totalStops: 0, aiScore: 70, _mock: true }]`);
+    sb.run('renderFlightCards(true)');
+    const cardHtml = String(sb.element('flightCards')?.innerHTML || '');
+    const hrefs = [...cardHtml.matchAll(/<a href="([^"]+)" target="_blank" rel="noopener noreferrer" data-site="([a-z]+)">/g)].map((m) => [m[2], m[1].replace(/&amp;/g, '&')]);
+    log(hrefs.map((h) => h[0]).join() === 'naver,skyscanner,kayak' && hrefs.every(([s, h]) => h === mc[s])
+      && cardHtml.includes(`<span class="site-links-label">${i18nDict.ko['flight-other-sites']}</span>`) && !/skyscanner\.co\.kr\/transport\/flights\/icn\/nrt\/261120\/261122/.test(cardHtml),
+      '#flightCards multi-city card: .site-links row with the per-leg links (new tab, noopener noreferrer) and the ko label', short(hrefs, 600));
+    sb.run('applyLanguage("en")');
+    const cardEn = String(sb.element('flightCards')?.innerHTML || '');
+    log(cardEn.includes(`<span class="site-links-label">${i18nDict.en['flight-other-sites']}</span>`) && cardEn.includes('>Naver Flights</a>'),
+      'flight card links are redrawn in English after a language switch', short(cardEn.slice(cardEn.indexOf('site-links'), cardEn.indexOf('site-links') + 200)));
+    sb.run('applyLanguage("ko")');
+
+    // ⑧ 숙소: [숙소 검색]의 조건으로 다른 예약 사이트 링크(결과가 0개여도)
+    sb.run(`el('stayCity').value = 'tokyo'; el('checkIn').value = '${futureDate(40)}'; el('checkOut').value = '${futureDate(43)}'; el('stayGuests').value = '3'; el('stayRooms').value = '2';`);
+    sb.element('btnStays').click();
+    await sb.settle(5000);
+    const ss = J('lastStaySearch') || {};
+    const ci = futureDate(40);
+    const co = futureDate(43);
+    const stayHtml = String(sb.element('staySiteLinks')?.innerHTML || '');
+    const st = urls(J(`staySiteLinks(lastStaySearch, 'ko')`));
+    log(stayCalls === 1 && ss.city === 'tokyo' && ss.checkIn === ci && ss.checkOut === co && !sb.element('staySiteLinks').classList.contains('hidden')
+      && Object.keys(st).join() === 'booking,agoda,google,jalan'
+      && st.booking === `https://www.booking.com/searchresults.ko.html?ss=Tokyo%2C%20Japan&checkin=${ci}&checkout=${co}&group_adults=3&no_rooms=2&group_children=0&selected_currency=KRW`
+      && st.agoda === `https://www.agoda.com/ko-kr/search?textToSearch=Tokyo%2C%20Japan&checkIn=${ci}&checkOut=${co}&los=3&rooms=2&adults=3&children=0`
+      && st.google === `https://www.google.com/travel/search?q=Tokyo%2C%20Japan%20hotels&checkin=${ci}&checkout=${co}&adults=3&hl=ko&gl=kr&curr=KRW`
+      && st.jalan === `https://www.jalan.net/130000/?stayYear=${ci.slice(0, 4)}&stayMonth=${Number(ci.slice(5, 7))}&stayDay=${Number(ci.slice(8, 10))}&stayCount=3&roomCount=2&adultNum=3`
+      && stayHtml.includes('data-site="jalan"') && stayHtml.includes(i18nDict.ko['stay-other-sites']),
+      '#staySiteLinks after [숙소 검색] (tokyo, 3 nights, 3 guests, 2 rooms): Booking.com / Agoda / Google 호텔 / じゃらん(도쿄도 130000) with the same dates and people', short({ ss, st }, 900));
+    // 현을 모르는 도시(채팅으로 새로 들어온 도시 등)는 じゃらん만 빠진다. 영어 이름이 없으면 도시 이름 그대로 검색.
+    const unknown = urls(J(`staySiteLinks({ city: 'zz_unknown', checkIn: '${ci}', checkOut: '${co}', guests: 2, rooms: 1 }, 'ko')`));
+    const badDates = J(`[staySiteLinks({ city: 'tokyo', checkIn: '${co}', checkOut: '${ci}', guests: 2, rooms: 1 }, 'ko').length, staySiteLinks(null, 'ko').length]`);
+    log(Object.keys(unknown).join() === 'booking,agoda,google' && /ss=zz_unknown&/.test(unknown.booking) && JSON.stringify(badDates) === '[0,0]',
+      'stay links: city without a prefecture -> no じゃらん link; check-out before check-in or no search -> no links', short({ unknown, badDates }));
+    // 언어를 바꾸면 사이트 언어도
+    sb.run('applyLanguage("ja")');
+    const stayJa = String(sb.element('staySiteLinks')?.innerHTML || '').replace(/&amp;/g, '&');
+    log(stayJa.includes('https://www.booking.com/searchresults.ja.html?') && stayJa.includes('https://www.agoda.com/ja-jp/search?') && stayJa.includes('&hl=ja&')
+      && stayJa.includes(i18nDict.ja['stay-other-sites']) && !HANGUL_RE.test(stayJa),
+      'stay links in Japanese: Booking .ja.html, Agoda ja-jp, Google hl=ja, no Korean text', short(stayJa, 400));
+    sb.run('applyLanguage("ko")');
+    // 숙소 검색이 실패해도 링크는 남는다(다른 사이트에서 찾을 수 있게)
+    stayFail = true;
+    sb.element('btnStays').click();
+    await sb.settle(5000);
+    log(stayCalls === 2 && !sb.element('staySiteLinks').classList.contains('hidden') && String(sb.element('staySiteLinks')?.innerHTML || '').includes('data-site="booking"'),
+      'stay search error (500) still shows the other-site links', short({ stayCalls }));
+
+    // ⑨ 투어: Klook 옆에 KKday(화면 언어 경로)
+    // 바로가기는 #klookWidgetWrap 안의 #tp-klook-widget에 그린다(언어를 바꾸면 refreshTourFallback이 다시 그림)
+    const tourHtml = () => String((sb.element('tp-klook-widget') || sb.element('klookWidgetWrap'))?.innerHTML || '').replace(/&amp;/g, '&');
+    sb.run(`loadKlookWidget('tokyo')`);
+    const tourKo = tourHtml();
+    sb.run('applyLanguage("en")');
+    const tourEn = tourHtml();
+    sb.run('applyLanguage("ja")');
+    const tourJa = tourHtml();
+    sb.run('applyLanguage("ko")');
+    log(tourKo.includes('href="https://www.kkday.com/ko/product/productlist?keyword=Tokyo"') && tourKo.includes(`>${i18nDict.ko['tour-kkday']}</a>`)
+      && tourKo.indexOf('klook.com') < tourKo.indexOf('kkday.com')
+      && tourEn.includes('href="https://www.kkday.com/en-us/product/productlist?keyword=Tokyo"') && tourJa.includes('href="https://www.kkday.com/ja/product/productlist?keyword=Tokyo"'),
+      'tours: KKday search link next to Klook (ko / en-us / ja paths)', short(tourKo.slice(tourKo.indexOf('kkday') - 60, tourKo.indexOf('kkday') + 120)));
+
+    const paidAll = sb.env.fetchCalls.filter((c) => c.sameOrigin && PAID.test(c.path) && c.path !== '/api/stays').map((c) => c.path);
+    const errs = sb.env.errors.concat(sb.unhandled);
+    log(paidAll.length === 0 && errs.length === 0, 'building the links makes no paid call (only the clicked [숙소 검색]) and raises no errors', short({ paidAll, errs }, 500));
+  } catch (e) { log(false, 'other-site links sandbox', e.stack || e.message); }
+}
+
 async function sandboxStorageTests(htmlCode, appCode, i18nDict) {
   section('Login survives a server wake-up, storage-unavailable messages (app.js sandbox)');
   const msg = { ko: (i18nDict.ko || {})['store-unavailable'], en: (i18nDict.en || {})['store-unavailable'], ja: (i18nDict.ja || {})['store-unavailable'] };
@@ -4932,6 +5894,127 @@ async function phaseAiItinerary() {
         `5-day rule plan ${route.join('·')} (indoor focus): every sightseeing slot is a place of that day's city (${route[0]} days keep their own indoor places)`,
         short({ wrong, perDay }, 600));
     }
+    // 실내 위주 긴 규칙 일정의 빈 날(검토 반영 2026-10-03, docs/handoff.md 5절 2): 실내 후보만 쓰는 일정(실내 후보가 하루 하나 이상)이
+    // 실내 후보를 다 쓰면 자유 일정 전에 그날 도시의 바깥 명소를 하루 1곳까지 넣는다(큐레이션 명소 → 도시 주변 실제 명소, AI 후처리 g-1b와 같은 기준).
+    // 예전에는 구마모토 3일(실내 3곳) 자유 일정 3칸, 5일 7칸, 7일 11칸(셋째 날부터 오전·오후 모두 자유 일정)이었다.
+    // 실내 판정은 같은 도시 AI 일정의 후보 줄(indoor)로 본다. 여러 도시(구마모토·가고시마·미야자키 8일)와 영어 일정도 본다.
+    try {
+      await plan('kumamoto', { days: 7, _specialPrefs: { indoorFocus: true } });
+      const kmIndoor = new Set(((ctxOf(lastItinPrompt()) || {}).picks || []).filter((p) => p.indoor === true && !p.allDay).map((p) => p.name));
+      const badKm = [];
+      for (const days of [3, 5, 7]) {
+        const r = await rulePlan('kumamoto', days, { _specialPrefs: { indoorFocus: true } });
+        const perDay = (r.json?.itinerary || []).map((d) => sightBlocks(d).map(blockName));
+        const flat = perDay.flat();
+        const firstOut = flat.findIndex((n) => !kmIndoor.has(n));
+        const cards = new Set((r.json?.recommendations || []).filter((x) => x.city === '구마모토').map((x) => x.nameKo || x.name));
+        const free = (r.json?.itinerary || []).flatMap((d) => d.blocks || []).filter((b) => /자유 일정/.test(b)).length;
+        const problems = [
+          r.json?.itineraryInfo?.kind !== 'rule' && 'not rule',
+          perDay.length !== days && 'days',
+          perDay.some((names) => names.length === 0) && 'a day with no sight',
+          perDay.some((names) => names.filter((n) => !kmIndoor.has(n)).length > 1) && '2+ outdoor in a day',
+          [...kmIndoor].some((n) => !flat.includes(n)) && 'indoor candidate unused',
+          firstOut >= 0 && flat.slice(firstOut).some((n) => kmIndoor.has(n)) && 'outdoor before indoor ran out',
+          flat.some((n) => !cards.has(n)) && 'sight without a 구마모토 card',
+          !flat.includes('구마모토성') && 'no curated outdoor (구마모토성)',
+          free > days - 2 && `free ${free}`
+        ].filter(Boolean);
+        if (problems.length) badKm.push(`${days}d ${problems.join(',')}: ${short(perDay, 300)}`);
+      }
+      // 여러 도시: 날마다 그날 도시 장소가 1곳 이상(예전에는 구마모토 셋째 날·미야자키 이틀이 모두 자유 일정)
+      const k8Cards = new Map((k8rule.json?.recommendations || []).map((x) => [x.nameKo || x.name, x.city]));
+      const k8Cities = cityAt(k8rule).split(',');
+      const k8Days = (k8rule.json?.itinerary || []).map((d, i) => sightBlocks(d).map(blockName).map((n) => `${n}@${k8Cards.get(n) || '?'}/${k8Cities[i]}`));
+      const k8Bad = k8Days.map((names, i) => (names.length === 0 || names.some((x) => { const [p, d] = x.split('@')[1].split('/'); return p !== d; }) ? `D${i + 1}` : '')).filter(Boolean);
+      // 영어 일정: 넣은 바깥 명소도 그 언어 이름(한글 없음), 날마다 1곳 이상
+      const en5 = await rulePlan('kumamoto', 5, { lang: 'en', _specialPrefs: { indoorFocus: true } });
+      const en5Days = (en5.json?.itinerary || []).map((d) => (d.blocks || []).filter((b) => /^(오전|오후|종일)\(/.test(b) && !/Free time/.test(b)));
+      const en5Bad = en5Days.length !== 5 || en5Days.some((x) => x.length === 0) || (en5.json?.itinerary || []).some((d) => (d.blocks || []).some((b) => /[가-힣]/.test(String(b).replace(/^(오전|오후|종일|저녁)\(/, '('))));
+      log(kmIndoor.size >= 3 && badKm.length === 0 && k8rule.json?.itineraryInfo?.kind === 'rule' && k8Days.length === 8 && k8Bad.length === 0 && !en5Bad,
+        'indoor-focus rule plans (구마모토 3/5/7 days, 구마모토·가고시마·미야자키 8 days, English 5 days): once the indoor candidates run out, a free slot gets an outdoor sight of that day\'s city first (curated 구마모토성 before nearby places), at most one a day, so no day is left without a sight',
+        short({ indoor: [...kmIndoor], badKm, k8Bad, k8Days: k8Bad.length ? k8Days : undefined, en5: en5Bad ? en5Days : undefined }, 900));
+    } catch (e) { log(false, 'indoor-focus long rule plans fill free slots with one outdoor sight a day', e.stack || e.message); }
+    // 고른 카드(바깥 장소)가 오후 칸에 들어가는 날에는 규칙이 오전에 바깥 명소를 더 넣지 않는다(검토 반영 2026-10-03). 예전에는 구마모토 6·7일
+    // 실내 위주(고른 카드 6곳) 다섯째 날이 '오전 구마모토성 | 오후 레이간 동굴(고른 카드, 옛 이름 레이간도)'로 바깥 2곳이었다(6da5de3에서는 그날 오전이 자유 일정).
+    // 규칙이 넣은 바깥 명소(고른 카드도 실내도 아닌 곳)가 있는 날에는 다른 바깥 장소가 없고, 고른 카드는 모두 들어가며, 구마모토성은 다른 날에 들어간다.
+    // 실내 판정은 같은 카드로 만든 AI 일정의 후보 줄(indoor)로 본다.
+    try {
+      const KM_PICKS = ['구마모토 사이간지', '무사시즈카 공원', '스이젠지 에즈코 공원', '자쿠신의 녹나무', '에즈호', '레이간 동굴'];
+      const kmPicks = KM_PICKS.map((name) => ({ name, city: '구마모토' }));
+      await plan('kumamoto', { days: 7, _specialPrefs: { indoorFocus: true }, _picks: kmPicks });
+      const indoorNames = new Set(((ctxOf(lastItinPrompt()) || {}).picks || []).filter((p) => p.indoor === true).map((p) => p.name));
+      const bad = [];
+      for (const days of [6, 7]) {
+        const r = await rulePlan('kumamoto', days, { _specialPrefs: { indoorFocus: true }, _picks: kmPicks });
+        const perDay = (r.json?.itinerary || []).map((d) => sightBlocks(d).map(blockName));
+        const flat = perDay.flat();
+        const twoOut = perDay.map((names, i) => {
+          const out = names.filter((n) => !indoorNames.has(n));
+          return out.some((n) => !KM_PICKS.includes(n)) && out.length > 1 ? `D${i + 1} ${out.join('/')}` : '';
+        }).filter(Boolean);
+        const problems = [
+          r.json?.itineraryInfo?.kind !== 'rule' && 'not rule',
+          twoOut.length > 0 && `added outdoor next to a chosen outdoor card: ${twoOut.join(', ')}`,
+          KM_PICKS.some((n) => !flat.includes(n)) && 'chosen card missing',
+          !flat.includes('구마모토성') && 'no curated outdoor (구마모토성)'
+        ].filter(Boolean);
+        if (problems.length) bad.push(`${days}d ${problems.join(',')}: ${short(perDay, 400)}`);
+      }
+      log(indoorNames.size >= 3 && bad.length === 0,
+        'indoor-focus rule plans with 6 chosen outdoor 구마모토 cards (6/7 days): a day whose afternoon is a chosen outdoor card (레이간 동굴) gets no added outdoor sight in the morning (구마모토성 goes to another day), every card stays',
+        short({ indoor: [...indoorNames], bad }, 900));
+    } catch (e) { log(false, 'indoor-focus rule plans: no added outdoor sight next to a chosen outdoor card', e.stack || e.message); }
+    // 규칙이 넣는 도시 주변 실제 명소(위키데이터 인기순)는 문화(신사·절·성) → 그 밖 → 자연(산·섬·호수) 순(검토 반영 2026-10-03).
+    // 예전에는 비 오는 날 일정에 구마모토 긴보산·나가사키 하시마섬·다카마쓰 데시마섬·간류섬 같은 산·섬이 신사·절보다 먼저 들어갔다.
+    // 넣은 생성 장소의 분류 순서가 거꾸로 가지 않고, 아직 쓰지 않은 바깥 문화 장소가 있는데 자연 장소를 넣지 않는다(분류는 assets/city-places.json).
+    try {
+      const cp = JSON.parse(read('assets/city-places.json')).cities || {};
+      const rank = (c) => (c === '문화' ? 0 : (c === '자연' ? 2 : 1));
+      const bad = [];
+      let natureSeen = 0;
+      for (const [ck, days] of [['kumamoto', 5], ['kumamoto', 7], ['nagasaki', 7], ['takamatsu', 7], ['kitakyushu', 5], ['iwakuni', 7]]) {
+        const r = await rulePlan(ck, days, { _specialPrefs: { indoorFocus: true } });
+        const gen = new Map((cp[ck]?.places || []).map((p) => [p.name, p]));
+        const flat = (r.json?.itinerary || []).flatMap((d) => sightBlocks(d).map(blockName));
+        const added = flat.filter((n) => gen.has(n) && !gen.get(n).indoor);
+        const ranks = added.map((n) => rank(gen.get(n).category));
+        const nature = added.filter((n) => gen.get(n).category === '자연');
+        natureSeen += nature.length;
+        const cultureLeft = [...gen.values()].filter((p) => p.category === '문화' && !p.indoor && !p.dayTrip && !p.fullDay && !flat.includes(p.name));
+        if (r.json?.itineraryInfo?.kind !== 'rule' || ranks.some((v, k) => k > 0 && v < ranks[k - 1]) || (nature.length > 0 && cultureLeft.length > 0)) {
+          bad.push(`${ck}${days}: ${added.map((n) => `${n}:${gen.get(n).category}`).join(' > ')}`);
+        }
+      }
+      log(bad.length === 0,
+        'indoor-focus rule plans (구마모토 5/7, 나가사키 7, 다카마쓰 7, 기타큐슈 5, 이와쿠니 7 days): added nearby places go culture (shrine/temple/castle) before nature (mountain/island); no 긴보산·하시마섬·데시마섬·간류섬 while an outdoor culture place is unused',
+        short({ bad, natureSeen }, 900));
+    } catch (e) { log(false, 'indoor-focus rule plans: nearby culture places before nature', e.stack || e.message); }
+    // 꼭 갈 곳이 많은 실내 위주 규칙 일정: 규칙이 바깥 명소로 빈 칸을 채우기 전에 아직 넣지 않은 꼭 갈 곳을 먼저 넣는다(검토 반영 2026-10-03).
+    // 바깥 명소가 자유 일정 칸을 먼저 차지하면 꼭 갈 곳 넣기(postProcessItinerary (e))가 다른 관광 칸을 바꿔, 구마모토 5일 + 꼭 갈 곳 7곳에서
+    // 실내 명소 구마모토 현립 미술관이 일정에서 빠졌다. 실내 후보·꼭 갈 곳이 모두 들어가고, 꼭 갈 곳이 아닌 바깥 명소는 하루 1곳까지다.
+    try {
+      const KM_MUST = ['구마모토성', '스이젠지 공원', '레이간 동굴', '에즈호', '무사시즈카 공원', '스이젠지 에즈코 공원', '자쿠신의 녹나무'];
+      await plan('kumamoto', { days: 6, mustVisit: KM_MUST, _specialPrefs: { indoorFocus: true } });
+      const indoorNames = new Set(((ctxOf(lastItinPrompt()) || {}).picks || []).filter((p) => p.indoor === true && !p.allDay).map((p) => p.name));
+      const bad = [];
+      for (const days of [5, 6]) {
+        const r = await rulePlan('kumamoto', days, { mustVisit: KM_MUST, _specialPrefs: { indoorFocus: true } });
+        const perDay = (r.json?.itinerary || []).map((d) => sightBlocks(d).map(blockName));
+        const flat = perDay.flat();
+        const problems = [
+          r.json?.itineraryInfo?.kind !== 'rule' && 'not rule',
+          [...indoorNames].filter((n) => !flat.includes(n)).map((n) => `indoor missing ${n}`).join('/'),
+          KM_MUST.filter((n) => !flat.includes(n)).map((n) => `must missing ${n}`).join('/'),
+          (r.json?.itineraryInfo?.missingMustVisit || []).length > 0 && 'missingMustVisit',
+          perDay.some((names) => names.filter((n) => !indoorNames.has(n) && !KM_MUST.includes(n)).length > 1) && '2+ added outdoor in a day'
+        ].filter(Boolean);
+        if (problems.length) bad.push(`${days}d ${problems.join(',')}: ${short(perDay, 400)}`);
+      }
+      log(indoorNames.size >= 3 && bad.length === 0,
+        'indoor-focus rule plans with 7 must-visit outdoor places (구마모토 5/6 days): unplaced must-visits go before added outdoor sights, so every indoor candidate (구마모토 현립 미술관) and every must-visit stays',
+        short({ indoor: [...indoorNames], bad }, 900));
+    } catch (e) { log(false, 'indoor-focus rule plans: must-visits before added outdoor sights', e.stack || e.message); }
     // AI + 실내 위주 + 여러 도시(검토 반영 2026-10-03 R6): 후처리가 비거나 바뀐 칸을 채울 때도 하루 바깥 관광은 하나까지(g-1b와 같은 규칙).
     // 예전에는 빈 낮 채우기가 남은 야외 후보로 구마모토 날 하나에 스이젠지 공원·레이간도·가토 신사(야외 3곳)를 넣었다.
     for (const [city, route] of [['fukuoka', ['후쿠오카', '구마모토']], ['sapporo', ['삿포로', '하코다테']]]) {
@@ -5294,6 +6377,708 @@ async function phaseOpenAiCompat() {
   checkNoFatal('OpenAI-compatible (config)');
 }
 
+// ── 대화로 일정 일부만 고치기(②)·애매하면 되묻기(③) — docs/handoff.md 4절 1번(서버) ──
+// 일정이 있을 때(itinerary를 함께 보냄) 편집 명령은 다시 만들지 않고 편집(ops)·되묻기(choices)로 답한다.
+// 해석은 Groq(OpenAI 호환)만, 없거나 실패하면 규칙. Gemini는 편집에 한 번도 부르지 않는다. 넣는 장소는 그날 도시 후보에서만(규칙 6).
+const EDIT_KINKAKU_D2 = '오후(14:00-15:30): 금각사 (교토)';
+function editKyotoItinerary(extraDay3 = []) {
+  return {
+    lang: 'ko', cityKey: 'kyoto', routeCities: ['교토'],
+    days: [
+      { day: 1, date: futureDate(30), blocks: ['오전(09:00-11:00): 기요미즈데라 (히가시야마)', '점심(12:00-13:00): 오멘 긴카쿠지 (사쿄구)', '오후(13:30-15:30): 후시미 이나리 (후시미)', '저녁(18:00-19:30): 기온 우오신 (기온)'] },
+      { day: 2, date: futureDate(31), blocks: ['오전(09:00-10:30): 아라시야마 대나무숲 (아라시야마)', EDIT_KINKAKU_D2, '저녁(18:00-19:30): 오멘 긴카쿠지 (사쿄구)'] },
+      { day: 3, date: futureDate(32), blocks: ['오전(09:00-11:00): 니조성 (니조)', '오후(13:00-15:00): 니시키 시장 (교토)', ...extraDay3] }
+    ]
+  };
+}
+// 교토 후보의 실제 이름(데이터에 있는 것): 도시 명소·대표 명소·추가 명소(server.js) + 도시 주변 실제 명소(assets/city-places.json)
+function kyotoCandidateNames() {
+  const names = new Set();
+  const hl = /kyoto: \{[\s\S]*?highlights: \[([\s\S]*?)\]/.exec(serverCode);
+  for (const m of String(hl ? hl[1] : '').matchAll(/name: '([^']+)'/g)) names.add(m[1]);
+  for (const m of serverCode.matchAll(/\{ name: '([^']+)', cityKey: 'kyoto'/g)) names.add(m[1]);
+  try { for (const p of JSON.parse(read('assets/city-places.json')).cities.kyoto.places) names.add(p.name); } catch { /* 파일이 없으면 큐레이션만 */ }
+  return names;
+}
+async function phaseItineraryEdit() {
+  section('Chat itinerary edit (handoff 4-1 ②③): rule + Groq interpretation, only the day city\'s candidates (rule 6), ask when ambiguous, trip-level changes still regenerate, Gemini never called for edits');
+  const GEM = 'GEMKEY-edit-test-4c82e1';
+  const GSK = 'gsk_TESTONLYeditGroq0123456789abcdefghij';
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const gemCalls = () => mock.entries('gemini').length;
+  const ctxBody = { city: 'kyoto', theme: 'mixed', budget: 'mid', days: 3, startDate: futureDate(30) };
+  // 이 단계에서 받은 편집 응답의 status를 모두 모은다(K1 '항상 확인 후 적용': 'apply'는 한 번도 없어야 한다)
+  const editStatuses = [];
+  const chat = async (message, itinerary, lang = 'ko') => {
+    const r = await postJson('/api/ai-travel-chat', { message, lang, context: ctxBody, history: [], prevParsed: null, ...(itinerary !== undefined ? { itinerary } : {}) }, { ip: nextIntentIp() });
+    if (r.json?.mode === 'edit') editStatuses.push(r.json.edit?.status);
+    return r;
+  };
+  const IT = editKyotoItinerary();
+  const KYOTO_NAMES = kyotoCandidateNames();
+  const opsOf = (e) => [...(e?.ops || []), ...((e?.choices || []).flatMap((c) => c.ops || []))];
+  // K1 '항상 확인 후 적용': 확정된 편집도 바로 적용(apply)하지 않고 '이렇게 바꿀까요?'([이대로 바꾸기]·[취소])로 온다. 그 확인이 실은 편집(아니면 null).
+  const confirmOps = (j) => (j && j.mode === 'edit' && j.edit?.status === 'ask' && j.edit.confirm === true && !j.edit.ops && !j.parsed
+    && (j.edit.choices || []).length === 2 && j.edit.choices[1].cancel === true && (j.edit.choices[1].ops || []).length === 0 && Array.isArray(j.edit.choices[0].ops)
+    ? j.edit.choices[0].ops : null);
+  const CONFIRM_HEAD = { ko: '이렇게 바꿀까요?\n· ', en: 'Should I make this change?\n· ', ja: 'この内容で変更しますか？\n· ' };
+
+  // (1) Groq 없음(Gemini 키만): 규칙 해석(ko/en/ja). 편집에는 Gemini를 부르지 않는다.
+  mock.reset({ gemini: 'chat_ok' });
+  try {
+    await startServer('edit-rules', { GEMINI_API_KEY: GEM, TRUST_PROXY: '1' });
+    const RULE_CASES = [
+      ['2일째 오후 금각사 빼줘', 'ko', [{ op: 'remove', day: 2, block: EDIT_KINKAKU_D2 }]],
+      ['3일째 오전에 은각사 넣어줘', 'ko', [{ op: 'add', day: 3, slot: 'morning', name: '은각사', area: '사쿄구', kind: 'dest' }]],
+      ['금각사를 3일째로', 'ko', [{ op: 'move', fromDay: 2, block: EDIT_KINKAKU_D2, day: 3, slot: 'afternoon' }]],
+      ['금각사 대신 은각사', 'ko', [{ op: 'replace', day: 2, block: EDIT_KINKAKU_D2, name: '은각사', area: '사쿄구', kind: 'dest' }]],
+      ['2일째 저녁을 7시로', 'ko', [{ op: 'time', day: 2, block: '저녁(18:00-19:30): 오멘 긴카쿠지 (사쿄구)', start: '19:00' }]],
+      ['2일째 저녁 8시로 바꿔줘', 'ko', [{ op: 'time', day: 2, block: '저녁(18:00-19:30): 오멘 긴카쿠지 (사쿄구)', start: '20:00' }]],
+      ['2일째 오후 금각사 빼고 은각사', 'ko', [{ op: 'replace', day: 2, block: EDIT_KINKAKU_D2, name: '은각사', area: '사쿄구', kind: 'dest' }]],
+      ['니조성을 오후 3시로', 'ko', [{ op: 'time', day: 3, block: '오전(09:00-11:00): 니조성 (니조)', start: '15:00' }]],
+      ['remove Kinkaku-ji from day 2', 'en', [{ op: 'remove', day: 2, block: EDIT_KINKAKU_D2 }]],
+      ['add Ginkaku-ji to day 3 morning', 'en', [{ op: 'add', day: 3, slot: 'morning', name: '은각사', area: '사쿄구', kind: 'dest' }]],
+      ['3日目の午前に銀閣寺を入れて', 'ja', [{ op: 'add', day: 3, slot: 'morning', name: '은각사', area: '사쿄구', kind: 'dest' }]],
+      ['2日目の夕食を19時に', 'ja', [{ op: 'time', day: 2, block: '저녁(18:00-19:30): 오멘 긴카쿠지 (사쿄구)', start: '19:00' }]]
+    ];
+    // (설계 변경: K1 '항상 확인 후 적용') 예전에는 이 단순한 명령을 바로 적용(apply)했다. 이제 같은 편집을 '이렇게 바꿀까요?'로 묻는다.
+    // 답은 그 언어의 확인 문구로 시작한다(블록 이름은 일정에 적힌 그대로라 한글 일정이면 한글이 섞인다).
+    // en/ja는 일정·편집의 장소 이름을 지운 뒤에는 한글이 없어야 한다(문구 틀에 한글이 새지 않게 — 검토 K1c 사소한 의견).
+    const itNames = IT.days.flatMap((d) => d.blocks.map((b) => (/^[^(]+\([^)]*\):\s*(.+?)(?:\s*\([^()]*\))?$/.exec(b) || [])[1]).filter(Boolean));
+    const noKoBesideNames = (s, ops) => !HANGUL_RE.test([...itNames, ...ops.map((o) => o.name).filter(Boolean)].reduce((acc, n) => acc.split(n).join(''), String(s || '')));
+    for (const [message, lang, ops] of RULE_CASES) {
+      const g0 = gemCalls();
+      const r = await chat(message, IT, lang);
+      const j = r.json || {};
+      log(r.status === 200 && same(confirmOps(j), ops) && gemCalls() === g0
+        && j.sourceInfo?.kind === 'rule' && j.source === 'rule_edit_parser_v1' && String(j.reply || '').startsWith(CONFIRM_HEAD[lang]) && (lang === 'ko' || noKoBesideNames(j.reply, ops)),
+        `edit by rules (${lang}) '${message}' -> asks to confirm only ${ops.map((o) => o.op).join('+')} (never applied at once, no regeneration, no Gemini call, reply in ${lang})`, short({ status: r.status, edit: j.edit, gem: gemCalls() - g0, reply: j.reply }, 500));
+    }
+    // 확인 문구: 바꿀 것 한 줄씩(날·칸·시각·장소), 세 언어
+    const lineCases = [
+      ['2일째 오후 금각사 빼줘', 'ko', '이렇게 바꿀까요?\n· 2일차 오후(14:00-15:30) 금각사 빼기'],
+      ['remove Kinkaku-ji from day 2', 'en', 'Should I make this change?\n· remove 금각사 (Day 2 Afternoon 14:00-15:30)'],
+      ['2日目の金閣寺を外して', 'ja', 'この内容で変更しますか？\n· 2日目午後（14:00-15:30）の금각사を削除'],
+      ['2일째 저녁을 7시로', 'ko', '이렇게 바꿀까요?\n· 2일차 저녁(18:00-19:30) 오멘 긴카쿠지 → 19:00 시작'],
+      ['금각사를 3일째로', 'ko', '이렇게 바꿀까요?\n· 2일차 오후(14:00-15:30) 금각사 → 3일차 오후 옮기기'],
+      ['3日目の午前に銀閣寺を入れて', 'ja', 'この内容で変更しますか？\n· 3日目午前に은각사を追加']
+    ];
+    for (const [message, lang, want] of lineCases) {
+      const j = (await chat(message, IT, lang)).json || {};
+      log(j.reply === want && j.edit?.question === want, `K1 confirm text (${lang}) '${message}' shows the change on its own line with day, slot, time and place`, short({ reply: j.reply }, 300));
+    }
+    const twoLines = (await chat('2일째 오후 금각사 빼고 3일째 오전에 은각사 넣어줘', IT)).json || {};
+    log(String(twoLines.reply || '').split('\n').filter((l) => l.startsWith('· ')).length === 2 && String(twoLines.reply).includes('· 2일차 오후(14:00-15:30) 금각사 빼기\n· 3일차 오전에 은각사 넣기'),
+      'K1 confirm with two changes lists each change on its own line before the choices', short(twoLines.reply, 300));
+    // 되묻기: 같은 장소가 여러 날 → 날마다 선택지 + '모두'. 고르기 전에는 ops가 없다.
+    const dup = (await chat('금각사 빼줘', editKyotoItinerary(['오후(15:30-17:00): 금각사 (교토)']))).json || {};
+    const dch = dup.edit?.choices || [];
+    log(dup.mode === 'edit' && dup.edit.status === 'ask' && !dup.edit.ops && dch.length === 3
+      && same(dch[0].ops, [{ op: 'remove', day: 2, block: EDIT_KINKAKU_D2 }]) && same(dch[1].ops, [{ op: 'remove', day: 3, block: '오후(15:30-17:00): 금각사 (교토)' }])
+      && dch[2].ops.length === 2 && /2일차/.test(dch[0].label) && /3일차/.test(dch[1].label) && String(dup.reply || '').includes(dup.edit.question),
+      "ask: '금각사 빼줘' with 금각사 on day 2 and day 3 -> a choice per day plus 'all'; no ops until one is chosen", short(dup.edit, 600));
+    // 날짜 없이 넣기 → 며칠째인지 묻는다
+    const nod = (await chat('은각사 넣어줘', IT)).json || {};
+    const ndc = nod.edit?.choices || [];
+    log(nod.edit?.status === 'ask' && !nod.edit.ops && ndc.length === 3 && ndc.every((c, i) => c.ops.length === 1 && c.ops[0].op === 'add' && c.ops[0].day === i + 1 && c.ops[0].name === '은각사'),
+      "ask: '은각사 넣어줘' without a day on a 3-day plan -> asks which day (3 choices), nothing applied yet", short(nod.edit, 500));
+    // 규칙 6: 그날 도시(교토) 후보에 없는 장소는 넣지 않는다(다른 도시 명소·지어낸 이름). 비슷한 교토 후보만 선택지로.
+    for (const [message, bad, why] of [['3일째 오전에 센소지 넣어줘', '센소지', '도쿄'], ['3일째에 호그와트 성 넣어줘', '호그와트', '교토'], ['3일째 저녁에 도쿄 타워 넣어줘', '도쿄 타워', '도쿄']]) {
+      const j = (await chat(message, IT)).json || {};
+      const all = opsOf(j.edit);
+      log(j.mode === 'edit' && j.edit?.status === 'ask' && !j.edit.ops && all.length > 0 && !all.some((o) => String(o.name || '').includes(bad))
+        && all.every((o) => o.op === 'add' && o.day === 3 && KYOTO_NAMES.has(o.name)) && String(j.reply || '').includes(bad) && String(j.reply || '').includes(why),
+        `rule 6: '${message}' is not added (not a Kyoto candidate); the reply says so and offers only real Kyoto candidates for day 3`, short({ reply: j.reply, choices: (j.edit?.choices || []).map((c) => c.label) }, 500));
+    }
+    const missing = (await chat('3일째 센소지 빼줘', IT)).json || {};
+    log(missing.mode === 'edit' && missing.edit?.status === 'none' && !opsOf(missing.edit).length && String(missing.reply || '').includes('센소지'),
+      "removing a place that is not in the plan changes nothing and says it was not found", short(missing, 300));
+    // 일수·도시·경로·조건·여행 전체가 바뀌는 말은 편집이 아니다 → 지금처럼 조건을 해석해 다시 만든다
+    for (const message of ['하루 더 늘려줘', '오사카도 추가해줘', '쇼핑은 빼줘', '교토 3일 여행 다시 짜줘', '교토 2박3일로 바꿔줘']) {
+      const r = await chat(message, IT);
+      log(r.status === 200 && !r.json?.mode && r.json?.parsed?.cityKey && !r.json?.edit, `trip-level change '${message}' is not an edit (parsed as before -> the plan is regenerated)`, short({ mode: r.json?.mode, parsed: r.json?.parsed?.cityKey }, 200));
+    }
+    // 일정이 있어도 여행 요청·조건 말은 편집이 아니다: 바람('가고 싶어'·'visit', 일차 없이), 경로 밖 도시의 장소, 도착 시각, '여행', 일정에 없는 장소 바꾸기
+    // (실측: 채팅 말뭉치 5,863문장을 일정이 있는 상태로 보내면 편집으로 잡히는 것은 '2일차에 유니버셜 넣어줘' 하나)
+    for (const message of ['I want to visit Kobecity Agricultural Park', '후지산 가고 싶어', '은각사도 가고 싶어', '첫날은 오후 3시 도착이야', '디즈니랜드 빼고 도쿄 여행', '유니버설대신수족관', '센소지 넣어줘']) {
+      const g0 = gemCalls();
+      const r = await chat(message, IT);
+      log(r.status === 200 && !r.json?.mode && r.json?.parsed?.cityKey && gemCalls() > g0, `trip request '${message}' with a plan open is not an edit (chat parsed and regenerated as before)`, short({ mode: r.json?.mode, edit: r.json?.edit }, 300));
+    }
+    const sap = { lang: 'ko', cityKey: 'sapporo', routeCities: ['삿포로'], days: [{ day: 1, date: futureDate(30), blocks: ['오전(09:00-10:30): 삿포로 오도리 공원 (오도리)'] }, { day: 2, date: futureDate(31), blocks: ['오후(13:00-15:00): 삿포로 TV 타워 (오도리)'] }] };
+    const sw = await chat('삿포로 대신 하코다테', sap);
+    log(!sw.json?.mode && sw.json?.parsed, "'삿포로 대신 하코다테' (city swap) on a Sapporo plan is not an edit", short({ mode: sw.json?.mode, city: sw.json?.parsed?.cityKey }));
+    // 일정 없이(첫 대화)는 같은 말도 지금처럼 해석. 일정 형식이 틀리면 400, 시간대 블록이 없는 일정은 편집 대상이 아니다.
+    const noIt = await chat('2일째 오후 금각사 빼줘', undefined);
+    const badIt = await chat('2일째 오후 금각사 빼줘', [IT]);
+    const emptyIt = await chat('2일째 오후 금각사 빼줘', { lang: 'ko', cityKey: 'kyoto', days: [{ day: 1, blocks: ['안내 줄만 있음'] }] });
+    log(!noIt.json?.mode && noIt.json?.parsed && badIt.status === 400 && !emptyIt.json?.mode && emptyIt.json?.parsed,
+      'no itinerary -> parsed as before; itinerary as an array -> 400; an itinerary without time blocks is not editable', short({ noIt: noIt.json?.mode, bad: badIt.status, empty: emptyIt.json?.mode }));
+    // 검토 회귀(막는 문제 1): 부정('안 빼도 돼'·'빼지 마'·"don't remove"·'削除しないで')은 빼기가 아니다. 남기라는 장소를 지우지 않고
+    // 지금처럼 다시 만들기(조건 해석)로 둔다. 부정 + 넣기('빼지 말고 은각사도 넣어줘')는 넣기만, 'keep A, add B'·'A는 그대로 두고'는 B만.
+    for (const [message, lang] of [['금각사는 안 빼도 돼', 'ko'], ['금각사 취소하지 마', 'ko'], ['금각사 빼면 안 돼', 'ko'], ['금각사는 빼지 않아도 돼', 'ko'], ["don't remove Kinkaku-ji", 'en'],
+      ['please do not drop Kinkaku-ji', 'en'], ['never remove Kinkaku-ji', 'en'], ['金閣寺は削除しないで', 'ja']]) {
+      const r = await chat(message, IT, lang);
+      log(r.status === 200 && !r.json?.mode && !opsOf(r.json?.edit).length && Boolean(r.json?.parsed?.cityKey),
+        `negation is not a removal: '${message}' removes nothing (chat parsed as before, no edit)`, short({ st: r.status, mode: r.json?.mode, edit: r.json?.edit, city: r.json?.parsed?.cityKey, excl: r.json?.parsed?.excludedPlaces, err: r.json?.error }, 300));
+    }
+    const negAdd = (await chat('금각사 빼지 말고 은각사도 넣어줘', IT)).json || {};
+    log(negAdd.mode === 'edit' && negAdd.edit?.status === 'ask' && opsOf(negAdd.edit).length > 0 && opsOf(negAdd.edit).every((o) => o.op === 'add' && o.name === '은각사'),
+      "'금각사 빼지 말고 은각사도 넣어줘' keeps 금각사 and only asks which day to add 은각사 ('말고' after '빼지' is not 'instead')", short(negAdd.edit, 400));
+    for (const [message, lang] of [['keep Kinkaku-ji, add Ginkaku-ji on day 3', 'en'], ['금각사는 그대로 두고 은각사 3일째에 넣어줘', 'ko'], ['金閣寺は残して、3日目に銀閣寺を入れて', 'ja']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      const ops = confirmOps(j) || [];
+      log(ops.length === 1 && ops[0].op === 'add' && ops[0].day === 3 && ops[0].name === '은각사',
+        `'${message}' asks to add only 은각사 on day 3 (the kept place is not added again or removed)`, short(j.edit, 300));
+    }
+    // 검토 회귀(막는 문제 2): 시각이 든 넣기·빼기, 시각을 붙인 바꾸기·다른 날로 옮기기는 한 칸 시각 바꾸기로 나타낼 수 없다 → 지금처럼 다시 만들기
+    for (const message of ['2일째 저녁 7시에 라멘집 넣어줘', '2일째 오후 2시 이후는 빼줘', '2일째 금각사 빼고 오후 2시에 은각사 넣어줘', '금각사를 3일째 오후 3시로 옮겨줘', '금각사 대신 오후 3시에 은각사']) {
+      const r = await chat(message, IT);
+      log(r.status === 200 && !r.json?.mode && !opsOf(r.json?.edit).length && r.json?.parsed?.cityKey, `a time with add/remove/replace/move-to-another-day '${message}' does not retime another block (regenerated as before)`, short({ mode: r.json?.mode, edit: r.json?.edit }, 300));
+    }
+    // 사소한 의견: 오전 칸 '6시'는 06:00(18:00 아님), '0시'·'저녁을 12시로'는 다시 묻기, 'N일에'는 일정의 날짜(그달 N일)로, '공항'은 다시 만들기,
+    // 이미 일정에 있는 장소를 바라면('금각사는 저녁에 가고 싶어') 하나 더 넣지 않고 옮긴다
+    const sixAm = (await chat('니조성을 6시로', IT)).json || {};
+    log(same(confirmOps(sixAm), [{ op: 'time', day: 3, block: '오전(09:00-11:00): 니조성 (니조)', start: '06:00' }]), "'니조성을 6시로' on a morning block -> 06:00 (not 18:00)", short(sixAm.edit));
+    for (const message of ['금각사를 0시로', '2일째 저녁을 12시로']) {
+      const j = (await chat(message, IT)).json || {};
+      log(j.mode === 'edit' && j.edit?.status === 'none' && !opsOf(j.edit).length && String(j.reply || '').includes('7시'), `'${message}' is not applied as noon; the reply asks for a clearer time`, short({ edit: j.edit, reply: j.reply }, 300));
+    }
+    const doms = [30, 31, 32].map((n) => Number(futureDate(n).slice(8, 10)));
+    const onDate = (await chat(`${doms[1]}일에 은각사 넣어줘`, IT)).json || {};
+    const onDateOps = confirmOps(onDate) || [];
+    log(onDateOps.length === 1 && onDateOps[0].day === 2 && onDateOps[0].name === '은각사',
+      `'${doms[1]}일에 은각사 넣어줘' uses the plan date (day-of-month ${doms[1]} = day 2), not day ${doms[1]}`, short(onDate.edit, 300));
+    const offDom = [5, 6, 7, 8, 9].find((d) => !doms.includes(d));
+    const offDate = await chat(`${offDom}일에 은각사 넣어줘`, IT);
+    log(!offDate.json?.mode && offDate.json?.parsed, `'${offDom}일에 은각사 넣어줘' (a date outside the plan) is not an edit`, short({ mode: offDate.json?.mode, edit: offDate.json?.edit }));
+    const airport = await chat('마지막 날은 공항 가야 해서 오후 일정 빼줘', IT);
+    log(!airport.json?.mode && airport.json?.parsed, "'마지막 날은 공항 가야 해서 오후 일정 빼줘' (airport/departure) is regenerated as before, not '공항 가야 해서 not found'", short({ mode: airport.json?.mode, reply: airport.json?.reply }, 200));
+    const wishMove = (await chat('금각사는 저녁에 가고 싶어', IT)).json || {};
+    log(same(confirmOps(wishMove), [{ op: 'move', fromDay: 2, block: EDIT_KINKAKU_D2, day: 2, slot: 'night' }]),
+      "'금각사는 저녁에 가고 싶어' moves the existing 금각사 to the evening slot instead of adding it again", short(wishMove.edit, 300));
+    // 검토 회귀(막는 문제 3): 되묻기에 글로 답하면 남은 선택지(editChoices)에서 고른다. 다시 만들지 않고(일수가 바뀌지 않는다) Gemini도 부르지 않는다.
+    const askDay = (await chat('은각사 넣어줘', IT)).json || {};
+    const pend = (askDay.edit?.choices || []).map((c) => ({ label: c.label, kinds: [...new Set(c.ops.map((o) => o.op))] }));
+    const answer = (message, choices = pend, lang = 'ko', itinerary = IT) => postJson('/api/ai-travel-chat',
+      { message, lang, context: ctxBody, history: [{ role: 'user', content: '은각사 넣어줘' }, { role: 'assistant', content: String(askDay.reply || '') }], prevParsed: null, itinerary, editChoices: choices }, { ip: nextIntentIp() });
+    log(pend.length === 3 && pend[1].label === '2일차 오전' && same(pend[1].kinds, ['add']), 'answer setup: the ask has 3 day choices', short(pend));
+    for (const [message, picks] of [['2일째', [1]], ['2일째로', [1]], ['둘째 날', [1]], ['2일', [1]], ['2일로', [1]], ['2일째에 넣어줘', [1]], ['두 번째', [1]], ['2', [1]], ['3일차 오전으로 해줘', [2]], ['2일째 말고 3일째', [2]], ['아니 1일째로', [0]]]) {
+      const g0 = gemCalls();
+      const r = await answer(message);
+      log(r.status === 200 && r.json?.mode === 'edit' && r.json.edit?.status === 'pick' && same(r.json.edit.picks, picks) && !r.json.parsed && gemCalls() === g0 && String(r.json.reply || '').includes(pend[picks[0]].label),
+        `typed answer '${message}' picks choice ${picks[0]} ('${pend[picks[0]].label}'); not regenerated, no Gemini call`, short({ edit: r.json?.edit, reply: r.json?.reply, parsed: r.json?.parsed?.days }, 300));
+    }
+    for (const [message, status, picks] of [['5일째', 'pick', []], ['네', 'pick', []], ['오전', 'pick', []], ['취소', 'cancel', null], ['아니요', 'cancel', null]]) {
+      const r = await answer(message);
+      log(r.json?.mode === 'edit' && r.json.edit?.status === status && (picks === null ? !('picks' in r.json.edit) : same(r.json.edit.picks, picks)) && !r.json.parsed,
+        `typed answer '${message}' -> ${status}${picks ? ' ' + JSON.stringify(picks) : ''} (nothing regenerated; no match keeps the choices open)`, short({ edit: r.json?.edit, reply: r.json?.reply }, 300));
+    }
+    // 답이 아닌 말(새 편집·여행 전체 바꾸기)은 지금처럼 처리한다
+    const newEdit = await answer('3일째 니조성 빼줘');
+    const tripAgain = await answer('교토 2일로 다시 짜줘');
+    const otherKind = await answer('2일째 오전 빼줘');
+    const placeOnly = await answer('하코네에서 2일');
+    log(same(confirmOps(newEdit.json), [{ op: 'remove', day: 3, block: '오전(09:00-11:00): 니조성 (니조)' }])
+      && !tripAgain.json?.mode && tripAgain.json?.parsed?.days === 2 && (confirmOps(otherKind.json) || [])[0]?.op === 'remove'
+      && !placeOnly.json?.mode && placeOnly.json?.parsed,
+      "while choices are open, a new command is not taken as an answer ('3일째 니조성 빼줘' edits, '교토 2일로 다시 짜줘' and '하코네에서 2일' are parsed as before, '2일째 오전 빼줘' is a removal, not the add choice)",
+      short({ newEdit: newEdit.json?.edit, trip: tripAgain.json?.parsed?.days, other: otherKind.json?.edit, placeOnly: placeOnly.json?.mode }, 400));
+    const dupIt = editKyotoItinerary(['오후(15:30-17:00): 금각사 (교토)']);
+    const dupPend = (dup.edit?.choices || []).map((c) => ({ label: c.label, kinds: [...new Set(c.ops.map((o) => o.op))] }));
+    const pick3 = (await answer('3일째 거', dupPend, 'ko', dupIt)).json || {};
+    const both = (await answer('둘 다', dupPend, 'ko', dupIt)).json || {};
+    log(same(pick3.edit?.picks, [1]) && same(both.edit?.picks, [2]) && String(both.reply || '').includes("'모두(2곳)'를"),
+      "answers to 'which 금각사?': '3일째 거' -> day 3, '둘 다' -> 'all'", short({ pick3: pick3.edit, both: both.edit, reply: both.reply }, 300));
+    const enAsk = (await chat('add Ginkaku-ji', IT, 'en')).json || {};
+    const enPend = (enAsk.edit?.choices || []).map((c) => ({ label: c.label, kinds: [...new Set(c.ops.map((o) => o.op))] }));
+    const enPick = (await answer('the third one', enPend, 'en')).json || {};
+    const jaPick = (await answer('2日目でお願いします', enPend.map((c, i) => ({ ...c, label: `${i + 1}日目 午前` })), 'ja')).json || {};
+    log(enPend.length === 3 && same(enPick.edit?.picks, [2]) && !HANGUL_RE.test(String(enPick.reply || '')) && same(jaPick.edit?.picks, [1]) && !HANGUL_RE.test(String(jaPick.reply || '')),
+      "typed answers in en ('the third one') and ja ('2日目でお願いします') pick the matching choice; replies in that language", short({ en: enPick.edit, ja: jaPick.edit, enR: enPick.reply, jaR: jaPick.reply }, 300));
+    const badChoices = await postJson('/api/ai-travel-chat', { message: '2일째', lang: 'ko', context: ctxBody, history: [], prevParsed: null, itinerary: IT, editChoices: 'x' }, { ip: nextIntentIp() });
+    log(badChoices.status === 400, 'editChoices that is not an array -> 400', short(badChoices.json));
+
+    // ── K1 재검토 회귀: 바로 적용은 단순한 명령(절·동사·장소 하나, 부정·조건·대조·그대로 두기·맞바꾸기 표지 없음)만 ──
+    // 그 밖에는 '이렇게 바꿀까요?'(status ask + confirm, [취소] 포함)로 묻고 고르기 전에는 아무것도 바꾸지 않는다. Gemini 0회.
+    const NIJO = '오전(09:00-11:00): 니조성 (니조)';
+    const rmNijo = [{ op: 'remove', day: 3, block: NIJO }];
+    const isConfirm = (j) => j.mode === 'edit' && j.edit?.status === 'ask' && j.edit.confirm === true && !j.edit.ops
+      && (j.edit.choices || []).some((c) => c.cancel === true && Array.isArray(c.ops) && c.ops.length === 0) && !j.parsed;
+    const touchesKinkaku = (j) => opsOf(j.edit).some((o) => String(o.block || '').includes('금각사') || String(o.block2 || '').includes('금각사'));
+    // (U1·U2·U8) 남기라는 장소 + 다른 장소 빼기: 바로 지우지 않는다. 니조성만 빼는 선택지가 있다.
+    for (const [message, lang, onlyNijo] of [['금각사는 두고 니조성 빼줘', 'ko', true], ['금각사는 냅둬 니조성 빼줘', 'ko', true], ['금각사는 괜찮아, 니조성 빼줘', 'ko', false], ['금각사 살리고 니조성 빼줘', 'ko', true],
+      ['Kinkaku-ji should stay, remove Nijo Castle', 'en', true],
+      ['금각사는 안 뺄래, 니조성 빼줘', 'ko', true], ['금각사 말고 니조성 빼줘', 'ko', true], ['金閣寺は外さないで、二条城を外して', 'ja', true], ['二条城はやめないで金閣寺をやめて', 'ja', false]]) {
+      const g0 = gemCalls();
+      const j = (await chat(message, IT, lang)).json || {};
+      const nijoChoice = (j.edit?.choices || []).some((c) => same(c.ops, rmNijo));
+      const ok = message.startsWith('二条城はやめないで')
+        ? isConfirm(j) && (j.edit.choices || []).filter((c) => !c.cancel).every((c) => c.ops.every((o) => o.block !== NIJO))
+        : isConfirm(j) && nijoChoice && (!onlyNijo || !touchesKinkaku(j));
+      // 답은 그 언어의 확인 문구(블록 이름은 일정에 적힌 그대로라 한글 일정이면 한글이 섞인다)
+      const replyRe = { ko: /이렇게/, en: /Should I make this change|Here is what I understood/, ja: /この内容で変更|このように受け取りました/ }[lang];
+      log(ok && gemCalls() === g0 && replyRe.test(String(j.reply || '')),
+        `K1 keep + remove '${message}': not applied at once; asks '이렇게 바꿀까요?' with a cancel choice${onlyNijo ? ' and only the other place to remove' : ''} (no Gemini call)`, short({ edit: j.edit, reply: j.reply }, 600));
+    }
+    // (U3·U4·U14) 부정·질문·조건·자기 정정: 바로 지우지 않는다(확인으로 묻거나 지금처럼 다시 만들기)
+    for (const [message, lang] of [['금각사 빼고 싶지 않아', 'ko'], ['금각사 빼는 거 아니야', 'ko'], ['금각사 빼는 건 아닌 것 같아', 'ko'], ['금각사를 빼야 할까?', 'ko'], ['금각사 빼면 어떻게 돼?', 'ko'], ['비 오면 금각사 빼줘', 'ko'],
+      ['금각사 빼줘 아니다 그냥 둬', 'ko'], ["I didn't say remove Kinkaku-ji", 'en'], ['Should I drop Kinkaku-ji?', 'en'], ['remove Kinkaku-ji? no, keep it', 'en'], ["remove Kinkaku-ji. actually, don't", 'en'],
+      ['Kinkaku-ji should stay, remove Nijo Castle', 'en'], ['金閣寺を外すな', 'ja'], ['金閣寺を削除する必要はない', 'ja'], ['金閣寺を外すのはやめて', 'ja'], ['金閣寺を外すべき？', 'ja']]) {
+      const g0 = gemCalls();
+      const j = (await chat(message, IT, lang)).json || {};
+      log(!(j.mode === 'edit' && j.edit?.status === 'apply') && (j.mode !== 'edit' || j.edit.status !== 'ask' || isConfirm(j)) && (j.mode !== 'edit' || gemCalls() === g0),
+        `K1 negation / question / condition '${message}' is never applied at once (confirm or regenerate)`, short({ mode: j.mode, edit: j.edit }, 400));
+    }
+    // 단순한 명령에 인사·부탁 꼴만 붙은 것('…, thanks'·'빼줄래?'·'네, …'·'안 갈래')은 그 편집 하나를 확인한다
+    // (설계 변경: 예전에는 바로 적용했다. 이제 모든 편집은 [이대로 바꾸기]를 눌러야 바뀐다)
+    for (const [message, lang] of [['remove Kinkaku-ji from day 2, thanks', 'en'], ['2일째 오후 금각사 빼줄래?', 'ko'], ['네, 2일째 오후 금각사 빼줘', 'ko'], ['2일째 금각사는 안 갈래', 'ko'], ['can you remove Kinkaku-ji?', 'en']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      log(same(confirmOps(j), [{ op: 'remove', day: 2, block: EDIT_KINKAKU_D2 }]),
+        `K1 simple command with only a polite part '${message}' asks to confirm exactly that removal`, short(j.edit, 300));
+    }
+    // 절이 여럿이면 편집마다 하나씩 고르게(+ 모두·취소)
+    const two = (await chat('2일째 오후 금각사 빼고 3일째 오전에 은각사 넣어줘', IT)).json || {};
+    const twoCh = two.edit?.choices || [];
+    log(isConfirm(two) && twoCh.length === 4 && same(twoCh[0].ops, [{ op: 'remove', day: 2, block: EDIT_KINKAKU_D2 }]) && twoCh[1].ops[0]?.op === 'add' && twoCh[1].ops[0]?.name === '은각사'
+      && twoCh[2].label === '모두(2곳)' && twoCh[2].ops.length === 2 && twoCh[3].cancel === true,
+      "K1 two clauses '2일째 오후 금각사 빼고 3일째 오전에 은각사 넣어줘' -> one choice per change + '모두(2곳)' + cancel (nothing applied yet)", short(two.edit, 600));
+    // (U6) 'AをやめてBに'는 A를 B로 바꾸기(B를 지우지 않는다). 확인 후 적용.
+    const yamete = (await chat('金閣寺をやめて銀閣寺に', IT, 'ja')).json || {};
+    log(same(confirmOps(yamete), [{ op: 'replace', day: 2, block: EDIT_KINKAKU_D2, name: '은각사', area: '사쿄구', kind: 'dest' }]),
+      "K1 '金閣寺をやめて銀閣寺に' replaces 金閣寺 with 銀閣寺 (the place after に is not removed)", short(yamete.edit, 400));
+    // (U7) 맞바꾸기: 두 블록의 시각·칸은 두고 장소만 서로(swap op), 확인 후 적용. 새 장소가 다른 날에 이미 있는 바꾸기도 확인.
+    const swapOp = [{ op: 'swap', day: 2, block: EDIT_KINKAKU_D2, day2: 3, block2: NIJO }];
+    for (const [message, lang] of [['금각사랑 니조성 자리 바꿔줘', 'ko'], ['금각사와 니조성 순서 바꿔줘', 'ko'], ['swap Kinkaku-ji with Nijo Castle', 'en']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      log(isConfirm(j) && same(j.edit.choices[0].ops, swapOp) && !opsOf(j.edit).some((o) => o.op === 'replace' || o.op === 'remove'),
+        `K1 swap '${message}' -> one swap op (times kept, places exchanged), asked before applying; no replace/remove`, short(j.edit, 400));
+    }
+    const dupRep = (await chat('금각사 대신 니조성', IT)).json || {};
+    const dupOp = dupRep.edit?.choices?.[0]?.ops || [];
+    log(isConfirm(dupRep) && dupOp.length === 1 && dupOp[0].op === 'replace' && dupOp[0].day === 2 && dupOp[0].block === EDIT_KINKAKU_D2 && dupOp[0].name === '니조성' && String(dupRep.reply || '').includes('3일차'),
+      "K1 '금각사 대신 니조성' (니조성 already on day 3) is not applied at once; the reply says it is already on day 3", short({ edit: dupRep.edit, reply: dupRep.reply }, 400));
+    // (U10·U11) 블록 ↔ 후보: 정확 일치 먼저, 포함 비교는 같은 종류끼리(식사 칸 ↔ 맛집), 로마자 짧은 별칭은 단어로만
+    const omenJa = { lang: 'ja', cityKey: 'kyoto', routeCities: ['교토'], days: [
+      { day: 1, date: futureDate(30), blocks: ['오전(09:00-11:00): 清水寺 (東山)', '저녁(18:00-20:00): おめん 銀閣寺本店 (左京区)'] },
+      { day: 2, date: futureDate(31), blocks: ['오후(14:00-15:30): 金閣寺 (京都)'] }] };
+    const omenEn = { lang: 'en', cityKey: 'kyoto', routeCities: ['교토'], days: [
+      { day: 1, date: futureDate(30), blocks: ['오전(09:00-11:00): Kiyomizu-dera Temple (Higashiyama)', '저녁(18:00-20:00): Omen Ginkakuji (Sakyo Ward)'] },
+      { day: 2, date: futureDate(31), blocks: ['오후(14:00-15:30): Kinkaku-ji Temple (Kyoto)'] }] };
+    const touchesOmen = (j) => opsOf(j.edit).some((o) => /おめん|Omen/.test(String(o.block || '')));
+    const omen1 = (await chat('銀閣寺を外して', omenJa, 'ja')).json || {};
+    const omen2 = (await chat('1日目の銀閣寺を外して', omenJa, 'ja')).json || {};
+    const omen3 = (await chat('remove Byodo-in', omenEn, 'en')).json || {};
+    log(!touchesOmen(omen1) && !touchesOmen(omen2) && !touchesOmen(omen3),
+      "K1 the dinner 'おめん 銀閣寺本店' / 'Omen Ginkakuji' is not 銀閣寺 or Byōdō-in (no op touches the restaurant)", short({ a: omen1.edit || omen1.mode, b: omen2.edit || omen2.mode, c: omen3.edit || omen3.mode }, 500));
+    const addGin = (await chat('1日目に銀閣寺を入れて', omenJa, 'ja')).json || {};
+    const addByo = (await chat('add Byodo-in to day 1', omenEn, 'en')).json || {};
+    const addGinEn = (await chat('add Ginkaku-ji to day 1', omenEn, 'en')).json || {};
+    const addedOn1 = (j, re) => { const o = confirmOps(j) || []; return o.length === 1 && o[0].op === 'add' && o[0].day === 1 && re.test(o[0].name); };
+    log(addedOn1(addGin, /銀閣寺/) && addedOn1(addByo, /Byōdō-in|Byodo-in/) && addedOn1(addGinEn, /Ginkaku-ji/),
+      "K1 adding 銀閣寺 / Byōdō-in / Ginkaku-ji to day 1 works (not refused as 'already there' because of the Omen dinner)", short({ a: addGin.edit, b: addByo.edit, c: addGinEn.edit }, 500));
+    // (U9) 되묻기에 거절·그대로 두기·부정된 넣기로 답하면 닫는다(cancel), 두 날은 두 선택지로 좁힌다. 다시 만들지 않고 Gemini 0회.
+    for (const [message, lang, choices] of [['아니 됐어', 'ko'], ['아니야 됐어요', 'ko'], ['그냥 둬', 'ko'], ['안 넣을래', 'ko'], ['필요 없어', 'ko'], ['넣지 마', 'ko'],
+      ["never mind, don't add it", 'en', enPend], ['actually no', 'en', enPend], ['要らない', 'ja'], ['入れないで', 'ja'], ['やめておく', 'ja']]) {
+      const g0 = gemCalls();
+      const r = await answer(message, choices || pend, lang);
+      log(r.json?.mode === 'edit' && r.json.edit?.status === 'cancel' && !r.json.parsed && gemCalls() === g0,
+        `K1 typed refusal '${message}' to open choices -> cancel (not regenerated)`, short({ edit: r.json?.edit, reply: r.json?.reply, days: r.json?.parsed?.days }, 300));
+    }
+    const twoDays = (await answer('1일째랑 2일째')).json || {};
+    const letsDo = (await answer("let's do day 3", enPend, 'en')).json || {};
+    log(same(twoDays.edit?.picks, [0, 1]) && same(letsDo.edit?.picks, [2]) && !twoDays.parsed && !letsDo.parsed,
+      "K1 typed '1일째랑 2일째' narrows to two choices (pick [0,1]); \"let's do day 3\" picks day 3", short({ a: twoDays.edit, b: letsDo.edit }, 300));
+    const confirmPend = [{ label: '이대로 바꾸기', kinds: ['remove'] }, { label: '취소', kinds: ['cancel'] }];
+    const yes1 = (await answer('네', confirmPend)).json || {};
+    const yes2 = (await answer('응 좋아', confirmPend)).json || {};
+    const no1 = (await answer('아니', confirmPend)).json || {};
+    const no2 = (await answer('취소', confirmPend)).json || {};
+    log(same(yes1.edit?.picks, [0]) && same(yes2.edit?.picks, [0]) && no1.edit?.status === 'cancel' && no2.edit?.status === 'cancel',
+      "K1 typed answers to '이렇게 바꿀까요?': '네'·'응 좋아' pick [이대로 바꾸기] (the cancel choice is not counted), '아니'·'취소' cancel", short({ yes1: yes1.edit, yes2: yes2.edit, no1: no1.edit, no2: no2.edit }, 300));
+
+    // ── K1 재검토 2: 표지 낱말 목록이 아니라 '알아들은 것 밖에 남는 낱말'로 단순한 명령을 가린다(모르는 말은 확인 쪽으로) ──
+    // (막는 문제 1·2) 표지 낱말이 없어도 남기라는·다른 칸을 가리키는·조건·물음표 없는 질문·알아듣지 못한 다른 장소 말은 금각사를 바로 지우지 않는다. Gemini 0회.
+    for (const [message, lang] of [
+      ['금각사 삭제 취소', 'ko'], ['금각사 빼달라고 한 거 취소', 'ko'], ['금각사 빼는 건 보류', 'ko'], ['금각사 빼는 건 반대야', 'ko'], ['친구가 금각사 빼래', 'ko'],
+      ['금각사 다음 일정 빼줘', 'ko'], ['금각사 근처 맛집 빼줘', 'ko'], ['금각사 외에 2일째 다 빼줘', 'ko'], ['금각사 빼야 하나', 'ko'], ['비 올 때 금각사 빼줘', 'ko'],
+      ['금각사는 꼭 갈 거니까 철도박물관 빼줘', 'ko'], ['금각사는 필수야 박물관 빼줘', 'ko'],
+      ['cancel the Kinkaku-ji removal', 'en'], ['skip removing Kinkaku-ji', 'en'], ['remove the dinner after Kinkaku-ji', 'en'], ['do I need to drop Kinkaku-ji', 'en'],
+      ['drop Kinkaku-ji when it rains', 'en'], ['Kinkaku-ji is my favorite so remove the railway museum', 'en'],
+      ['金閣寺の削除はキャンセル', 'ja'], ['金閣寺を外す件は撤回', 'ja'], ['金閣寺の次を外して', 'ja'], ['金閣寺以外を外して', 'ja'], ['雨のとき金閣寺を外して', 'ja'], ['金閣寺は必須なので鉄道博物館を外して', 'ja']]) {
+      const g0 = gemCalls();
+      const j = (await chat(message, IT, lang)).json || {};
+      log(!(j.mode === 'edit' && j.edit?.status === 'apply') && (j.mode !== 'edit' || j.edit.status !== 'ask' || isConfirm(j) || !touchesKinkaku(j)) && (j.mode !== 'edit' || gemCalls() === g0),
+        `K1 no marker word, still not a simple command '${message}': 금각사 is not removed at once (asks to confirm or regenerates)`, short({ mode: j.mode, edit: j.edit }, 400));
+    }
+    // 단순한 명령은 말투가 달라도 같은 편집 하나를 확인한다(부탁 꼬리·'일차' 다른 말·경로 도시 이름·'싶어'·일본어 ください)
+    for (const [message, lang] of [['이튿날 금각사 빼줘', 'ko'], ['2일째 오후 금각사 빼 주세요', 'ko'], ['교토에서 금각사 빼줘', 'ko'], ['2일째 금각사 빼고 싶어', 'ko'],
+      ['could you please remove Kinkaku-ji from my plan?', 'en'], ['2日目の金閣寺を外してください', 'ja']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      log(same(confirmOps(j), [{ op: 'remove', day: 2, block: EDIT_KINKAKU_D2 }]), `K1 simple command '${message}' asks to confirm exactly that removal`, short(j.edit, 300));
+    }
+    // (막는 문제 5) 넣지 말라는·보류하는 말은 바로 넣지 않는다
+    for (const [message, lang] of [['3일째에 은각사 넣고 싶지 않아', 'ko'], ['3일째에 은각사 넣을 필요 없어', 'ko'], ['3일째 오전에 은각사 추가는 취소', 'ko'], ['3日目に銀閣寺を入れるのは保留', 'ja']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      log(!(j.mode === 'edit' && j.edit?.status === 'apply') && (j.mode !== 'edit' || j.edit.status !== 'ask' || isConfirm(j)),
+        `K1 '${message}' (do not add / hold off) does not add 은각사 at once`, short({ mode: j.mode, edit: j.edit }, 300));
+    }
+    // (막는 문제 3·4) '이렇게 바꿀까요?'에 '네'가 섞인 취소·장소를 말한 철회·부정으로 답하면 닫는다(바꾸는 선택지를 고르지 않는다)
+    const confirmPendEn = [{ label: 'Yes, change it', kinds: ['remove'] }, { label: 'Cancel', kinds: ['cancel'] }];
+    const confirmPendJa = [{ label: 'この内容で変更', kinds: ['remove'] }, { label: 'キャンセル', kinds: ['cancel'] }];
+    for (const [message, lang, pend2] of [['응 취소해', 'ko'], ['네 취소해 주세요', 'ko'], ['좋아 취소해', 'ko'], ['응 취소', 'ko'], ['네? 아니요', 'ko'], ['노노', 'ko'], ['ㄴㄴ', 'ko'],
+      ['금각사 삭제 취소', 'ko'], ['금각사 빼는 건 보류', 'ko'], ['금각사는 빼지 마', 'ko'],
+      ['yes, cancel it', 'en', confirmPendEn], ['ok cancel', 'en', confirmPendEn], ['cancel removing Kinkaku-ji', 'en', confirmPendEn], ['stop', 'en', confirmPendEn], ['leave it', 'en', confirmPendEn],
+      ['はい、キャンセル', 'ja', confirmPendJa], ['取り消して', 'ja', confirmPendJa], ['金閣寺の削除はキャンセル', 'ja', confirmPendJa]]) {
+      const r = (await answer(message, pend2 || confirmPend, lang)).json || {};
+      log(r.mode === 'edit' && r.edit?.status === 'cancel' && !r.parsed, `K1 typed '${message}' to '이렇게 바꿀까요?' cancels (never picks the change, never regenerates)`, short({ edit: r.edit, reply: r.reply }, 300));
+    }
+    const yes3 = (await answer('ㅇㅇ', confirmPend)).json || {};
+    const yes4 = (await answer('그래 빼', confirmPend)).json || {};
+    log(same(yes3.edit?.picks, [0]) && same(yes4.edit?.picks, [0]), "K1 'ㅇㅇ'·'그래 빼' to '이렇게 바꿀까요?' pick [이대로 바꾸기]", short({ a: yes3.edit, b: yes4.edit }));
+    // (사소한 의견 1) 두 곳 중 한 곳만 일정에 있으면 맞바꾸기가 아니라 그 자리를 바꾸기(확인 후)
+    const kinToGin = [{ op: 'replace', day: 2, block: EDIT_KINKAKU_D2, name: '은각사', area: '사쿄구', kind: 'dest' }];
+    for (const [message, lang] of [['금각사 자리에 은각사로 바꿔줘', 'ko'], ['금각사 자리에 은각사 넣어줘', 'ko'], ['switch Kinkaku-ji for Ginkaku-ji', 'en'], ['switch Kinkaku-ji to Ginkaku-ji', 'en']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      log(isConfirm(j) && same(j.edit.choices[0].ops, kinToGin), `K1 '${message}' (only one place in the plan) asks to replace 금각사 with 은각사 (not 'which two places')`, short({ edit: j.edit, reply: j.reply }, 400));
+    }
+    // (사소한 의견 2) 맞바꾸기도 도시(규칙 6)와 종일 칸을 본다
+    const osakaKyoto = { lang: 'ko', cityKey: 'osaka', routeCities: ['오사카', '교토'], days: [
+      { day: 1, date: futureDate(30), blocks: ['오전(08:30-11:30): 오사카성 (주오구)', '오후(13:00-17:00): 신세카이 (에비스초)'] },
+      { day: 2, date: futureDate(31), blocks: ['종일(09:00-18:00): 유니버셜 스튜디오 재팬 (오사카)'] },
+      { day: 3, date: futureDate(32), blocks: ['도시 이동: 오사카 -> 교토 (JR/한큐 약 30~60분)', '오후(13:00-17:00): 금각사 (교토)'] }] };
+    const swCity = (await chat('오사카성이랑 금각사 자리 바꿔줘', osakaKyoto)).json || {};
+    const swAllDay = (await chat('유니버셜 스튜디오 재팬이랑 신세카이 자리 바꿔줘', osakaKyoto)).json || {};
+    const swOk = (await chat('오사카성이랑 신세카이 자리 바꿔줘', osakaKyoto)).json || {};
+    log(swCity.edit?.status === 'none' && !opsOf(swCity.edit).length && /오사카|교토/.test(String(swCity.reply || ''))
+      && swAllDay.edit?.status === 'none' && !opsOf(swAllDay.edit).length && String(swAllDay.reply || '').includes('하루 종일')
+      && isConfirm(swOk) && same(swOk.edit.choices[0].ops, [{ op: 'swap', day: 1, block: '오전(08:30-11:30): 오사카성 (주오구)', day2: 1, block2: '오후(13:00-17:00): 신세카이 (에비스초)' }]),
+      "K1 swap checks the city (오사카성 ↔ 금각사 refused) and all-day slots (USJ ↔ 신세카이 refused); 오사카성 ↔ 신세카이 is offered", short({ city: swCity.reply, allDay: swAllDay.reply, ok: swOk.edit }, 500));
+    // ── K1 '항상 확인 후 적용' 최종 검토 회귀(fix-K1c: F1·F2·F5·F7·F8·R1·R4) ──
+    const DINNER_D2 = '저녁(18:00-19:30): 오멘 긴카쿠지 (사쿄구)';
+    // (F1·F4) 장소 + 그 장소가 없는 칸 낱말: 장소만 고치지 않고 그날 그 칸 일정을 첫 선택지로 묻는다('모두' 없음). 그날 그 칸이 비었으면 '그 칸에서 찾지 못했어요'.
+    for (const [message, lang, op] of [['금각사 저녁 빼줘', 'ko', 'remove'], ['drop Kinkaku-ji dinner', 'en', 'remove'], ['金閣寺の夕食を外して', 'ja', 'remove'],
+      ['금각사 저녁 7시로 해줘', 'ko', 'time'], ['change Kinkaku-ji dinner to 7pm', 'en', 'time'], ['金閣寺の夕食を19時に', 'ja', 'time']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      const ch = (j.edit?.choices || []).filter((c) => !c.cancel);
+      const first = op === 'remove' ? [{ op: 'remove', day: 2, block: DINNER_D2 }] : [{ op: 'time', day: 2, block: DINNER_D2, start: '19:00' }];
+      log(j.mode === 'edit' && j.edit?.status === 'ask' && !j.edit.ops && ch.length === 2 && same(ch[0].ops, first) && ch[1].ops.length === 1 && ch[1].ops[0].block === EDIT_KINKAKU_D2
+        && !ch.some((c) => /모두|All|すべて/.test(c.label)),
+        `K1 F1 '${message}' (금각사 is not at dinner): asks with day 2 dinner first and 금각사 second, no 'all' (the slot word is not dropped)`, short({ edit: j.edit, reply: j.reply }, 500));
+    }
+    for (const [message, lang] of [['I can skip lunch for Kinkaku-ji', 'en'], ['skip breakfast for Kinkaku-ji', 'en'], ['금각사 위해 점심 빼', 'ko']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      log(!opsOf(j.edit).length && (j.mode !== 'edit' || j.edit.status === 'none'), `K1 F4 '${message}' (no such meal on the 금각사 day) changes nothing and offers nothing about 금각사`, short({ edit: j.edit, reply: j.reply }, 300));
+    }
+    const kinkaku7 = (await chat('금각사를 저녁 7시로', IT)).json || {};
+    log(same(confirmOps(kinkaku7), [{ op: 'time', day: 2, block: EDIT_KINKAKU_D2, start: '19:00' }]), "K1 '금각사를 저녁 7시로' (금각사 is the object) still asks to move 금각사 to 19:00", short(kinkaku7.edit, 300));
+    // (F7) 들르다·가다 뜻의 구동사는 빼기가 아니다. 'drop/skip/take off X'는 그대로 빼기(확인).
+    for (const [message, lang] of [['drop by Kinkaku-ji', 'en'], ['I want to drop by Kinkaku-ji', 'en'], ['drop into Kinkaku-ji', 'en'], ['drop in at Gion Uoshin', 'en'],
+      ['drop me at Kinkaku-ji', 'en'], ['skip to Kinkaku-ji on day 2', 'en'], ["let's take off for Kinkaku-ji in the afternoon", 'en']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      log(!opsOf(j.edit).some((o) => o.op === 'remove'), `K1 F7 '${message}' (visit, not remove) never offers a removal`, short({ mode: j.mode, edit: j.edit }, 300));
+    }
+    // (F8) 'Xでやめて'(X에서 끝내기)는 빼기가 아니다. 'Xは/をやめて'는 빼기(확인).
+    for (const message of ['金閣寺でやめて', '2日目は金閣寺でやめて', '金閣寺でやめてください']) {
+      const j = (await chat(message, IT, 'ja')).json || {};
+      log(!opsOf(j.edit).some((o) => o.op === 'remove'), `K1 F8 '${message}' (stop at 金閣寺) never offers to remove 金閣寺`, short({ mode: j.mode, edit: j.edit }, 300));
+    }
+    for (const [message, lang] of [['drop Kinkaku-ji', 'en'], ['skip Kinkaku-ji', 'en'], ['take off Kinkaku-ji', 'en'], ['金閣寺はやめて', 'ja'], ['金閣寺をやめて', 'ja'], ['2日目の金閣寺をやめて', 'ja']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      log(same(confirmOps(j), [{ op: 'remove', day: 2, block: EDIT_KINKAKU_D2 }]), `K1 F7/F8 control '${message}' is still a removal (asked to confirm)`, short(j.edit, 300));
+    }
+    // (F2) 끝에 ?가 붙은 답은 승낙이 아니다: 고르지 않고 선택지를 그대로 둔다. 부탁('…해 줄래?')·물음표 없는 답은 지금처럼 고른다.
+    for (const [message, lang, choices] of [['네?', 'ko', confirmPend], ['응?', 'ko', confirmPend], ['ok?', 'en', confirmPendEn], ['you sure?', 'en', confirmPendEn],
+      ['はい？', 'ja', confirmPendJa], ['ええ？', 'ja', confirmPendJa], ['다?', 'ko', dupPend], ['둘 다?', 'ko', dupPend], ['全部？', 'ja', dupPend], ['both?', 'en', dupPend], ['the second?', 'en', dupPend]]) {
+      const r = (await answer(message, choices, lang, choices === dupPend ? dupIt : IT)).json || {};
+      log(r.mode === 'edit' && r.edit?.status === 'pick' && same(r.edit.picks, []) && !r.parsed, `K1 F2 typed '${message}' (ends with ?) picks nothing; the choices stay open`, short({ edit: r.edit, reply: r.reply }, 300));
+    }
+    const yesJa = (await answer('はい', confirmPendJa, 'ja')).json || {};
+    const politeQ = (await answer('2일째로 해 줄래?')).json || {};
+    log(same(yesJa.edit?.picks, [0]) && same(politeQ.edit?.picks, [1]), "K1 F2 controls: 'はい' picks [この内容で変更]; a polite request '2일째로 해 줄래?' still picks day 2", short({ a: yesJa.edit, b: politeQ.edit }));
+    // (F5) 'A 말고 다'·'Aじゃなくて全部': [모두]를 고르지 않고 A를 뺀 나머지로 좁힌다(하나면 그것, 여럿이면 그것만 다시 보여 준다). A를 모르면 그대로.
+    for (const [message, lang, picks] of [['2일째 말고 다', 'ko', [1]], ['2일째 거 말고 전부', 'ko', [1]], ['첫번째 말고 다', 'ko', [1]], ['3일째 말고 모두', 'ko', [0]],
+      ['2日目じゃなくて全部', 'ja', [1]], ['그거 말고 다', 'ko', []]]) {
+      const r = (await answer(message, dupPend, lang, dupIt)).json || {};
+      log(r.mode === 'edit' && r.edit?.status === 'pick' && same(r.edit.picks, picks) && !(r.edit.picks || []).includes(2), `K1 F5 typed '${message}' picks ${JSON.stringify(picks)} (never 'all')`, short({ edit: r.edit, reply: r.reply }, 300));
+    }
+    const IT3 = editKyotoItinerary(['저녁(18:00-20:00): 교토 이자카야 찾기 (기온 주변)']);
+    const dinners = (await chat('저녁 빼줘', IT3)).json || {};
+    const dinPend = (dinners.edit?.choices || []).map((c) => ({ label: c.label, kinds: c.cancel ? ['cancel'] : [...new Set(c.ops.map((o) => o.op))] }));
+    const notDay1 = (await answer('1일째 말고 다', dinPend, 'ko', IT3)).json || {};
+    log(dinPend.length === 4 && same(notDay1.edit?.picks, [1, 2]) && /2개/.test(String(notDay1.reply || '')),
+      "K1 F5 '1일째 말고 다' on 3 dinners narrows to the other two (shown again, nothing applied), not 'all'", short({ pend: dinPend.map((c) => c.label), edit: notDay1.edit }, 400));
+    // (R1) 넣거나 바꿀 것이 종류·음식 낱말이면 편집이 아니라 예전처럼 다시 만들기(조건 해석). 후보 장소 이름 속 음식 낱말은 그대로 편집.
+    for (const [message, lang] of [['라멘 맛집 넣어줘', 'ko'], ['2일째 점심에 라멘 넣어줘', 'ko'], ['금각사 근처 맛집 추가해줘', 'ko'], ['카페 하나 넣어줘', 'ko'], ['쇼핑 넣어줘', 'ko'],
+      ['온천 넣어줘', 'ko'], ['add a ramen place', 'en'], ['add an onsen', 'en'], ['ラーメン屋を追加して', 'ja'], ['3日目の夕食に寿司を入れて', 'ja'], ['買い物を入れて', 'ja']]) {
+      const r = await chat(message, IT, lang);
+      log(r.status === 200 && !r.json?.mode && r.json?.parsed?.cityKey && !r.json?.edit, `K1 R1 category/food request '${message}' is regenerated with conditions as before (not an edit)`, short({ mode: r.json?.mode, edit: r.json?.edit, reply: r.json?.reply }, 300));
+    }
+    const tokyoIt = { lang: 'ko', cityKey: 'tokyo', routeCities: ['도쿄'], days: [
+      { day: 1, date: futureDate(30), blocks: ['오전(09:00-11:00): 센소지 (아사쿠사)', '저녁(18:00-20:00): 스시다이 (츠키지)'] },
+      { day: 2, date: futureDate(31), blocks: ['오후(13:00-15:00): 메이지 신궁 (하라주쿠)'] }] };
+    const afuri = (await chat('2일째 점심에 아후리 라멘 넣어줘', tokyoIt)).json || {};
+    const afuriOps = confirmOps(afuri) || [];
+    log(afuriOps.length === 1 && afuriOps[0].op === 'add' && afuriOps[0].day === 2 && afuriOps[0].slot === 'lunch' && afuriOps[0].name === '아후리 라멘' && afuriOps[0].kind === 'food',
+      "K1 R1 control: '2일째 점심에 아후리 라멘 넣어줘' (a real candidate whose name has '라멘') is still an edit (asked to confirm)", short(afuri.edit, 300));
+    // (R4) 일본어 이름 추출: 칸 뒤 조사(に)를 이름에 붙이지 않고, 昼는 점심 칸
+    const akiba = (await chat('3日目の午後に秋葉原を入れて', IT, 'ja')).json || {};
+    const museum = (await chat('3日目の午後に国立博物館を入れて', IT, 'ja')).json || {};
+    const museumOps = confirmOps(museum) || [];
+    const hiru = (await chat('1日目の昼を12時半に', IT, 'ja')).json || {};
+    log(String(akiba.reply || '').includes('「秋葉原」') && !/「に|「の/.test(String(akiba.reply || ''))
+      && museumOps.length === 1 && museumOps[0].op === 'add' && museumOps[0].day === 3 && /국립박물관/.test(museumOps[0].name)
+      && same(confirmOps(hiru), [{ op: 'time', day: 1, block: '점심(12:00-13:00): 오멘 긴카쿠지 (사쿄구)', start: '12:30' }]),
+      "K1 R4 '3日目の午後に秋葉原を入れて' names 「秋葉原」 (not 「に秋葉原」), '…国立博物館を入れて' finds 京都国立博物館, '1日目の昼を12時半に' is the lunch slot", short({ akiba: akiba.reply, museum: museum.edit, hiru: hiru.edit }, 500));
+    // ── 검토 K1c 회귀(막는 문제 1~4·사소한 의견) ──
+    // (1) '모두' 선택지는 all: true로 온다(화면이 좁힐 때 원래 '모두'를 다시 보이지 않는다). 좁힌 줄만 다음 답에 보내면
+    // '둘 다'·'다'·'both'·'両方'은 그 줄의 새 '모두(2곳)'를, '첫 번째'·'1번'·'the first one'·'最初の'은 그 줄의 첫째(뺀 1일차가 아니다)를 고른다.
+    const twoRm = (await chat('기요미즈데라랑 금각사 빼줘', IT)).json || {};
+    log(same((dinners.edit?.choices || []).filter((c) => c.all === true).map((c) => c.label), ['모두(3곳)'])
+      && same((twoRm.edit?.choices || []).filter((c) => c.all === true).map((c) => c.label), ['모두(2곳)']) && (twoRm.edit?.choices || []).filter((c) => c.all).length === 1,
+      "K1c 'all' choices carry all: true (the slot ask and the confirm with several changes)", short({ a: dinners.edit?.choices?.map((c) => [c.label, c.all]), b: twoRm.edit?.choices?.map((c) => [c.label, c.all]) }, 400));
+    const shownRow = [dinPend[1], dinPend[2], { label: '모두(2곳)', kinds: ['remove'] }];
+    for (const [message, lang, picks] of [['둘 다', 'ko', [2]], ['다', 'ko', [2]], ['모두', 'ko', [2]], ['both', 'en', [2]], ['両方', 'ja', [2]],
+      ['첫 번째', 'ko', [0]], ['1번', 'ko', [0]], ['the first one', 'en', [0]], ['最初の', 'ja', [0]], ['마지막', 'ko', [1]]]) {
+      const r = (await answer(message, shownRow, lang, IT3)).json || {};
+      log(r.mode === 'edit' && r.edit?.status === 'pick' && same(r.edit.picks, picks) && !r.parsed,
+        `K1c after narrowing to day 2·3 (only that row is sent), '${message}' picks ${JSON.stringify(picks)} of that row (never the day 1 dinner or the old 'all')`, short({ edit: r.edit, reply: r.reply }, 300));
+    }
+    // (3) ? 뒤에 다른 부호·자모가 붙어도('네?!'·'응?…'·'네?;;'·'네?ㅠ'·'yes?!'·'ok?.'·'はい？！'·'ええ？。'·'다?!'·'둘째 날?!') 되묻는 말이다: 고르지 않는다
+    for (const [message, lang, choices] of [['네?!', 'ko', confirmPend], ['응?…', 'ko', confirmPend], ['네?;;', 'ko', confirmPend], ['네?ㅠ', 'ko', confirmPend], ['그래?!', 'ko', confirmPend],
+      ['yes?!', 'en', confirmPendEn], ['ok?.', 'en', confirmPendEn], ['はい？！', 'ja', confirmPendJa], ['ええ？。', 'ja', confirmPendJa],
+      ['다?!', 'ko', dupPend], ['둘 다?!', 'ko', dupPend], ['全部？！', 'ja', dupPend], ['both?!', 'en', dupPend], ['둘째 날?!', 'ko', dupPend]]) {
+      const r = (await answer(message, choices, lang, choices === dupPend ? dupIt : IT)).json || {};
+      log(r.mode === 'edit' && r.edit?.status === 'pick' && same(r.edit.picks, []) && !r.parsed, `K1c typed '${message}' (a question mark followed by other marks) picks nothing; the choices stay open`, short({ edit: r.edit, reply: r.reply }, 300));
+    }
+    // (4) 'X 빼고 … 다 빼줘'·'except X'·'X以外'·'Xを除いて'·'X는 두고 … 다 빼줘'는 X를 남기라는 말이다: X를 빼는 선택지는 없고, 범위의 나머지를 하나씩(빼기만) 묻는다
+    const touchesKin = (j) => opsOf(j.edit).some((o) => String(o.block || '').includes('금각사'));
+    for (const [message, lang, n] of [['금각사 빼고 오후 일정 다 빼줘', 'ko', 2], ['2일째는 금각사 빼고 다 빼줘', 'ko', 2], ['금각사 제외하고 2일째 다 빼줘', 'ko', 2], ['금각사 외에 2일째 다 빼줘', 'ko', 2],
+      ['금각사 빼고 다른 오후 일정은 빼줘', 'ko', 2], ['금각사는 두고 2일째 다 빼줘', 'ko', 2], ['remove day 2 except Kinkaku-ji', 'en', 2], ['drop everything on day 2 but Kinkaku-ji', 'en', 2],
+      ['remove day 2 but keep Kinkaku-ji', 'en', 2], ['apart from Kinkaku-ji, remove day 2', 'en', 2], ['金閣寺以外の2日目を外して', 'ja', 2], ['金閣寺を除いて2日目を外して', 'ja', 2]]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      const rows = (j.edit?.choices || []).filter((c) => !c.cancel && !c.all);
+      log(j.mode === 'edit' && j.edit?.status === 'ask' && j.edit.confirm === true && !touchesKin(j) && rows.length === n && opsOf(j.edit).every((o) => o.op === 'remove')
+        && (j.edit.choices || []).some((c) => c.cancel === true) && !String(j.reply || '').includes("'고"),
+        `K1c '${message}' (keep 금각사) never offers to remove 금각사; asks about the other ${n} items one by one`, short({ reply: j.reply, choices: (j.edit?.choices || []).map((c) => c.label) }, 500));
+    }
+    const exceptAll = (await chat('기요미즈데라 빼고 다 빼', IT)).json || {};
+    log(exceptAll.mode === 'edit' && exceptAll.edit?.status === 'none' && !opsOf(exceptAll.edit).length && String(exceptAll.reply || '').includes('날이나 시간대'),
+      "K1c '기요미즈데라 빼고 다 빼' (no day or slot) removes nothing and asks for the day or time of day", short({ edit: exceptAll.edit, reply: exceptAll.reply }, 300));
+    for (const [message, lang] of [['기온 우오신 빼고 전부', 'ko'], ['1일째 빼고 다', 'ko'], ['1일째 제외하고 모두', 'ko'], ['1일째 거 빼고 나머지', 'ko'], ['all except day 1', 'en'], ['all but day 1', 'en'], ['1日目以外全部', 'ja'], ['1日目を除いて全部', 'ja']]) {
+      const r = (await answer(message, dinPend, lang, IT3)).json || {};
+      log(r.mode === 'edit' && r.edit?.status === 'pick' && same(r.edit.picks, [1, 2]) && !r.parsed,
+        `K1c typed '${message}' to the 3 dinners narrows to day 2·3 (the day 1 dinner is kept; never 'all')`, short({ edit: r.edit, reply: r.reply }, 300));
+    }
+    const rmDay2 = (await answer('2일째 빼', dinPend, 'ko', IT3)).json || {};
+    log(same(rmDay2.edit?.picks, [1]), "K1c control: '2일째 빼' (no 'all' word) still picks the day 2 dinner", short(rmDay2.edit));
+    // (2) 넣거나 바꿀 '대상'만 종류 낱말인지 본다: 후보 장소 + 목적·때·다른 절의 종류 낱말은 그 장소 넣기·바꾸기 확인이다. 대상이 종류 낱말이면 다시 만들기 + editRegen 'category'.
+    for (const [message, lang, op] of [['3일째 저녁 야경 보러 은각사 넣어줘', 'ko', 'add'], ['카페 들르기 전에 3일째 오전 은각사 넣어줘', 'ko', 'add'], ['기념품 사게 3일째에 은각사 넣어줘', 'ko', 'add'],
+      ['3일째 오전에 은각사 넣어줘 근처 맛집도 있으니까', 'ko', 'add'], ['3일째 오전 니조성 대신 은각사, 라멘 말고', 'ko', 'replace'], ['add Ginkaku-ji to day 3 for the night view', 'en', 'add'],
+      ['add Ginkaku-ji on day 3, I want souvenirs', 'en', 'add'], ['夜景を見に3日目に銀閣寺を入れて', 'ja', 'add'], ['お土産を買いたいので3日目に銀閣寺を入れて', 'ja', 'add']]) {
+      const j = (await chat(message, IT, lang)).json || {};
+      const ops = confirmOps(j) || [];
+      log(ops.length === 1 && ops[0].op === op && ops[0].day === 3 && ops[0].name === '은각사' && !j.parsed && !j.editRegen,
+        `K1c '${message}' (a real candidate; the food/shopping/view word is a purpose or another clause) asks to ${op} 은각사, not a whole new plan`, short({ mode: j.mode, edit: j.edit, reply: j.reply }, 400));
+    }
+    for (const [message, lang] of [['라멘 넣어줘', 'ko'], ['금각사 근처 맛집 추가해줘', 'ko'], ['3일째 저녁은 스시로 바꿔줘', 'ko'], ['add a ramen place near Kinkaku-ji', 'en'], ['銀閣寺の近くのカフェを追加して', 'ja']]) {
+      const r = await chat(message, IT, lang);
+      log(r.status === 200 && !r.json?.mode && r.json?.parsed?.cityKey && r.json?.editRegen === 'category', `K1c '${message}' (the thing to add is a kind of food/place) is regenerated as before and marked editRegen 'category' (the app asks first)`, short({ mode: r.json?.mode, editRegen: r.json?.editRegen }, 300));
+    }
+    const tripRegen = await chat('하루 더 늘려줘', IT);
+    const noItRegen = await chat('라멘 넣어줘', undefined);
+    log(!tripRegen.json?.mode && tripRegen.json?.editRegen === undefined && !noItRegen.json?.mode && noItRegen.json?.editRegen === undefined,
+      "K1c editRegen is only for a kind-of-place add with a plan open ('하루 더 늘려줘' and a first request without a plan have none)", short({ a: tripRegen.json?.editRegen, b: noItRegen.json?.editRegen }));
+    // (사소한 의견) 되묻는 문장은 할 일을 밝히고 개수는 보이는 선택지 수다. 이미 그 칸인 장소를 '오전 금각사를 오후로'처럼 말하면 말하지 않은 일정을 묻지 않는다.
+    const pmMove = (await chat('오후 일정 3일째로 옮겨줘', IT)).json || {};
+    const amKin = (await chat('오전 금각사를 오후로 옮겨줘', IT)).json || {};
+    log(pmMove.edit?.status === 'ask' && (pmMove.edit.choices || []).filter((c) => !c.cancel).length === 2 && /2개예요\. 어느 것을 옮길까요\?/.test(String(pmMove.edit.question || ''))
+      && /어느 것을 뺄까요\?/.test(String(dinners.edit?.question || '')) && amKin.mode === 'edit' && amKin.edit?.status === 'none' && !opsOf(amKin.edit).length && /이미 그 칸에 있어요/.test(String(amKin.reply || '')),
+      "K1c the ask says the action and counts the shown choices ('2개예요. 어느 것을 옮길까요?'); '오전 금각사를 오후로 옮겨줘' (already afternoon) says so instead of offering another block", short({ q: pmMove.edit?.question, d: dinners.edit?.question, am: amKin.reply }, 400));
+    // 맞장구·인사만('고마워'·'ok thanks'·'ありがとう')은 일정을 다시 만들지 않는다(편집 none, Gemini 0회)
+    for (const [message, lang] of [['고마워', 'ko'], ['네', 'ko'], ['ok thanks', 'en'], ['ありがとうございます', 'ja']]) {
+      const g0 = gemCalls();
+      const r = await chat(message, IT, lang);
+      log(r.json?.mode === 'edit' && r.json.edit?.status === 'none' && !r.json.parsed && gemCalls() === g0 && Boolean(r.json.reply),
+        `K1c '${message}' with a plan open and no choices is not a new plan request (nothing regenerated, no Gemini call)`, short({ mode: r.json?.mode, edit: r.json?.edit, reply: r.json?.reply }, 300));
+    }
+    log(editStatuses.length > 60 && !editStatuses.includes('apply'), `K1 never applies at once: none of the ${editStatuses.length} edit answers in this phase has status 'apply'`, short([...new Set(editStatuses)]));
+    // 끝에서 끝까지: 이 서버(Gemini 키 있음)의 실제 편집 응답을 화면(app.js 샌드박스)이 받아 그 칸만 바꾼다. Gemini 0회, 화면의 서버 호출은 채팅 1회.
+    const E2E_MSG = '2일째 오후 금각사 빼고 은각사 넣어줘';
+    const gE2e = gemCalls();
+    const real = await chat(E2E_MSG, IT);
+    const planBody = {
+      ...samplePlanResponse(), city: '교토', recommendations: [],
+      recommendedFoods: [{ name: '오멘 긴카쿠지', city: '교토', area: '사쿄구', genre: '우동' }, { name: '기온 우오신', city: '교토', area: '기온', genre: '가이세키' }],
+      itinerary: IT.days.map((d) => ({ day: d.day, date: d.date, blocks: d.blocks.slice() }))
+    };
+    const sbx = createBrowser({ html: read('public/index.html'), fetchRoutes: sandboxRoutes({ '/api/travel-plan': { body: planBody }, '/api/ai-travel-chat': { body: real.json } }), location: BASE + '/' });
+    await sbx.boot(read('public/app.js'), 'public/app.js');
+    sbx.element('city').value = 'kyoto';
+    sbx.element('btnPlan').click();
+    await sbx.settle(20000);
+    const sent0 = sbx.env.fetchCalls.length;
+    sbx.element('aiRequest').value = E2E_MSG;
+    sbx.element('btnPlan').click();
+    await sbx.settle(20000);
+    const chatSent = JSON.parse(sbx.env.fetchCalls.filter((c) => c.path === '/api/ai-travel-chat').pop()?.body || '{}');
+    const day2Of = () => JSON.parse(String(sbx.run('JSON.stringify(findItineraryDay(2).blocks)')));
+    // 설계 변경(K1 '항상 확인 후 적용'): 서버는 '이렇게 바꿀까요?'로 답하고, 화면은 [이대로 바꾸기]를 눌렀을 때만 바꾼다
+    const day2Asked = day2Of();
+    const applyLabel = String(sbx.run(`((chatEditChoiceSets[chatEditPendingId] || { choices: [] }).choices[0] || {}).label || ''`));
+    sbx.run(`document.querySelector('[data-chat-choice][data-choice-index="0"]').click()`);
+    const sbxCalls = sbx.env.fetchCalls.slice(sent0).map((c) => c.path);
+    const day2 = day2Of();
+    log(real.json?.mode === 'edit' && confirmOps(real.json) && gemCalls() === gE2e && same(chatSent.itinerary?.days?.map((d) => d.blocks), IT.days.map((d) => d.blocks))
+      && day2Asked.includes(EDIT_KINKAKU_D2) && applyLabel === '이대로 바꾸기'
+      && same(sbxCalls, ['/api/ai-travel-chat']) && day2.includes('오후(14:00-15:30): 은각사 (사쿄구)') && !day2.some((b) => b.includes('금각사'))
+      && sbx.env.errors.concat(sbx.unhandled).length === 0,
+      "end to end: the app sends its plan, this server asks '이렇게 바꿀까요?' with no Gemini call, nothing changes until [이대로 바꾸기], then only day 2 afternoon is replaced (금각사 -> 은각사, same time); one server call",
+      short({ calls: sbxCalls, day2Asked, day2, gem: gemCalls() - gE2e, errs: sbx.env.errors.concat(sbx.unhandled) }, 600));
+    // 검토 R2: 편집으로 답한 같은 글로 [일정 만들기]를 다시 누르면 일정 전체를 다시 만들지 않고(travel-plan 0회) 채팅으로 다시 보낸다(다시 확인을 묻는다)
+    const countOf = (p) => sbx.env.fetchCalls.filter((c) => c.path === p).length;
+    const plansR2 = countOf('/api/travel-plan');
+    const chatsR2 = countOf('/api/ai-travel-chat');
+    sbx.element('btnPlan').click();
+    await sbx.settle(20000);
+    const openR2 = Number(sbx.run(`Array.prototype.filter.call(document.querySelectorAll('[data-chat-choice]'), function (b) { return !b.disabled; }).length`));
+    log(countOf('/api/travel-plan') === plansR2 && countOf('/api/ai-travel-chat') === chatsR2 + 1 && openR2 === 2 && sbx.env.errors.concat(sbx.unhandled).length === 0,
+      'R2: pressing the main button again with the same edit text sends it to the chat again (asks to confirm again); the plan is not regenerated (0 travel-plan calls)',
+      short({ plans: countOf('/api/travel-plan') - plansR2, chats: countOf('/api/ai-travel-chat') - chatsR2, openR2 }));
+  } catch (e) { log(false, 'chat itinerary edit (rules)', e.stack || e.message); }
+  checkNoSecrets('chat itinerary edit (rules)', [GEM]);
+  checkNoUnexpectedExternal('chat itinerary edit (rules)');
+  checkNoFatal('chat itinerary edit (rules)');
+
+  // (2) Groq(OpenAI 호환) + Gemini: 편집 해석은 Groq만, Gemini 0회. Groq가 고른 장소도 후보 확인(규칙 6), Groq 실패 → 규칙.
+  const oa = () => mock.entries('openai');
+  const editOps = () => oa().filter((x) => x.isEdit);
+  const aiOp = (o) => ({ action: '', day: 0, slot: '', place: '', newPlace: '', toDay: 0, toSlot: '', time: '', ...o });
+  mock.reset({ gemini: 'chat_ok', openai: 'ok' });
+  try {
+    await startServer('edit-groq', { GEMINI_API_KEY: GEM, GROQ_API_KEY: GSK, OPENAI_BASE_URL: 'https://api.groq.com/openai/v1', AI_CHAT_PROVIDER_ORDER: 'openai,gemini', TRUST_PROXY: '1' });
+    // (a) 규칙으로는 '그 절'을 모른다 → Groq가 금각사로 알아듣고 빼기
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'remove', day: 2, slot: 'afternoon', place: '금각사' })] } });
+    const a = (await chat('둘째 날 오후에 있는 그 절은 빼 줘', IT)).json || {};
+    const ea = editOps()[0];
+    log(same(confirmOps(a), [{ op: 'remove', day: 2, block: EDIT_KINKAKU_D2 }]) && a.source === 'openai_edit_parser_v1'
+      && a.sourceInfo?.kind === 'ai' && a.sourceInfo?.provider === 'openai' && oa().length === 1 && editOps().length === 1 && gemCalls() === 0,
+      "Groq edit: '둘째 날 오후에 있는 그 절은 빼 줘' -> Groq resolves 'that temple' to 금각사 -> asks to confirm the removal; one Groq call, no Gemini call", short({ edit: a.edit, src: a.sourceInfo, oa: oa().length, gem: gemCalls() }, 500));
+    log(Boolean(ea) && ea.host === 'api.groq.com' && ea.headers.authorization === `Bearer ${GSK}` && ea.body?.text?.format?.name === 'itinerary_edit' && ea.body?.text?.format?.strict === true
+      && JSON.stringify(ea.body?.input || []).includes('Day 2 (Kyoto): morning 09:00-10:30 아라시야마 대나무숲 | afternoon 14:00-15:30 금각사'),
+      'Groq edit request: api.groq.com with the Groq key, strict json_schema itinerary_edit, the itinerary as one line per day', short(ea && { host: ea.host, format: ea.body?.text?.format?.name }));
+    // (b) Groq가 지어낸 장소 → 넣지 않는다(규칙 6)
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'add', day: 3, slot: 'morning', newPlace: '호그와트 성' })] } });
+    const b = (await chat('3일째 오전에 호그와트 성 넣어줘', IT)).json || {};
+    log(b.mode === 'edit' && b.edit?.status !== 'apply' && !opsOf(b.edit).some((o) => /호그와트/.test(String(o.name || ''))) && opsOf(b.edit).every((o) => KYOTO_NAMES.has(o.name)) && gemCalls() === 0,
+      'rule 6 with Groq: a place Groq returns that is not a Kyoto candidate is never added (only real candidates are offered)', short(b.edit, 400));
+    // (c) Groq가 말에 없는 실제 후보(은각사)를 고르면 바로 넣지 않고 넣을지 묻는다
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'add', day: 3, slot: 'morning', newPlace: '은각사' })] } });
+    const c = (await chat('3일째 오전에 조용한 절 하나 넣어줘', IT)).json || {};
+    log(c.mode === 'edit' && c.edit?.status === 'ask' && !c.edit.ops && c.edit.choices?.[0]?.ops?.[0]?.name === '은각사' && c.edit.choices[0].ops[0].day === 3 && String(c.reply || '').includes('은각사'),
+      'a candidate Groq picked that the traveler did not name (은각사) is offered as the first choice, not applied', short(c.edit, 400));
+    // (d) Groq가 '다시 만들기'로 보면 지금처럼 조건 해석(Groq) → 다시 만들기. Gemini 0회.
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'regenerate', ops: [] } });
+    const d = (await chat('2일째 오후 금각사 빼줘', IT)).json || {};
+    log(!d.mode && d.parsed && d.source === 'openai_chat_parser_v1' && oa().length === 2 && oa()[0].isEdit === true && !oa()[1].isEdit && gemCalls() === 0,
+      "Groq says 'regenerate' -> the normal chat parse (Groq) runs and the plan is regenerated as before; no Gemini call", short({ mode: d.mode, src: d.source, calls: oa().map((x) => x.isEdit) }));
+    // (e) Groq 한도(429) → 규칙 해석으로 같은 편집, 출처는 규칙(AI_BUSY). Gemini로 넘어가지 않는다.
+    mock.reset({ gemini: 'chat_ok', openai: 'error429' });
+    const e = (await chat('2일째 오후 금각사 빼줘', IT)).json || {};
+    log(same(confirmOps(e), [{ op: 'remove', day: 2, block: EDIT_KINKAKU_D2 }]) && e.sourceInfo?.kind === 'rule' && e.sourceInfo?.reasonCode === 'AI_BUSY'
+      && editOps().length >= 1 && gemCalls() === 0 && (e.aiErrors || []).some((x) => x.provider === 'Groq'),
+      'Groq rate limit (429) -> the rule interpreter makes the same edit (sourceInfo rule / AI_BUSY); Gemini is not used', short({ edit: e.edit, src: e.sourceInfo, gem: gemCalls() }, 400));
+    // (f) 여행 전체가 바뀌는 말은 편집 해석(Groq)을 부르지 않는다
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'remove', day: 2, place: '금각사' })] } });
+    const f = (await chat('하루 더 늘려줘', IT)).json || {};
+    log(!f.mode && f.parsed && editOps().length === 0, "'하루 더 늘려줘' never calls the edit interpreter (rules see a trip-length change first)", short({ mode: f.mode, editCalls: editOps().length }));
+    // (g) 부정·그대로 두기가 든 말은 Groq 편집 해석을 부르지 않고 규칙으로 한다(Groq가 부정을 놓쳐 남기라는 장소를 지우지 않게).
+    // 되묻기에 글로 한 답도 Groq·Gemini 0회.
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'remove', day: 2, place: '금각사' }), aiOp({ action: 'add', day: 3, newPlace: '은각사' })] } });
+    const g = (await chat('금각사는 빼지 말고 3일째에 은각사 넣어줘', IT)).json || {};
+    const gOps = confirmOps(g) || [];
+    log(gOps.length === 1 && gOps[0].op === 'add' && gOps[0].name === '은각사' && g.sourceInfo?.kind === 'rule'
+      && editOps().length === 0 && gemCalls() === 0,
+      "with Groq: '금각사는 빼지 말고 3일째에 은각사 넣어줘' uses the rules (no Groq edit call), keeps 금각사 and adds only 은각사", short({ edit: g.edit, src: g.sourceInfo, editCalls: editOps().length }, 400));
+    // (h) K1 재검토: Groq가 낸 빼기·바꾸기라도 단순한 명령이 아니면(그대로 두기·조건·질문·맞바꾸기·장소 여럿) 바로 적용하지 않고 확인한다
+    for (const [message, ops] of [
+      ['금각사는 괜찮아, 니조성 빼줘', [aiOp({ action: 'remove', day: 2, place: '금각사' }), aiOp({ action: 'remove', day: 3, place: '니조성' })]],
+      ['금각사 다음 일정 빼줘', [aiOp({ action: 'remove', day: 2, place: '금각사' })]],
+      ['2일째 철도박물관 빼줘', [aiOp({ action: 'remove', day: 2, place: '금각사' })]],
+      ['비 오면 금각사 빼줘', [aiOp({ action: 'remove', day: 2, place: '금각사' })]],
+      ['금각사 빼면 어떻게 돼?', [aiOp({ action: 'remove', day: 2, place: '금각사' })]],
+      ['금각사랑 니조성 순서 바꿔줘', [aiOp({ action: 'replace', day: 2, place: '금각사', newPlace: '니조성' })]]
+    ]) {
+      mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops } });
+      const j = (await chat(message, IT)).json || {};
+      log(j.mode === 'edit' && j.edit?.status === 'ask' && j.edit.confirm === true && !j.edit.ops && j.source === 'openai_edit_parser_v1' && editOps().length === 1 && gemCalls() === 0
+        && (j.edit.choices || []).some((c) => c.cancel === true),
+        `with Groq: '${message}' (Groq returned ${ops.map((o) => o.action).join('+')}) is not applied at once; asks to confirm (one Groq call, no Gemini)`, short({ edit: j.edit, src: j.source }, 500));
+    }
+    // (F6) Groq가 낸 'HH:MM'도 규칙 시각과 같이 검사한다: 말 속 시각(오전·오후 표시 포함)이 있으면 그것을 쓰고, 없으면 칸에 맞춰 오후로 보정,
+    // 5시 전·저녁 12시는 넣지 않고 시각을 다시 묻는다. 어느 쪽이든 바로 적용하지 않고 확인한다.
+    for (const [message, op, want] of [
+      ['2일째 저녁 7시로', aiOp({ action: 'time', day: 2, slot: 'dinner', time: '07:00' }), '19:00'],
+      ['금각사 3시로 해줘', aiOp({ action: 'time', place: '금각사', time: '03:00' }), '15:00'],
+      ['금각사 오후 3시로', aiOp({ action: 'time', place: '금각사', time: '03:00' }), '15:00'],
+      ['금각사 시간 바꿔줘', aiOp({ action: 'time', place: '금각사', time: '03:00' }), '15:00'],
+      ['금각사 시간 바꿔줘', aiOp({ action: 'time', place: '금각사', time: '16:30' }), '16:30'],
+      ['2일째 저녁 0시로', aiOp({ action: 'time', day: 2, slot: 'dinner', time: '00:00' }), null],
+      ['금각사 시간 바꿔줘', aiOp({ action: 'time', place: '금각사', time: '00:30' }), null]
+    ]) {
+      mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [op] } });
+      const j = (await chat(message, IT)).json || {};
+      const ops = confirmOps(j) || [];
+      const ok = want ? ops.length === 1 && ops[0].op === 'time' && ops[0].start === want : j.mode === 'edit' && j.edit?.status === 'none' && !opsOf(j.edit).length && String(j.reply || '').includes('7시');
+      log(ok && j.source === 'openai_edit_parser_v1' && gemCalls() === 0, `with Groq (F6): '${message}' + Groq time ${op.time} -> ${want ? 'asks to confirm ' + want : 'asks for a clearer time (nothing offered)'}`, short({ edit: j.edit, reply: j.reply }, 400));
+    }
+    // (F1) 장소와 칸이 안 맞는 말은 Groq에 맡기지 않고 규칙으로 그 칸 일정과 장소를 묻는다(Groq가 '금각사 빼기'로만 읽어도 확인 문구가 말과 달라지지 않게)
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'remove', place: '금각사' })] } });
+    const f1g = (await chat('금각사 저녁 빼줘', IT)).json || {};
+    const f1gCh = (f1g.edit?.choices || []).filter((c) => !c.cancel);
+    log(f1g.edit?.status === 'ask' && f1gCh.length === 2 && same(f1gCh[0].ops, [{ op: 'remove', day: 2, block: '저녁(18:00-19:30): 오멘 긴카쿠지 (사쿄구)' }])
+      && f1g.sourceInfo?.kind === 'rule' && editOps().length === 0 && gemCalls() === 0,
+      "with Groq (F1): '금각사 저녁 빼줘' is not sent to Groq; the rules ask with day 2 dinner first (Groq's 'remove 금각사' never becomes the confirm)", short({ edit: f1g.edit, src: f1g.sourceInfo, editCalls: editOps().length }, 400));
+    // Groq가 같은 장소를 고치며 말한 일차를 빠뜨리면 말한 일차로 채운다('1일째 금각사 빼줘' + Groq '금각사 빼기' → 1일차에 금각사가 없으니 어느 것인지 묻는다)
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'remove', place: '금각사' })] } });
+    const dayFill = (await chat('1일째 금각사 빼줘', IT)).json || {};
+    log(dayFill.edit?.status === 'ask' && dayFill.edit.confirm !== true && editOps().length === 1 && (dayFill.edit.choices || []).length === 1 && dayFill.source === 'openai_edit_parser_v1',
+      "with Groq: the day the traveler said ('1일째') is kept when Groq leaves it out -> asks which 금각사 (not a plain 'remove 금각사' confirm)", short({ edit: dayFill.edit, src: dayFill.source }, 400));
+    // (검토 K1c 사소한 의견 1) Groq가 말과 다른 동작으로 읽거나('move dinner to 7pm'을 빼기로) 말에 없는 장소를 고르면, 되묻는 문장이 할 일을 밝히고 [취소]를 둔다
+    for (const [message, lang, ops, word] of [
+      ['move dinner to 7pm', 'en', [aiOp({ action: 'remove', slot: 'dinner' })], 'Which one should I remove?'],
+      ['오후 일정 3일째로 옮겨줘', 'ko', [aiOp({ action: 'remove', slot: 'afternoon' })], '어느 것을 뺄까요?'],
+      ['니조성 빼줘', 'ko', [aiOp({ action: 'remove', place: '오멘 긴카쿠지' })], '어느 것을 뺄까요?']
+    ]) {
+      mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops } });
+      const j = (await chat(message, IT, lang)).json || {};
+      log(j.mode === 'edit' && j.edit?.status === 'ask' && j.edit.confirm === true && (j.edit.choices || []).some((c) => c.cancel === true) && String(j.edit.question || '').endsWith(word)
+        && j.source === 'openai_edit_parser_v1' && gemCalls() === 0,
+        `with Groq (K1c): '${message}' read by Groq as ${ops[0].action}${ops[0].place ? ' ' + ops[0].place : ''} -> the question names the action ('${word}') and offers [취소]`, short({ q: j.edit?.question, choices: (j.edit?.choices || []).map((c) => c.label) }, 400));
+    }
+    // 'X 빼고 … 다 빼줘'(남기라는 말)는 Groq를 부르지 않고 규칙으로 묻는다
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'remove', place: '금각사' })] } });
+    const keepExc = (await chat('2일째는 금각사 빼고 다 빼줘', IT)).json || {};
+    log(keepExc.edit?.status === 'ask' && keepExc.sourceInfo?.kind === 'rule' && editOps().length === 0 && !opsOf(keepExc.edit).some((o) => String(o.block || '').includes('금각사')),
+      "with Groq (K1c): '2일째는 금각사 빼고 다 빼줘' is not sent to Groq; the rules never offer to remove 금각사", short({ edit: keepExc.edit, src: keepExc.sourceInfo, editCalls: editOps().length }, 400));
+    log(!editStatuses.includes('apply'), "with Groq: no edit answer has status 'apply' (always confirmed)", short([...new Set(editStatuses)]));
+    // 그대로 두기 동사('두고')가 있으면 Groq를 부르지 않고 규칙으로: 니조성 빼기만 묻는다(금각사를 빼는 선택지는 없다)
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'remove', day: 2, place: '금각사' }), aiOp({ action: 'remove', day: 3, place: '니조성' })] } });
+    const keepRule = (await chat('금각사는 두고 니조성 빼줘', IT)).json || {};
+    log(keepRule.mode === 'edit' && keepRule.edit?.confirm === true && keepRule.sourceInfo?.kind === 'rule' && editOps().length === 0 && gemCalls() === 0
+      && same((keepRule.edit.choices || []).filter((c) => !c.cancel).map((c) => c.ops), [[{ op: 'remove', day: 3, block: '오전(09:00-11:00): 니조성 (니조)' }]]),
+      "with Groq: '금각사는 두고 니조성 빼줘' uses the rules (no Groq call) and asks only about removing 니조성", short({ edit: keepRule.edit, src: keepRule.sourceInfo }, 500));
+    mock.reset({ gemini: 'chat_ok', openai: 'ok', openaiEdit: { kind: 'edit', ops: [aiOp({ action: 'remove', day: 2, place: '금각사' })] } });
+    const pick = await postJson('/api/ai-travel-chat', { message: '2일째', lang: 'ko', context: ctxBody, history: [], prevParsed: null, itinerary: IT,
+      editChoices: [1, 2, 3].map((n) => ({ label: `${n}일차 오전`, kinds: ['add'] })) }, { ip: nextIntentIp() });
+    log(pick.json?.mode === 'edit' && same(pick.json.edit?.picks, [1]) && oa().length === 0 && gemCalls() === 0,
+      "with Groq: a typed answer ('2일째') to open choices is matched without any AI call", short({ edit: pick.json?.edit, oa: oa().length, gem: gemCalls() }));
+  } catch (e) { log(false, 'chat itinerary edit (Groq)', e.stack || e.message); }
+  checkNoSecrets('chat itinerary edit (Groq)', [GEM, GSK]);
+  checkNoUnexpectedExternal('chat itinerary edit (Groq)');
+  checkNoFatal('chat itinerary edit (Groq)');
+}
+
 // ── ホットペッパー 맛집(무료 모드 + HOTPEPPER_API_KEY): 요청 형식, 장르 섞기, 캐시, 일정 추천 맛집, 악성 데이터, 키 오류, 키 없음 ──
 // 서버는 진짜 주소(webservice.recruit.co.jp)를 부르고 net-guard가 가짜 서버로 돌린다.
 async function phaseHotpepper() {
@@ -5386,6 +7171,122 @@ async function phaseHotpepper() {
       'no HOTPEPPER_API_KEY: zero Hot Pepper calls, curated foods as before (sourceInfo curated)', short({ calls: hp().length, src: r.json?.source }));
   } catch (e) { log(false, 'Hot Pepper off', e.stack || e.message); }
   checkNoFatal('Hot Pepper off');
+}
+
+// ── Travelpayouts 손보기(api-review 5번): 가까운 날짜 = 날짜별 최저가(grouped_prices) + 가격순 목록, 응답 통화 확인, 링크 날짜 ──
+async function phaseTravelpayouts() {
+  section('Travelpayouts: grouped_prices for nearby dates, response currency check, Skyscanner/KAYAK link dates');
+  const TPT = 'TPTOKEN-grouped-test-5b7c19';
+  const flights = (body) => postJson('/api/flights', { city: 'tokyo', from: 'ICN', to: 'NRT', preference: 'balanced', ...body }, { ip: nextIntentIp() });
+  const tpCalls = (endpoint) => mock.entries('travelpayouts').filter((e) => e.endpoint === endpoint).map((e) => Object.fromEntries(new URLSearchParams(String(e.query || '').replace(/^\?/, ''))));
+  const depDay = (f) => String(f?.legs?.[0]?.date || '');
+  const D = futureDate(20);
+  const dayDiff = (a, b) => Math.round((Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86400000);
+  mock.reset({ travelpayouts: 'nearby' });
+  try {
+    await startServer('travelpayouts', { TRAVELPAYOUTS_TOKEN: TPT, TRUST_PROXY: '1' });
+    // ① 편도: 정확한 날짜 0건 → 달마다 grouped_prices(날짜별 최저가) + prices_for_dates(가격순 100건)
+    const r1 = await flights({ tripType: 'oneway', departDate: D });
+    const f1 = r1.json?.flights || [];
+    const g1 = tpCalls('grouped_prices');
+    const p1 = tpCalls('prices_for_dates');
+    const months = [...new Set([D, futureDate(13), futureDate(27)].map((d) => d.slice(0, 7)))];
+    log(g1.length >= 1 && g1.every((q) => q.group_by === 'departure_at' && q.currency === 'krw' && q.origin === 'ICN' && q.destination === 'NRT' && /^\d{4}-\d{2}$/.test(q.departure_at) && !('return_at' in q) && q.token === TPT)
+      && g1.every((q) => months.includes(q.departure_at)) && p1.some((q) => q.departure_at === D) && p1.some((q) => /^\d{4}-\d{2}$/.test(q.departure_at) && q.limit === '100'),
+      'one-way, no exact-date price: nearby lookup asks grouped_prices (group_by=departure_at, currency=krw, month, no return_at) and the 100-row price list per month', short({ g1, p1: p1.map((q) => q.departure_at) }, 600));
+    const fromGrouped = f1.filter((f) => f.totalPriceKRW === 175000);
+    const offsets = f1.map((f) => Math.abs(dayDiff(depDay(f), D)));
+    log(r1.status === 200 && r1.json?.source === 'travelpayouts_live' && fromGrouped.length > 0 && fromGrouped.some((f) => depDay(f) === D)
+      && Math.min(...offsets) === 0 && offsets.every((o) => o <= 7) && !f1.some((f) => f.totalPriceKRW === 50000),
+      'nearby result uses the per-date cheapest fares (the requested day itself is found) and drops a round-trip fare mixed into a one-way answer (50,000)', short(f1.map((f) => [depDay(f), f.totalPriceKRW]), 500));
+    log(r1.json?.dateMatch === 'exact' && f1.every((f) => f.nearbyDate === (f.dateOffsetDays > 0)) && f1.some((f) => f.nearbyDate === true) && !r1.json?.note,
+      "a card on the requested date is not marked '다른 날짜' (nearbyDate only when the date differs); a price on the requested day -> dateMatch exact, no 'nearby' note", short({ dm: r1.json?.dateMatch, note: r1.json?.note, f: f1.slice(0, 4).map((f) => [depDay(f), f.nearbyDate, f.dateOffsetDays]) }, 500));
+    // ② 왕복: grouped_prices에 return_at(달)을 같이 보내고, 귀국일이 있는 행만
+    const R = futureDate(23);
+    const r2 = await flights({ tripType: 'roundtrip', departDate: D, returnDate: R });
+    const f2 = r2.json?.flights || [];
+    const g2 = tpCalls('grouped_prices').slice(g1.length);
+    log(r2.status === 200 && g2.length >= 1 && g2.every((q) => /^\d{4}-\d{2}$/.test(q.return_at || '')) && f2.length > 0 && f2.every((f) => (f.legs || []).length === 2)
+      && f2.some((f) => f.totalPriceKRW === 175000 && depDay(f) === D && f.legs[1].date === R),
+      'round trip: grouped_prices gets return_at (month) and the 3-night fare on the requested dates is found', short({ g2, f2: f2.slice(0, 3).map((f) => [depDay(f), f.legs?.[1]?.date, f.totalPriceKRW]) }, 500));
+    // KAYAK·Skyscanner(API 응답의 호환용 링크)도 귀국일까지, Skyscanner 날짜는 YYMMDD
+    const rf = f2.find((f) => depDay(f) === D && f.legs?.[1]?.date === R) || {};
+    const yy = (d) => d.replace(/-/g, '').slice(2);
+    log(rf.deeplinkKayak === `https://www.kayak.co.kr/flights/ICN-NRT/${D}/${R}` && rf.deeplinkSkyscanner === `https://www.skyscanner.co.kr/transport/flights/icn/nrt/${yy(D)}/${yy(R)}/`,
+      'Travelpayouts round-trip result: deeplinkKayak / deeplinkSkyscanner include the return date (Skyscanner YYMMDD)', short({ k: rf.deeplinkKayak, s: rf.deeplinkSkyscanner }));
+
+    // ③ grouped_prices가 실패해도 가격순 목록만으로 계속(오류 없이 200). 30분 캐시에 걸리지 않게 다른 노선(ICN→KIX)
+    mock.reset({ travelpayouts: 'nearby_grouped_error' });
+    const D3 = futureDate(30);
+    const r3 = await flights({ tripType: 'oneway', to: 'KIX', departDate: D3 });
+    const f3 = r3.json?.flights || [];
+    log(r3.status === 200 && tpCalls('grouped_prices').length >= 1 && tpCalls('prices_for_dates').some((q) => /^\d{4}-\d{2}$/.test(q.departure_at))
+      && !f3.some((f) => f.totalPriceKRW === 175000) && (r3.json?.source === 'mock' || f3.every((f) => f.totalPriceKRW === 189000)),
+      'grouped_prices 500 -> the price list alone is used (no crash, no grouped fare)', short({ src: r3.json?.source, f3: f3.map((f) => [depDay(f), f.totalPriceKRW]) }, 400));
+
+    // ④ 응답 통화: usd는 원화로 환산, rub(바꿀 수 없음)는 가격을 쓰지 않고 예시 데이터 + PROVIDER_UNAVAILABLE
+    mock.reset({ travelpayouts: 'usd' });
+    const r4 = await flights({ tripType: 'oneway', departDate: futureDate(33) });
+    const p4 = (r4.json?.flights || []).map((f) => f.totalPriceKRW);
+    log(r4.json?.source === 'travelpayouts_live' && p4.length > 0 && p4.every((p) => p >= 150 * 800 && p <= 150 * 2500) && /응답 통화가 USD\(요청은 krw\) → 환율로 원화 환산/.test(serverLogs()),
+      "response currency 'usd' -> prices converted to KRW (150 USD is not shown as 150원), warning in the log", short({ p4 }));
+    mock.reset({ travelpayouts: 'rub' });
+    const r5 = await flights({ tripType: 'oneway', departDate: futureDate(36) });
+    const f5 = r5.json?.flights || [];
+    log(r5.json?.source === 'mock' && r5.json?.sourceInfo?.reasonCode === 'PROVIDER_UNAVAILABLE' && f5.every((f) => f.sample === true) && !f5.some((f) => f.totalPriceKRW === 15000)
+      && /응답 통화가 RUB\(요청은 krw\)라 가격을 쓰지 않음/.test(serverLogs()),
+      "response currency 'rub' (not convertible) -> no live prices, sample data with PROVIDER_UNAVAILABLE", short({ src: r5.json?.source, info: r5.json?.sourceInfo }));
+
+    // ⑤ 예시 데이터(가격 없음) 다구간·왕복 링크: Skyscanner는 flights-multi-city + YYMMDD(예전엔 다구간에 KAYAK 주소, 날짜 YYYYMMDD)
+    mock.reset({ travelpayouts: 'empty' });
+    const segs = [{ from: 'ICN', to: 'NRT', date: futureDate(40) }, { from: 'NRT', to: 'KIX', date: futureDate(42) }, { from: 'KIX', to: 'ICN', date: futureDate(45) }];
+    const r6 = await flights({ tripType: 'multicity', multiSegments: segs });
+    const m6 = (r6.json?.flights || [])[0] || {};
+    const r7 = await flights({ tripType: 'roundtrip', departDate: futureDate(40), returnDate: futureDate(44) });
+    const m7 = (r7.json?.flights || [])[0] || {};
+    log(r6.json?.source === 'mock' && m6.deeplinkSkyscanner === `https://www.skyscanner.co.kr/transport/flights-multi-city/${segs.map((s) => `${s.from.toLowerCase()}/${s.to.toLowerCase()}/${yy(s.date)}`).join('/')}/`
+      && m6.deeplinkKayak === `https://www.kayak.co.kr/flights/${segs.map((s) => `${s.from}-${s.to}/${s.date}`).join('/')}`
+      && m7.deeplinkSkyscanner === `https://www.skyscanner.co.kr/transport/flights/icn/nrt/${yy(futureDate(40))}/${yy(futureDate(44))}/`,
+      'sample flights: multi-city Skyscanner link is flights-multi-city with every leg (YYMMDD), round trip carries the return date', short({ s6: m6.deeplinkSkyscanner, s7: m7.deeplinkSkyscanner }, 500));
+
+    // ⑥ 느린 grouped_prices: 날짜별 최저가는 짧게(4초) 기다리고, 가격순 목록·두 달과 함께 부른다.
+    //    예전에는 달마다 grouped_prices → prices_for_dates를 차례로 기다려(외부 호출 최대 5번) 화면의 30초 제한을 넘었다.
+    //    창(±7일)이 두 달에 걸치는 출발일, 30분 캐시에 걸리지 않게 노선을 바꾼다(ICN→FUK, ICN→CTS).
+    const now = new Date();
+    const E = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 1) - 3 * 86400000).toISOString().slice(0, 10);
+    const edgeMonths = [E.slice(0, 7), new Date(Date.parse(`${E}T00:00:00Z`) + 7 * 86400000).toISOString().slice(0, 7)];
+    const monthCalls = () => mock.entries('travelpayouts')
+      .map((e) => ({ endpoint: e.endpoint, at: e.at, q: Object.fromEntries(new URLSearchParams(String(e.query || '').replace(/^\?/, ''))) }))
+      .filter((c) => /^\d{4}-\d{2}$/.test(c.q.departure_at || ''));
+    // (가) grouped_prices가 9초(가격순 목록의 15초 제한 안이지만 grouped 제한 4초 밖) → 4초에 접고 가격순 목록만으로 답한다
+    mock.reset({ travelpayouts: 'nearby', travelpayoutsDelayMs: { grouped_prices: 9000 } });
+    const tA = Date.now();
+    const rA = await flights({ tripType: 'oneway', to: 'FUK', departDate: E });
+    const msA = Date.now() - tA;
+    const fA = rA.json?.flights || [];
+    const cA = monthCalls();
+    const atA = cA.map((c) => c.at);
+    log(rA.status === 200 && rA.json?.source === 'travelpayouts_live' && fA.length > 0 && fA.every((f) => f.totalPriceKRW === 189000) && msA < 8000
+      && /nearby-grouped 요청 실패\(네트워크\/타임아웃\)/.test(serverLogs()),
+      'grouped_prices hangs (9 s) -> /api/flights answers in ~4 s from the price list alone (not 2 x 9 s, well under the 30 s browser limit)', short({ ms: msA, src: rA.json?.source, f: fA.slice(0, 3).map((f) => [depDay(f), f.totalPriceKRW]) }, 400));
+    log(edgeMonths[0] !== edgeMonths[1]
+      && JSON.stringify(cA.filter((c) => c.endpoint === 'grouped_prices').map((c) => c.q.departure_at).sort()) === JSON.stringify(edgeMonths)
+      && JSON.stringify(cA.filter((c) => c.endpoint === 'prices_for_dates').map((c) => c.q.departure_at).sort()) === JSON.stringify(edgeMonths)
+      && atA.length === 4 && Math.max(...atA) - Math.min(...atA) < 1000,
+      'window over two months: grouped_prices and the price list for both months are requested together (4 calls within 1 s, not one after another)', short({ edgeMonths, calls: cA.map((c) => [c.endpoint, c.q.departure_at, c.at - Math.min(...atA)]) }, 500));
+    // (나) 모든 호출이 1.5초씩 늦어도(grouped 제한 안) 날짜별 최저가를 쓰고, 정확한 날짜 1번 + 가까운 날짜 1번만큼만 걸린다(차례로면 7.5초)
+    mock.reset({ travelpayouts: 'nearby', travelpayoutsDelayMs: { grouped_prices: 1500, prices_for_dates: 1500 } });
+    const tB = Date.now();
+    const rB = await flights({ tripType: 'oneway', to: 'CTS', departDate: E });
+    const msB = Date.now() - tB;
+    const fB = rB.json?.flights || [];
+    log(rB.status === 200 && rB.json?.source === 'travelpayouts_live' && fB.some((f) => f.totalPriceKRW === 175000 && depDay(f) === E) && msB < 6000,
+      'every Travelpayouts call 1.5 s slow -> grouped fares are still used and the answer takes ~3 s (exact + one parallel nearby round, not 5 x 1.5 s)', short({ ms: msB, f: fB.slice(0, 3).map((f) => [depDay(f), f.totalPriceKRW]) }, 400));
+  } catch (e) { log(false, 'Travelpayouts', e.stack || e.message); }
+  checkNoSecrets('Travelpayouts', [TPT]);
+  log(!serverLogs().includes(TPT), 'Travelpayouts: the token never appears in the server log');
+  checkNoUnexpectedExternal('Travelpayouts');
+  checkNoFatal('Travelpayouts');
 }
 
 const GEMINI_DEFAULT_CHAIN = ['gemini-2.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-3.6-flash', 'gemini-flash-latest'];

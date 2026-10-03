@@ -72,10 +72,10 @@ project-root/
 | 서버 | Node.js 20+ (native `http` module, 프레임워크 없음, 전역 `fetch`) |
 | 프론트엔드 | Vanilla JS + CSS (프레임워크·빌드 없음) |
 | 장소 데이터 | 기본: 내장 큐레이션(`CITY_DATA`, 62개 도시) + Wikimedia Commons 사진·좌표 / 선택: Google Places API (New) |
-| 지도 | 기본: OpenStreetMap 타일 + Leaflet 1.9.4 / 선택: Google Maps JavaScript API |
+| 지도 | 기본: Leaflet 1.9.4 + OpenFreeMap 벡터 바탕(MapLibre GL, 실패하면 OpenStreetMap 타일) / 선택: Google Maps JavaScript API |
 | 항공권 | Travelpayouts(Aviasales Data API 캐시 가격) → 예시 데이터 |
 | 숙소 | Rakuten Travel API(좌표 기반) → 예시 데이터 |
-| 투어/액티비티 | Klook 위젯 + Klook/Viator/GetYourGuide 바로가기 |
+| 투어/액티비티 | Klook·KKday·Viator·GetYourGuide 검색 바로가기 |
 | AI 일정 생성 | Gemini(기본 `gemini-2.5-flash`) → OpenAI 호환(OpenAI `gpt-4o-mini` 또는 Groq `openai/gpt-oss-120b` + 대체 모델) → 규칙 기반 |
 | AI 채팅 해석 | `AI_CHAT_PROVIDER_ORDER` 순서(기본 Gemini → OpenAI 호환, Groq 운영은 `openai,gemini`) → 규칙 기반 |
 | 날씨·지오코딩 | open-meteo(무료, 키 없음, CC BY 4.0, 비상업적 사용 조건) |
@@ -515,7 +515,7 @@ Google `primaryType`을 언어별 카테고리명으로 바꾼다(예: tourist_a
 3. **탐색** — 여행지·맛집 독립 검색
 4. **항공권 탐색** — 편도/왕복/다구간 + 필터/정렬
 5. **숙소 탐색** — 체크인아웃/인원/필터
-6. **투어** — Klook 위젯(8초 안에 안 뜨면 바로가기 링크)
+6. **투어** — Klook·KKday·Viator·GetYourGuide 검색 바로가기
 
 ### 8.2 첫 화면(부팅) — 유료 API를 부르지 않는다
 부팅 IIFE: `applyBrand()` → `initCityOptions()`(`/api/cities`, 실패하면 2초·5초 뒤 재시도, 끝내 실패하면 [다시 시도]와 버튼 잠금) → `renderInitialEmptyStates()`(빈 상태 카드: [일정 만들기]를 누르라는 안내) → 출발일 기본값(오늘+14일) → `loadKlookWidget()` → `loadMapConfig()`(`/api/maps-config`) → `initExchangeRateChip()`(`/api/fx-rate`) → `offerDraftRestore()`(초안이 있으면 안내 띠만). 별도로 `/api/auth/me`, `/api/auth/providers`(응답 전에는 로그인 버튼 3개를 `hidden`, 설정된 것만 보임)를 부른다. 자동 클릭·자동 검색은 없다.
@@ -531,7 +531,7 @@ Google `primaryType`을 언어별 카테고리명으로 바꾼다(예: tourist_a
 
 ### 8.5 지도
 `loadMapConfig()` → `ensureMapLibrary()`(일정이 생길 때 로드):
-- `osm`: Leaflet 1.9.4(unpkg, SRI 검증), 타일 `https://tile.openstreetmap.org/{z}/{x}/{y}.png`(OSMF 타일 정책에 따라 `{s}` 서브도메인 없음), 표기 "© OpenStreetMap contributors". `renderLeafletItinMap()`.
+- `osm`: Leaflet 1.9.4(unpkg, SRI 검증), 타일 `https://tile.openstreetmap.org/{z}/{x}/{y}.png`(OSMF 타일 정책에 따라 `{s}` 서브도메인 없음), 표기 "© OpenStreetMap contributors". `renderLeafletItinMap()`. 바탕은 일정 지도를 처음 그릴 때만 MapLibre GL 5.24.0 + maplibre-gl-leaflet 0.1.4(unpkg, SRI)를 불러 OpenFreeMap(`tiles.openfreemap.org/styles/liberty`) 벡터로 그리고, 지명은 `name:ko`/`name:en`/`name:ja` → `name` 순. WebGL 없음·스크립트/스타일 실패·10초 안에 첫 타일 없음(탭이 보이는 동안만 셈, `armVectorTileWatch`)·타일 오류 2번이면 OSM 타일과 OSM 표기로 바꾼다. Google 모드에서는 부르지 않는다.
 - `google`: 기존 Google Maps JS 경로 `renderGoogleItinMap()`. 좌표 없는 곳만 렌더당 최대 15곳 브라우저 지오코딩, `REQUEST_DENIED`면 그 세션에서 중단.
 - 좌표는 `buildCoordIndex()`가 `day.places`, `placeCoords`, 추천·맛집 카드에서 모은다. 좌표가 없으면 지도를 숨기고 짧은 안내(`#itinMapNote`)를 보여준다. 일자별 경로선은 `DAY_COLORS`.
 
@@ -633,7 +633,8 @@ POST /api/flights
 | 서비스 | 용도 | 비고 |
 |---|---|---|
 | Wikimedia Commons / Wikidata / Wikipedia | 무료 모드 장소·도시·음식 장르 사진, 좌표, en/ja 이름 | 실행 중에는 호출하지 않음. `scripts/build-place-images.js`가 미리 `assets/place-images.json`을 만든다(User-Agent `TabimaruBot/0.1`, 초당 4건 이하, 응답 캐시). `scripts/build-city-places.js`는 query.wikidata.org SPARQL(`wikibase:around`)로 도시 주변 실제 명소를 골라 `assets/city-places.json`을 만든다(같은 User-Agent, 초당 1건 이하, 응답 캐시). 자유 라이선스만, 카드에 저작자·라이선스 표시. Wikidata 이름은 CC0 |
-| OpenStreetMap 타일 + Leaflet | 기본 지도 | 브라우저가 직접 불러옴. "© OpenStreetMap contributors" 표기, OSMF 타일 사용 정책 준수 |
+| OpenFreeMap 벡터 타일 + MapLibre GL | 기본 바탕 지도(키 없음, 운영 보장 없음) | 실패하면 아래 OSM 타일로 대체. "OpenFreeMap © OpenMapTiles Data from OpenStreetMap" 표기 |
+| OpenStreetMap 타일 + Leaflet | 대체 바탕 지도·마커 | 브라우저가 직접 불러옴. "© OpenStreetMap contributors" 표기, OSMF 타일 사용 정책 준수 |
 | open-meteo | 날씨 예보, 무료 지오코딩 | 키 없음, `User-Agent: TabimaruBot/0.1 (+저장소 주소)`, 캐시(예보 30분, 지오코딩 24시간). CC BY 4.0(날씨 위젯·패널 하단에 출처 링크 표기), 무료 API는 비상업적 사용·하루 10,000회 이하 |
 | open.er-api → Frankfurter v2 | 환율 | 키 없음, 같은 User-Agent, 8초 타임아웃, 12시간 갱신. ExchangeRate-API 공개 엔드포인트는 "Rates By Exchange Rate API" 링크 표기가 필요하고(환율 칩 안에 표기) 받은 환율의 재배포는 금지. Frankfurter는 `api.frankfurter.dev/v2/rates?base=JPY&quotes=KRW,USD&providers=ecb`(옛 `api.frankfurter.app`은 301, v1은 지원 중단 예정, v2 기본값은 여러 기관 값을 섞으므로 ECB로 고정). 응답은 `[{date, base, quote, rate}]` 배열 |
 | Travelpayouts (Aviasales Data API v3) | 항공권 캐시 가격 | `TRAVELPAYOUTS_TOKEN`, 30분 캐시, 토큰은 로그에서 가림 |
@@ -645,7 +646,7 @@ POST /api/flights
 | Google Maps JavaScript API | `MAP_PROVIDER=google`일 때만 | 브라우저 키(리퍼러 제한) |
 | Supabase | "내 일정" 저장(설정 시), `/api/travel-plan/*` | 서버 전용 키(`SUPABASE_SERVICE_ROLE_KEY`: 새 형식 `sb_secret_…`은 `apikey` 헤더만, 예전 JWT `eyJ…`일 때만 `Authorization: Bearer`도), 8초 타임아웃, 상태 확인(`runSupabaseCheck()` = `GET travel_plans?select=id&limit=1`, 5초) 캐시(정상 5분·이상 1분, 시작 직후·10분마다 갱신), keepalive 캐시(성공 10분·실패 15초). 오류 원문은 서버 로그에만(키는 가림, 상태 코드·PostgREST 코드별로 10분에 한 줄) |
 | Google·Naver·Kakao OAuth | 로그인 | `OAUTH_BASE_URL` 기준 콜백 |
-| Klook 위젯 | 투어 | 실패 시 바로가기 링크 |
+| Klook·KKday·Viator·GetYourGuide | 투어 | 검색 바로가기 링크(위젯 없음) |
 
 ---
 
@@ -687,7 +688,7 @@ POST /api/flights
 - **로그인 유지·저장소 장애 안내(샌드박스, `sandboxStorageTests()`)**: `/api/auth/me`가 한 번 502(서버가 깨어나는 중)여도 다시 물어 로그인 화면(내 일정 버튼·닉네임)이 나오는지, 내 일정 목록·불러오기·삭제·저장(목록이 503이면 저장 창을 닫음, 저장 POST가 503이면 안내)이 503일 때 `store-unavailable`("저장소에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.", en/ja 포함)을 보여 주는지 본다. 저장 POST가 409 `PLAN_LIMIT`·413 `PLAN_TOO_LARGE`·400 `INVALID_PLAN`이면 `plan-limit`(`{n}` = 50)·`plan-too-large`·`plan-invalid`, 그 밖에는 `save-fail`, `/?authError=not_allowed`면 `auth-err-not-allowed`가 뜨는지도 본다.
 - **가짜 Supabase**(`tests/support/mock-vendor.js`, `<mock>/supabase/rest/v1`): `travel_plans` 한 표의 PostgREST 흉내. GET(`select` 열 목록·`eq` 필터·`order`·`limit`), POST(`on_conflict=plan_key` + `resolution=merge-duplicates`, `return=representation|minimal`, 열 검사: 모르는 열 400, `city_key`·`payload` not null, `start_date` 날짜, `days` 정수, 실제 Postgres처럼 NUL이 든 글자 400 `22P05`·짝 없는 서로게이트 400 `22P02`), DELETE(필터 필수), HEAD/GET 루트. 그 밖의 연산자·열·경로는 `unknownMockRoute`로 기록되어 실패한다. `scenario.supabase`: `'down'` 모든 요청에 503 + 원문(`SUPABASE_ERROR_TEXT`), `'auth'` 모든 요청에 401 Invalid API key, `'reject_post'` POST만 400 `22P05`. 가짜 OAuth 프로필의 `emailVerified`(기본 true)가 Google `verified_email`·Kakao `is_email_verified`로 나간다. `mock.supabaseRows()`·`mock.seedSupabase()`로 표를 보고 미리 채운다.
 - 각 단계 끝에서 모든 응답 본문·헤더에 서버 키·토큰이 없는지, 서버 로그에 크래시가 없는지 확인한다.
-- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`hotpepper`·`oauth`·`session`·`live`·`free`·`city`). `npm test`·CI는 늘 전체(2026-10-03 기준 1,103개).
+- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`hotpepper`·`oauth`·`session`·`live`·`free`·`city`). `npm test`·CI는 늘 전체(2026-10-03 기준 1,575개). 부분 실행 이름에 `edit`·`tp`·`map`·`links`·`editui`도 있다.
 - CI: `.github/workflows/ci.yml`(push·PR, Node 20). `.github/workflows/keepalive.yml`(3일마다 운영 `/api/keepalive`)은 정적 검사로 내용(cron `17 3 */3 * *`, `workflow_dispatch`, `permissions: {}`, 5번 재시도, `"supabase":"ok"`일 때만 성공, 비밀값 없음)만 확인한다.
 
 ---
@@ -765,6 +766,7 @@ POST /api/flights
 | 2026-10-02 | **ホットペッパー 맛집**: `HOTPEPPER_API_KEY`가 있으면 무료 모드의 맛집 검색(30곳)·일정 추천 맛집(경로 도시 최대 3곳 섞어 20곳)이 실제 가게. 장르 섞기, 6시간 캐시, 원문 표시, 크레딧("Powered by ホットペッパー Webサービス"), 사진·링크 허용 목록(`IMAGE_URL_RULES.food`, `safeHotpepperUrl()`), health `hotpepperConfigured`. **여행지 확장 준비**: `scripts/build-city-places.js` 목표 12 → 30(카드에 보이는 highlights 기준으로 모자란 만큼, `assets/city-places.json` 재생성·이름 검토는 다음 작업), 탐색 탭 30곳 + [더보기] 10곳씩. **제외 칩 버그**: 도시 주변 실제 명소의 별칭 중 다른 도시 큐레이션 이름과 같은 것은 버림(교토 '기요미즈데라는 빼고'에 '하나마키 기요미즈데라'가 끼던 문제), 의도 표 `excludedOnly` |
 | 2026-10-03 | **여러 도시 일정**: '1박2일로 도쿄 오사카 후쿠오카'·'2박3일 도쿄 갔다가 오키나와'처럼 전체 기간이 첫 도시 옆에 있으면 그 도시의 일수로 읽혀 나머지 도시가 말없이 빠지던 문제(`isWholeTripRegionPlan()`: 도시가 여럿인데 한 도시가 전체 기간을 다 가져가는 분배는 규칙·AI 해석과 `allocateDaysByCities()`에서 버림). 일수보다 도시가 많으면 앞의 도시부터 하루씩 넣고, 채팅 답장(`tooManyCities`)·일정 팁 맨 앞(`droppedCities`, 필요한 일수 n·권장 2n-1)·`itineraryInfo.droppedCities`로 알린다(요청한 경로 도시만 셈). 규칙 해석의 경로 도시는 메시지에 나온 순서. `scripts/prompt-matrix.mjs --prompts <file>`. 테스트 815개 |
 | 2026-10-03 | **원래 PC 세션(커밋 전 묶음)**: 알려진 문제 1~5·7 수정 — 영어·일본어·한국어 도시별 일수 해석(`extractRegionDayPlanFromText`: 'N days in X'·'X N days'·泊·日間·'N일간/동안'·'그중/のうち/including'·말로 쓴 일수·'after', 같은 도시 두 번, 쉼표 없는 'N박은'; 하루 예산·호텔 N박·JR패스는 일수 아님; 도시 안 동네 `CITY_AREA_WORDS`; 영어·일본어 데이터 없는 지역은 아는 지역 이름만), 'X대신Y' 붙여쓰기와 '대신궁', 영어 일정의 대표 카드 현지화와 ko로 되돌리기(`nameKo`), 긴 여러 도시 AI 후보 도시별 몫(`selectAiPicks`·`expandPicksForAi` `cityTargets`), 식사 도시 맞추기(h-1a·`mustSlotFor`·`departureMeal`)·식당 반복 줄이기, 이동 시간 표·신칸센 노선·섬·거리 구간(`CITY_TRANSFER_HINTS`·`SHINKANSEN_LINES`·`ISLAND_CITY_KEYS`), 실내 위주(실내 생성 장소 유지·큐레이션 실내 먼저·하루 야외 1곳·여러 도시 규칙 일정은 그날 도시 밖으로 채우지 않음), 추천 카드는 일정에 든 곳을 자르지 않음, 같은 QID가 두 도시에 있으면 도시 중심이 가까운 쪽(중심이 5km 안이면 큐레이션 명소가 많은 도시, 예: 삿포로 > 오카다마), 규칙 일정에서 같은 장소(같은 QID)는 한 번만, 짧은 일정(4일 이하)에는 요청하지 않은 하루짜리 카드를 붙이지 않음. 날짜 나눔: 전체 일수를 한 도시에 붙여 말하고 다른 도시는 장소로만 들어오면 그 도시를 주 도시(`specialPrefs.mainCity`)로 두고 장소 도시에는 꼭 갈 곳을 넣을 만큼만(`placeCityMinDays`). **대화 초기화 버튼**(`#btnChatReset`, 서버 호출 0). **여행지 30곳 데이터**(`assets/city-places.json` 1,378곳·사진 1,169곳·일본어로만 남은 이름 0, 한국어 이름 없는 후보·호텔·료칸 제외, 생성 장소는 큐레이션 뒤 `isGeneratedCityPlace`). Travelpayouts marker 고정 테스트, 문서 정리. HEAD 대비 채팅 5,863문장·일정 4,358건 비교로 회귀 확인. 테스트 1,103개 |
+| 2026-10-03 | **다음 묶음(배포 6da5de3 이후, 커밋 전)**: **대화로 일정 일부만 고치기**(일정이 있을 때 빼기·넣기·옮기기·바꾸기·시간 편집은 다시 만들지 않고 그 칸만, `mode: 'edit'`; 해석은 Groq만·Gemini 0회·없으면 규칙; 넣을 장소는 그날 도시 후보만; 애매하면 선택지로 되묻기, 글 답도 `editChoices`로 규칙 매칭; 부정문('빼지 마')·시각이 섞인 넣기/빼기·일수/도시 변경은 다시 만들기; '바뀐 점' + ↩; **모든 편집은 확인 후 적용**: 서버는 `status: 'apply'`를 보내지 않고 `editConfirmResult()`로 '이렇게 바꿀까요?' + 바꿀 것 한 줄씩을 묻는다, 화면은 버튼·분명한 승낙 글일 때만 적용(물음표 붙은 답은 승낙 아님, 좁힌 선택지는 보이는 줄만 보냄, 'X 빼고/말고 다'는 X를 남김), 칸이 안 맞으면 그 칸을 묻기, 'drop by'·'でやめて'는 빼기 아님, Groq 시각도 규칙과 같은 검사, 종류·음식 낱말 넣기는 `editRegen: 'category'`로 다시 만들기 전에 확인, 맞바꾸기는 `swap` op, 블록↔후보는 정확 일치 우선·같은 종류끼리만). **실내 위주 긴 규칙 일정**: 실내를 다 쓰면 그날 도시 바깥 명소 하루 1곳(큐레이션 → 생성 장소 문화 → 자연), 고른 바깥 카드가 있는 날은 더하지 않고, 못 넣은 꼭 갈 곳 먼저. **데이터**: 다리 32곳 검토해 19곳 제외(고속도로·보통 도로 다리), 이름 49곳 정리('~의 녹나무', 끝의 の 제거, 시설 낱말 번역, 縣→현), 1,372곳; 水前寺江津湖公園은 '에즈호'(다른 장소)와 이름 포함 충돌이라 '스이젠지 에즈코 공원' 유지. **항공·숙소·투어 링크**(Google 항공편·네이버·스카이스캐너·카약·Trip.com, 숙소 Booking·Agoda·Google 호텔·じゃらん, KKday), 다구간 링크 날짜 버그, Travelpayouts 통화 변환·`grouped_prices`(4초, 병렬)·`scripts/travelpayouts-check.mjs`. **OpenFreeMap 벡터 지도**(지명 ko/en/ja, 실패하면 OSM). 테스트 1,575개 |
 
 ---
 
