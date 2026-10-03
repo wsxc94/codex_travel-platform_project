@@ -130,10 +130,10 @@ qwen3.8-27b는 공식적으로 "평가 전용, 예고 없이 종료될 수 있�
 | 1 Groq 연결 | 완료·배포(3절 1~5). Groq 키는 `GROQ_API_KEY`(Groq 주소에만 보냄). 같은 요청 5개 비교: 품질은 비슷하나 Groq만 쓰면 분당 토큰 한도로 자주 막혀, 일정은 Gemini 먼저·채팅 해석은 Groq 먼저로 유지. 3절 7(`GEMINI_TOTAL_BUDGET_MS` 20초)은 아직 적용 안 함(운영 health 40000, 사용자 결정 대기). 3절 8의 gemma-4 생각 끄기는 안 함(선택) |
 | 2 교통비 AI 제거 | 완료·배포(거리 추정 + 구간별 Google 지도 대중교통 링크). Google 지도 대중교통 모드는 경유지를 받지 않아 '하루별' 링크는 만들지 않음(구간별만) |
 | 3 ホットペッパー | 완료·배포(`HOTPEPPER_API_KEY`, 도시 중심 3km 30곳, 장르 섞기, 크레딧) |
-| 여행지 30곳 확장 | 완료(아직 커밋·배포 전, 2026-10-03). `assets/city-places.json` 재생성(목표 30, 1,378곳, 한국어 이름 1,378곳), 이름 검사 통과, `NAME_FIXES`·`EXCLUDE_QIDS` 검토 반영 |
+| 여행지 30곳 확장 | 완료·배포(6da5de3, 2026-10-03). `assets/city-places.json` 재생성(목표 30, 1,378곳, 한국어 이름 1,378곳), 이름 검사 통과, `NAME_FIXES`·`EXCLUDE_QIDS` 검토 반영 |
 | 4 ORS 도보 시간 | 아직(키 필요) |
-| 5 항공 손보기 + 링크 | 완료(커밋 전, 2026-10-03): 통화 확인·변환, `grouped_prices`(4초, 병렬), 항공·숙소·KKday 링크, 다구간 링크 날짜 버그. market은 기본 그대로 — `scripts/travelpayouts-check.mjs`로 비교 후 결정(결정 대기). 링크 직접 눌러 보기 남음 |
-| 6 OpenFreeMap | 완료(커밋 전, 2026-10-03): MapLibre GL + maplibre-gl-leaflet, 지명 ko/en/ja, 실패하면 OSM |
+| 5 항공 손보기 + 링크 | 완료·배포(becc52e, 2026-10-03): 통화 확인·변환, `grouped_prices`(4초, 병렬), 항공·숙소·KKday 링크, 다구간 링크 날짜 버그. market은 기본 그대로 — `scripts/travelpayouts-check.mjs`로 비교 후 결정(결정 대기). 링크 직접 눌러 보기 남음 |
+| 6 OpenFreeMap | 완료·배포(becc52e, 2026-10-03): MapLibre GL + maplibre-gl-leaflet, 지명 ko/en/ja, 실패하면 OSM |
 
 다음 세션 할 일은 `docs/handoff.md` 7절이 단일 출처다(이 문서는 외부 API 작업의 세부만 둔다).
 
