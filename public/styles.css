@@ -1074,6 +1074,19 @@ button:hover {
   resize: vertical;
 }
 
+/* [대화 초기화]: 요청칸 아래 오른쪽. 채팅 영역의 보조 버튼(.secondary-btn)과 같은 모양을 한 단계 작게 */
+.ai-chat-tools {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+.ai-chat-tools .chat-reset-btn {
+  width: auto;
+  min-height: 36px;
+  padding: 6px 14px;
+  font-size: 13px;
+}
+
 .ai-chat-log {
   margin-top: 10px;
   display: grid;
@@ -4167,7 +4180,8 @@ body.touch-dragging * {
     grid-template-columns: 1fr;
   }
 
-  .ai-chat-input button {
+  .ai-chat-input button,
+  .ai-chat-tools .chat-reset-btn {
     min-height: 44px;
   }
 

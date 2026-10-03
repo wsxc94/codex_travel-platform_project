@@ -503,9 +503,13 @@ function jaTouches(ko, ja) {
   // 岳 -다케 and 山 -산 are written with the name: アーラ岳 "Āra Dake" → 아라다케, 利尻ポン山 "Rishiri Pon Yama" → 리시리 폰산
   if (/[岳嶽]$/.test(name)) out = out.replace(/ 다케$/, '다케');
   if (/山$/.test(name)) out = out.replace(/ 야마$/, '산');
+  // 大橋 is 대교 whatever the English label says ("Akita Bridge" = 秋田大橋 → 아키타 대교, like 지토세 대교 / 와카토 대교)
+  if (/大橋$/.test(name)) out = out.replace(/ 다리$/, ' 대교');
   // 島 is 섬 (女木島 메기섬, like the Korean Wikipedia's 男木島 오기섬); a one-kanji name keeps -시마 (経島 후미시마섬, like 似島 니노시마섬)
+  // (the cut must leave a word of 2+ letters: 北条鹿島 "Kashima" is 鹿島 か+しま → 가시마섬, not 가섬)
   if (/島$/.test(name) && !/[半列諸群]島$/.test(name) && /(?:지마|시마)$/.test(out)) {
-    out = [...name].length >= 3 ? out.replace(/(?:지마|시마)$/, '섬') : `${out}섬`;
+    const cut = out.replace(/(?:지마|시마)$/, '');
+    out = [...name].length >= 3 && cut.split(' ').pop().length >= 2 ? `${cut}섬` : `${out}섬`;
   }
   return out;
 }

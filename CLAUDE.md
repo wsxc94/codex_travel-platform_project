@@ -13,7 +13,7 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
 ## 절대 규칙
 
 1. **도메인에 묶인 값은 바꾸지 않는다.** 바꾸면 로그인·저장 데이터·배포가 깨지고, 테스트가 고정하고 있다.
-   - 운영 주소 `japanjapantravel.onrender.com`, Render 서비스 이름 `japantravel-suite`
+   - 운영 주소 `japanjapantravel.onrender.com`, Render 운영 서비스 `japanjapantravel`(대시보드에서 만듦)과 `render.yaml` 안의 서비스 이름 `japantravel-suite`(테스트 고정) — 둘 다 그대로
    - OAuth 콜백 `/api/auth/<공급자>/callback`
    - Rakuten 요청 Referer, Travelpayouts marker·ID
    - 쿠키 `sid`
@@ -43,7 +43,7 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
 
 1. 고친 JS 파일마다 `node --check server.js`, `node --check public/app.js`로 구문을 검사한다.
 2. `npm test`(= `node test_all.js`)로 전체 테스트를 돌린다.
-   - 2026-10-03 기준 815개가 모두 통과하는 것이 정상이다.
+   - 2026-10-03 기준 1,103개가 모두 통과하는 것이 정상이다.
    - 외부 패키지가 없어 `npm install`은 필요 없다. Node 20 이상이 필요하다.
    - 실제 네트워크와 `.env` 값을 쓰지 않는다(가짜 벤더 서버, 네트워크 차단).
    - 포트 13581·3205가 비어 있어야 한다.
@@ -73,7 +73,8 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
   - 경로에 한글이 있으면 Bash 도구가 실패할 수 있으니 PowerShell을 쓴다.
   - 커밋 메시지는 UTF-8 파일로 만들어 `git commit -F`로 넣는다.
   - `curl`에 한국어를 인자로 넣으면 글자가 깨진 채 전송된다. 요청 본문은 UTF-8 파일로 만들어 `--data-binary @파일`로 보낸다.
-  - 작업 폴더에서 `.env.example`·`scripts/*.mjs`는 CRLF, 나머지(.js·.md·.yaml·.html·.css)는 LF다(`.gitattributes`). 스크립트로 고칠 때 줄바꿈을 맞춘다.
+  - `.gitattributes`가 .js·.md·.yml·.yaml·.json·.css·.html을 LF로 고정한다. 나머지(`.env.example`·`scripts/*.mjs` 등)는 PC의 `core.autocrlf`를 따른다(원래 PC는 CRLF). 스크립트로 고칠 때 줄바꿈을 맞춘다.
+  - **PowerShell 5.1에서 `$env:X=''`는 변수를 지운다.** 그러면 서버가 `.env` 값을 다시 채워 운영 Supabase에 쓰고 AI 한도를 쓴다. 로컬 점검용으로 키를 끌 때는 빈 값 대신 공백 한 칸(`$env:GEMINI_API_KEY=' '`)을 넣고, 대체 이름(`GOOGLE_API_KEY`·`OPENAI_API_KEY`·`OPENAI_KEY`)도 같이 막는다. 띄운 뒤 `/api/health`의 `supabaseConfigured: false`를 먼저 본다.
 
 ## AI 한도와 키 (실측)
 
@@ -97,7 +98,7 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
 - `/api/health`에서 다음 값을 확인한다.
   - `ok: true`, `app: "tabimaru"`
   - `supabaseCheck: "ok"`
-  - `sessionSecretWeak: false`
+  - `sessionSecretConfigured: true`, `sessionSecretWeak: false`
 - AI 일정이 실제로 만들어지는지 볼 때는 무료 한도를 쓴다는 점을 사용자에게 먼저 알린다.
 
 ## 사용자에 대해
@@ -109,4 +110,4 @@ Render 무료 플랜에서 돌고, `main`에 푸시하면 CI(`npm test`)가 통�
   - 무료 모드를 유지하되 Google로 다시 전환할 수 있게 둔다.
 - 작업 결과에는 다음 작업 가이드를 붙인다. 지금 결과가 뜻하는 것, 권장하는 다음 작업과 이유, 사용자가 할 일, 완료 기준이다.
 - 사용자와 합의한 결정은 기록한다. 큰 변경은 `ARCHITECTURE.md` 13절 변경 이력에, 작업 규칙은 이 파일에 적는다.
-- 다음 작업 순서는 `docs/api-review-2026-10-02.md` 5절을 따른다. 하지 말 것 목록은 같은 문서 4절에 있다.
+- 다음 작업 순서는 `docs/handoff.md` 7절을 따른다(외부 API 작업의 세부는 `docs/api-review-2026-10-02.md` 5절). 하지 말 것 목록은 api-review 4절에 있다.

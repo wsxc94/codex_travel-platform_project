@@ -401,14 +401,14 @@ async function runTests() {
   const htmlCode = read('public/index.html');
   const cssCode = read('public/styles.css');
 
-  // 개발용 부분 실행: TEST_ONLY=sandbox,intent,itinerary 처럼 고른 단계만 돌린다(npm test·CI는 늘 전체).
+  // 개발용 부분 실행: TEST_ONLY=sandbox,intent,itinerary 처럼 고른 단계만 돌린다(npm test·CI는 늘 전체). city = 도시 주변 실제 명소(city-places.json)
   const only = new Set(String(process.env.TEST_ONLY || '').split(',').map((s) => s.trim()).filter(Boolean));
   if (only.size > 0) {
     results.push(`  [partial run: TEST_ONLY=${[...only].join(',')}]`);
     const start = appCode.indexOf('var I18N = {');
     const dict = vm.runInNewContext('(' + extractBalanced(appCode, appCode.indexOf('{', start)) + ')', {});
     if (only.has('sandbox')) { await sandboxSchedulingTests(htmlCode, appCode, dict); await sandboxStorageTests(htmlCode, appCode, dict); }
-    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, chain: phaseGeminiChain, openai: phaseOpenAiCompat, hotpepper: phaseHotpepper, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree };
+    const phases = { intent: phaseIntentRegression, itinerary: phaseAiItinerary, chain: phaseGeminiChain, openai: phaseOpenAiCompat, hotpepper: phaseHotpepper, oauth: phaseOauthAndAiErrors, session: phaseSessionsAndStorage, live: phaseGoogleLive, free: phaseFree, city: phaseCityCoverage };
     const chosen = Object.keys(phases).filter((k) => only.has(k));
     if (chosen.length) {
       await mock.start();
@@ -622,6 +622,9 @@ async function runTests() {
   log(serverCode.includes("const SESSION_COOKIE = 'sid';") && serverCode.includes('`${SESSION_COOKIE}=${token}; ')
     && serverCode.includes("'Referer': 'https://japanjapantravel.onrender.com/'") && oauthPaths.every((p) => serverCode.includes(p)),
     "Domain-bound: cookie 'sid', Rakuten Referer and OAuth callback paths unchanged");
+  // Travelpayouts 사이트 확인 스크립트(marker 507447)는 index.html 머리에만 있다. 머리를 고치다 지워지면 제휴 확인이 끊긴다.
+  log(htmlCode.includes("script.src = 'https://tp-em.com/NTA3NDQ3.js?t=507447';") && htmlCode.includes('<!-- Travelpayouts verification -->'),
+    'Domain-bound: Travelpayouts verification script (marker 507447) unchanged in index.html');
   // 세션·저장소 설계 고정점: 사용자 id는 OAuth 신원의 sha256(SESSION_SECRET과 무관), Bearer는 예전 JWT 키(eyJ…)에만
   log(/return 'u_' \+ createHash\('sha256'\)\.update\(`\$\{provider\}:\$\{providerId\}`\)\.digest\('hex'\)\.slice\(0, 24\);/.test(serverCode),
     "Session: stable user id = 'u_' + sha256(provider:providerId).slice(0,24) (independent of SESSION_SECRET)");
@@ -1277,7 +1280,9 @@ async function sandboxSchedulingTests(htmlCode, appCode, i18nDict) {
           parsed: {
             cityKey: 'tokyo', cityLabel: '도쿄', days: 3, theme: 'mixed', startDate: futureDate(20), routeCities: ['도쿄'], regionDayPlan: [],
             wantedPlaces: ['팀랩 플래닛'], excludedPlaces: ['디즈니'], unsupportedPlaces: [], foodKeyword: '라멘, 모츠나베', specialPrefs: { lateStart: true },
-            arrivalTime: '', departureTime: '', startTimeMin: ''
+            arrivalTime: '', departureTime: '', startTimeMin: '',
+            // 세 번째 대화([대화 초기화] 뒤)는 말로 예산을 정한다 → 다음 초기화가 그 예산만 되돌리는지 본다
+            ...(chatCalls === 3 ? { budget: 'low' } : {})
           },
           selectedDestinations: [{ name: '팀랩 플래닛', city: '도쿄', area: '도요스' }],
           sourceInfo: { kind: 'ai', provider: 'gemini', reasonCode: null }
@@ -1350,6 +1355,64 @@ async function sandboxSchedulingTests(htmlCode, appCode, i18nDict) {
     await sc.settle(20000);
     const lastPlan = sc.env.fetchCalls.filter((c) => c.path === '/api/travel-plan').pop();
     log(chatCalls === 2 && lastPlan && bodyOf(lastPlan).request === '교토 하루 더 늘려줘', 'same request text again: no new chat call, intent kept in the travel-plan body', short({ chatCalls }));
+
+    // ── [대화 초기화](handoff 결정 대기 1-①): 대화 기록·말로 정한 조건만 비우고, 지금 일정·조건 칸·localStorage는 그대로, 서버 호출 0회 ──
+    const resetBtnTag = (/<button\b[^>]*\bid="btnChatReset"[^>]*>/.exec(htmlCode) || [''])[0];
+    log(/\btype="button"/.test(resetBtnTag) && /\bdata-i18n="btn-chat-reset"/.test(resetBtnTag) && /\bdata-i18n-aria="aria-chat-reset"/.test(resetBtnTag) && /\baria-label="[^"]+"/.test(resetBtnTag)
+      && Boolean(sc.element('btnChatReset')) && JC(`PLAN_BUSY_BUTTONS.indexOf('btnChatReset') >= 0`) === true,
+      'index.html has #btnChatReset (type=button, data-i18n btn-chat-reset, aria-label + data-i18n-aria) and it is locked with PLAN_BUSY_BUTTONS', short(resetBtnTag, 300));
+    // 해석·생성 중(planBusyCount > 0)에는 잠기고, 눌러도 아무것도 지우지 않는다
+    const historyLen = JC('chatHistory.length');
+    sc.run(`beginPlanBusy('btnAiAssist')`);
+    const busyDisabled = sc.element('btnChatReset').disabled;
+    sc.element('btnChatReset').click();
+    const busyKept = JC('chatHistory.length') === historyLen && JC('lastParsedConditions !== null') === true;
+    sc.run('endPlanBusy()');
+    log(historyLen >= 2 && busyDisabled === true && busyKept && sc.element('btnChatReset').disabled === false,
+      '[대화 초기화] is disabled while a plan is being made and a click then clears nothing; enabled again afterwards', short({ historyLen, busyDisabled, busyKept }));
+    // 대화가 바꾸지 않은 예산(초안·저장한 일정에서 온 값 흉내)은 초기화 뒤에도 남아야 한다
+    sc.run(`setBudgetTier('high')`);
+    const snapReset = () => ({
+      itin: String(sc.run('JSON.stringify(currentItineraryData)') || ''),
+      planHtml: String(sc.element('planResult')?.innerHTML || ''),
+      form: JC(`{ city: el('city').value, days: el('days').value, theme: el('theme').value, startDate: el('startDate').value, to: el('to').value, foodGenre: el('foodGenre').value }`),
+      storage: JC(`(function () { var o = {}; for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); o[k] = localStorage.getItem(k); } return o; })()`)
+    });
+    const chatState = () => JC(`{ history: chatHistory.length, prev: lastParsedConditions, req: aiRequestText, handled: aiRequestHandledText, must: aiMustVisit.length, wanted: aiWantedNames.length,
+      excluded: aiExcludedPlaces.length, food: aiFoodWishes.length, prefs: Object.keys(aiSpecialPrefs).length, route: aiRouteCities.length, records: chatIntentRecords.length,
+      logHtml: el('aiChatLog').innerHTML, logChildren: el('aiChatLog').children.length, source: el('aiSourceNote').textContent, box: el('aiRequest').value, budget: currentBudgetTier() }`) || {};
+    const beforeReset = snapReset();
+    const stateBefore = chatState();
+    const callsBefore = sc.env.fetchCalls.length;
+    sc.run('el("memoToast").textContent = ""');
+    sc.element('btnChatReset').click();
+    const stateAfter = chatState();
+    const afterReset = snapReset();
+    const toastText = String(sc.element('memoToast')?.textContent || '');
+    await sc.settle(3000);
+    const resetCalls = sc.env.fetchCalls.slice(callsBefore).map((c) => c.path);
+    log(stateBefore.history >= 2 && stateBefore.records >= 1 && stateBefore.must > 0 && stateBefore.logChildren > 0
+      && stateAfter.history === 0 && stateAfter.prev === null && stateAfter.req === '' && stateAfter.handled === '' && stateAfter.must === 0 && stateAfter.wanted === 0
+      && stateAfter.excluded === 0 && stateAfter.food === 0 && stateAfter.prefs === 0 && stateAfter.route === 0 && stateAfter.records === 0
+      && stateAfter.logHtml === '' && stateAfter.logChildren === 0 && stateAfter.source === '' && stateAfter.box === '',
+      '[대화 초기화] clears the chat bubbles/intent chips, chat history, previous parse and chat-set conditions (and the already-sent request text)', short({ stateBefore, stateAfter }, 600));
+    log(beforeReset.itin.length > 2 && afterReset.itin === beforeReset.itin && afterReset.planHtml === beforeReset.planHtml
+      && JSON.stringify(afterReset.form) === JSON.stringify(beforeReset.form) && JSON.stringify(afterReset.storage) === JSON.stringify(beforeReset.storage) && stateAfter.budget === 'high',
+      '[대화 초기화] keeps the current plan, the form values, localStorage and a budget the chat did not set', short({ form: afterReset.form, budget: stateAfter.budget }, 400));
+    log(resetCalls.length === 0 && toastText === ko['chat-reset-done'], "[대화 초기화] makes no server call (0 fetches) and shows the 'chat-reset-done' toast", short({ resetCalls, toastText }));
+    // 초기화 뒤 다음 말은 새 대화로 간다(기록·이전 해석 없음). 이 대화가 정한 예산(low)은 다음 초기화가 그 전 값(high)으로 되돌린다.
+    sc.element('aiRequest').value = '오사카 2일, 예산 아껴서';
+    sc.element('btnPlan').click();
+    await sc.settle(20000);
+    const freshChat = bodyOf(sc.env.fetchCalls.filter((c) => c.path === '/api/ai-travel-chat')[2] || {});
+    const freshPlan = sc.env.fetchCalls.filter((c) => c.path === '/api/travel-plan').pop();
+    log(chatCalls === 3 && Array.isArray(freshChat.history) && freshChat.history.length === 0 && !freshChat.prevParsed && freshChat.message === '오사카 2일, 예산 아껴서'
+      && JC('currentBudgetTier()') === 'low' && freshPlan && bodyOf(freshPlan).budget === 'low',
+      'after [대화 초기화] the next request starts a new conversation (empty history, no prevParsed); its budget (low) reaches travel-plan', short({ chatCalls, history: freshChat.history, prev: freshChat.prevParsed }, 400));
+    sc.element('aiRequest').value = '아직 안 보낸 글';
+    sc.element('btnChatReset').click();
+    log(JC('currentBudgetTier()') === 'high' && sc.element('aiRequest').value === '아직 안 보낸 글' && JC('chatHistory.length') === 0 && JC('lastParsedConditions') === null,
+      '[대화 초기화] reverts only the budget the chat set (low -> high, the value before the chat) and keeps an unsent request text', short({ budget: JC('currentBudgetTier()'), box: sc.element('aiRequest').value }));
     const errs = sc.env.errors.concat(sc.unhandled);
     log(errs.length === 0, 'intent flow in the sandbox raises no errors', short(errs, 400));
   } catch (e) {
@@ -1879,9 +1942,57 @@ async function phaseCityCoverage() {
   log(/name: '구마노 혼구 다이샤', cityKey: 'nanki_shirahama'/.test(serverCode) && !/name: '구마노고도', cityKey: 'kobe'/.test(serverCode) && !images['kobe|구마노고도'],
     'Kumano Kodō (Hongū Taisha) is a day trip from Nanki-Shirahama, not Kobe (140 km)');
   // 검토로 뺀 곳(닫은 미술관·상륙할 수 없는 바위섬·주거 섬·스키 점프대·도로 고개·센카쿠 신사)은 다시 들어오지 않는다
-  const REVIEWED_OUT = ['Q6940951', 'Q862944', 'Q11482667', 'Q11589594', 'Q3912774', 'Q11288918', 'Q11476897', 'Q11577742', 'Q11607237', 'Q17230291', 'Q391408'];
+  // (30곳 데이터: 사무용 빌딩 NTT 도코모 요요기 빌딩, 증권거래소, 읽기를 확인할 수 없는 작은 신사 龍神宮, 아파트 타워 The Kitahama — 'tower block' 분류,
+  //  기노사키의 료칸 千年の湯 古まん, 교토 아라시야마로 가던 채팅을 가로채던 아사히카와의 동네 공원 嵐山公園)
+  const REVIEWED_OUT = ['Q6940951', 'Q862944', 'Q11482667', 'Q11589594', 'Q3912774', 'Q11288918', 'Q11476897', 'Q11577742', 'Q11607237', 'Q17230291', 'Q391408',
+    'Q2090752', 'Q217475', 'Q11679328', 'Q2201650', 'Q28504101', 'Q11477252'];
   const back = allPlaces.filter(([, p]) => REVIEWED_OUT.includes(p.wikidata)).map(([ck, p]) => `${ck}|${p.name}`);
-  log(back.length === 0, 'city-places.json: reviewed-out items (closed museum, no-landing rocks, residential islands, ski jump, road passes, Senkaku Shrine) are not in the data', back.join(', '));
+  log(back.length === 0, 'city-places.json: reviewed-out items (closed museum, no-landing rocks, residential islands, ski jump, road passes, Senkaku Shrine, office tower, stock exchange, condominium tower, an onsen ryokan, Asahikawa 嵐山公園) are not in the data', back.join(', '));
+  // 숙박 분류는 온천 낱말이 붙어도 명소가 아니다('onsen ryokan' 古まん, 'hot spring hotel'). 온천·온천 마을은 그대로 명소이고,
+  // 료칸을 겸한 진짜 정원(立花氏庭園: daimyō garden + ryōtei + ryokan)은 정원으로 남는다
+  try {
+    const B = require(path.join(PROJECT, 'scripts', 'build-city-places.js'));
+    const kindFor = (labels) => { const m = new Map(labels.map((l, i) => [`Q${i + 1}`, l])); const r = B.kindOf({ classes: [...m.keys()] }, m); return r.kind ? r.kind.id : null; };
+    const lodgingWrong = [[['onsen ryokan'], null], [['hot spring hotel'], null], [['ryokan'], null], [['onsen'], 'onsen'], [['hot spring'], 'onsen'], [['hot spring resort'], 'onsen'],
+      [['onsen town'], 'onsen'], [['daimyō garden', 'ryōtei', 'ryokan'], 'garden'], [['post town'], 'district']]
+      .filter(([labels, want]) => kindFor(labels) !== want).map(([labels, want]) => `${labels.join('+')}: ${kindFor(labels)} != ${want}`);
+    const garden = allPlaces.find(([, p]) => p.wikidata === 'Q11598174');
+    log(lodgingWrong.length === 0 && Boolean(garden) && garden[1].kind === 'garden',
+      "build-city-places.js: a lodging class is no sight even with an onsen word ('onsen ryokan', 'hot spring hotel'); onsen / onsen town stay; 立花氏庭園 (garden + ryokan) stays a garden",
+      short({ lodgingWrong, garden: garden ? `${garden[0]}|${garden[1].name} ${garden[1].kind}` : 'missing' }));
+  } catch (e) { log(false, 'build-city-places.js lodging class rule', e.message); }
+  // 문서가 적은 곳(다리·작은 산·유적의 sitelinks가 분류 최소값 미만)을 받는 두 번째 단계는 섬이나 명소가 9곳보다 적을 도시에서만 쓴다
+  // (30곳 목표에서 다른 도시에 평범한 도로 다리·보가 들어왔다: 北旭川大橋, 富山大橋, 新潟大堰). 아파트 타워('tower block')는 'tower' 명소가 아니다.
+  try {
+    const B = require(path.join(PROJECT, 'scripts', 'build-city-places.js'));
+    const minSl = B.KIND_MIN_SITELINKS || {};
+    const lowDoc = cityEntries.filter(([ck]) => !(B.ISLAND_CITIES instanceof Set) || !B.ISLAND_CITIES.has(ck)).flatMap(([ck, c]) => {
+      const places = c.places || [];
+      const documented = places.filter((p) => (minSl[p.kind] || 0) <= p.sitelinks && !p.fullDay && !p.dayTrip).length;
+      if ((c.curatedHalfDay || 0) + documented < (asset.source?.minSights || 9)) return [];
+      return places.filter((p) => (minSl[p.kind] || 0) > p.sitelinks).map((p) => `${ck}|${p.name} (${p.kind}, ${p.sitelinks})`);
+    });
+    const classWrong = [['tower block', true], ['condominium', true], ['residential building', true], ['observation tower', false], ['television tower', false], ['tower', false]]
+      .filter(([l, want]) => !(B.REJECT_HEAD_RE instanceof RegExp) || B.REJECT_HEAD_RE.test(l) !== want).map(([l]) => l);
+    log(lowDoc.length === 0 && classWrong.length === 0 && B.ISLAND_CITIES instanceof Set,
+      'city-places.json: barely documented places (road bridges, small peaks) only on islands or in cities that would otherwise have few sights; a tower block is no tower sight',
+      short({ lowDoc: lowDoc.slice(0, 6), classWrong }));
+  } catch (e) { log(false, 'build-city-places.js rules load', e.message); }
+  // 한국어 이름을 만들 수 없는 곳(nameFrom 'ja': 위키데이터 한국어 이름·한국어 위키백과 제목도 없고 읽기도 못 옮긴 곳)과
+  // 숙박 시설(OMO7旭川 같은 호텔·리조트, 큐레이션 테마파크를 묶은 東京ディズニーリゾート)·말일성도 성전은 생성 스크립트가 받지 않는다
+  const LODGING_NAME_RE = /OMO\d|ホテル|旅館|リゾート|호텔|리조트|\bhotel\b|\bresort\b|\bryokan\b|末日聖徒|latter[- ]day saints/i;
+  const noKoName = allPlaces.filter(([, p]) => p.nameFrom === 'ja').map(([ck, p]) => `${ck}|${p.name}`);
+  const lodging = allPlaces.filter(([, p]) => LODGING_NAME_RE.test(`${p.name} ${p.ja} ${p.en}`)).map(([ck, p]) => `${ck}|${p.name}`);
+  let nameRuleWrong = [];
+  try {
+    const B = require(path.join(PROJECT, 'scripts', 'build-city-places.js'));
+    nameRuleWrong = [['OMO7旭川', true], ['東京ディズニーリゾート', true], ['末日聖徒イエス・キリスト教会日本福岡神殿', true], ['Hotel New Grand', true], ['湯の川温泉旅館', true],
+      ['北野天満宮', false], ['鶴岡公園', false], ['Sapporo Art Park', false], ['도요스 시장', false]]
+      .filter(([n, want]) => !(B.NOT_A_SIGHT_NAME_RE instanceof RegExp) || B.NOT_A_SIGHT_NAME_RE.test(n) !== want).map(([n]) => n);
+  } catch (e) { nameRuleWrong = [`load: ${e.message}`]; }
+  log(noKoName.length === 0 && lodging.length === 0 && nameRuleWrong.length === 0,
+    'city-places.json: no place without a Korean name (nameFrom ja), no hotel / resort / LDS temple (build-city-places.js NOT_A_SIGHT_NAME_RE: OMO7旭川, 東京ディズニーリゾート)',
+    short({ noKoName: noKoName.slice(0, 5), lodging, nameRuleWrong }));
   // 한국어 화면 이름은 모두 한글(일본어 이름은 읽기를 한글로 옮기거나 검토한 이름), 영어 화면 이름에는 한자·가나가 없다
   const jaOnly = allPlaces.filter(([, p]) => !HANGUL_RE.test(p.name)).map(([ck, p]) => `${ck}|${p.name}`);
   const enCjk = allPlaces.filter(([, p]) => /[぀-ヿ一-鿿]/.test(p.en)).map(([ck, p]) => `${ck}|${p.en}`);
@@ -1915,6 +2026,8 @@ async function phaseCityCoverage() {
       [D('湯湾岳', 'Mount Yuwan'), '유완다케'], [D('槍ヶ岳', 'Mount Yari'), '야리가타케'], [D('右田ヶ岳', 'Mount Migita'), '미기타가다케'], [D('アーラ岳', 'Āra Dake'), '아라다케'],
       [D('信夫山', 'Mount Shinobu'), '시노부산'], [D('旭山', 'Mount Asahi'), '아사히산'],
       [D('達子森', 'Mount Takkomori'), '닷코모리'], [D('大沼', 'Lake Ōnuma'), '오누마'], [D('女木島', 'Megijima'), '메기섬'], [D('経島', 'Fumishima'), '후미시마섬'],
+      // 島를 섬으로 바꿀 때 한 글자만 남기지 않는다(北条鹿島 "Kashima" → 가시마섬, 가섬이 아니다), 大橋는 영어 이름이 Bridge여도 대교
+      [D('北条鹿島', 'Kashima'), '가시마섬'], [D('秋田大橋', 'Akita Bridge'), '아키타 대교'], [D('出島橋', 'Dejima Bridge'), '데지마 다리'],
       // 大社·天満宮은 따로 쓴다: 天満宮은 앱의 큐레이션 표기(다자이후 텐만구)를 따라 텐만구(규칙대로면 덴만구), 大社는 다이샤(구마노 혼구 다이샤)
       [D('屋久島大社', 'Yakushima-taisha', 'やくしまたいしゃ'), '야쿠시마 다이샤'], [D('楠川天満宮', 'Kusugawa-tenmangū'), '구스가와 텐만구'],
       [D('楠川天満宮', '', 'くすがわてんまんぐう'), '구스가와 텐만구'],
@@ -1951,9 +2064,19 @@ async function phaseCityCoverage() {
     ['kagoshima', 'Q25045409', '나가시마 미술관'], ['asahikawa', 'Q11373285', '이노우에 야스시 기념관'], ['yakushima', 'Q10950373', '미야노우라다케'], ['takamatsu', 'Q339004', '메기섬'],
     ['izumo', 'Q55523209', '가미엔야 쓰키야마 고분'], ['tottori', 'Q11496825', '오기노센'], ['iwakuni', 'Q11657359', '아타타섬'], ['yakushima', 'Q130284190', '구스가와 텐만구'],
     ['izumo', 'Q47164008', '신지호 자연관 고비우스'], ['nakashibetsu', 'Q11366289', '나카시베츠 향토관'], ['asahikawa', 'Q6919490', '아사히카와 아사히산'],
-    ['yonaguni', 'Q11405009', '요나구니 도야마 신사'], ['hanamaki', 'Q11537943', '사쿠라치진관'], ['yonaguni', 'Q64589704', '투이시']];
+    ['yonaguni', 'Q11405009', '요나구니 도야마 신사'], ['hanamaki', 'Q11537943', '사쿠라치진관'], ['yonaguni', 'Q64589704', '투이시'],
+    // 30곳 데이터(2026-10-03 검토): 영어 이름의 n + y모음은 ん + や행(雷神山 らいじんやま 라이진야마 — 라이지냐마가 아니다, 上塩冶 가미엔야, 八幡山 하치만야마,
+    // 天神山 덴진야마, 万葉 만요), 영어 낱말을 음차하지 않는다(Mountain Castle → 산성), 빠진 낱말(文学), 인물 이름은 성 먼저(千田正 지다 다다시), 氏 → 씨(시는 市로 읽힌다)
+    ['sendai', 'Q11660187', '라이진야마 고분'], ['izumo', 'Q60987962', '가미엔야 지조야마 고분'], ['niigata', 'Q11411419', '후루쓰 하치만야마 유적'],
+    ['tottori', 'Q11480764', '돗토리 덴진야마성'], ['tottori', 'Q11420253', '이나바 만요 역사관'], ['okayama', 'Q48748474', '오메구리 고메구리 산성'],
+    ['akita', 'Q61886172', '아키타 문학 자료관'], ['hanamaki', 'Q60988648', '지다 다다시 기념관'], ['yamaguchi_ube', 'Q11432542', '오우치씨관']];
   const renamedWrong = RENAMED.filter(([ck, q, name]) => !(asset.cities?.[ck]?.places || []).some((p) => p.wikidata === q && p.name === name)).map(([ck, q, name]) => `${ck}|${q} ${name}`);
-  log(renamedWrong.length === 0, 'city-places.json: renamed places carry the new Korean names (도몬 겐 기념관, 우에다 쇼지 사진 미술관, 니가타 현립 식물원, 가미엔야 쓰키야마 고분, 오기노센 …)', short(renamedWrong));
+  log(renamedWrong.length === 0, 'city-places.json: renamed places carry the new Korean names (도몬 겐 기념관, 우에다 쇼지 사진 미술관, 니가타 현립 식물원, 가미엔야 쓰키야마 고분, 오기노센, 라이진야마 고분, 가미엔야 지조야마 고분 …)', short(renamedWrong));
+  // 위키데이터 P131이 틀린 곳(日南海岸: 宮城県·鹿児島県)은 손으로 고친 지역을 세 언어로 보인다
+  const nichinan = allPlaces.find(([, p]) => p.wikidata === 'Q49322227');
+  log(Boolean(nichinan) && nichinan[0] === 'miyazaki' && nichinan[1].area === '미야자키시' && nichinan[1].areaEn === 'Miyazaki' && nichinan[1].areaJa === '宮崎市',
+    'city-places.json: 니치난 해안 (日南海岸) has the area 미야자키시 / Miyazaki / 宮崎市, not the wrong Wikidata P131 미야기현 (AREA_FIXES)',
+    nichinan ? `${nichinan[0]}|${nichinan[1].area} ${nichinan[1].areaEn} ${nichinan[1].areaJa}` : 'missing');
   // 앱이 이미 쓰는 표기를 따른다: 도시 이름(나카시베츠 — 장소 이름·지역에도 '나카시베쓰'가 없다), 天満宮 텐만구(다자이후 텐만구), 宍道湖 신지호(신지호 석양)
   const offSpelling = allPlaces.filter(([, p]) => /나카시베쓰|덴만구|신지코/.test(`${p.name} ${p.area}`)).map(([ck, p]) => `${ck}|${p.name} (${p.area})`);
   log(offSpelling.length === 0, "city-places.json: names follow the app's own spellings (city label 나카시베츠, 다자이후 텐만구, 신지호): no 나카시베쓰 / 덴만구 / 신지코", short(offSpelling));
@@ -1978,6 +2101,7 @@ async function phaseCityCoverage() {
   const fewNoTip = [];
   const notFull = [];
   const failed = [];
+  const planSightsByCity = {}; // 도시 → 3일 규칙 일정의 관광 칸 장소 이름
   let sightsTotal = 0;
   for (const c of cityList) {
     const r = await postJson('/api/travel-plan', { city: c.key, theme: 'mixed', days: 3, budget: 'mid', startDate, lang: 'ko', useAi: true }, { ip: ip(), record: false });
@@ -1998,6 +2122,7 @@ async function phaseCityCoverage() {
         const name = m[4].replace(/\s*\([^()]*\)\s*$/, '').trim();
         if (FREE_TIME_NAME_RE.test(name)) { free += 1; continue; }
         real += 1;
+        (planSightsByCity[c.key] = planSightsByCity[c.key] || []).push(name);
         const rec = recs.find((x) => x.name === name || x.nameKo === name);
         if (!rec || rec.city !== j.city) otherCity.push(`${c.key} D${d.day}: ${name}${rec ? ` (${rec.city})` : ' (not a card of this city)'}`);
       }
@@ -2010,6 +2135,288 @@ async function phaseCityCoverage() {
   log(otherCity.length === 0, `3-day rule plans use only places of their own city (${sightsTotal} sights in ${cityList.length} plans)`, short(otherCity.slice(0, 5)));
   log(emptyNoNote.length === 0, '3-day rule plans: a day without a sight always has a free-time block and the tip that says why', short(emptyNoNote.slice(0, 5)));
   log(fewNoTip.length === 0, "cities with few sights (city-places.json few) get the honest tip (no filler from other cities), with the right particle ('도쿠노시마는', not '은(는)')", fewNoTip.join(', '));
+  // 30곳 데이터: 추천 카드가 도시 명소 + 도시 주변 실제 명소(생성 장소)라도, 규칙 일정은 요청하지 않은 생성 장소를 큐레이션 명소
+  // (도시 명소·대표 명소·추가 명소)를 다 쓴 뒤에만 쓴다 → 교토 3일의 금각사, 후쿠오카 3일의 다자이후 텐만구 같은 대표 명소가 남는다
+  const MUST_KEPT = { kyoto: ['금각사', '후시미 이나리', '기요미즈데라', '아라시야마 대나무숲'], osaka: ['오사카성', '신세카이', '도톤보리'],
+    fukuoka: ['후쿠오카 타워', '다자이후 텐만구', '캐널시티 하카타'] };
+  const mustLost = Object.entries(MUST_KEPT).flatMap(([ck, names]) => {
+    const sights = planSightsByCity[ck] || [];
+    const generated = new Set((asset.cities?.[ck]?.places || []).map((p) => p.name));
+    const missing = names.filter((n) => !sights.includes(n));
+    const gen = sights.filter((n) => generated.has(n));
+    return sights.length < 6 || missing.length || gen.length ? [`${ck}: ${sights.length} sights, missing ${missing.join('/') || '-'}, generated ${gen.join('/') || '-'}`] : [];
+  });
+  log(mustLost.length === 0, '3-day rule plans of Kyoto / Osaka / Fukuoka keep the must-see places (금각사, 오사카성, 다자이후 텐만구 …) and use no unrequested nearby (generated) place while curated ones are left',
+    short(mustLost));
+  // 말로 찾기: 이웃한 두 도시(삿포로·삿포로 오카다마)에 함께 든 같은 장소는 가까운 도시로, 다른 도시 도시 명소의 en/ja 이름(松山城·Matsuyama Castle)은
+  // 그 도시로(쇼나이의 '쇼나이 마쓰야마성'이 아니다), 앱의 다른 표기(기타노 덴만구)는 기타노 텐만구로
+  try {
+    const bad = [];
+    for (const [message, lang, city, place] of [['나카지마 공원 2일', 'ko', 'sapporo', '나카지마 공원'], ['Matsuyama Castle 2 days', 'en', 'matsuyama', 'Matsuyama Castle'],
+      ['松山城 2日間', 'ja', 'matsuyama', '松山城'], ['기타노 덴만구 2일', 'ko', 'kyoto', '기타노 텐만구']]) {
+      const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 3, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+      const p = chat.json?.parsed || {};
+      const plan = await postJson('/api/travel-plan', { city: p.cityKey, theme: 'mixed', days: p.days, budget: 'mid', startDate, lang, useAi: true, request: message, mustVisit: p.wantedPlaces || [] }, { ip: ip() });
+      const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+      if (p.cityKey !== city || !blocks.some((b) => b.includes(place)) || blocks.some((b) => /쇼나이|Shonai|庄内/.test(b))) bad.push(`${message}: ${p.cityKey} ${short(p.wantedPlaces)} ${short(blocks, 160)}`);
+    }
+    log(bad.length === 0, "chat: a place listed for two neighbouring cities goes to the nearer one (나카지마 공원 -> 삿포로), another city's curated en/ja name stays there (松山城 / Matsuyama Castle -> 마쓰야마), 기타노 덴만구 -> 기타노 텐만구", short(bad));
+  } catch (e) { log(false, 'chat shared / curated names', e.message); }
+  // 같은 장소(위키데이터 항목)가 이웃한 두 도시에 든 곳(삿포로·삿포로 오카다마 23곳 + 삿포로 TV 타워, 미야코지마·시모지시마 5곳 + 이라부 대교):
+  // 채팅이 고른 카드는 일정 도시의 카드이고(예전에는 파일 순서상 앞인 '삿포로 오카다마' 카드), 화면처럼 그 카드를 넣은 일정에
+  // 없는 도시 이동('도시 이동: 삿포로 -> 삿포로 오카다마 (1~3시간)')이 없으며, 같은 곳이 두 이름으로 두 번 들어가지 않는다
+  // ('삿포로 TV 타워 (오도리)' + '삿포로 TV타워'). 예전 채팅이 낸 이웃 도시 카드도 일정 도시의 장소로 본다. 경로 도시에 없는 다른 도시 카드는 그대로 그 도시가 경로에 든다.
+  try {
+    const qidOf = new Map(); // 이름(ko/en/ja, 공백 무시) → 위키데이터 ID
+    const nk = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
+    for (const [, p] of allPlaces) [p.name, p.en, p.ja, ...(p.aliases || [])].forEach((n) => { if (n) qidOf.set(nk(n), p.wikidata); });
+    for (const [k, v] of Object.entries(images)) if (v && v.wikidata) [k.slice(k.indexOf('|') + 1), v.labels?.en, v.labels?.ja].forEach((n) => { if (n && !qidOf.has(nk(n))) qidOf.set(nk(n), v.wikidata); });
+    const sharedQids = (() => {
+      const by = new Map();
+      for (const [ck, p] of allPlaces) { if (!by.has(p.wikidata)) by.set(p.wikidata, new Set()); by.get(p.wikidata).add(ck); }
+      return [...by.entries()].filter(([, s]) => s.size > 1).map(([q, s]) => `${q}:${[...s].sort().join('+')}`);
+    })();
+    const TRANSFER_RE = /^(?:도시 이동: |Transfer: |都市間移動：)/;
+    // 야경은 같은 공원 항목이라도 따로 하는 일이다(오카다마 '오도리 야경' = 오도리 공원 항목)
+    const NIGHT_VIEW_RE = /야경|night view|夜景/i;
+    const planIssues = (j, wantName) => {
+      const blocks = (j?.itinerary || []).flatMap((d) => d.blocks || []);
+      const out = [];
+      const tr = blocks.filter((b) => TRANSFER_RE.test(b));
+      if (tr.length) out.push(`transfer ${short(tr, 120)}`);
+      const seen = []; // { key, q, name }
+      for (const b of blocks) {
+        const m = PLAN_SIGHT_RE.exec(b);
+        if (!m) continue;
+        const name = m[4].replace(/\s*\([^()]*\)\s*$/, '').trim();
+        const key = nk(name);
+        const q = qidOf.get(key) || '';
+        const dup = seen.find((s) => s.key === key || (q && s.q === q && !NIGHT_VIEW_RE.test(s.name) && !NIGHT_VIEW_RE.test(name)));
+        if (dup) out.push(`twice ${dup.name} / ${name}`);
+        seen.push({ key, q, name });
+      }
+      if (wantName && !blocks.some((b) => b.includes(wantName))) out.push(`missing ${wantName}`);
+      return out;
+    };
+    const bad = [];
+    for (const [message, lang, shown] of [['나카지마 공원 가고 싶어', 'ko', '나카지마 공원'], ['홋카이도 대학 식물원 가고 싶어', 'ko', '홋카이도 대학 식물원'],
+      ['가톨릭 기타이치조 성당 2일', 'ko', '가톨릭 기타이치조 성당'], ['Nakajima Park 2 days', 'en', 'Nakajima Park'], ['I want to visit Nakajima Park', 'en', 'Nakajima Park'],
+      ['中島公園 2日間', 'ja', '中島公園'], ['カトリック北一条教会 2日間', 'ja', 'カトリック北一条教会']]) {
+      const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 4, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+      const p = chat.json?.parsed || {};
+      const sel = chat.json?.selectedDestinations || [];
+      if (p.cityKey !== 'sapporo' || !sel.length || sel.some((d) => d.city !== '삿포로')) { bad.push(`${message}: chat ${p.cityKey} ${short(sel.map((d) => `${d.name}@${d.city}`))}`); continue; }
+      const picks = sel.map((d) => ({ name: d.name, ...(d.nameKo ? { nameKo: d.nameKo } : {}), city: d.city, area: d.area, category: d.category, bestTime: d.bestTime, stayMin: d.stayMin }));
+      for (const useAi of [false, true]) {
+        const plan = await postJson('/api/travel-plan', { city: p.cityKey, theme: 'mixed', days: p.days, budget: 'mid', startDate, lang, useAi, request: message,
+          mustVisit: p.wantedPlaces || [], _routeCities: p.routeCities || [], _picks: picks }, { ip: ip() });
+        const issues = planIssues(plan.json, shown);
+        if (plan.status !== 200 || plan.json?.city !== '삿포로' || issues.length) bad.push(`${message} (${useAi ? 'ai' : 'rule'}): ${plan.status} ${plan.json?.city} ${short(issues)}`);
+      }
+    }
+    // 예전 채팅·화면이 보낸 이웃 도시 카드(같은 위키데이터 항목): 일정 도시의 장소로 본다. 이름이 띄어쓰기만 다르면 그 도시 이름으로(TV타워 → TV 타워),
+    // 하는 일이 다른 이름(오카다마 '오도리 야경' = 삿포로 오도리 공원 항목)은 이름 그대로 둔다
+    for (const [city, pick, shown, lang] of [['sapporo', { name: '나카지마 공원', city: '삿포로 오카다마', area: '주오구' }, '나카지마 공원', 'ko'],
+      ['sapporo', { name: '삿포로 TV타워', city: '삿포로 오카다마', area: '삿포로 오카다마' }, '삿포로 TV 타워', 'ko'],
+      ['sapporo', { name: 'Sapporo TV Tower', nameKo: '삿포로 TV타워', city: '삿포로 오카다마', area: 'Sapporo Okadama' }, 'Sapporo TV Tower', 'en'],
+      ['sapporo', { name: '오도리 야경', city: '삿포로 오카다마', area: '오도리', bestTime: '20:00-21:30', stayMin: 60 }, '오도리 야경', 'ko'],
+      ['okadama', { name: '나카지마 공원', city: '삿포로', area: '주오구' }, '나카지마 공원', 'ko'],
+      ['miyako', { name: '사와다 해변', city: '시모지시마', area: '시모지시마' }, '사와다 해변', 'ko'],
+      ['shimojishima', { name: '미야코 신사', city: '미야코지마', area: '미야코지마' }, '미야코 신사', 'ko']]) {
+      for (const useAi of [false, true]) {
+        const plan = await postJson('/api/travel-plan', { city, theme: 'mixed', days: 3, budget: 'mid', startDate, lang, useAi, mustVisit: [pick.nameKo || pick.name],
+          _picks: [{ category: '추천', bestTime: '09:00-17:00', stayMin: 90, ...pick }] }, { ip: ip() });
+        const cityLabel = cityList.find((c) => c.key === city)?.label;
+        const card = (plan.json?.recommendations || []).find((r) => r.name === shown);
+        const issues = planIssues(plan.json, shown);
+        if (plan.status !== 200 || plan.json?.city !== cityLabel || issues.length || !card || card.city !== cityLabel) bad.push(`${city} + ${pick.name}@${pick.city} (${useAi ? 'ai' : 'rule'}): ${plan.json?.city} card ${card ? card.city : 'missing'} ${short(issues)}`);
+      }
+    }
+    // 경로 도시에 없는 다른 도시 장소(삿포로 일정의 하코다테 아침시장)는 그대로: 하코다테가 경로에 들고 이동 줄이 있다
+    const other = await postJson('/api/travel-plan', { city: 'sapporo', theme: 'mixed', days: 4, budget: 'mid', startDate, lang: 'ko', useAi: false, mustVisit: ['하코다테 아침시장'],
+      _picks: [{ name: '하코다테 아침시장', city: '하코다테', area: '하코다테역', category: '시장', bestTime: '08:00-10:00', stayMin: 60 }] }, { ip: ip() });
+    const otherBlocks = (other.json?.itinerary || []).flatMap((d) => d.blocks || []);
+    if (!otherBlocks.some((b) => /^도시 이동: 삿포로 -> 하코다테/.test(b))) bad.push(`하코다테 아침시장 card on a Sapporo trip: no transfer to 하코다테 ${short(otherBlocks.filter((b) => TRANSFER_RE.test(b)))}`);
+    const pairsOk = sharedQids.every((s) => /:(?:okadama\+sapporo|miyako\+shimojishima)$/.test(s));
+    log(bad.length === 0 && pairsOk,
+      `places listed for two neighbouring cities (${sharedQids.length} Wikidata items: 삿포로·삿포로 오카다마, 미야코지마·시모지시마): the chat card is the trip city's, and the plan has no made-up transfer ('삿포로 -> 삿포로 오카다마') and no place twice under two names (삿포로 TV 타워 / TV타워); an old neighbour-city card counts as the trip city's; a real other-city card (하코다테) still adds its city`,
+      short({ bad, pairs: pairsOk ? 'ok' : sharedQids.filter((s) => !/:(?:okadama\+sapporo|miyako\+shimojishima)$/.test(s)).slice(0, 4) }, 900));
+  } catch (e) { log(false, 'shared places of neighbouring cities', e.message); }
+  // 도시 주변 실제 명소가 다른 도시의 큐레이션 명소와 같은 위키데이터 항목인 곳(미야코지마 '이라부 대교' = 시모지시마 큐레이션 명소,
+  // 오카다마 'TV타워' = 삿포로 TV 타워, 삿포로 '모에레누마 공원' = 오카다마 도시 명소): 그 장소의 en/ja 이름만 말해도 두 도시 중
+  // 도시 중심이 가까운 도시로 정하고(폼 도시 도쿄로 가지 않는다. 중심이 5km 안인 삿포로·오카다마는 큰 도시 삿포로로), 그 장소가 일정에 들며
+  // 없는 도시 이동('Tokyo -> Miyakojima')이 없다.
+  // 큐레이션 사진 데이터의 en/ja 이름('Irabu Bridge'·'さっぽろテレビ塔')이 같은 항목의 생성 장소 이름을 '다른 도시 이름'으로 막던 회귀(2026-10-03).
+  // 여러 도시 일정에서 카드 없이 꼭 갈 곳만 보내거나(도쿄·삿포로 + 나카지마 공원) 채팅이 카드를 만들어도 일정 도시(삿포로)의 장소이고,
+  // 경로 도시에서 하루짜리인 같은 항목(아오모리 '오이라세 계곡')을 다른 이름의 이웃 도시 카드(미사와 '오이라세 계류')로 골라도 하루짜리로 든다.
+  try {
+    const TRANSFER_RE = /^(?:도시 이동: |Transfer: |都市間移動：)/;
+    const curatedCities = new Map(); // 위키데이터 ID → 큐레이션 명소가 든 도시들(place-images.json + city-places.json media)
+    for (const [k, v] of [...Object.entries(images), ...Object.entries(asset.media || {})]) {
+      if (!v || !/^Q\d+$/.test(v.wikidata || '')) continue;
+      if (!curatedCities.has(v.wikidata)) curatedCities.set(v.wikidata, new Set());
+      curatedCities.get(v.wikidata).add(k.slice(0, k.indexOf('|')));
+    }
+    const centerOf = (ck) => asset.cities?.[ck]?.center || centers[ck] || null;
+    const km = (a, b) => { const r = Math.PI / 180; const x = Math.sin(((b.lat - a.lat) * r) / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(((b.lng - a.lng) * r) / 2) ** 2; return 12742 * Math.asin(Math.sqrt(x)); };
+    const cross = allPlaces.filter(([ck, p]) => curatedCities.has(p.wikidata) && !curatedCities.get(p.wikidata).has(ck));
+    // 도시 중심이 5km 안인 두 도시(삿포로·삿포로 오카다마 2.4km)는 한 도시로 보고 큐레이션 명소(사진 데이터)가 많은 도시로 간다:
+    // 히가시구의 모에레누마 공원은 오카다마 중심이 더 가깝지만 삿포로(국제선 CTS)다. 미야코지마·시모지시마(13.9km)는 가까운 쪽 그대로.
+    const curatedN = (k) => Object.keys(images).filter((x) => x.startsWith(`${k}|`)).length;
+    const bad = [];
+    for (const [ck, p] of cross) {
+      const cities = [ck, ...curatedCities.get(p.wikidata)].filter((k) => centerOf(k));
+      const byDist = cities.sort((a, b) => km(centerOf(a), p) - km(centerOf(b), p));
+      const expected = byDist.filter((k) => km(centerOf(k), centerOf(byDist[0])) <= 5).sort((a, b) => curatedN(b) - curatedN(a))[0];
+      for (const [lang, name, message] of [['en', p.en, `${p.en} 2 days`], ['ja', p.ja, `${p.ja} 2日間`], ['en', p.en, `I want to visit ${p.en}`]]) {
+        const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 4, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+        const pr = chat.json?.parsed || {};
+        const sel = chat.json?.selectedDestinations || [];
+        if (pr.cityKey !== expected || !(pr.wantedPlaces || []).length) { bad.push(`${message}: chat ${pr.cityKey} (want ${expected}) ${short(pr.wantedPlaces)}`); continue; }
+        const picks = sel.map((d) => ({ name: d.name, ...(d.nameKo ? { nameKo: d.nameKo } : {}), city: d.city, area: d.area, category: d.category, bestTime: d.bestTime, stayMin: d.stayMin }));
+        for (const useAi of [false, true]) {
+          const plan = await postJson('/api/travel-plan', { city: pr.cityKey, theme: 'mixed', days: pr.days, budget: 'mid', startDate, lang, useAi, request: message,
+            mustVisit: pr.wantedPlaces || [], _routeCities: pr.routeCities || [], _picks: picks }, { ip: ip() });
+          const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+          const tr = blocks.filter((b) => TRANSFER_RE.test(b));
+          if (plan.status !== 200 || tr.length || !blocks.some((b) => b.includes(name))) bad.push(`${message} (${useAi ? 'ai' : 'rule'}): ${plan.status} ${plan.json?.city} ${short(tr)} ${blocks.some((b) => b.includes(name)) ? '' : `missing ${name}`}`);
+        }
+      }
+    }
+    // 여러 도시 일정 + 두 이웃 도시에 함께 든 장소: 꼭 갈 곳만(카드 없이) 보낸 일정, 채팅이 만든 카드
+    for (const [lang, routes, label] of [['ko', ['도쿄', '삿포로'], '나카지마 공원'], ['en', ['도쿄', '삿포로'], 'Nakajima Park'], ['ja', ['오사카', '삿포로'], '中島公園']]) {
+      for (const useAi of [false, true]) {
+        const plan = await postJson('/api/travel-plan', { city: lang === 'ja' ? 'osaka' : 'tokyo', theme: 'mixed', days: 4, budget: 'mid', startDate, lang, useAi, _routeCities: routes, mustVisit: ['나카지마 공원'] }, { ip: ip() });
+        const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+        const tr = blocks.filter((b) => TRANSFER_RE.test(b));
+        if (plan.status !== 200 || tr.length !== 1 || tr.some((b) => /오카다마|Okadama|丘珠/.test(b)) || !blocks.some((b) => b.includes(label))) bad.push(`${routes.join('+')} mustVisit 나카지마 공원 (${lang}, ${useAi ? 'ai' : 'rule'}): ${short(tr)} ${blocks.some((b) => b.includes(label)) ? '' : 'missing'}`);
+      }
+    }
+    for (const [message, lang] of [['도쿄 2일 삿포로 2일, 나카지마 공원 가고 싶어', 'ko'], ['Tokyo 2 days, Sapporo 2 days, I want to visit Nakajima Park', 'en']]) {
+      const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 4, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+      const card = (chat.json?.selectedDestinations || []).find((d) => (d.nameKo || d.name) === '나카지마 공원');
+      if (!card || card.city !== '삿포로') bad.push(`${message}: card ${card ? card.city : 'missing'}`);
+    }
+    // 이웃 도시 카드가 경로 도시에서 하루짜리인 같은 항목이면 하루짜리로(아오모리 일정의 '오이라세 계류 (미사와)' = 아오모리 '오이라세 계곡')
+    for (const useAi of [false, true]) {
+      const plan = await postJson('/api/travel-plan', { city: 'aomori', theme: 'mixed', days: 3, budget: 'mid', startDate, lang: 'ko', useAi, mustVisit: ['오이라세 계류'],
+        _picks: [{ name: '오이라세 계류', city: '미사와', area: '도와다', category: '자연', bestTime: '09:00-17:00', stayMin: 90 }] }, { ip: ip() });
+      const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+      if (blocks.some((b) => TRANSFER_RE.test(b)) || !blocks.some((b) => /^종일\(/.test(b) && b.includes('오이라세 계류'))) bad.push(`aomori + 오이라세 계류@미사와 (${useAi ? 'ai' : 'rule'}): ${short(blocks.filter((b) => /오이라세|도시 이동/.test(b)))}`);
+    }
+    log(cross.length >= 3 && bad.length === 0,
+      `a nearby place that is the same Wikidata item as another city's curated place (${cross.length}: 이라부 대교, TV 타워, 모에레누마 공원) is found by its en/ja name and goes to the nearer of the two cities (two cities whose centres are within 5 km — 삿포로·오카다마 — count as one and the bigger, 삿포로, is chosen) with the place in the plan and no made-up transfer; multi-city trips keep 나카지마 공원 in 삿포로 (mustVisit only, chat card); a neighbour card that is a day trip in the trip city stays a day trip`,
+      short({ cross: cross.map(([ck, p]) => `${ck}|${p.name}`), bad }, 900));
+  } catch (e) { log(false, 'nearby places shared with another city\'s curated place', e.message); }
+  // 두 이웃 도시(삿포로·삿포로 오카다마, 중심 2.4km)에 함께 든 같은 장소가 오카다마 중심에 더 가까워도(아쓰베쓰구의 홋카이도 박물관·홋카이도 역사 마을)
+  // 도시를 말하지 않았으면 큰 도시 삿포로(국제선 CTS)로 간다. 예전에는 오카다마(국내선만 있는 OKD) 일정이 됐다(2026-10-03).
+  // '오카다마'라고 말하면 그대로 오카다마다.
+  try {
+    const TRANSFER_RE = /^(?:도시 이동: |Transfer: |都市間移動：)/;
+    const bad = [];
+    for (const [message, lang, city, airport, shown] of [['I want to visit Hokkaido Museum', 'en', 'sapporo', 'CTS', 'Hokkaido Museum'],
+      ['I want to visit Historical Village of Hokkaido', 'en', 'sapporo', 'CTS', 'Historical Village of Hokkaido'], ['홋카이도 박물관 가고 싶어', 'ko', 'sapporo', 'CTS', '홋카이도 박물관'],
+      ['Moerenuma Park 2 days', 'en', 'sapporo', 'CTS', 'Moerenuma Park'], ['오카다마 2일 홋카이도 박물관', 'ko', 'okadama', 'OKD', '홋카이도 박물관']]) {
+      const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 4, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+      const p = chat.json?.parsed || {};
+      const sel = chat.json?.selectedDestinations || [];
+      const picks = sel.map((d) => ({ name: d.name, ...(d.nameKo ? { nameKo: d.nameKo } : {}), city: d.city, area: d.area, category: d.category, bestTime: d.bestTime, stayMin: d.stayMin }));
+      const plan = await postJson('/api/travel-plan', { city: p.cityKey, theme: 'mixed', days: p.days, budget: 'mid', startDate, lang, useAi: false, request: message,
+        mustVisit: p.wantedPlaces || [], _routeCities: p.routeCities || [], _picks: picks }, { ip: ip() });
+      const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+      const cityAirport = cityList.find((c) => c.key === p.cityKey)?.airport;
+      if (p.cityKey !== city || cityAirport !== airport || plan.status !== 200 || !blocks.some((b) => b.includes(shown)) || blocks.some((b) => TRANSFER_RE.test(b))) {
+        bad.push(`${message}: ${p.cityKey}/${cityAirport} plan ${plan.status} ${short(blocks.filter((b) => b.includes(shown) || TRANSFER_RE.test(b)), 160)}`);
+      }
+    }
+    log(bad.length === 0, "a place of both 삿포로 and 삿포로 오카다마 that is nearer the 오카다마 centre (Hokkaido Museum, Historical Village of Hokkaido, Moerenuma Park) goes to 삿포로 / CTS when no city is named; '오카다마 2일 …' stays 오카다마",
+      short(bad, 600));
+  } catch (e) { log(false, 'places of 삿포로 and 삿포로 오카다마 go to 삿포로', e.message); }
+  // 같은 장소(위키데이터 항목)는 이름이 달라도 규칙 일정에 한 번만: 삿포로 큐레이션 명소 '오도리 공원'과 도시 주변 실제 명소 '삿포로 오도리 공원',
+  // 미사와 '오이라세 계류'와 아오모리 '오이라세 계곡'이 이틀에 걸쳐 두 번 들어갔다(2026-10-03). 요청한 이름이 일정에 남는다.
+  // (야경은 같은 공원 항목이라도 따로 하는 일이라 위 '이웃한 두 도시' 검사처럼 함께 둔다)
+  try {
+    const nk = (s) => String(s || '').toLowerCase().replace(/\s+/g, '');
+    const qidOf = new Map();
+    for (const [, p] of allPlaces) [p.name, p.en, p.ja, ...(p.aliases || [])].forEach((n) => { if (n) qidOf.set(nk(n), p.wikidata); });
+    for (const [k, v] of Object.entries(images)) if (v && v.wikidata) [k.slice(k.indexOf('|') + 1), v.labels?.en, v.labels?.ja].forEach((n) => { if (n && !qidOf.has(nk(n))) qidOf.set(nk(n), v.wikidata); });
+    const twice = (j) => {
+      const seen = new Map();
+      const out = [];
+      for (const b of (j?.itinerary || []).flatMap((d) => d.blocks || [])) {
+        const m = PLAN_SIGHT_RE.exec(b);
+        if (!m) continue;
+        const name = m[4].replace(/\s*\([^()]*\)\s*$/, '').trim();
+        const q = qidOf.get(nk(name));
+        if (!q) continue;
+        if (seen.has(q)) out.push(`${seen.get(q)} / ${name}`); else seen.set(q, name);
+      }
+      return out;
+    };
+    const bad = [];
+    const cases = [
+      ['sapporo', 4, { mustVisit: ['삿포로 오도리 공원'], _picks: [{ name: '삿포로 오도리 공원', city: '삿포로', area: '삿포로', category: '추천', bestTime: '09:00-17:00', stayMin: 90 }] }, '삿포로 오도리 공원'],
+      ['sapporo', 4, { _picks: [{ name: '삿포로 오도리 공원', city: '삿포로', area: '삿포로', category: '추천', bestTime: '09:00-17:00', stayMin: 90 }] }, '삿포로 오도리 공원'],
+      ['misawa', 2, { mustVisit: ['오이라세 계곡'] }, '오이라세 계곡'], ['misawa', 3, { mustVisit: ['오이라세 계곡'] }, '오이라세 계곡']];
+    for (const [city, days, extra, shown] of cases) {
+      const plan = await postJson('/api/travel-plan', { city, theme: 'mixed', days, budget: 'mid', startDate, lang: 'ko', useAi: false, ...extra }, { ip: ip() });
+      const dup = twice(plan.json);
+      const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+      if (plan.status !== 200 || dup.length || !blocks.some((b) => b.includes(shown))) bad.push(`${city} ${days}d ${short(extra.mustVisit || extra._picks.map((x) => x.name))}: ${plan.status} ${dup.length ? `twice ${short(dup)}` : ''} ${blocks.some((b) => b.includes(shown)) ? '' : `missing ${shown}`}`);
+    }
+    for (const [message, lang, shown] of [['오도리 공원 가고 싶어', 'ko', '오도리 공원'], ['삿포로 오도리 공원 가고 싶어', 'ko', '오도리 공원'], ['미사와 2일 오이라세 계곡', 'ko', '오이라세 계곡']]) {
+      const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 4, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+      const p = chat.json?.parsed || {};
+      const picks = (chat.json?.selectedDestinations || []).map((d) => ({ name: d.name, ...(d.nameKo ? { nameKo: d.nameKo } : {}), city: d.city, area: d.area, category: d.category, bestTime: d.bestTime, stayMin: d.stayMin }));
+      const plan = await postJson('/api/travel-plan', { city: p.cityKey, theme: 'mixed', days: p.days, budget: 'mid', startDate, lang, useAi: false, request: message,
+        mustVisit: p.wantedPlaces || [], _routeCities: p.routeCities || [], ...(picks.length ? { _picks: picks } : {}) }, { ip: ip() });
+      const dup = twice(plan.json);
+      const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+      if (plan.status !== 200 || dup.length || !blocks.some((b) => b.includes(shown))) bad.push(`${message}: ${plan.status} ${dup.length ? `twice ${short(dup)}` : ''} ${blocks.some((b) => b.includes(shown)) ? '' : `missing ${shown}`}`);
+    }
+    log(bad.length === 0, "rule plans put one place (one Wikidata item) in only once even under two names: 삿포로 4일 + '삿포로 오도리 공원' has no extra '오도리 공원', 미사와 2·3일 + '오이라세 계곡' has no extra '오이라세 계류' (form and chat)",
+      short(bad, 600));
+  } catch (e) { log(false, 'same place twice under two names', e.message); }
+  // 이름 속 '대신'(야마노우에 대신궁 = 山上大神宮, 야마구치 대신궁)은 'X 대신 Y'가 아니다: '궁'이라는 없는 장소를 꼭 갈 곳으로 넣지 않고 그 신사를 넣으며,
+  // 후속 대화에서 도시를 바꾸지도 않는다. 낱말 '대신'(금각사 대신 은각사, 삿포로 대신 하코다테로)은 그대로. 영어는 장음 기호 없이 써도 찾는다(Daijingu, Ino no Hi)
+  try {
+    const bad = [];
+    const parse = async (message, lang = 'ko', extra = {}) => (await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 3, theme: 'mixed', budget: 'mid', startDate }, ...extra }, { ip: ip() })).json?.parsed || {};
+    for (const [message, lang, city, wanted, shown] of [['하코다테 2일 야마노우에 대신궁 가고 싶어', 'ko', 'hakodate', '야마노우에 대신궁', '야마노우에 대신궁'],
+      ['야마노우에 대신궁 2일', 'ko', 'hakodate', '야마노우에 대신궁', '야마노우에 대신궁'], ['야마구치 3일 야마구치 대신궁 꼭 가기', 'ko', 'yamaguchi_ube', '야마구치 대신궁', '야마구치 대신궁'],
+      ['Hakodate 2 days Yamanoue Daijingu Shrine', 'en', 'hakodate', '야마노우에 대신궁', 'Yamanoue Daijingū'], ['Yakushima 2 days Ino no Hi', 'en', 'yakushima', '이노 기념비', 'Inō no Hi']]) {
+      const p = await parse(message, lang);
+      const plan = await postJson('/api/travel-plan', { city: p.cityKey, theme: 'mixed', days: p.days, budget: 'mid', startDate, lang, useAi: false, request: message,
+        mustVisit: p.wantedPlaces || [], excludedPlaces: p.excludedPlaces || [] }, { ip: ip() });
+      const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+      if (p.cityKey !== city || !(p.wantedPlaces || []).includes(wanted) || (p.wantedPlaces || []).some((w) => /^궁/.test(w)) || (p.excludedPlaces || []).length
+        || !blocks.some((b) => b.includes(shown)) || blocks.some((b) => /:\s*궁도?\s\(/.test(b))) bad.push(`${message}: ${p.cityKey} ${short({ wanted: p.wantedPlaces, excl: p.excludedPlaces })} ${short(blocks, 160)}`);
+    }
+    const instead = await parse('교토 2일 금각사 대신 은각사');
+    if (!(instead.wantedPlaces || []).includes('은각사') || !(instead.excludedPlaces || []).includes('금각사')) bad.push(`금각사 대신 은각사: ${short(instead)}`);
+    const prevS = { cityKey: 'sapporo', cityLabel: '삿포로', days: 3, theme: 'mixed', startDate, routeCities: ['삿포로'], regionDayPlan: [{ cityLabel: '삿포로', days: 3, unit: 'day' }], wantedPlaces: [] };
+    const history = [{ role: 'user', content: '삿포로 3일' }, { role: 'assistant', content: '삿포로 3일 여행으로 맞췄어요.' }];
+    const addShrine = await parse('하코다테 야마노우에 대신궁도 넣어줘', 'ko', { history, prevParsed: prevS });
+    if (addShrine.cityKey !== 'sapporo' || !['삿포로', '하코다테'].every((c) => (addShrine.routeCities || []).includes(c)) || !(addShrine.wantedPlaces || []).includes('야마노우에 대신궁')) bad.push(`follow-up add: ${short(addShrine)}`);
+    const switched = await parse('삿포로 대신 하코다테로', 'ko', { history, prevParsed: prevS });
+    if (switched.cityKey !== 'hakodate' || (switched.routeCities || []).includes('삿포로')) bad.push(`follow-up switch: ${short(switched)}`);
+    log(bad.length === 0, "chat: '대신' inside a place name (야마노우에 대신궁) is not 'X 대신 Y' (no made-up place '궁', no city switch in a follow-up); '금각사 대신 은각사' still swaps; English names match without macrons (Daijingu, Ino no Hi)", short(bad));
+  } catch (e) { log(false, 'chat 대신궁 / instead / macrons', e.message); }
+  // 실내 위주(비 오는 날) 규칙 일정: 실내 후보 수에 생성 장소의 실내 명소(무로 사이세이 기념관 등)도 센다 → 실내 명소가 충분한 도시는 야외 큐레이션
+  // 명소(가나자와의 겐로쿠엔·히가시차야 거리·오미초 시장)를 넣지 않고 실내 명소로 채운다. 실내 명소가 거의 없는 섬(리시리)은 예전처럼 야외 명소로 채운다
+  try {
+    const OUTDOOR = { kanazawa: ['겐로쿠엔', '히가시차야 거리', '오미초 시장'], hiroshima: ['평화기념공원', '히로시마성', '이쓰쿠시마 신사'], akita: ['센슈공원', '오가 반도'],
+      kobe: ['고베 하버랜드', '누노비키 허브원', '기타노 이진칸'], rishiri: [] };
+    const bad = [];
+    for (const [ck, outdoorNames] of Object.entries(OUTDOOR)) {
+      const r = await postJson('/api/travel-plan', { city: ck, theme: 'mixed', days: 3, budget: 'mid', startDate, lang: 'ko', useAi: false, _specialPrefs: { indoorFocus: true } }, { ip: ip() });
+      const sights = (r.json?.itinerary || []).flatMap((d) => (d.blocks || []).map((b) => PLAN_SIGHT_RE.exec(b)).filter(Boolean)
+        .map((m) => m[4].replace(/\s*\([^()]*\)\s*$/, '').trim())).filter((n) => !FREE_TIME_NAME_RE.test(n));
+      const outdoor = sights.filter((n) => outdoorNames.includes(n));
+      if (r.status !== 200 || outdoor.length || sights.length < 4) bad.push(`${ck}: ${sights.length} sights (${sights.join('/')}), outdoor ${outdoor.join('/') || '-'}`);
+    }
+    log(bad.length === 0, 'indoor-focus 3-day rule plans count indoor nearby (generated) places: no outdoor curated sight where indoor ones are enough (가나자와 겐로쿠엔), >= 4 real sights (리시리 still gets its outdoor sights)', short(bad));
+  } catch (e) { log(false, 'indoor-focus rule plans', e.message); }
   // 멀리 떨어진 두 도시(도쿄 → 삿포로)는 '대중교통 1~3시간'이 아니라 비행기 이동으로 안내한다
   try {
     const far = await postJson('/api/travel-plan', { city: 'tokyo', theme: 'mixed', days: 4, budget: 'mid', startDate, lang: 'ko', useAi: false,
@@ -2017,6 +2424,79 @@ async function phaseCityCoverage() {
     const transfer = (far.json?.itinerary || []).flatMap((d) => d.blocks || []).find((b) => /^도시 이동/.test(b)) || '';
     log(/도쿄 -> 삿포로/.test(transfer) && /비행기 이동/.test(transfer) && !/1~3시간/.test(transfer), "far route Tokyo -> Sapporo: the transfer line says plane, not 'public transport 1-3 h'", transfer);
   } catch (e) { log(false, 'far route transfer hint', e.message); }
+  // 이동 시간 안내: 자주 쓰는 구간은 표의 시간(삿포로 → 하코다테 특급, 구마모토 → 미야자키 버스, 250km가 넘어도 신칸센인 도쿄 → 나고야),
+  // 표에 없는 구간은 거리 구간(100km 미만 1~3시간, 250km까지 2~4시간 — 같은 신칸센 노선이면 신칸센 시간대),
+  // 섬이 끼면 배·비행기(짧은 배편은 표의 시간), 250km가 넘어도 같은 신칸센 노선이면 비행기가 아니다. en/ja 일정의 이동 줄에는 한국어가 없다.
+  try {
+    const TRANSFER_RE = { ko: /^도시 이동: /, en: /^Transfer: /, ja: /^都市間移動：/ };
+    const transferLine = async (cityKey, from, to, lang) => {
+      const r = await postJson('/api/travel-plan', { city: cityKey, theme: 'mixed', days: 4, budget: 'mid', startDate, lang, useAi: false,
+        _routeCities: [from, to], _regionDayPlan: [{ cityLabel: from, days: 2, unit: 'day' }, { cityLabel: to, days: 2, unit: 'day' }] }, { ip: ip() });
+      return (r.json?.itinerary || []).flatMap((d) => d.blocks || []).find((b) => TRANSFER_RE[lang].test(b)) || '';
+    };
+    // [폼 도시, 출발, 도착, ko 문구, en 문구(null이면 ko만), ja 문구]
+    const ROUTES = [
+      ['sapporo', '삿포로', '하코다테', /\(특급 약 3시간 40분\)$/, /Limited express, about 3 h 40 min/, /特急 約3時間40分/],
+      ['kumamoto', '구마모토', '미야자키', /\(버스 약 3시간\)$/, /Bus, about 3 h\)$/, /バス 約3時間/],
+      ['tokyo', '도쿄', '나고야', /\(신칸센 약 1시간 40분\)$/, /Shinkansen, about 1 h 40 min/, /新幹線 約1時間40分/],
+      // 신칸센이 없는 100~250km 구간은 대중교통 시간대(신칸센 시간을 쓰지 않는다)
+      ['sapporo', '삿포로', '오비히로', /\(대중교통 기준 약 2~4시간\)$/, /\(about 2-4 h by public transport\)$/, /（公共交通機関で約2～4時間）$/],
+      // 같은 신칸센 노선 위 100~250km는 실제로 타는 신칸센 시간(예전에는 '대중교통 기준 약 2~4시간, 신칸센이면 더 짧음'):
+      // 자주 쓰는 구간은 표(고베 ↔ 오카야마 약 30분), 나머지는 거리 구간(200km까지 30분~1시간 30분: 기타큐슈 → 구마모토 122km,
+      // 그 위는 1시간 30분~2시간: 시즈오카 → 교토 239km)
+      ['okayama', '오카야마', '고베', /\(신칸센 약 30분\)$/, /\(Shinkansen, about 30 min\)$/, /（新幹線 約30分）$/],
+      ['kobe', '고베', '오카야마', /\(신칸센 약 30분\)$/, null, null],
+      ['kyoto', '교토', '오카야마', /\(신칸센 약 1시간\)$/, null, null],
+      ['kitakyushu', '기타큐슈', '구마모토', /\(신칸센 약 30분~1시간 30분\)$/, /\(Shinkansen, about 30 min-1 h 30 min\)$/, /（新幹線 約30分～1時間30分）$/],
+      ['shizuoka', '시즈오카', '교토', /\(신칸센 약 1시간 30분~2시간\)$/, /\(Shinkansen, about 1 h 30 min-2 h\)$/, /（新幹線 約1時間30分～2時間）$/],
+      ['sendai', '센다이', '하나마키', /\(신칸센 약 30분~1시간 30분\)$/, null, null],
+      // 짧은 배편이 있는 섬은 표의 배 시간(예전에는 '배나 비행기로 이동, … 반나절 안팎')
+      ['wakkanai', '왓카나이', '리시리', /\(페리 약 1시간 40분\)$/, /\(Ferry, about 1 h 40 min\)$/, /（フェリー 約1時間40分）$/],
+      ['kagoshima', '가고시마', '야쿠시마', /\(고속선 약 2시간, 페리 약 4시간\)$/, /\(High-speed boat, about 2 h; ferry, about 4 h\)$/, /（高速船 約2時間、フェリー 約4時間）$/],
+      ['yakushima', '야쿠시마', '다네가시마', /\(고속선 약 50분\)$/, /\(High-speed boat, about 50 min\)$/, /（高速船 約50分）$/],
+      ['tanegashima', '다네가시마', '가고시마', /\(고속선 약 1시간 40분\)$/, null, null],
+      ['sendai', '센다이', '야마가타', /\(대중교통 기준 1~3시간\)$/, /about 1-3 h by public transport/, /公共交通機関で約1～3時間/],
+      // 100km가 안 돼도 산·바다를 돌아가 오래 걸리는 구간(예전에 '약 1~2시간'으로 나오던 곳)
+      ['kumamoto', '구마모토', '오이타', /\(특급 약 3시간\)$/, /\(Limited express, about 3 h\)$/, /特急 約3時間）$/],
+      ['matsuyama', '마쓰야마', '고치', /\(버스 약 2시간 30분\)$/, null, null],
+      ['kagoshima', '가고시마', '미야자키', /\(특급 약 2시간 10분\)$/, null, null],
+      // 섬: 기차·버스가 없다(아마미 → 도쿠노시마 84km, 미야코지마 → 이시가키 125km)
+      ['amami', '아마미', '도쿠노시마', /\(배나 비행기로 이동, 항구·공항 오가는 시간 포함 반나절 안팎\)$/, /by ferry or plane/, /フェリーか飛行機で移動/],
+      ['miyako', '미야코지마', '이시가키', /\(배나 비행기로 이동, 항구·공항 오가는 시간 포함 반나절 안팎\)$/, null, null],
+      // 250km가 넘는 신칸센 구간은 비행기가 아니다(표: 고베 → 히로시마 253km, 거리 구간: 나고야 → 오카야마 276km, 도쿄 → 오카야마 543km)
+      ['kobe', '고베', '히로시마', /\(신칸센 약 1시간 10분\)$/, null, null],
+      ['nagoya', '나고야', '오카야마', /\(신칸센 약 1~3시간\)$/, /\(Shinkansen, about 1-3 h\)$/, /新幹線 約1～3時間/],
+      ['tokyo', '도쿄', '오카야마', /\(신칸센 약 2~4시간 30분\)$/, null, null]
+    ];
+    const bad = [];
+    for (const [ck, from, to, koRe, enRe, jaRe] of ROUTES) {
+      const ko = await transferLine(ck, from, to, 'ko');
+      if (!ko.startsWith(`도시 이동: ${from} -> ${to} (`) || !koRe.test(ko)) bad.push(`ko ${ko || `${from} -> ${to}: no transfer line`}`);
+      for (const [lang, re] of [['en', enRe], ['ja', jaRe]]) {
+        if (!re) continue;
+        const line = await transferLine(ck, from, to, lang);
+        if (!re.test(line) || HANGUL_RE.test(line)) bad.push(`${lang} ${line || `${from} -> ${to}: no transfer line`}`);
+      }
+    }
+    log(bad.length === 0, "transfer hints: table times (삿포로 -> 하코다테 '특급 약 3시간 40분', 구마모토 -> 오이타 '특급 약 3시간', 오카야마 -> 고베 '신칸센 약 30분', 왓카나이 -> 리시리 '페리 약 1시간 40분'), other islands by ferry/plane, Shinkansen pairs 100-250 km by Shinkansen time and over 250 km not 'plane', distance bands for the rest; en/ja lines have no Korean", short(bad, 700));
+    // 표의 모든 문구와 거리 구간 문구에 en/ja가 있고, 표의 도시 이름은 CITY_DATA 한글 이름(cityKeyForExactLabel로 찾는다)
+    const hints = objectLiteralFromServer('const CITY_TRANSFER_HINTS = ') || {};
+    const hintI18n = objectLiteralFromServer('const TRANSFER_HINT_I18N = ') || {};
+    const fnAt = serverCode.indexOf('function transferHint(');
+    const fnSrc = fnAt >= 0 ? extractBalanced(serverCode, serverCode.indexOf('{', fnAt)) || '' : '';
+    const returned = [...fnSrc.matchAll(/return '([^']+)'/g)].map((m) => m[1]);
+    const labels = new Set(cityList.map((c) => c.label));
+    const noI18n = [...new Set([...Object.values(hints), ...returned])].filter((h) => !hintI18n[h]?.en || !hintI18n[h]?.ja || HANGUL_RE.test(hintI18n[h].en + hintI18n[h].ja));
+    const badKeys = Object.keys(hints).filter((k) => k.split('|').length !== 2 || k.split('|').some((c) => !labels.has(c) && c !== '나라'));
+    // 신칸센 노선·섬 도시 목록의 키는 실제 도시 키(오타가 나면 그 도시만 조용히 거리 구간으로 돌아간다)
+    const arrayLiteral = (prefix) => { const at = serverCode.indexOf(prefix); const src = at >= 0 ? extractBalanced(serverCode, serverCode.indexOf('[', at)) : null; return src ? vm.runInNewContext('(' + src + ')', {}) : null; };
+    const cityKeys = new Set(cityList.map((c) => c.key));
+    const lineKeys = (arrayLiteral('const SHINKANSEN_LINES = ') || []).flat();
+    const islandKeys = arrayLiteral('const ISLAND_CITY_KEYS = new Set(') || [];
+    const badCityKeys = [...lineKeys, ...islandKeys].filter((k) => !cityKeys.has(k));
+    log(Object.keys(hints).length >= 20 && returned.length >= 6 && noI18n.length === 0 && badKeys.length === 0 && lineKeys.length >= 20 && islandKeys.length >= 10 && badCityKeys.length === 0,
+      `CITY_TRANSFER_HINTS (${Object.keys(hints).length} pairs) and the distance-band hints all have en/ja in TRANSFER_HINT_I18N; pair keys are CITY_DATA labels; SHINKANSEN_LINES/ISLAND_CITY_KEYS are city keys`, short({ noI18n, badKeys, badCityKeys }));
+  } catch (e) { log(false, 'transfer hint table and distance bands', e.message); }
   // 화면 흐름(폼 도시 도쿄): 도시 주변 실제 명소 이름만 말한 채팅 → 그 도시 일정, 갈 수 없는 '도시 이동' 날이 없다
   try {
     const bad = [];
@@ -2058,6 +2538,21 @@ async function phaseCityCoverage() {
     }
     log(bad.length === 0, 'chat naming a renamed place (도몬 겐 기념관, 우에다 쇼지 사진 미술관, 구스가와 텐만구, 오기노센 …; en/ja names, the other spelling 타이샤, former names like 겐 도몬 사진 박물관 / 메기지마) -> its city, the place in the plan', short(bad));
   } catch (e) { log(false, 'chat renamed place lookup', e.message); }
+  // '아라시야마 공원'은 교토 아라시야마다: 아사히카와의 동네 공원 嵐山公園(30곳 데이터에서 뺌)이 도시 해석을 가로채지 않는다.
+  // 교토라고 말해도 아라시야마가 대나무숲과 지역 카드로 두 번 들어가지 않는다
+  try {
+    const bad = [];
+    for (const [message, lang, mark, once] of [['아라시야마 공원 가고 싶어', 'ko', '아라시야마', true], ['I want to go to Arashiyama Park', 'en', 'Arashiyama', false],
+      ['교토 아라시야마 공원 가고 싶어', 'ko', '아라시야마', true]]) {
+      const chat = await postJson('/api/ai-travel-chat', { message, lang, context: { city: 'tokyo', days: 3, theme: 'mixed', budget: 'mid', startDate } }, { ip: ip() });
+      const p = chat.json?.parsed || {};
+      const plan = await postJson('/api/travel-plan', { city: p.cityKey, theme: 'mixed', days: p.days, budget: 'mid', startDate, lang, useAi: true, request: message, mustVisit: p.wantedPlaces || [] }, { ip: ip() });
+      const blocks = (plan.json?.itinerary || []).flatMap((d) => d.blocks || []);
+      const marked = blocks.filter((b) => b.includes(mark));
+      if (p.cityKey !== 'kyoto' || !marked.length || (once && marked.length !== 1) || blocks.some((b) => /아사히카와|Asahikawa|旭川/.test(b))) bad.push(`${message}: ${p.cityKey} ${short(p.wantedPlaces)} ${short(blocks, 200)}`);
+    }
+    log(bad.length === 0, "chat '아라시야마 공원 가고 싶어' / 'I want to go to Arashiyama Park' -> Kyoto (Arashiyama in the plan once), not Asahikawa's neighbourhood park 嵐山公園", short(bad));
+  } catch (e) { log(false, 'chat Arashiyama Park -> Kyoto', e.message); }
   // 이름이 걸친 말: '아사히카와 아사히야마 동물원'·'旭川旭山動物園'은 동물원 하나(산 '아사히카와 아사히산'·'旭川旭山'이 아니다), '니이가타 2일'은 니가타,
   // 예전 이름으로 빼 달라고 하면 지금 이름의 장소가 빠진다, 꼭 갈 곳의 여러 낱말 이름은 낱말 조각('쇼지'·'박물관')으로 쪼개지 않는다
   try {
@@ -2122,6 +2617,53 @@ async function phaseCityCoverage() {
     }
     log(bad.length === 0, 'AI itinerary candidates (prompt picks) are real places from the city data only: >= 8 for a 3-day trip in former 2-3-sight cities', short(bad));
   } catch (e) { log(false, 'AI candidates from city data', e.message); }
+  // 30곳 데이터: 무료 모드의 AI 후보 확장도 요청하지 않은 생성 장소를 큐레이션 명소 뒤에 둔다 → 교토 3일 후보(9곳)에 금각사·뵤도인이 있고 생성 장소는 없다
+  try {
+    const before = mock.entries('gemini').length;
+    await postJson('/api/travel-plan', { city: 'kyoto', theme: 'mixed', days: 3, budget: 'mid', startDate, lang: 'ko', useAi: true }, { ip: ip() });
+    const entry = mock.entries('gemini').slice(before).filter((e) => e.isItinerary).pop();
+    let ctx = null;
+    try { ctx = JSON.parse(String(entry?.prompt || '').split('Context:\n')[1]); } catch { ctx = null; }
+    const names = (ctx?.picks || []).map((p) => p.name);
+    const generated = new Set((asset.cities?.kyoto?.places || []).map((p) => p.name));
+    const gen = names.filter((n) => generated.has(n));
+    log(names.length >= 8 && ['금각사', '뵤도인'].every((n) => names.includes(n)) && gen.length === 0,
+      'AI candidates (free mode, Kyoto 3 days): must-see places (금각사, 뵤도인) before unrequested nearby (generated) places, which stay out of the 9', short({ names, gen }));
+  } catch (e) { log(false, 'AI candidates keep must-see places', e.message); }
+  // 1~2일·여러 도시 일정도 같다: 카드(도시 명소 + 생성 장소) 수가 목표 수(날마다 3곳)를 이미 채워도 생성 장소를 뒤로 미루고 목표 수까지만 쓴다
+  // (예전에는 카드 6장 = 교토 2일 목표 6이라 그대로 돌려줘 금각사·니시키 시장이 빠지고, 도쿄+교토+오사카 6일은 24곳으로 20곳을 넘었다).
+  // 목표 수에는 반나절 명소만 센다: 하루짜리 카드(오우치주쿠)는 짧은 일정에서 빠지므로 후쿠시마 1일도 3곳(큐레이션이 모자라면 생성 장소로)
+  try {
+    const bad = [];
+    const CASES = [
+      [{ city: 'kyoto', days: 1 }, ['kyoto'], ['아라시야마 대나무숲', '후시미 이나리', '기요미즈데라'], true],
+      [{ city: 'kyoto', days: 2 }, ['kyoto'], ['금각사', '니시키 시장', '기요미즈데라'], true],
+      [{ city: 'fukushima', days: 1 }, ['fukushima'], ['쓰루가성', '고시키누마'], false],
+      [{ city: 'kyoto', days: 4, _routeCities: ['교토', '오사카'] }, ['kyoto', 'osaka'], ['금각사', '니시키 시장', '오사카성', '도톤보리'], true],
+      [{ city: 'osaka', days: 5, _routeCities: ['오사카', '교토'] }, ['osaka', 'kyoto'], ['유니버셜 스튜디오 재팬', '가이유칸', '아베노 하루카스 300', '기요미즈데라'], true],
+      // 여러 도시는 도시마다 그 도시 일수×3곳이 몫이다(알려진 문제 3): 도쿄 2일 몫은 도쿄 도시 명소 6곳으로 차고,
+      // 교토·오사카 몫은 큐레이션 명소(금각사·니시키 시장·가이유칸)로 채운다(도쿄만 11곳·교토 3곳으로 치우치지 않게)
+      [{ city: 'tokyo', days: 6, _routeCities: ['도쿄', '교토', '오사카'] }, ['tokyo', 'kyoto', 'osaka'], ['센소지', '메이지 신궁', '금각사', '니시키 시장', '기요미즈데라', '오사카성', '가이유칸'], true]
+    ];
+    for (const [body, cks, must, noGenerated] of CASES) {
+      const before = mock.entries('gemini').length;
+      await postJson('/api/travel-plan', { theme: 'mixed', budget: 'mid', startDate, lang: 'ko', useAi: true, ...body }, { ip: ip() });
+      const entry = mock.entries('gemini').slice(before).filter((e) => e.isItinerary).pop();
+      let ctx = null;
+      try { ctx = JSON.parse(String(entry?.prompt || '').split('Context:\n')[1]); } catch { ctx = null; }
+      const names = (ctx?.picks || []).map((p) => p.name);
+      const generated = new Set(cks.flatMap((ck) => (asset.cities?.[ck]?.places || []).map((p) => p.name)));
+      const gen = names.filter((n) => generated.has(n));
+      const missing = must.filter((n) => !names.includes(n));
+      // 반나절 명소 days x 3곳 + 넣을 수 있는 하루짜리(5일 이상이면 하나: USJ·디즈니랜드), 20곳까지
+      const target = Math.min(20, body.days * 3);
+      if (!ctx || names.length < target || names.length > Math.min(20, target + 1) || (noGenerated && gen.length) || missing.length) {
+        bad.push(`${body.city} ${body.days}d: ${names.length}/${target}, missing ${missing.join('/') || '-'}, generated ${gen.join('/') || '-'}`);
+      }
+    }
+    log(bad.length === 0, 'AI candidates (free mode) for 1-2 day and multi-city trips: curated must-see places (금각사, 니시키 시장, 가이유칸, USJ …) first (per-city share on multi-city trips), no unrequested nearby (generated) place while curated ones are left, days x 3 half-day places (<= 20)',
+      short(bad));
+  } catch (e) { log(false, 'AI candidates 1-2 days / multi-city', e.message); }
   checkNoFatal('City coverage AI');
 }
 
@@ -3130,7 +3672,7 @@ const USJ = '유니버셜 스튜디오 재팬';
 // 기대값 키: days · md('MM-DD' 또는 목록, 연도는 올해/내년이고 오늘 이후) · month · keepStart(폼 출발일 유지) · city · theme · notTheme · budget
 //           · prefs(참이어야 하는 조건) · maxPlaces · wanted(모두 포함) · noWanted(정규식) · excluded(모두 포함) · excludedOnly(정확히 이것만, 순서 무관)
 //           · unsupported(정확히 같은 목록)
-//           · route(모두 포함) · food(정규식) · arrival · departure · startTime
+//           · route(모두 포함) · routeExact(정확히 이 순서) · region(도시별 일수 '도시:3d'·'도시:2n', 정확히 이 순서) · food(정규식) · arrival · departure · startTime
 // ai_live = 실제 Gemini로 돌린 P01-P16·X1-X3, ai_code = 코드 검수 P01-P19(probe1 P01-P16 + 날짜 경계 P17-P19), SV-04 = 정규식 보정 표.
 const INTENT_CASES = [
   ['ai_live P01', '오사카 3박 4일, 유니버설 스튜디오는 하루 통째로, 도톤보리는 저녁에 꼭 가고 싶어', {}, { city: 'osaka', days: 4, keepStart: true, wanted: [USJ, '도톤보리'], unsupported: [] }],
@@ -3190,6 +3732,226 @@ const INTENT_CASES = [
   ['SV-04 foodie-days', '도쿄 맛집 투어 3일', {}, { city: 'tokyo', days: 3, theme: 'foodie', unsupported: [] }],
   ['SV-04 unknown-region', '오사카 3일 고야산 1일', {}, { city: 'osaka', days: 4, unsupported: ['고야산'] }],
   ['SV-04 two-cities', '도쿄 3일 오사카 2일', {}, { city: 'tokyo', days: 5, route: ['도쿄', '오사카'], unsupported: [] }],
+  // 2026-10-03 영어·일본어 도시별 일수(알려진 문제 1): 한국어 '오사카 3일 교토 2일'과 같은 일수·경로·분배(예전에는 첫 숫자 3일만).
+  // 날짜('Oct 15')·일차('Day 2'·'2日目')·'1日2か所'은 일수가 아니고, 도시 데이터가 없는 지역('Koyasan'·'高野山')의 일수는 더한다.
+  ['R01 ko two cities', '오사카 3일 교토 2일', {}, { city: 'osaka', days: 5, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R02 en city then days', 'Osaka 3 days then Kyoto 2 days', { lang: 'en' }, { city: 'osaka', days: 5, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R03 en days before city', '3 days in Osaka and 2 days in Kyoto', { lang: 'en' }, { city: 'osaka', days: 5, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R04 ja 日間', '大阪3日間、京都2日間', { lang: 'ja' }, { city: 'osaka', days: 5, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R05 ja 日', '大阪3日、京都2日', { lang: 'ja' }, { city: 'osaka', days: 5, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R06 en nights', 'Osaka 2 nights, Kyoto 1 night', { lang: 'en' }, { city: 'osaka', days: 4, routeExact: ['오사카', '교토'], region: ['오사카:2n', '교토:1n'], unsupported: [] }],
+  ['R07 ja nights', '大阪に2泊、京都に1泊', { lang: 'ja' }, { city: 'osaka', days: 4, routeExact: ['오사카', '교토'], region: ['오사카:2n', '교토:1n'], unsupported: [] }],
+  ['R08 en date and Day N', 'Oct 15 Osaka 3 days then Kyoto 2 days, Universal Studios on Day 2', { lang: 'en' }, { city: 'osaka', days: 5, md: '10-15', routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], wanted: [USJ] }],
+  ['R09 ja day number', '大阪3日間、2日目にUSJ、1日2か所', { lang: 'ja' }, { city: 'osaka', days: 3, region: ['오사카:3d'], wanted: [USJ], unsupported: [] }],
+  ['R10 en unknown region', 'Osaka 3 days, Kyoto 2 days, Koyasan 1 day', { lang: 'en' }, { city: 'osaka', days: 6, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: ['Koyasan'] }],
+  ['R11 ja unknown region', '大阪3日間、京都2日間、高野山1日', { lang: 'ja' }, { city: 'osaka', days: 6, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: ['高野山'] }],
+  ['R12 en place is not a region', 'Tokyo 3 days, Disneyland 1 day', { lang: 'en' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  ['R13 ja place is not a region', '東京3日間、ディズニーランド1日', { lang: 'ja' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  // 검토 후 보완(2026-10-03): 도시 안의 동네·섬(두 글자 한자 '浅草'·'宮島', 영어 'Miyajima'·'Harajuku'·'Disney')은 데이터 없는 지역이 아니다
+  // (한국어 '도쿄 3일, 아사쿠사 1일'·'히로시마 2일, 미야지마 1일'처럼 하루를 더하지 않고 '데이터 없음' 알림도 없다)
+  ['R14 ja two-kanji area', '東京3日間、浅草1日', { lang: 'ja' }, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R15 ja island in city data', '広島2日、宮島1日', { lang: 'ja' }, { city: 'hiroshima', days: 2, wanted: ['이쓰쿠시마 신사'], unsupported: [] }],
+  ['R16 en island in city data', 'Hiroshima 2 days, Miyajima 1 day', { lang: 'en' }, { city: 'hiroshima', days: 2, wanted: ['이쓰쿠시마 신사'], unsupported: [] }],
+  ['R17 en area', 'Tokyo 3 days, Harajuku 1 day', { lang: 'en' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  ['R18 en Disney', 'Tokyo 4 days, 1 day in Disney', { lang: 'en' }, { city: 'tokyo', days: 4, unsupported: [] }],
+  ['R19 ko area', '도쿄 3일, 이케부쿠로 1일', {}, { city: 'tokyo', days: 3, unsupported: [] }],
+  // 일수가 도시 앞에 오는 일본어·한국어('3日間は大阪、2日間は京都', '3일 오사카, 2일 교토'): 예전에는 오사카 2일로 읽어 교토가 빠졌다
+  ['R20 ja days before city', '3日間は大阪、2日間は京都', { lang: 'ja' }, { city: 'osaka', days: 5, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R21 ko days before city', '3일 오사카, 2일 교토', {}, { city: 'osaka', days: 5, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  // 쉼표 없는 영어: 일수 하나는 이름 하나에만('Koyasan 2 days'로 또 세지 않는다), '1 day 2 days'의 'day 2'는 일차가 아니다
+  ['R22 en no comma', '3 days in Osaka then 1 day in Koyasan 2 days in Kyoto', { lang: 'en' }, { city: 'osaka', days: 6, region: ['오사카:3d', '교토:2d'], unsupported: ['Koyasan'] }],
+  ['R23 en day 2 days', 'Osaka 3 days and Koyasan 1 day 2 days in Kyoto', { lang: 'en' }, { city: 'osaka', days: 6, region: ['오사카:3d', '교토:2d'], unsupported: ['Koyasan'] }],
+  // 'including'·'そのうち'·'그중': 뒤의 일수는 전체 안에 든다(더하지 않는다)
+  ['R24 en including', 'Tokyo 5 days including 2 days in Kyoto', { lang: 'en' }, { city: 'tokyo', days: 5, region: ['도쿄:3d', '교토:2d'], unsupported: [] }],
+  ['R25 ja sonouchi', '東京5日間、そのうち箱根2日', { lang: 'ja' }, { city: 'tokyo', days: 5, unsupported: ['箱根'] }],
+  ['R26 ko geujung', '도쿄 총 5일, 그중 하코네 2일', {}, { city: 'tokyo', days: 5, unsupported: ['하코네'] }],
+  // 장소가 아닌 말(패스·쇼핑·호텔·자유시간·마지막 날·하루 예산)은 지역이 아니다
+  ['R27 en JR Pass', 'Tokyo 3 days, JR Pass 7 days', { lang: 'en' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  ['R28 ja hotel nights', '東京3日間、ホテルは2泊', { lang: 'ja' }, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R29 ja budget per day', '東京3日間、予算は1日1万円', { lang: 'ja' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  // 'after': 뒤에 말한 오사카를 먼저 간다 / 도시 구간 뒤쪽의 박(高野山で1泊)은 오사카 몫이 아니다
+  ['R30 en after', 'Kyoto 2 days after 3 days in Osaka', { lang: 'en' }, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R31 ja night in the window', '大阪3日間、高野山で1泊、京都2日間', { lang: 'ja' }, { city: 'osaka', days: 6, region: ['오사카:3d', '교토:2d'], unsupported: ['高野山'] }],
+  // 2026-10-03 통합 검토 회귀: 한국어 'N일간'·'N일 동안'은 앞 도시 몫이다(다음 도시 몫으로 잘라 앞 도시가 일수를 잃고 전체가 3일이 되던 문제).
+  // 조사 '은·는'이 붙은 '3일간은 오사카'·'3일 동안은 오사카'만 다음 도시 몫이고, 글 전체가 '일수 → 도시' 순서면('3일 동안 도쿄, 2일 동안 오사카') 그대로 읽는다.
+  ['R32 ko N일간 after city', '오사카 3일간 교토 2일간', {}, { city: 'osaka', days: 5, routeExact: ['오사카', '교토'], region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R33 ko N일 동안 after city', '도쿄는 3일 동안 오사카는 2일 동안', {}, { city: 'tokyo', days: 5, routeExact: ['도쿄', '오사카'], region: ['도쿄:3d', '오사카:2d'], unsupported: [] }],
+  ['R34 ko N일 동안 before city', '3일 동안 도쿄, 2일 동안 오사카', {}, { city: 'tokyo', days: 5, routeExact: ['도쿄', '오사카'], region: ['도쿄:3d', '오사카:2d'], unsupported: [] }],
+  ['R35 ko N일간 reversed order', '교토 2일간 오사카 3일간', {}, { days: 5, route: ['교토', '오사카'], region: ['교토:2d', '오사카:3d'], unsupported: [] }],
+  ['R36 ko N박 동안', '도쿄 2박 동안 오사카 1박', {}, { city: 'tokyo', days: 4, routeExact: ['도쿄', '오사카'], region: ['도쿄:2n', '오사카:1n'], unsupported: [] }],
+  ['R37 ko 3일간은 before city', '3일간은 오사카, 2일간은 교토', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  // '그중/중 N일은 <명소>, <다른 도시> N일': 표시 바로 뒤 일수(디즈니·유니버셜)만 앞 도시 안에 들고, 뒤에 따로 말한 도시 일수는 빼지 않는다(ko/en/ja)
+  ['R38 ko 중 N일은 place', '도쿄 3일 중 1일은 디즈니, 오사카 2일', {}, { city: 'tokyo', days: 5, routeExact: ['도쿄', '오사카'], region: ['도쿄:3d', '오사카:2d'], unsupported: [] }],
+  ['R39 ko 그중 N일은 place', '오사카 3일 그중 1일은 유니버셜, 교토 2일', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:2d'], wanted: [USJ], unsupported: [] }],
+  ['R40 ko 중에 no comma', '오사카 3일 중에 1일은 유니버셜이고 교토 2일', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R41 en including place then city', 'Tokyo 3 days including 1 day at Disney, then Osaka 2 days', { lang: 'en' }, { city: 'tokyo', days: 5, region: ['도쿄:3d', '오사카:2d'], unsupported: [] }],
+  ['R42 ja のうち place then city', '東京3日間のうち1日はディズニー、大阪2日間', { lang: 'ja' }, { city: 'tokyo', days: 5, region: ['도쿄:3d', '오사카:2d'], unsupported: [] }],
+  // 도시와 일수 사이에 그 도시의 하루짜리 명소(테마파크)가 있으면 그 일수는 명소 몫: 같은 도시·시내·관광·쇼핑 일수를 더한다
+  // (같은 도시를 두 번 말한 두 번째 일수를 버려 1일 여행이 되던 문제). 도시 바로 뒤 일수('도쿄 3일, 쇼핑 1일')는 그 도시 전체라 그대로다.
+  ['R43 ko same city twice', '도쿄 디즈니랜드 1일, 도쿄 시내 3일', {}, { city: 'tokyo', days: 4, region: ['도쿄:4d'], wanted: ['도쿄 디즈니랜드'], unsupported: [] }],
+  ['R44 ko park then downtown', '도쿄 디즈니랜드 1일, 시내 3일', {}, { city: 'tokyo', days: 4, region: ['도쿄:4d'], unsupported: [] }],
+  ['R45 ko park then city', '오사카 유니버셜 1일, 오사카 시내 2일', {}, { city: 'osaka', days: 3, region: ['오사카:3d'], wanted: [USJ], unsupported: [] }],
+  ['R46 ko park then shopping', '도쿄 디즈니랜드 1일, 쇼핑 2일', {}, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R47 ko city days include shopping', '도쿄 3일, 쇼핑 1일', {}, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R48 ko city days include park', '도쿄 3일, 디즈니랜드 1일', {}, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R49 ko park only, no city name', '디즈니랜드 1일 시내 3일', {}, { city: 'tokyo', days: 4, unsupported: [] }],
+  ['R50 en park then city', 'Tokyo Disneyland 1 day, Tokyo city 3 days', { lang: 'en' }, { city: 'tokyo', days: 4, region: ['도쿄:4d'], unsupported: [] }],
+  ['R51 ja park then city', '東京ディズニーランド1日、東京市内3日', { lang: 'ja' }, { city: 'tokyo', days: 4, region: ['도쿄:4d'], unsupported: [] }],
+  ['R52 ko downtown then region', '도쿄 시내 3일 요코하마 1일', {}, { city: 'tokyo', days: 4, region: ['도쿄:3d'], unsupported: ['요코하마'] }],
+  // 다른 도시 장소 이름의 일부(宇治 ⊂ 가고시마 '一宇治城')는 이 여행 도시 안 장소가 아니다: 아는 지역 이름(宇治·Uji)이면 영어·한국어처럼 하루를 더하고 알린다.
+  // 2026-10-03 3차 검토: 영어·일본어는 아는 지역 이름만 센다. 長浜는 여러 곳에 쓰이는 이름이라(이즈모 '長浜神社' 등) 예전(HEAD)처럼 세지 않는다
+  // (R56의 기대값을 4일·['長浜']에서 HEAD 동작 3일·[]로 되돌림: 일반 낱말 200건을 지역으로 세던 같은 판정에서 나온 결과다)
+  ['R53 ja Uji', '京都3日間、宇治1日', { lang: 'ja' }, { city: 'kyoto', days: 4, region: ['교토:3d'], unsupported: ['宇治'] }],
+  ['R54 en Uji', 'Kyoto 3 days, Uji 1 day', { lang: 'en' }, { city: 'kyoto', days: 4, region: ['교토:3d'], unsupported: ['Uji'] }],
+  ['R55 ko Uji', '교토 3일, 우지 1일', {}, { city: 'kyoto', days: 4, region: ['교토:3d'], unsupported: ['우지'] }],
+  ['R56 ja Nagahama', '東京3日間、長浜1日', { lang: 'ja' }, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  // 도시 앞 일수에 이어 주는 말이 있으면('2 days in Kyoto', '2일은 교토') 쉼표 뒤 다른 이름의 일수(Nara 1 day)는 그 도시 몫이 아니다
+  ['R57 en days-in then region', '3 days in Osaka, 2 days in Kyoto, Nara 1 day', { lang: 'en' }, { city: 'osaka', days: 6, region: ['오사카:3d', '교토:2d'], unsupported: ['Nara'] }],
+  ['R58 ko N일은 then region', '3일은 오사카, 2일은 교토, 나라 1일', {}, { city: 'osaka', days: 6, region: ['오사카:3d', '교토:2d'], unsupported: ['나라'] }],
+  // 2026-10-03 2차 검토: 여행 도시 장소에 없는 일본어 일반 낱말(水族館·ビーチ·庭園·花見…)은 다른 도시 장소 이름 끝·여러 도시에 드는 장소 종류라
+  // 데이터 없는 지역이 아니다(하루를 더하고 '데이터 없음'을 알리던 회귀). 宇治·長浜(R53·R56)처럼 한 도시 장소 이름 앞·가운데에만 드는 이름은 지역이다.
+  ['R59 ja generic aquarium', '大阪3日間、水族館1日', { lang: 'ja' }, { city: 'osaka', days: 3, region: ['오사카:3d'], unsupported: [] }],
+  ['R60 ja generic beach', '沖縄3日間、ビーチ1日', { lang: 'ja' }, { city: 'okinawa', days: 3, region: ['오키나와:3d'], unsupported: [] }],
+  ['R61 ja generic garden', '京都3日間、庭園1日', { lang: 'ja' }, { city: 'kyoto', days: 3, region: ['교토:3d'], unsupported: [] }],
+  ['R62 ja generic hanami', '東京3日間、花見1日', { lang: 'ja' }, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R63 ja generic in two cities', '東京3日間、海水浴1日', { lang: 'ja' }, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R64 ja generic katakana', '東京3日間、ラベンダー1日', { lang: 'ja' }, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R65 en generic capitalized', 'Tokyo 3 days, Zoo 1 day', { lang: 'en' }, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  // '그중/including' 바로 뒤가 도시면 목록으로 이어지는 도시들이 모두 앞 도시 안에 든다(두 번째 도시까지 더해 하루 늘던 회귀). 'then'에서 목록이 끝난다.
+  ['R66 en including two cities', 'Tokyo 5 days including 2 days in Kyoto and 1 day in Osaka', { lang: 'en' }, { city: 'tokyo', days: 5, region: ['도쿄:2d', '교토:2d', '오사카:1d'], unsupported: [] }],
+  ['R67 ja sonouchi two cities', '東京5日間、そのうち京都2日、大阪1日', { lang: 'ja' }, { city: 'tokyo', days: 5, region: ['도쿄:2d', '교토:2d', '오사카:1d'], unsupported: [] }],
+  ['R68 ja nouchi N日は two cities', '大阪5日間のうち2日は京都、1日は神戸', { lang: 'ja' }, { city: 'osaka', days: 5, region: ['오사카:2d', '교토:2d', '고베:1d'], unsupported: [] }],
+  ['R69 ko geujung two cities', '도쿄 5일, 그중 교토 2일, 오사카 1일', {}, { city: 'tokyo', days: 5, region: ['도쿄:2d', '교토:2d', '오사카:1d'], unsupported: [] }],
+  ['R70 ko 중 N일은 two cities', '오사카 5일 중 1일은 교토, 1일은 고베', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:1d', '고베:1d'], unsupported: [] }],
+  ['R71 ko 중에 two cities no comma', '오사카 5일 중에 교토 1일 고베 1일', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:1d', '고베:1d'], unsupported: [] }],
+  ['R72 en including then city', 'Tokyo 5 days including 2 days in Kyoto, then Osaka 2 days', { lang: 'en' }, { city: 'tokyo', days: 7, region: ['도쿄:3d', '교토:2d', '오사카:2d'], unsupported: [] }],
+  // '그중 하루는 디즈니'처럼 말로 쓴 일수도 표시 바로 뒤 일수다: 뒤에 따로 말한 도시는 앞 도시에서 빼지 않는다(쉼표가 없으면 빼던 문제)
+  ['R73 ko 하루는 place then city', '도쿄 4일 그중 하루는 디즈니랜드 오사카 2일', {}, { city: 'tokyo', days: 6, region: ['도쿄:4d', '오사카:2d'], unsupported: [] }],
+  ['R74 ko 하루는 이고', '오사카 4일 중 하루는 유니버셜이고 교토 2일', {}, { city: 'osaka', days: 6, region: ['오사카:4d', '교토:2d'], wanted: [USJ], unsupported: [] }],
+  ['R75 ko 하루 no particle', '도쿄 3일 중 하루 디즈니 오사카 2일', {}, { city: 'tokyo', days: 5, region: ['도쿄:3d', '오사카:2d'], unsupported: [] }],
+  ['R76 ko 이틀은', '도쿄 5일 중에 이틀은 디즈니 교토 2일', {}, { city: 'tokyo', days: 7, region: ['도쿄:5d', '교토:2d'], unsupported: [] }],
+  ['R77 en one day at', 'Tokyo 4 days including one day at Disney, Kyoto 2 days', { lang: 'en' }, { city: 'tokyo', days: 6, region: ['도쿄:4d', '교토:2d'], unsupported: [] }],
+  ['R78 ja 一日は', '東京4日間のうち一日はディズニー、京都2日', { lang: 'ja' }, { city: 'tokyo', days: 6, region: ['도쿄:4d', '교토:2d'], unsupported: [] }],
+  // 같은 도시를 두 번 말하면 두 번째 일수도 그 도시 몫이다: 앞 일수가 그 도시 안 장소·당일치기 지역 몫이면 '시내' 일수를 더하고('교토 아라시야마 1일, 교토 시내 2일'),
+  // 다른 곳을 다녀와 다시 말하면 더한다('오사카 3일 교토 2일 오사카 1일'). 하코네·하우스텐보스 일수는 지역 몫이라 도시 일수에서 빠지고 따로 더해진다.
+  ['R79 ko area then city', '교토 아라시야마 1일, 교토 시내 2일', {}, { city: 'kyoto', days: 3, region: ['교토:3d'], unsupported: [] }],
+  ['R80 ko area then city tokyo', '도쿄 아사쿠사 1일, 도쿄 시내 2일', {}, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R81 ko day trip then city', '도쿄 하코네 1일, 도쿄 시내 2일', {}, { city: 'tokyo', days: 3, region: ['도쿄:2d'], unsupported: ['하코네'] }],
+  ['R82 ko no-data place then city', '나가사키 하우스텐보스 1일, 나가사키 시내 2일', {}, { city: 'nagasaki', days: 3, region: ['나가사키:2d'], unsupported: ['하우스텐보스'] }],
+  ['R83 ko city again after other city', '도쿄 디즈니랜드 1일 그리고 오사카 2일 그리고 도쿄 시내 1일', {}, { city: 'tokyo', days: 4, region: ['도쿄:2d', '오사카:2d'], unsupported: [] }],
+  ['R84 ko park, city, city again', '오사카 유니버셜 1일, 교토 2일, 오사카 시내 1일', {}, { city: 'osaka', days: 4, region: ['오사카:2d', '교토:2d'], unsupported: [] }],
+  ['R85 ko return to city', '오사카 3일 교토 2일 오사카 1일', {}, { city: 'osaka', days: 6, region: ['오사카:4d', '교토:2d'], unsupported: [] }],
+  ['R86 ko return with 다시', '도쿄는 3일 오사카는 2일 도쿄는 다시 1일', {}, { city: 'tokyo', days: 6, region: ['도쿄:4d', '오사카:2d'], unsupported: [] }],
+  ['R87 en back to city', 'Osaka 3 days, Kyoto 2 days, back to Osaka 1 day', { lang: 'en' }, { city: 'osaka', days: 6, region: ['오사카:4d', '교토:2d'], unsupported: [] }],
+  ['R88 ja また city', '大阪3日間、京都2日間、また大阪1日', { lang: 'ja' }, { city: 'osaka', days: 6, region: ['오사카:4d', '교토:2d'], unsupported: [] }],
+  ['R89 ko IN/OUT then days', '도쿄 IN 오사카 OUT, 도쿄 3일 오사카 2일', {}, { city: 'tokyo', days: 5, region: ['도쿄:3d', '오사카:2d'], unsupported: [] }],
+  ['R90 en area then city', 'Kyoto Arashiyama 1 day, Kyoto city 2 days', { lang: 'en' }, { city: 'kyoto', days: 3, region: ['교토:3d'], unsupported: [] }],
+  ['R91 ja area then city', '京都嵐山1日、京都市内2日', { lang: 'ja' }, { city: 'kyoto', days: 3, region: ['교토:3d'], unsupported: [] }],
+  // 그대로인 것: 도시 전체 일수 뒤의 같은 도시 '시내'·명소 일수, 'N일은 <장소>'로 나눈 일수, 장소 이름 속 도시 이름, 괄호 속 도시 이름, 숙소 이야기
+  ['R92 ko whole city then downtown', '도쿄 3일, 도쿄 시내 1일', {}, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R93 ko whole city then park', '도쿄 3일, 도쿄 디즈니랜드 1일', {}, { days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R94 ko split of city days', '도쿄 3일 오사카 2일, 오사카에서 1일은 유니버셜', {}, { days: 5, region: ['도쿄:3d', '오사카:2d'], unsupported: [] }],
+  ['R95 ko city name in place name', '오사카 3일, 교토 2일, 오사카성 1일', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R96 ko city name in parentheses', '오사카 3일 교토(오사카에서 가까움) 2일', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R97 ko stay near park', '도쿄 디즈니랜드 근처 숙소 3일, 시내 1일', {}, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R98 ko area stay then park', '오사카 난바 3일, 유니버셜 1일', {}, { city: 'osaka', days: 3, region: ['오사카:3d'], unsupported: [] }],
+  // '포함'·'including'·'含めて': 뒤 일수가 그 도시 전체다(더해서 하루 많던 문제)
+  ['R99 ko 포함해서 city days', '도쿄 디즈니랜드 1일 포함해서 도쿄 4일', {}, { city: 'tokyo', days: 4, region: ['도쿄:4d'], unsupported: [] }],
+  ['R100 ko 포함 days', '도쿄 디즈니랜드 1일 포함 3일', {}, { city: 'tokyo', days: 3, region: ['도쿄:3d'], unsupported: [] }],
+  ['R101 en in total including', 'Tokyo Disneyland 1 day, Tokyo 4 days in total including Disney', { lang: 'en' }, { city: 'tokyo', days: 4, region: ['도쿄:4d'], unsupported: [] }],
+  ['R102 ja 含めて', '東京ディズニーランド1日含めて東京4日', { lang: 'ja' }, { city: 'tokyo', days: 4, region: ['도쿄:4d'], unsupported: [] }],
+  // 지역이 아닌 말: '재팬'·'나머지', 하루 승차권 '1일권'. '2일 동안 오사카, 나라 1일'의 2일은 오사카 몫이다
+  ['R103 ko 재팬 not a region', '오사카 유니버셜 스튜디오 재팬 1일, 오사카 2일', {}, { city: 'osaka', days: 3, region: ['오사카:3d'], wanted: [USJ], unsupported: [] }],
+  ['R104 ko 나머지 not a region', '도쿄 디즈니랜드에서 1일 놀고 나머지 3일은 도쿄 시내', {}, { city: 'tokyo', days: 4, region: ['도쿄:4d'], unsupported: [] }],
+  ['R105 ko day pass is not days', '오사카 주유패스 1일권 사서 오사카 3일', {}, { city: 'osaka', days: 3, region: ['오사카:3d'], unsupported: [] }],
+  ['R106 ko N일 동안 then region', '도쿄 3일, 2일 동안 오사카, 나라 1일', {}, { city: 'tokyo', days: 6, region: ['도쿄:3d', '오사카:2d'], unsupported: ['나라'] }],
+  // 하루짜리 명소가 도시 이름보다 먼저 오고 도시 뒤가 '시내'뿐이면('유니버셜 1일, 오사카 시내 2일') 명소 일수도 그 도시 몫이다(오사카 2일만 남던 문제).
+  // 다른 도시의 명소('오사카 3일, 유니버셜 1일, 교토 시내 2일'의 유니버셜)는 교토에 더하지 않고, 앞 도시 괄호 속 '포함'은 다시 온 도시 일수와 상관없다.
+  ['R107 ko park before city part', '유니버셜 1일, 오사카 시내 2일', {}, { city: 'osaka', days: 3, region: ['오사카:3d'], unsupported: [] }],
+  ['R108 en park before city part', '1 day at Universal, Osaka city 2 days', { lang: 'en' }, { city: 'osaka', days: 3, region: ['오사카:3d'], unsupported: [] }],
+  ['R109 ja park before city part', 'USJ1日、大阪市内2日', { lang: 'ja' }, { city: 'osaka', days: 3, region: ['오사카:3d'], unsupported: [] }],
+  ['R110 ko other city park stays', '오사카 3일, 유니버셜 1일, 교토 시내 2일', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R111 ko 포함 inside parentheses', '도쿄 3일(디즈니 포함) 오사카 2일 도쿄 1일', {}, { city: 'tokyo', days: 6, region: ['도쿄:4d', '오사카:2d'], unsupported: [] }],
+  // 2026-10-03 3차 검토(채팅 해석 회귀): 띄어 쓰지 않은 'X대신Y'·'X대신에Y'도 'X 대신 Y'다 — X는 제외, Y만 꼭 갈 곳('대신' 뒤에 한글이 붙으면 모두 막아
+  // X가 꼭 갈 곳이 되던 회귀. 이름 속 '대신궁'만 막는다). 붙여 쓴 '도시+일수'(후쿠오카3일·오사카3일)는 부정 구절을 지울 때 함께 지우지 않는다
+  ['R112 ko 대신 glued', '도쿄4일디즈니대신시부야', {}, { city: 'tokyo', days: 4, wanted: ['시부야'], noWanted: /디즈니/ }],
+  ['R113 ko 대신 glued must', '교토2일금각사대신은각사', {}, { city: 'kyoto', days: 2, wanted: ['은각사'], excludedOnly: ['금각사'], noWanted: /금각사/ }],
+  ['R114 ko 대신 glued tower', '도쿄3일도쿄타워대신스카이트리', {}, { city: 'tokyo', days: 3, wanted: ['도쿄 스카이트리'], excludedOnly: ['도쿄 타워'], noWanted: /도쿄 타워/ }],
+  ['R115 ko 대신 then glued', '도쿄 3일 디즈니랜드 대신시부야', {}, { city: 'tokyo', days: 3, wanted: ['시부야'], excludedOnly: ['도쿄 디즈니랜드'], noWanted: /디즈니/ }],
+  ['R116 ko 대신에 glued', '도쿄3일디즈니대신에시부야', {}, { city: 'tokyo', days: 3, wanted: ['시부야'], noWanted: /디즈니/ }],
+  ['R117 ko 대신 glued day trip', '도쿄3일하코네대신가마쿠라당일치기', {}, { city: 'tokyo', days: 3, wanted: ['가마쿠라'], excludedOnly: ['하코네'], noWanted: /하코네|당일치기/ }],
+  ['R118 ko 대신 glued keeps city', '후쿠오카3일유후인대신벳푸', {}, { city: 'fukuoka', days: 3, wanted: ['벳푸 지옥온천'], excludedOnly: ['유후인'], noWanted: /유후인/ }],
+  ['R119 ko 대신 glued region', '오사카3일교토대신나라', {}, { city: 'osaka', days: 3, wanted: ['나라 공원·도다이지'] }],
+  ['R120 ko 대신 glued keeps city 2', '오사카3일유니버설대신수족관', {}, { city: 'osaka', days: 3, excludedOnly: [USJ], noWanted: /유니버/ }],
+  // 한국어 'N박은·N일은'이 앞 도시 바로 뒤에(쉼표 없이) 붙으면 앞 도시 몫이다(다음 도시 몫으로 읽어 앞 도시 일수가 사라지고 도시가 빠지던 회귀).
+  // 글 맨 앞·쉼표 뒤('2박은 오사카, 1박은 교토')와 앞 도시가 앞에 일수를 가진 글('3일은 오사카 2일은 교토')은 그대로 다음 도시 몫이다
+  ['R121 ko N박은 after city', '오사카 2박은 교토 1박은 어때', {}, { city: 'osaka', days: 4, routeExact: ['오사카', '교토'], region: ['오사카:2n', '교토:1n'], unsupported: [] }],
+  ['R122 ko N일은 after city', '오사카 3일은 교토 2일은 어때?', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:2d'], unsupported: [] }],
+  ['R123 ko 는 N일은', '도쿄는 3일은 오사카는 2일은', {}, { city: 'tokyo', days: 5, region: ['도쿄:3d', '오사카:2d'] }],
+  ['R124 ko N박은 then 에서', '오사카 2박은 교토에서 1박', {}, { days: 4, region: ['오사카:2n', '교토:1n'] }],
+  ['R125 ko 에 N박은', '오사카에 2박은 교토에 1박은', {}, { days: 4, region: ['오사카:2n', '교토:1n'] }],
+  ['R126 ko N박은 nights', '도쿄 3박은 오사카 1박', {}, { city: 'tokyo', days: 5, region: ['도쿄:3n', '오사카:1n'] }],
+  ['R127 ko N일은 days', '오사카 2일은 교토 1일', {}, { city: 'osaka', days: 3, region: ['오사카:2d', '교토:1d'] }],
+  ['R128 ko N박은 before city', '2박은 오사카, 1박은 교토', {}, { city: 'osaka', days: 4, region: ['오사카:2n', '교토:1n'] }],
+  ['R129 ko N일은 before both', '3일은 오사카 2일은 교토', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:2d'] }],
+  // 숫자 없이 말로 쓴 일수('하루는 교토'·'교토 당일치기'·'5일 여행 … 교토 하루'·'with a day trip to Kyoto')는 앞 도시 일수 안에 든다
+  // (읽지 못해 남는 날을 후보 수로 나눠 교토 2일·나고야 1일처럼 뒤집히던 회귀). 확실하지 않은 모양은 그대로다(R137)
+  ['R130 ko 하루는 day trip', '나고야 3일인데 하루는 교토 당일치기', {}, { days: 3, region: ['나고야:2d', '교토:1d'], unsupported: [] }],
+  ['R131 ko 중 하루는 two cities', '오사카 5일 중 하루는 교토, 하루는 고베', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:1d', '고베:1d'], unsupported: [] }],
+  ['R132 ko N일 여행 X 하루', '오사카 5일 여행 교토 하루 고베 하루', {}, { city: 'osaka', days: 5, region: ['오사카:3d', '교토:1d', '고베:1d'] }],
+  ['R133 ko 이틀은', '도쿄 5일 이틀은 교토', {}, { city: 'tokyo', days: 5, region: ['도쿄:3d', '교토:2d'] }],
+  ['R134 ko X 당일치기', '나고야 3일, 교토 당일치기', {}, { days: 3, region: ['나고야:2d', '교토:1d'] }],
+  ['R135 en with a day trip', 'Kyoto 3 days with a day trip to Tokyo', { lang: 'en' }, { days: 3, region: ['교토:2d', '도쿄:1d'] }],
+  ['R136 en side trip', 'Tokyo 5 days, with a 2 day side trip to Kyoto', { lang: 'en' }, { city: 'tokyo', days: 5, region: ['도쿄:3d', '교토:2d'] }],
+  ['R137 ko unsure shape unchanged', '오사카 3일 교토 하루', {}, { city: 'osaka', days: 3, route: ['오사카', '교토'], region: [] }],
+  // 영어·일본어 '이름 + 일수'는 아는 지역 이름(당일치기 명소·우지·요코하마 …)일 때만 데이터 없는 지역으로 센다: 도시 안 명소 별칭(Kinkakuji)·
+  // 일반 낱말(Temples·紅葉·寺院)은 예전처럼 하루를 더하지 않고 '데이터 없음'도 알리지 않는다(4일 + 거짓 알림이 나오던 회귀)
+  ['R138 en alias in city', 'Kyoto 3 days, Kinkakuji 1 day', { lang: 'en' }, { city: 'kyoto', days: 3, wanted: ['금각사'], unsupported: [] }],
+  ['R139 en alias Byodoin', 'Kyoto 3 days, Byodoin 1 day', { lang: 'en' }, { city: 'kyoto', days: 3, wanted: ['뵤도인'], unsupported: [] }],
+  ['R140 en alias Sensoji', 'Tokyo 3 days, Sensoji 1 day', { lang: 'en' }, { city: 'tokyo', days: 3, wanted: ['센소지'], unsupported: [] }],
+  ['R141 en Meiji Shrine', 'Tokyo 3 days, Meiji Shrine 1 day', { lang: 'en' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  ['R142 en Disney Sea', 'Tokyo 3 days, Disney Sea 1 day', { lang: 'en' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  ['R143 en capitalized generic', 'Tokyo 3 days, Temples 1 day', { lang: 'en' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  ['R144 en sentence-start generic', 'Tokyo 3 days. Museums 1 day.', { lang: 'en' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  ['R145 en words on ko screen', 'Kyoto 3 days, Kinkakuji 1 day', {}, { city: 'kyoto', days: 3, wanted: ['금각사'], unsupported: [] }],
+  ['R146 ja generic momiji', '東京3日間、紅葉1日', { lang: 'ja' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  ['R147 ja generic temple', '京都3日間、寺院1日', { lang: 'ja' }, { city: 'kyoto', days: 3, unsupported: [] }],
+  ['R148 ja generic department store', '東京3日間、デパート1日', { lang: 'ja' }, { city: 'tokyo', days: 3, unsupported: [] }],
+  ['R149 en known day trip still counts', 'Tokyo 3 days, Koyasan 1 day', { lang: 'en' }, { days: 4, unsupported: ['Koyasan'] }],
+  ['R150 en known region still counts', 'Tokyo 3 days, Yokohama 1 day', { lang: 'en' }, { city: 'tokyo', days: 4, unsupported: ['Yokohama'] }],
+  // 3차 검토 2: 붙여 쓴 '장소+N일' 뒤의 부정('디즈니1일은 빼줘'·'USJ1日抜きで')은 그 장소의 일수다. 부정 구절을 지울 때 남기는 앞부분은
+  // '도시+일수'·'일수'뿐이다(남긴 '디즈니1일'이 꼭 갈 곳이 되던 회귀). '오사카3일유니버설빼고'처럼 도시+일수는 그대로 남긴다(R160·R161)
+  ['R151 ko place+days negated', '도쿄 4일 디즈니1일은 빼줘', {}, { city: 'tokyo', days: 4, noWanted: /디즈니/ }],
+  ['R152 ko place+days negated then city', '오사카 3일 유니버설1일은 빼고 교토 1일', {}, { city: 'osaka', days: 4, region: ['오사카:3d', '교토:1d'], noWanted: /유니버/ }],
+  ['R153 ko place+days negated area', '교토 3일 아라시야마1일은 빼고', {}, { city: 'kyoto', days: 3, noWanted: /아라시야마/ }],
+  ['R154 ko day-trip nights negated', '도쿄 3일 하코네1박은 빼고', {}, { city: 'tokyo', days: 3, unsupported: [], noWanted: /하코네/ }],
+  ['R155 ja place+days 抜きで', '大阪4日間、USJ1日抜きで', { lang: 'ja' }, { city: 'osaka', days: 4, noWanted: /유니버|USJ/i }],
+  ['R156 ja place+days 抜き', '京都3日間、金閣寺1日抜き', { lang: 'ja' }, { city: 'kyoto', days: 3, noWanted: /금각사/ }],
+  ['R157 ko place+days 안 가', '오사카 3일 유니버설1일은 안 가', {}, { city: 'osaka', days: 3, noWanted: /유니버/ }],
+  ['R158 ko place+days 제외', '도쿄 4일 디즈니1일은 제외', {}, { city: 'tokyo', days: 4, noWanted: /디즈니/ }],
+  ['R159 ko place+days 대신', '도쿄 3일 디즈니1일대신시부야1일', {}, { city: 'tokyo', days: 3, wanted: ['시부야'], noWanted: /디즈니/ }],
+  ['R160 ko glued city+days kept', '오사카3일유니버설빼고', {}, { city: 'osaka', days: 3, noWanted: /유니버/ }],
+  ['R161 ja glued city+days kept', '大阪3日間USJ以外', { lang: 'ja' }, { city: 'osaka', days: 3, noWanted: /유니버|USJ/i }],
+  // 'X대신에노시마': 바로 붙은 '에'가 장소 이름(에노시마·에비스)의 첫 글자면 '대신에'로 읽지 않는다('노시마'라는 없는 장소가 꼭 갈 곳이 되던 회귀).
+  // 바로 붙은 '해'는 다음 이름의 첫 글자다('대신해유관' = 해유관, '유관'이 되던 회귀). 띄어 쓴 '대신에 에노시마'는 그대로다
+  ['R162 ko 대신 + 에-name glued', '도쿄3일하코네대신에노시마', {}, { city: 'tokyo', days: 3, wanted: ['에노시마'], excludedOnly: ['하코네'], noWanted: /^노시마|하코네/ }],
+  ['R163 ko 대신 + 에-name', '도쿄 3일 하코네 대신에노시마', {}, { city: 'tokyo', days: 3, wanted: ['에노시마'], excludedOnly: ['하코네'], noWanted: /^노시마|하코네/ }],
+  ['R164 ko 대신 + 에-area', '도쿄3일시부야대신에비스', {}, { city: 'tokyo', days: 3, wanted: ['에비스'], noWanted: /^비스|시부야/ }],
+  ['R165 ko 대신 + 해-name', '오사카3일유니버설대신해유관', {}, { city: 'osaka', days: 3, wanted: ['해유관'], excludedOnly: [USJ], noWanted: /^유관|유니버/ }],
+  ['R166 ko 대신에 spaced', '도쿄 3일 하코네 대신에 에노시마', {}, { city: 'tokyo', days: 3, wanted: ['에노시마'], excludedOnly: ['하코네'] }],
+  // 'N박은·N일은'(ja 'N泊は')이 앞 도시 뒤에 붙으면 사이에 꾸밈말('도착'·'호텔'·'먼저')이 있거나 도시가 셋이어도 앞 도시 몫이다
+  // (교토만 남아 일수가 줄고 '도착'이 데이터 없는 곳으로 알려지던 회귀). 마지막 도시 뒤에 일수가 없는 글은 다음 도시 몫(R176)
+  ['R167 ko word between city and N박은', '오사카 도착 2박은 교토 1박', {}, { city: 'osaka', days: 4, region: ['오사카:2n', '교토:1n'], unsupported: [] }],
+  ['R168 ko stay words between', '오사카 호텔 2박은 교토 료칸 1박은', {}, { city: 'osaka', days: 4, region: ['오사카:2n', '교토:1n'], unsupported: [] }],
+  ['R169 ko adverb between', '오사카 먼저 2박은 교토 1박', {}, { city: 'osaka', days: 4, region: ['오사카:2n', '교토:1n'], unsupported: [] }],
+  ['R170 ko three cities N일은', '도쿄 3일 오사카 2일은 교토 1일은', {}, { city: 'tokyo', days: 6, region: ['도쿄:3d', '오사카:2d', '교토:1d'], unsupported: [] }],
+  ['R171 ko three cities N박은', '도쿄 2박 오사카 2박은 교토 1박은', {}, { city: 'tokyo', days: 6, region: ['도쿄:2n', '오사카:2n', '교토:1n'] }],
+  ['R172 ko three cities 어때', '도쿄 2일 오사카 3일은 교토 2일은 어때', {}, { city: 'tokyo', days: 7, region: ['도쿄:2d', '오사카:3d', '교토:2d'] }],
+  ['R173 ko clause between', '오사카 도착해서 2박은 교토 1박은', {}, { city: 'osaka', days: 4, region: ['오사카:2n', '교토:1n'], unsupported: [] }],
+  ['R174 ja N泊は after city', '大阪2泊は京都で1泊', { lang: 'ja' }, { city: 'osaka', days: 4, region: ['오사카:2n', '교토:1n'] }],
+  ['R175 ja three cities N日間は', '東京3日間は大阪2日間は京都1日間は', { lang: 'ja' }, { city: 'tokyo', days: 6, region: ['도쿄:3d', '오사카:2d', '교토:1d'] }],
+  ['R176 ko trip frame then N일은 city', '도쿄 여행에서 3일은 오사카 2일은 교토', {}, { days: 5, region: ['오사카:3d', '교토:2d'] }],
+  ['R177 ja N泊は before city', '2泊は大阪、1泊は京都', { lang: 'ja' }, { city: 'osaka', days: 4, region: ['오사카:2n', '교토:1n'] }],
   ['SV-04 focus-word-days', '오사카 쇼핑 위주 2일', {}, { city: 'osaka', days: 2, theme: 'shopping', unsupported: [] }],
   // 2026-10-01 점검(여러 프롬프트): 'A랑 B는 빼고' 목록 부정, 음식·시간 낱말이 장소가 되지 않음, 영어/일본어 must·skip·시작 시각
   ['S2 N01 list-negation', '11월 20일부터 교토 3일, 기요미즈데라랑 쇼핑은 빼고 후시미 이나리는 꼭 가고, 하루 2곳만 여유롭게, 아침 11시 이후 시작', {}, { city: 'kyoto', days: 3, md: '11-20', wanted: ['후시미 이나리'], excluded: ['기요미즈데라'], excludedOnly: ['기요미즈데라'], noWanted: /기요미즈|쇼핑/, prefs: ['removeShopping', 'lateStart'], maxPlaces: 2, startTime: '11:00' }],
@@ -3223,7 +3985,8 @@ const INTENT_CASES = [
   ['C18 ja famous name', '厳島神社に行きたい 2日間', { lang: 'ja' }, { city: 'hiroshima', days: 2, wanted: ['이쓰쿠시마 신사'], noWanted: /구시로/ }],
   ['C19 food word not a place', 'Tokyo 3 days, I want to eat toro sushi', { lang: 'en' }, { city: 'tokyo', days: 3, noWanted: /토로|toro/i }],
   ['C20 famous temple', 'Kyoto 2 days Kiyomizu-dera Temple', { lang: 'en' }, { city: 'kyoto', days: 2, wanted: ['기요미즈데라'], noWanted: /하나마키/ }],
-  ['C21 city word inside a place', 'Matsumoto Seicho Memorial Museum 2 days', { lang: 'en' }, { city: 'kitakyushu', days: 2 }],
+  // 장소 이름 속 다른 도시 이름(Matsumoto)은 도시별 일수('마쓰모토 2일')와 경로에도 들어가지 않는다
+  ['C21 city word inside a place', 'Matsumoto Seicho Memorial Museum 2 days', { lang: 'en' }, { city: 'kitakyushu', days: 2, routeExact: ['기타큐슈'], region: [] }],
   ['C22 one card for the island', '미야지마 2일', {}, { city: 'hiroshima', days: 2, wanted: ['이쓰쿠시마 신사'], noWanted: /^미야지마$/ }],
   ['C23 spelling variant must', '카미코치 2일', {}, { city: 'matsumoto', days: 2, wanted: ['가미코치'] }]
 ];
@@ -3255,6 +4018,11 @@ function intentMismatches(p, exp, ctx) {
   if (exp.excludedOnly && JSON.stringify([...(p.excludedPlaces || [])].sort()) !== JSON.stringify([...exp.excludedOnly].sort())) out.push(`excludedPlaces=${short(p.excludedPlaces, 120)} (want exactly ${short(exp.excludedOnly)})`);
   if (exp.unsupported && JSON.stringify(p.unsupportedPlaces || []) !== JSON.stringify(exp.unsupported)) out.push(`unsupportedPlaces=${short(p.unsupportedPlaces)} (want ${short(exp.unsupported)})`);
   for (const c of exp.route || []) if (!has(p.routeCities, c)) out.push(`routeCities=${short(p.routeCities)} (missing ${c})`);
+  if (exp.routeExact && JSON.stringify(p.routeCities || []) !== JSON.stringify(exp.routeExact)) out.push(`routeCities=${short(p.routeCities)} (want exactly ${short(exp.routeExact)})`);
+  if (exp.region) {
+    const got = (p.regionDayPlan || []).map((x) => `${x.cityLabel}:${x.days}${x.unit === 'night' ? 'n' : 'd'}`);
+    if (JSON.stringify(got) !== JSON.stringify(exp.region)) out.push(`regionDayPlan=${short(got)} (want ${short(exp.region)})`);
+  }
   if (exp.food && !exp.food.test(String(p.foodKeyword || ''))) out.push(`foodKeyword=${p.foodKeyword} (want ${exp.food})`);
   if (exp.arrival !== undefined && p.arrivalTime !== exp.arrival) out.push(`arrivalTime=${p.arrivalTime} (want ${exp.arrival})`);
   if (exp.departure !== undefined && p.departureTime !== exp.departure) out.push(`departureTime=${p.departureTime} (want ${exp.departure})`);
@@ -3396,6 +4164,14 @@ async function phaseIntentRegression() {
     log(tak.json?.sourceInfo?.kind === 'ai' && tk.cityKey === 'nagoya' && (tk.wantedPlaces || []).includes('다카야마 산마치') && (tk.unsupportedPlaces || []).length === 0
       && !/データがない/.test(String(tak.json?.reply || '')) && !HANGUL_RE.test(String(tak.json?.reply || '')),
       "Gemini 'chat_place_unknown' 高山で2日間 (AI: tokyo, unsupported 高山) -> nagoya + 다카야마 산마치, ja reply without 'no data' or Korean", short({ p: { city: tk.cityKey, wanted: tk.wantedPlaces, unsupported: tk.unsupportedPlaces }, reply: tak.json?.reply }, 400));
+    // 두 이웃 도시(삿포로·삿포로 오카다마)에 함께 든 장소만 AI가 돌려줘도 규칙 해석과 같은 가까운 도시(삿포로)로, 고른 카드도 삿포로 카드다
+    // (예전에는 카드가 파일 순서상 앞인 '삿포로 오카다마' 카드라 일정이 두 도시로 나뉘었다)
+    const nak = await chat('나카지마 공원 2일');
+    const nkp = nak.json?.parsed || {};
+    const nkSel = nak.json?.selectedDestinations || [];
+    log(nak.json?.sourceInfo?.kind === 'ai' && nkp.cityKey === 'sapporo' && (nkp.wantedPlaces || []).includes('나카지마 공원') && nkSel.length > 0 && nkSel.every((d) => d.city === '삿포로'),
+      "Gemini 'chat_place_unknown' 나카지마 공원 2일 (AI: tokyo + 나카지마 공원, a place of both 삿포로 and 삿포로 오카다마) -> sapporo like the rule parse, card city 삿포로",
+      short({ city: nkp.cityKey, wanted: nkp.wantedPlaces, sel: nkSel.map((d) => `${d.name}@${d.city}`) }, 400));
 
     // 후속 대화(AI 경로): AI가 이전 도시를 그대로 말해도 규칙 병합 결과는 같다
     mock.reset({ gemini: 'chat_ok' });
@@ -3433,6 +4209,300 @@ async function phaseIntentRegression() {
     const okPlan = await planOf(ok2.json?.parsed || {});
     log(!(okPlan.json?.itineraryInfo?.droppedCities || []).length && !/넣지 못한 도시/.test((okPlan.json?.tips || []).join(' ')) && !/빼고 짤게요/.test(String(ok2.json?.reply || '')),
       "'5박6일 오사카 갔다가 교토': no left-out notice when the days are enough", short(okPlan.json?.tips));
+    // en 화면의 여러 도시 채팅(꼭 갈 곳 없음): 도시별 대표 카드도 영어 이름(원래 한글 이름은 nameKo)이고,
+    // 화면이 그 카드를 _picks로 보낸 일정(규칙)에도 한국어 이름이 없다('오사카성 (Chuo Ward)'·'후시미 이나리'가 나오던 문제)
+    const enMulti = await chat('Osaka 3 days then Kyoto 2 days', { lang: 'en' });
+    const emp = enMulti.json?.parsed || {};
+    const emSel = enMulti.json?.selectedDestinations || [];
+    log(emSel.length >= 2 && emSel.every((d) => !HANGUL_RE.test(String(d.name || '')) && HANGUL_RE.test(String(d.nameKo || '')))
+      && emSel.some((d) => d.name === 'Osaka Castle' && d.nameKo === '오사카성') && emSel.some((d) => d.nameKo === '후시미 이나리'),
+      "en chat 'Osaka 3 days then Kyoto 2 days': the per-city cards are named in English (Osaka Castle, Fushimi Inari Taisha) and keep the Korean name as nameKo",
+      short(emSel.map((d) => [d.name, d.nameKo, d.area]), 300));
+    // 화면(normalizeDestinationForPlan)이 보내는 모양 그대로: 새 화면은 nameKo도 보내고, 예전 화면·저장 상태는 한글 이름만 보낸다
+    const asPick = (d, withKo) => ({ name: d.name, ...(withKo && d.nameKo ? { nameKo: d.nameKo } : {}), city: d.city, area: d.area || '', category: d.category || '추천', bestTime: d.bestTime || '09:00-17:00', stayMin: Number(d.stayMin || 90) });
+    // 일수·도시별 일수는 직접 준다(이 검사는 카드 이름만 본다. 영어 'N days' 도시별 일수 해석은 아래 알려진 문제 1 검사가 따로 본다)
+    const enPicksPlan = (picks) => postJson('/api/travel-plan', { city: emp.cityKey || 'osaka', theme: 'mixed', days: 5, budget: 'mid', startDate: futureDate(20), lang: 'en', useAi: false,
+      _routeCities: ['오사카', '교토'], _regionDayPlan: [{ cityLabel: '오사카', days: 3, unit: 'day' }, { cityLabel: '교토', days: 2, unit: 'day' }], _picks: picks }, { ip: nextIntentIp() });
+    const koreanSightNames = (r) => (r.json?.itinerary || []).flatMap((d) => d.blocks || []).filter((b) => /^(오전|오후|종일)\(/.test(b)).map(blockName).filter((n) => HANGUL_RE.test(n));
+    const enNew = await enPicksPlan(emSel.map((d) => asPick(d, true)));
+    const enOld = await enPicksPlan([{ name: '오사카성', city: '오사카', area: '주오구', category: '문화', bestTime: '09:00-11:30', stayMin: 120 },
+      { name: '후시미 이나리', city: '교토', area: '후시미', category: '문화/트레킹', bestTime: '07:30-10:30', stayMin: 140 }]);
+    const enBlocks = (r) => (r.json?.itinerary || []).flatMap((d) => d.blocks || []);
+    log(enNew.status === 200 && koreanSightNames(enNew).length === 0 && enBlocks(enNew).some((b) => b.includes('Osaka Castle')) && enBlocks(enNew).some((b) => b.includes('Fushimi Inari'))
+      && enOld.status === 200 && koreanSightNames(enOld).length === 0 && enBlocks(enOld).some((b) => b.includes('Osaka Castle (Chuo Ward)')) && enBlocks(enOld).some((b) => b.includes('Fushimi Inari')),
+      "en plan with those cards as _picks (with nameKo, and old Korean-only picks '오사카성'/'후시미 이나리'): no Korean place name in the blocks, 'Osaka Castle (Chuo Ward)'",
+      short({ withKo: koreanSightNames(enNew), koOnly: koreanSightNames(enOld), blocks: enBlocks(enOld) }, 900));
+    // en/ja로 채팅한 뒤 화면 언어를 ko로 바꿔 같은 카드로 다시 만든 ko 일정: 이름·지역이 원래 한글로 돌아온다
+    // ('Osaka Castle (Chuo Ward)'·'大阪城 (中央区)'가 나오던 문제). nameKo 없이 영어 이름만 온 카드(예전 화면)도 한글 이름으로 찾는다.
+    const jaMulti = await chat('大阪3日、京都2日', { lang: 'ja' });
+    const jaSel = jaMulti.json?.selectedDestinations || [];
+    const koPicksPlan = (picks) => postJson('/api/travel-plan', { city: 'osaka', theme: 'mixed', days: 5, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: false,
+      _routeCities: ['오사카', '교토'], _regionDayPlan: [{ cityLabel: '오사카', days: 3, unit: 'day' }, { cityLabel: '교토', days: 2, unit: 'day' }], _picks: picks }, { ip: nextIntentIp() });
+    const sightBlocks = (r) => (r.json?.itinerary || []).flatMap((d) => d.blocks || []).filter((b) => /^(오전|오후|종일)\(/.test(b));
+    const nonKoSights = (r) => sightBlocks(r).filter((b) => /Osaka Castle|Fushimi Inari|Chuo Ward|大阪城|伏見稲荷|中央区|伏見/.test(b));
+    const koFromEn = await koPicksPlan(emSel.map((d) => asPick(d, true)));
+    const koFromJa = await koPicksPlan(jaSel.map((d) => asPick(d, true)));
+    const koFromOldEn = await koPicksPlan(emSel.map((d) => asPick(d, false)));
+    const hasKoCards = (r) => sightBlocks(r).some((b) => b.endsWith(': 오사카성 (주오구)')) && sightBlocks(r).some((b) => b.endsWith(': 후시미 이나리 (후시미)'));
+    log(jaSel.some((d) => d.name === '大阪城') && [koFromEn, koFromJa, koFromOldEn].every((r) => r.status === 200 && nonKoSights(r).length === 0 && hasKoCards(r)),
+      "ko plan with the en/ja chat cards as _picks (language switched to ko; with nameKo, and en names only): '오사카성 (주오구)', '후시미 이나리 (후시미)', no 'Osaka Castle (Chuo Ward)' / '大阪城 (中央区)'",
+      short({ ja: jaSel.map((d) => d.name), en: nonKoSights(koFromEn), ja2ko: nonKoSights(koFromJa), oldEn: nonKoSights(koFromOldEn), blocks: sightBlocks(koFromOldEn) }, 900));
+    // en↔ja로 화면 언어를 바꿔 같은 카드로 다시 만든 일정: 도시별 대표 카드 이름·지역도 새 언어로 바뀐다
+    // (ja 일정에 'Osaka Castle (Chuo Ward)', en 일정에 '大阪城 (中央区)'·'函館山の夜景 (元町)'가 남던 문제). 같은 언어로 다시 만들면 그대로다.
+    const JA_SCRIPT_RE = /[぀-ヿ一-鿿]/;
+    const langPicksPlan = (city, lang, from, to, d1, d2, picks) => postJson('/api/travel-plan', { city, theme: 'mixed', days: d1 + d2, budget: 'mid', startDate: futureDate(20), lang, useAi: false,
+      _routeCities: [from, to], _regionDayPlan: [{ cityLabel: from, days: d1, unit: 'day' }, { cityLabel: to, days: d2, unit: 'day' }], _picks: picks }, { ip: nextIntentIp() });
+    const sapJaSel = (await chat('札幌と函館で4日', { lang: 'ja' })).json?.selectedDestinations || [];
+    const jaFromEn = await langPicksPlan('osaka', 'ja', '오사카', '교토', 3, 2, emSel.map((d) => asPick(d, true)));
+    const jaFromJa = await langPicksPlan('osaka', 'ja', '오사카', '교토', 3, 2, jaSel.map((d) => asPick(d, true)));
+    const enFromJa = await langPicksPlan('osaka', 'en', '오사카', '교토', 3, 2, jaSel.map((d) => asPick(d, true)));
+    const enFromJaSap = await langPicksPlan('sapporo', 'en', '삿포로', '하코다테', 2, 2, sapJaSel.map((d) => asPick(d, true)));
+    const hasSights = (r, names) => names.every((n) => sightBlocks(r).some((b) => b.endsWith(`: ${n}`)));
+    const jaOk = (r) => r.status === 200 && hasSights(r, ['大阪城 (中央区)', '伏見稲荷大社 (伏見)']) && !sightBlocks(r).some((b) => /Osaka Castle|Fushimi Inari|Chuo Ward|\(Fushimi\)/.test(b));
+    const enOk = (r) => r.status === 200 && sightBlocks(r).length >= 4 && !sightBlocks(r).some((b) => JA_SCRIPT_RE.test(b) || HANGUL_RE.test(blockName(b)));
+    log(sapJaSel.some((d) => d.name === '函館山の夜景') && jaOk(jaFromEn) && jaOk(jaFromJa)
+      && enOk(enFromJa) && hasSights(enFromJa, ['Osaka Castle (Chuo Ward)', 'Fushimi Inari Taisha (Fushimi)']) && enOk(enFromJaSap) && hasSights(enFromJaSap, ['Odori Park (Odori)']),
+      "language switched between en and ja with the chat cards as _picks: ja plan '大阪城 (中央区)', '伏見稲荷大社 (伏見)'; en plans 'Osaka Castle (Chuo Ward)', 'Fushimi Inari Taisha (Fushimi)', 'Odori Park (Odori)', no Japanese-script sight",
+      short({ sap: sapJaSel.map((d) => d.name), jaFromEn: sightBlocks(jaFromEn), enFromJa: sightBlocks(enFromJa).filter((b) => JA_SCRIPT_RE.test(b)), sap2en: sightBlocks(enFromJaSap) }, 900));
+    // 영어·일본어 도시별 일수(알려진 문제 1, 2026-10-03): 일정도 한국어 '오사카 3일 교토 2일'처럼 오사카 3일 + 교토 2일(4일차에 교토로 이동),
+    // 'Osaka 2 nights, Kyoto 1 night'은 4일(오사카 3일 + 교토 1일). 예전에는 첫 숫자 3일만 읽어 오사카 2일·교토 1일이 됐다.
+    const kyotoMoveDay = (pl) => (pl.json?.itinerary || []).findIndex((d) => (d.blocks || []).some((b) => /도시 이동: 오사카 -> 교토/.test(String(b)))) + 1;
+    // (검토 후 보완: 일수가 도시 앞에 오는 일본어·한국어, 'after'로 순서를 바꾼 영어도 같은 일정)
+    for (const [msg, lang, wantDays] of [['오사카 3일 교토 2일', 'ko', 5], ['Osaka 3 days then Kyoto 2 days', 'en', 5], ['3 days in Osaka and 2 days in Kyoto', 'en', 5], ['大阪3日間、京都2日間', 'ja', 5], ['Osaka 2 nights, Kyoto 1 night', 'en', 4],
+      ['3日間は大阪、2日間は京都', 'ja', 5], ['3일 오사카, 2일 교토', 'ko', 5], ['Kyoto 2 days after 3 days in Osaka', 'en', 5],
+      // 한국어 'N일간'·'N일 동안'(2026-10-03 회귀: 오사카 3일만 남고 교토가 빠졌다)
+      ['오사카 3일간 교토 2일간', 'ko', 5], ['오사카 3일 동안 교토 2일 동안', 'ko', 5],
+      // 2차 검토: 말로 쓴 일수('그중 하루는 유니버셜', 'のうち一日はUSJ')와 같은 도시를 두 번 말한 글('오사카 난바 1일, 오사카 시내 2일')도 오사카 3일 + 교토 2일
+      ['오사카 3일 그중 하루는 유니버셜 교토 2일', 'ko', 5], ['오사카 난바 1일, 오사카 시내 2일, 교토 2일', 'ko', 5], ['大阪3日間のうち一日はUSJ、京都2日間', 'ja', 5],
+      // 3차 검토: 쉼표 없는 'N박은·N일은'(앞 도시 몫. 교토만 남아 3일이 되던 회귀)
+      ['오사카 2박은 교토 1박은 어때', 'ko', 4], ['오사카 3일은 교토 2일은 어때?', 'ko', 5], ['오사카 2박은 교토에서 1박', 'ko', 4],
+      // 3차 검토 2: 도시와 'N박은' 사이에 꾸밈말이 있어도('도착'·'호텔'), 일본어 'N泊は'도 앞 도시 몫(교토만 남던 회귀)
+      ['오사카 도착 2박은 교토 1박', 'ko', 4], ['오사카 호텔 2박은 교토 료칸 1박은', 'ko', 4], ['大阪2泊は京都で1泊', 'ja', 4]]) {
+      const pr = (await chat(msg, { lang })).json?.parsed || {};
+      const pl = await planOf(pr);
+      log(pr.days === wantDays && (pl.json?.itinerary || []).length === wantDays && kyotoMoveDay(pl) === 4,
+        `rule '${msg}' -> ${wantDays}-day plan, moves from 오사카 to 교토 on day 4`, short({ days: pr.days, region: pr.regionDayPlan, len: (pl.json?.itinerary || []).length, moveDay: kyotoMoveDay(pl) }, 300));
+    }
+    // 도시 안의 동네·명소와 장소가 아닌 말은 데이터 없는 지역으로 세지 않는다(하루를 더하지 않고 '데이터 없음' 알림도 없다).
+    // 당일치기 명소(하코네)는 한국어 '도쿄 3일 하코네 1일'처럼 그대로 더하고 당일치기로 알린다.
+    const regionWordCases = [
+      ...['東京3日間、渋谷1日', '東京3日間、新宿1日', '東京3日間、銀座1日', '東京3日間、原宿1日', '大阪3日間、梅田1日', '大阪3日間、難波1日', '京都3日間、祇園1日', '京都3日間、嵐山1日', '福岡3日間、天神1日',
+        '東京3日間、ショッピング1日', '東京3日間、自由時間1日', '東京3日間、最終日1日'].map((m) => [m, 'ja', 3, []]),
+      ...['Tokyo 3 days, Disney 1 day', 'Tokyo 3 days, Akihabara 1 day', 'Tokyo 3 days, Roppongi 1 day', 'Tokyo 3 days, Ikebukuro 1 day', 'Tokyo 3 days, Shopping 1 day'].map((m) => [m, 'en', 3, []]),
+      ...['도쿄 3일, 우에노 1일', '도쿄 3일, 쇼핑 1일', '도쿄 3일, 호텔 2박', '도쿄 3일, JR패스 7일', '도쿄 3일, 예산 1일 5만원'].map((m) => [m, 'ko', 3, []]),
+      ['Tokyo 3 days, Hakone 1 day', 'en', 4, ['Hakone']], ['東京3日間、箱根1日', 'ja', 4, ['箱根']],
+      // 2026-10-03 2차 검토: 여행 도시 장소에 없는 일본어 일반 낱말도 지역이 아니다(8개 도시 × 22개 낱말. 고치기 전에는 135개 문장이 4일 + '데이터 없음')
+      ...['東京', '大阪', '京都', '福岡', '札幌', '沖縄', '名古屋', '広島'].flatMap((c) => ['水族館', 'ビーチ', '動物園', '植物園', '博物館', '市場', '夜景', '展望台', '商店街', '庭園', 'タワー',
+        '記念館', '花見', '離島', 'ダイビング', '海水浴', '高原', '神宮', '大社', '公園', '鍾乳洞', '灯台'].map((w) => [`${c}3日間、${w}1日`, 'ja', 3, []])),
+      // 아는 지역 이름(宇治)은 지역이다(영어·한국어처럼 하루를 더하고 알린다). 長浜·Nagahama는 아는 지역 이름이 아니라 예전(HEAD)처럼 세지 않는다(3차 검토에서 4일 → 3일로 되돌림)
+      ['京都3日間、宇治1日', 'ja', 4, ['宇治']], ['東京3日間、長浜1日', 'ja', 3, []], ['Tokyo 3 days, Nagahama 1 day', 'en', 3, []],
+      // 2026-10-03 3차 검토: 일본어 일반 낱말 25개(8개 도시)와 대문자로 쓴 영어 일반 낱말·도시 안 명소 별칭도 지역이 아니다(4일 + '데이터 없음'이던 회귀 200건 등)
+      ...['東京', '大阪', '京都', '福岡', '札幌', '沖縄', '名古屋', '広島'].flatMap((c) => ['紅葉', '寺院', '牧場', '遊園地', '世界遺産', 'アウトレット', 'デパート', '温泉街', '花火', '城下町',
+        '古民家', '酒蔵', '工場見学', 'スキー', '天守閣', '大仏', '渓谷', 'ハイキング', '夜市', '屋台', '横丁', '観覧車', 'ショッピングモール', 'キャンプ', '砂浜'].map((w) => [`${c}3日間、${w}1日`, 'ja', 3, []])),
+      ...['Tokyo', 'Kyoto', 'Osaka'].flatMap((c) => ['Temples', 'Shrines', 'Museums', 'Hiking', 'Outlet', 'Gardens', 'Markets', 'Castle'].map((w) => [`${c} 3 days, ${w} 1 day`, 'en', 3, []])),
+      ...['Kyoto 3 days, Kinkakuji 1 day', 'Kyoto 3 days, Byodoin 1 day', 'Tokyo 3 days, Sensoji 1 day', 'Tokyo 3 days, Meiji Shrine 1 day', 'Tokyo 3 days, Disney Sea 1 day',
+        'Tokyo 3 days. Temples 1 day.'].map((m) => [m, 'en', 3, []]),
+      // 아는 지역 이름(당일치기 명소의 en/ja 별칭·작은 목록)은 그대로 더하고 알린다
+      ['Tokyo 3 days, Kamakura 1 day', 'en', 4, ['Kamakura']], ['東京3日間、鎌倉1日', 'ja', 4, ['鎌倉']], ['大阪3日間、奈良1日', 'ja', 4, ['奈良']], ['東京3日間、横浜1日', 'ja', 4, ['横浜']],
+      ['Hiroshima 2 days, Onomichi 1 day', 'en', 3, ['Onomichi']], ['東京3日間、日光1日', 'ja', 4, ['日光']]
+    ];
+    const regionWordBad = [];
+    for (const [msg, lang, wantDays, wantUnsup] of regionWordCases) {
+      const r = await chat(msg, { lang });
+      const pr = r.json?.parsed || {};
+      if (pr.days !== wantDays || JSON.stringify(pr.unsupportedPlaces || []) !== JSON.stringify(wantUnsup)) regionWordBad.push(`${msg}: days ${pr.days} unsupported ${short(pr.unsupportedPlaces)}`);
+    }
+    log(regionWordBad.length === 0, `rule: ${regionWordCases.length} in-city area / non-place / day-trip phrases keep the right days and unsupported list`, regionWordBad.slice(0, 4).join(' | '));
+    // 3차 검토(규칙 일정까지): 말로 쓴 일수는 그 도시 몫이고 앞 도시가 나머지를 가진다(후보 수로 나눠 교토 2일·나고야 1일, 오사카 1일로 뒤집히던 회귀),
+    // 붙여 쓴 'X대신Y'의 X는 일정에 없고 Y는 있다
+    const cityDays = (pl) => {
+      const itin = pl.json?.itinerary || [];
+      const tr = itin.map((d) => /^도시 이동: (.+?) -> (.+?) \(/.exec((d.blocks || []).map(String).find((b) => /^도시 이동: /.test(b)) || ''));
+      const first = tr.find(Boolean);
+      let cur = first ? first[1] : '';
+      const seq = tr.map((m) => { if (m) cur = m[2]; return cur; });
+      return { seq, count: seq.reduce((acc, c) => ({ ...acc, [c]: (acc[c] || 0) + 1 }), {}) };
+    };
+    const wordDaysBad = [];
+    for (const [msg, want, firstCity] of [['나고야 3일인데 하루는 교토 당일치기', { 나고야: 2, 교토: 1 }, ''], ['오사카 5일 중 하루는 교토, 하루는 고베', { 오사카: 3, 교토: 1, 고베: 1 }, '오사카'],
+      ['오사카 5일 여행 교토 하루 고베 하루', { 오사카: 3, 교토: 1, 고베: 1 }, '오사카'], ['도쿄 5일 이틀은 교토', { 도쿄: 3, 교토: 2 }, '도쿄']]) {
+      const pr = (await chat(msg)).json?.parsed || {};
+      const cd = cityDays(await planOf(pr));
+      if (Object.keys(cd.count).length !== Object.keys(want).length || Object.entries(want).some(([c, n]) => cd.count[c] !== n)) wordDaysBad.push(`${msg}: ${cd.seq.join(',')}`);
+      else if (firstCity && cd.seq[0] !== firstCity) wordDaysBad.push(`${msg}: starts ${cd.seq[0]}`);
+    }
+    log(wordDaysBad.length === 0, "rule plan: word days ('하루는 교토', '5일 여행 교토 하루') -> 나고야 2 + 교토 1, 오사카 3 + 교토 1 + 고베 1 (starting in 오사카), 도쿄 3 + 교토 2", wordDaysBad.join(' | '));
+    const insteadPlanBad = [];
+    for (const [msg, out, inn] of [['교토2일금각사대신은각사', /금각사/, /은각사/], ['도쿄3일도쿄타워대신스카이트리', /도쿄 타워/, /스카이트리/], ['도쿄3일디즈니대신에시부야', /디즈니/, /시부야/]]) {
+      const pr = (await chat(msg)).json?.parsed || {};
+      const pl = await postJson('/api/travel-plan', { city: pr.cityKey, theme: 'mixed', days: pr.days, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: false, request: msg,
+        mustVisit: pr.wantedPlaces || [], excludedPlaces: pr.excludedPlaces || [] }, { ip: nextIntentIp() });
+      const blocks = (pl.json?.itinerary || []).flatMap((d) => d.blocks || []).map(String);
+      if (blocks.some((b) => out.test(b)) || !blocks.some((b) => inn.test(b))) insteadPlanBad.push(`${msg}: ${short({ wanted: pr.wantedPlaces, excl: pr.excludedPlaces }, 120)}`);
+    }
+    log(insteadPlanBad.length === 0, "rule plan: glued 'X대신Y' keeps X out of the plan and Y in it (금각사대신은각사, 도쿄타워대신스카이트리, 디즈니대신에시부야)", insteadPlanBad.join(' | '));
+    // 3차 검토 2(규칙 일정까지): 도시가 셋인 'N일은'은 도시마다 제 일수(오사카가 빠지고 6일이 4일이 되던 회귀),
+    // 붙여 쓴 '장소+N일은 빼줘'의 장소는 일정에 없고(그 장소가 꼭 갈 곳으로 들어가던 회귀), 'X 대신에노시마'는 에노시마가 있고 '노시마'는 없다
+    const topicPlanBad = [];
+    for (const [msg, want] of [['도쿄 3일 오사카 2일은 교토 1일은', { 도쿄: 3, 오사카: 2, 교토: 1 }], ['도쿄 2일 오사카 3일은 교토 2일은 어때', { 도쿄: 2, 오사카: 3, 교토: 2 }]]) {
+      const cd = cityDays(await planOf((await chat(msg)).json?.parsed || {}));
+      if (Object.keys(cd.count).length !== Object.keys(want).length || Object.entries(want).some(([c, n]) => cd.count[c] !== n)) topicPlanBad.push(`${msg}: ${cd.seq.join(',')}`);
+    }
+    for (const [msg, out, inn] of [['도쿄 4일 디즈니1일은 빼줘', /디즈니/, null], ['오사카 3일 유니버설1일은 빼고 교토 1일', /유니버셜|유니버설/, null], ['도쿄 3일 하코네 대신에노시마', /(?:^|[^에])노시마/, /에노시마/]]) {
+      const pr = (await chat(msg)).json?.parsed || {};
+      const pl = await postJson('/api/travel-plan', { city: pr.cityKey, theme: 'mixed', days: pr.days, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: false, request: msg,
+        mustVisit: pr.wantedPlaces || [], excludedPlaces: pr.excludedPlaces || [] }, { ip: nextIntentIp() });
+      const blocks = (pl.json?.itinerary || []).flatMap((d) => d.blocks || []).map(String);
+      if (pl.status !== 200 || blocks.some((b) => out.test(b)) || (inn && !blocks.some((b) => inn.test(b)))) topicPlanBad.push(`${msg}: ${short({ wanted: pr.wantedPlaces, excl: pr.excludedPlaces }, 120)}`);
+    }
+    log(topicPlanBad.length === 0, "rule plan: '도쿄 3일 오사카 2일은 교토 1일은' -> 도쿄 3 + 오사카 2 + 교토 1; '디즈니1일은 빼줘'·'유니버설1일은 빼고' leave the park out; '하코네 대신에노시마' has 에노시마, no '노시마'", topicPlanBad.join(' | '));
+    // 4차 수정(날짜 나눔 뒤집힘): 일수를 붙여 말한 주 도시가 카드 수 비율 분배로 하루(이동일)만 받던 회귀.
+    // 화면(buildPlanPayload)과 같은 본문으로 규칙 일정과 AI 일정의 날짜별 도시(프롬프트 dayPlan)를 함께 본다.
+    // - '아사히카와 3일 아라시야마 공원': 교토는 장소(아라시야마)로만 들어온 도시 → 하루, 아사히카와가 나머지(specialPrefs.mainCity)
+    // - 말로 쓴 일수의 다른 모양: '나고야 2박3일 하루는 교토', '오사카 5일 여행 교토 하루는 고베', 'with a day trip to Kyoto and a day trip to Kobe',
+    //   'with day trips to Kyoto and Kobe', 'Nagoya 3 days, one day trip to Kyoto', 'Osaka 5 days, two days in Kyoto'
+    const appPlan = (pr, msg, useAi) => {
+      const body = { city: pr.cityKey, theme: 'mixed', days: pr.days, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi, request: msg };
+      if ((pr.routeCities || []).length) body._routeCities = pr.routeCities;
+      if ((pr.regionDayPlan || []).length) body._regionDayPlan = pr.regionDayPlan;
+      if (pr.specialPrefs && Object.keys(pr.specialPrefs).length) body._specialPrefs = pr.specialPrefs;
+      if ((pr.wantedPlaces || []).length) body.mustVisit = pr.wantedPlaces;
+      return postJson('/api/travel-plan', body, { ip: nextIntentIp() });
+    };
+    const countOf = (list) => list.reduce((acc, c) => ({ ...acc, [c]: (acc[c] || 0) + 1 }), {});
+    const mainDaysBad = [];
+    for (const [msg, lang, want, mainCity] of [
+      ['아사히카와 3일 아라시야마 공원', 'ko', { 아사히카와: 2, 교토: 1 }, '아사히카와'], ['아사히카와 3일 아라시야마 공원 가고 싶어', 'ko', { 아사히카와: 2, 교토: 1 }, '아사히카와'],
+      ['나고야 2박3일 하루는 교토', 'ko', { 나고야: 2, 교토: 1 }, ''], ['나고야 2박3일 하루는 교토 당일치기', 'ko', { 나고야: 2, 교토: 1 }, ''],
+      ['나고야 3일인데 하루는 교토 당일치기', 'ko', { 나고야: 2, 교토: 1 }, ''], ['오사카 5일 여행 교토 하루는 고베', 'ko', { 오사카: 3, 교토: 1, 고베: 1 }, ''],
+      ['Osaka 5 days with a day trip to Kyoto and a day trip to Kobe', 'en', { 오사카: 3, 교토: 1, 고베: 1 }, ''], ['Osaka 5 days with day trips to Kyoto and Kobe', 'en', { 오사카: 3, 교토: 1, 고베: 1 }, ''],
+      ['Nagoya 3 days, one day trip to Kyoto', 'en', { 나고야: 2, 교토: 1 }, ''], ['Osaka 5 days, two days in Kyoto', 'en', { 오사카: 3, 교토: 2 }, '']]) {
+      const pr = (await chat(msg, { lang })).json?.parsed || {};
+      const rule = cityDays(await appPlan(pr, msg, false));
+      const before = mock.entries('gemini').filter((e) => e.isItinerary).length;
+      await appPlan(pr, msg, true);
+      const itinCalls = mock.entries('gemini').filter((e) => e.isItinerary);
+      let aiPlan = null;
+      try { aiPlan = JSON.parse(String(itinCalls[itinCalls.length - 1]?.prompt || '').split('Context:\n')[1]).dayPlan; } catch { aiPlan = null; }
+      const ai = countOf((Array.isArray(aiPlan) ? aiPlan : []).map((d) => d.city));
+      const same = (cnt) => Object.keys(cnt).length === Object.keys(want).length && Object.entries(want).every(([c, n]) => cnt[c] === n);
+      if (pr.days !== Object.values(want).reduce((a, b) => a + b, 0) || !same(rule.count) || itinCalls.length <= before || !same(ai)
+        || String(pr.specialPrefs?.mainCity || '') !== mainCity || (mainCity && (pr.regionDayPlan || []).length)) {
+        mainDaysBad.push(`${msg}: days ${pr.days} rule ${rule.seq.join(',')} ai ${short(ai)} main ${short(pr.specialPrefs?.mainCity)} region ${short(pr.regionDayPlan)}`);
+      }
+    }
+    // 지정 없는 일반 분배는 그대로: 다른 도시도 이름으로 말했거나 전체 일수가 도시 목록 뒤에 있으면 주 도시를 정하지 않는다
+    for (const msg of ['도쿄 오사카 5일', '후쿠오카 5일 구마모토도 가고 싶어', '2박3일 도쿄 갔다가 오키나와 가고 싶어', '삿포로 4일 하코다테']) {
+      const pr = (await chat(msg)).json?.parsed || {};
+      if (pr.specialPrefs?.mainCity || (pr.regionDayPlan || []).length || (pr.routeCities || []).length !== 2) mainDaysBad.push(`${msg}: main ${short(pr.specialPrefs?.mainCity)} region ${short(pr.regionDayPlan)} route ${short(pr.routeCities)}`);
+    }
+    // 후속 대화: 주 도시를 이어 가서 '하루 더 늘려줘'는 교토 1 + 아사히카와 3(예전: 후보 수 분배 교토 2 + 아사히카와 1에서 2 + 2)
+    const asahi = (await chat('아사히카와 3일 아라시야마 공원')).json?.parsed || {};
+    const more = (await chat('하루 더 늘려줘', { body: { history: [{ role: 'user', content: '아사히카와 3일 아라시야마 공원' }, { role: 'assistant', content: '교토 · 아사히카와 3일 여행으로 맞췄어요.' }], prevParsed: asahi } })).json?.parsed || {};
+    const moreSplit = (more.regionDayPlan || []).map((x) => `${x.cityLabel}:${x.days}`).join(',');
+    if (more.days !== 4 || moreSplit !== '교토:1,아사히카와:3' || more.specialPrefs?.mainCity !== '아사히카와') mainDaysBad.push(`follow-up 하루 더: days ${more.days} region ${moreSplit} main ${short(more.specialPrefs?.mainCity)}`);
+    log(mainDaysBad.length === 0, "rule + AI dayPlan: '아사히카와 3일 아라시야마 공원' -> 아사히카와 2 + 교토 1 (place-only city gets one day), '나고야 2박3일 하루는 교토' -> 나고야 2 + 교토 1, '오사카 5일 여행 교토 하루는 고베' / 'with a day trip to Kyoto and a day trip to Kobe' / 'day trips to Kyoto and Kobe' -> 3 + 1 + 1, 'one day trip to' / 'two days in' read; plain splits ('도쿄 오사카 5일') get no main city; follow-up '하루 더' keeps it", mainDaysBad.join(' | '));
+    // 4차 수정 검토: 주 도시 분배가 장소 도시를 무조건 하루로 줄여 꼭 갈 곳이 일정에서 빠지던 문제(유니버설 + 15시 도착, 교토 명소 4곳,
+    // 디즈니 두 곳, 나라 공원(종일) + 후시미이나리)와 장소에 붙인 일수('이틀은 유니버설')를 버리던 문제. 장소 도시는 그 도시의 꼭 갈 곳을
+    // 넣을 날(종일 장소는 도착일·이동일·마지막 날이 아닌 날, 늦은 도착일은 빼고, 반나절은 하루 2곳)을 받는다. 규칙 일정은 꼭 갈 곳이 모두 있고,
+    // AI 일정(가짜 Gemini 'ok')은 프롬프트 dayPlan의 장소 도시 일수가 모자라지 않고 후처리 뒤 꼭 갈 곳이 모두 있다.
+    const mustAllIn = (pl, pr) => {
+      const text = (pl.json?.itinerary || []).flatMap((d) => d.blocks || []).map(String).join('\n');
+      const wl = pr.labels?.wantedPlaces || [];
+      return (pr.wantedPlaces || []).length > 0 && (pr.wantedPlaces || []).every((w, k) => text.includes(w) || Boolean(wl[k] && text.includes(wl[k])));
+    };
+    // 화면처럼 채팅이 고른 카드(selectedDestinations → _picks, normalizeDestinationForPlan과 같은 모양)도 보낸다(날짜 분배가 카드 수를 본다)
+    const cardPlan = (r, msg, useAi) => {
+      const pr = r.json?.parsed || {};
+      const cards = (Array.isArray(r.json?.selectedDestinations) ? r.json.selectedDestinations : []).filter(Boolean).slice(0, 8)
+        .map((d) => ({ name: d.name || '추천 장소', ...(d.nameKo ? { nameKo: d.nameKo } : {}), city: d.city || '', area: d.area || '', category: d.category || '추천', bestTime: d.bestTime || '09:00-17:00', stayMin: Number(d.stayMin || 90) }));
+      const body = { city: pr.cityKey, theme: 'mixed', days: pr.days, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi, request: msg };
+      if ((pr.routeCities || []).length) body._routeCities = pr.routeCities;
+      if ((pr.regionDayPlan || []).length) body._regionDayPlan = pr.regionDayPlan;
+      if (pr.specialPrefs && Object.keys(pr.specialPrefs).length) body._specialPrefs = pr.specialPrefs;
+      if ((pr.wantedPlaces || []).length) body.mustVisit = pr.wantedPlaces;
+      if (cards.length) body._picks = cards;
+      return postJson('/api/travel-plan', body, { ip: nextIntentIp() });
+    };
+    const placeNeedBad = [];
+    for (const [msg, minDays] of [
+      ['도쿄 5일 유니버설 오후 3시 도착', { 오사카: 2 }], ['도쿄 4일 유니버설 밤 9시 도착', { 오사카: 2 }], ['오사카 4일 디즈니랜드 오후 2시 도착', { 도쿄: 2 }],
+      ['도쿄 5일 아라시야마 금각사 기요미즈데라 후시미이나리', { 교토: 2 }], ['오사카 5일 디즈니랜드 디즈니씨', { 도쿄: 3 }], ['도쿄 5일 나라 공원 도다이지 후시미이나리', { 교토: 2 }],
+      ['오사카 5일 금각사 은각사 기요미즈데라 후시미이나리 아라시야마 니조성 가고 싶어', { 교토: 3 }], ['도쿄 7일 유니버설 아라시야마 금각사 도톤보리', { 오사카: 2 }],
+      ['도쿄 5일 중 이틀은 유니버설', { 오사카: 2 }], ['도쿄 5일 유니버설 이틀', { 오사카: 2 }], ['오사카 4일 하코네 온천 료칸', { 도쿄: 2 }]]) {
+      const r = await chat(msg);
+      const pr = r.json?.parsed || {};
+      const rulePl = await cardPlan(r, msg, false);
+      const rule = cityDays(rulePl);
+      mock.reset({ gemini: 'ok' });
+      const aiPl = await cardPlan(r, msg, true);
+      const itinCalls = mock.entries('gemini').filter((e) => e.isItinerary);
+      mock.reset({ gemini: 'error400' });
+      let aiPlan = null;
+      try { aiPlan = JSON.parse(String(itinCalls[itinCalls.length - 1]?.prompt || '').split('Context:\n')[1]).dayPlan; } catch { aiPlan = null; }
+      const ai = countOf((Array.isArray(aiPlan) ? aiPlan : []).map((d) => d.city));
+      const short1 = (cnt) => Object.entries(minDays).some(([c, n]) => !(cnt[c] >= n));
+      if (short1(rule.count) || !mustAllIn(rulePl, pr) || aiPl.json?.itineraryInfo?.kind !== 'ai' || short1(ai) || !mustAllIn(aiPl, pr)) {
+        placeNeedBad.push(`${msg}: rule ${rule.seq.join(',')} must ${mustAllIn(rulePl, pr)} | ai ${aiPl.json?.itineraryInfo?.kind} ${short(ai)} must ${mustAllIn(aiPl, pr)} | main ${short(pr.specialPrefs?.mainCity)}`);
+      }
+    }
+    // 장소 도시의 꼭 갈 곳이 하루에 들어가면 주 도시가 나머지를 받는 것은 그대로('도쿄 5일 아라시야마 금각사' -> 교토 1 + 도쿄 4, 둘 다 일정에 있다)
+    {
+      const msg = '도쿄 5일 아라시야마 금각사';
+      const r = await chat(msg);
+      const pr = r.json?.parsed || {};
+      const rulePl = await cardPlan(r, msg, false);
+      const cd = cityDays(rulePl);
+      if (cd.count['교토'] !== 1 || cd.count['도쿄'] !== 4 || !mustAllIn(rulePl, pr)) placeNeedBad.push(`${msg}: rule ${cd.seq.join(',')} must ${mustAllIn(rulePl, pr)}`);
+    }
+    // 'X 하루는 Y'는 Y 뒤에 Y의 일수가 따로 있으면 X 몫이다(교토·고베가 뒤바뀌거나 고베 이틀을 버리던 문제)
+    for (const [msg, want] of [['오사카 5일 여행 교토 하루는 고베 이틀', { 오사카: 2, 교토: 1, 고베: 2 }], ['오사카 6일 여행 교토 이틀은 고베 하루', { 오사카: 3, 교토: 2, 고베: 1 }],
+      ['오사카 7일 여행 교토 사흘은 고베 하루', { 오사카: 3, 교토: 3, 고베: 1 }], ['오사카 5일 여행인데 교토 이틀은 고베 하루', { 오사카: 2, 교토: 2, 고베: 1 }],
+      ['오사카 6일 여행 교토 이틀은 고베 하루는', { 오사카: 3, 교토: 2, 고베: 1 }]]) {
+      const r = await chat(msg);
+      const pr = r.json?.parsed || {};
+      const cd = cityDays(await cardPlan(r, msg, false));
+      if (Object.keys(cd.count).length !== Object.keys(want).length || Object.entries(want).some(([c, n]) => cd.count[c] !== n)) placeNeedBad.push(`${msg}: rule ${cd.seq.join(',')} region ${short(pr.regionDayPlan)}`);
+    }
+    // 후속 대화: '하루 더 늘려줘'의 도시별 일수도 같은 기준(15시 도착일의 유니버설이 빠지지 않게), 새 도시를 이름으로 더하면 주 도시를 버린다
+    const usjLate = (await chat('도쿄 5일 유니버설 오후 3시 도착')).json?.parsed || {};
+    const usjMoreRes = await chat('하루 더 늘려줘', { body: { history: [{ role: 'user', content: '도쿄 5일 유니버설 오후 3시 도착' }, { role: 'assistant', content: '오사카 · 도쿄 5일 여행으로 맞췄어요.' }], prevParsed: usjLate } });
+    const usjMore = usjMoreRes.json?.parsed || {};
+    const usjMorePl = await cardPlan(usjMoreRes, '하루 더 늘려줘', false);
+    const usjOsaka = (usjMore.regionDayPlan || []).find((x) => x.cityLabel === '오사카')?.days || 0;
+    if (usjMore.days !== 6 || usjOsaka < 2 || !mustAllIn(usjMorePl, usjMore)) placeNeedBad.push(`follow-up 유니버설 하루 더: days ${usjMore.days} region ${short(usjMore.regionDayPlan)} must ${mustAllIn(usjMorePl, usjMore)}`);
+    const asahi2 = (await chat('아사히카와 3일 아라시야마 공원')).json?.parsed || {};
+    const plusOsaka = (await chat('오사카도 가고 싶어', { body: { history: [{ role: 'user', content: '아사히카와 3일 아라시야마 공원' }, { role: 'assistant', content: '교토 · 아사히카와 3일 여행으로 맞췄어요.' }], prevParsed: asahi2 } })).json?.parsed || {};
+    if (!(plusOsaka.routeCities || []).includes('오사카') || plusOsaka.specialPrefs?.mainCity) placeNeedBad.push(`follow-up 오사카도: route ${short(plusOsaka.routeCities)} main ${short(plusOsaka.specialPrefs?.mainCity)}`);
+    log(placeNeedBad.length === 0, "rule + AI: main-city split leaves place-only cities enough days for their must-visits (USJ with a 15:00 arrival, 4 Kyoto sights, both Disney parks, Nara + Fushimi Inari, place-attached '이틀') and every must-visit stays in both plans; '교토 하루는 고베 이틀' / '교토 이틀은 고베 하루' keep each city's own days; follow-up '하루 더' uses the same rule, naming a new city drops the main city", placeNeedBad.join(' | '));
+    // AI 경로: Gemini가 도시별 3+2를 주면서 일수는 메시지의 첫 숫자 3을 줘도(chat_two_cities) 규칙이 읽은 도시별 합계 5일이 이긴다.
+    // ('메시지 일수가 AI 일수보다 우선'(chat_noisy) 규칙은 그대로: 규칙이 이제 도시별 합계를 읽는다)
+    mock.reset({ gemini: 'chat_two_cities' });
+    for (const [msg, lang] of [['Osaka 3 days then Kyoto 2 days', 'en'], ['3 days in Osaka and 2 days in Kyoto', 'en'], ['大阪3日間、京都2日間', 'ja']]) {
+      const r = await chat(msg, { lang });
+      const pr = r.json?.parsed || {};
+      const pl = await planOf(pr);
+      const reply = String(r.json?.reply || '');
+      log(r.json?.sourceInfo?.kind === 'ai' && pr.days === 5 && JSON.stringify(pr.routeCities) === JSON.stringify(['오사카', '교토'])
+        && JSON.stringify((pr.regionDayPlan || []).map((x) => `${x.cityLabel}:${x.days}`)) === JSON.stringify(['오사카:3', '교토:2'])
+        && (pl.json?.itinerary || []).length === 5 && kyotoMoveDay(pl) === 4 && !HANGUL_RE.test(reply),
+        `Gemini 'chat_two_cities' '${msg}' (AI days 3, split 3+2) -> 5 days, 오사카 3 + 교토 2, ${lang} reply without Korean`,
+        short({ si: r.json?.sourceInfo?.kind, days: pr.days, route: pr.routeCities, region: pr.regionDayPlan, moveDay: kyotoMoveDay(pl), reply }, 400));
+    }
+    // 한국어 'N일간'·'N일 동안'도 AI 경로에서 같다(규칙 일수가 AI 일수를 이기므로 규칙이 3일로 읽으면 AI가 맞아도 3일이 되던 회귀, 2026-10-03)
+    // 2차 검토: '그중 하루는 유니버셜 교토 2일'(말로 쓴 일수), '오사카 난바 1일, 오사카 시내 2일'(같은 도시 두 번)도 규칙이 3일로 읽어 AI의 3+2를 이기던 문제
+    for (const msg of ['오사카 3일간 교토 2일간', '오사카 3일 동안 교토 2일 동안', '오사카 3일 그중 하루는 유니버셜 교토 2일', '오사카 난바 1일, 오사카 시내 2일, 교토 2일']) {
+      const r = await chat(msg);
+      const pr = r.json?.parsed || {};
+      const pl = await planOf(pr);
+      const reply = String(r.json?.reply || '');
+      log(r.json?.sourceInfo?.kind === 'ai' && pr.days === 5 && JSON.stringify(pr.routeCities) === JSON.stringify(['오사카', '교토'])
+        && JSON.stringify((pr.regionDayPlan || []).map((x) => `${x.cityLabel}:${x.days}`)) === JSON.stringify(['오사카:3', '교토:2'])
+        && (pl.json?.itinerary || []).length === 5 && kyotoMoveDay(pl) === 4 && /오사카 · 교토 5일/.test(reply) && /오사카 3일, 교토 2일/.test(reply),
+        `Gemini 'chat_two_cities' '${msg}' (AI days 3, split 3+2) -> 5 days, 오사카 3 + 교토 2, reply '오사카 · 교토 5일 … 오사카 3일, 교토 2일'`,
+        short({ si: r.json?.sourceInfo?.kind, days: pr.days, route: pr.routeCities, region: pr.regionDayPlan, moveDay: kyotoMoveDay(pl), reply }, 400));
+    }
+    mock.reset({ gemini: 'error400' });
 
     // 입력 검증
     const badHistory = await chat('도쿄', { body: { history: 'not-an-array' } });
@@ -3507,6 +4577,10 @@ async function phaseAiItinerary() {
     const ev = await plan('osaka');
     log(allBlocks(ev).includes('오후(19:00-21:00): 우메다 스카이 빌딩 (우메다)') && ev.json?.itineraryInfo?.postProcess?.sightsRelabeled >= 1 && ev.json?.itineraryInfo?.kind === 'ai',
       "evening_sight: '저녁(19:00-21:00): 우메다 스카이 빌딩' -> '오후(19:00-21:00)' (time kept, sightsRelabeled)", short(allBlocks(ev)));
+    // en 일정 + 예전 화면이 보낸 한글 카드(_picks '오사카성'): AI가 '오사카성 (주오구)'로 써도 후보로 알아보고(nameKo) 'Osaka Castle (Chuo Ward)'로 쓴다
+    const evEn = await plan('osaka', { lang: 'en', _picks: [{ name: '오사카성', city: '오사카', area: '주오구' }] });
+    log(evEn.json?.itineraryInfo?.kind === 'ai' && allBlocks(evEn).some((b) => /: Osaka Castle \(Chuo Ward\)$/.test(b)) && !allBlocks(evEn).some((b) => /오사카성/.test(b)),
+      "evening_sight en + Korean-only _picks '오사카성': the AI's '오사카성 (주오구)' is the offered card -> 'Osaka Castle (Chuo Ward)', no '오사카성'", short(allBlocks(evEn)));
     mock.scenario = { gemini: 'lunch_food_in_afternoon' };
     const lf = await plan('tokyo');
     log(allBlocks(lf).includes('점심(12:00-13:30): 스시다이 (츠키지)') && lf.json?.itineraryInfo?.postProcess?.mealsMoved >= 1,
@@ -3560,11 +4634,404 @@ async function phaseAiItinerary() {
     const rnPrompt = lastItinPrompt();
     log(/Copy every place and food name exactly as written/.test(rnPrompt) && /never write a placeholder such as "자유 식사"/.test(rnPrompt),
       'itinerary prompt: copy names character for character, meals only from foods (no "자유 식사" placeholder)');
+    log(/use each of those foods once before repeating any of them/.test(rnPrompt) && /with dayPlan, only foods whose city is that day's city/.test(rnPrompt)
+      && !/a food may be used again on another day/.test(rnPrompt),
+      "itinerary prompt: a food is repeated only after every food of that day's city has been used (no blanket \"may be used again\")");
     // 알려진 한계: 도시별 날짜(dayPlan)와 다른 도시의 장소(오사카 날의 후시미 이나리)는 아직 고치지 않는다 → 형식·출처만 본다.
     mock.scenario = { gemini: 'wrong_city_day' };
     const wc = await plan('osaka', { days: 4, _routeCities: ['오사카', '교토'], _regionDayPlan: [{ cityLabel: '오사카', days: 2, unit: 'day' }, { cityLabel: '교토', days: 2, unit: 'day' }] });
     log(wc.json?.itineraryInfo?.kind === 'ai' && (wc.json?.itinerary || []).length === 4 && /^도시 이동: 오사카 -> 교토/.test(wc.json?.itinerary?.[2]?.blocks?.[0] || ''),
       'wrong_city_day: AI plan kept (kind ai, 4 days) and day 3 starts with the transfer line', short((wc.json?.itinerary || []).map((d) => d.blocks), 500));
+    // 다른 도시 식당(알려진 문제 4, 실측 2박3일 도쿄→오키나와의 오키나와 날 '아후리 라멘 (에비스)'): 맛집 목록에 있는 다른 도시 가게만
+    // 그날 도시 가게로 바꾼다(mealsCityFixed). 목록에 없는 일반 문구('점심 식사')는 그대로 둔다.
+    // 이동하는 날 점심('토리키조쿠')은 앞에 빈 낮 채우기(h)가 넣은 오키나와 관광이 있어 출발 전 식사가 아니므로 오키나와 가게로 바뀐다
+    // (검토 2026-10-03: 예전 기대값은 '오키나와 관광 → 도쿄 가게 점심 → 국제거리'를 정답으로 고정했다).
+    const mealsOf = (d) => (d?.blocks || []).filter((b) => /^(아침|점심|저녁)\(/.test(b));
+    const TOKYO_FOOD = /^(스시다이|아후리 라멘|토리키조쿠|도쿄 (이자카야|라멘집) 찾기)$/;
+    const OKINAWA_FOOD = /^(오키나와 소바|고야참푸루|오키나와 (이자카야|라멘집) 찾기)$/;
+    // 그 칸보다 앞(같은 날)에 관광이 있는지: 이동 날 식사가 도착한 뒤인지 본다
+    const sightBefore = (d, b) => { const bs = d?.blocks || []; const i = bs.indexOf(b); return i > 0 && sightBlocks({ blocks: bs.slice(0, i) }).length > 0; };
+    mock.scenario = { gemini: 'wrong_city_food' };
+    const wf = await plan('tokyo', { days: 3, _routeCities: ['도쿄', '오키나와'], _regionDayPlan: [{ cityLabel: '도쿄', days: 2, unit: 'day' }, { cityLabel: '오키나와', days: 1, unit: 'day' }] });
+    const wfDays = wf.json?.itinerary || [];
+    const wfLunch3 = mealsOf(wfDays[2]).find((b) => b.startsWith('점심(')) || '';
+    const wfDinner3 = mealsOf(wfDays[2]).find((b) => b.startsWith('저녁(')) || '';
+    log(wf.json?.itineraryInfo?.kind === 'ai' && wfDays.length === 3 && /^도시 이동: 도쿄 -> 오키나와/.test(wfDays[2]?.blocks?.[0] || '')
+      && wfDays.slice(0, 2).every((d) => mealsOf(d).every((b) => !OKINAWA_FOOD.test(blockName(b))))
+      && mealsOf(wfDays[0]).some((b) => b.startsWith('저녁(18:00-19:30): ') && TOKYO_FOOD.test(blockName(b)))
+      && (wfDays[1]?.blocks || []).includes('점심(12:00-13:00): 점심 식사 (신주쿠)')
+      && sightBefore(wfDays[2], wfLunch3) && wfLunch3.startsWith('점심(12:00-13:00): ') && OKINAWA_FOOD.test(blockName(wfLunch3))
+      && wfDinner3.startsWith('저녁(18:00-19:30): ') && OKINAWA_FOOD.test(blockName(wfDinner3)) && blockName(wfLunch3) !== blockName(wfDinner3)
+      && wf.json?.itineraryInfo?.postProcess?.mealsCityFixed === 3,
+      "wrong_city_food: Tokyo day's '고야참푸루', Okinawa day's '아후리 라멘 (에비스)' and the transfer-day lunch '토리키조쿠' after an Okinawa sight -> a food of that day's city (mealsCityFixed 3); the generic '점심 식사' stays",
+      short({ pp: wf.json?.itineraryInfo?.postProcess, days: wfDays.map((d) => d.blocks) }, 700));
+    // 같은 식당 반복(알려진 문제 7, 실측 '스시다이 1·3일째'): 가게 수(도쿄 실제 3곳 + '찾기' 안내 2곳)보다 식사 칸이 많아도
+    // 같은 가게가 그날·전날·다음날에 이어지지 않는다 — 되풀이 정리(h-4)와 빈 식사 채우기(h-1b)
+    const mealNamesByDay = (r) => (r.json?.itinerary || []).map((d) => mealsOf(d).map(blockName));
+    const noNearRepeat = (byDay) => byDay.every((names, i) => new Set(names).size === names.length && !(byDay[i + 1] || []).some((n) => names.includes(n)));
+    mock.scenario = { gemini: 'food_repeat' };
+    const frp = await plan('tokyo', { days: 4 });
+    const frpMeals = mealNamesByDay(frp);
+    log(frp.json?.itineraryInfo?.kind === 'ai' && frpMeals.length === 4 && frpMeals.every((m) => m.length === 2) && noNearRepeat(frpMeals) && frpMeals.flat().every((n) => TOKYO_FOOD.test(n))
+      && frp.json?.itineraryInfo?.postProcess?.repeatsReplaced >= 4,
+      "food_repeat: '스시다이' lunch + '토리키조쿠' dinner on all 4 days -> no restaurant twice a day or on two days in a row, even after all 5 Tokyo foods are used",
+      short(frpMeals, 500));
+    mock.scenario = { gemini: 'free_meal_repeat' };
+    const fmr = await plan('tokyo', { days: 4 });
+    const fmrMeals = mealNamesByDay(fmr);
+    log(fmr.json?.itineraryInfo?.kind === 'ai' && fmrMeals.length === 4 && fmrMeals.every((m) => m.length === 2) && noNearRepeat(fmrMeals)
+      && fmrMeals.flat().every((n) => TOKYO_FOOD.test(n)) && !allBlocks(fmr).some((b) => /자유 식사/.test(b)),
+      "free_meal_repeat: five '자유 식사' meals in 4 Tokyo days -> filled with Tokyo foods, none twice a day or on two days in a row (not the first shop again)",
+      short(fmrMeals, 500));
+    // 꼭 갈 곳 식당이 다른 도시 날에만 있으면(검토 지적: 식사 도시 맞추기가 꼭 갈 곳을 말없이 지움) 지우지 않고 그 가게 도시 날의 식사 칸으로 옮긴다.
+    // 도쿄 날 식사 칸이 다 찼으면 '찾기' 안내 칸을 대신한다. 이동하는 날 점심(1일째 저녁과 같은 '토리키조쿠')은 앞에 오키나와 관광이 있어
+    // 출발 전 식사가 아니므로 오키나와 가게로 바꾼다(검토 2026-10-03: 예전 기대값은 '도쿄 가게 그대로'였다).
+    mock.scenario = { gemini: 'wrong_city_must' };
+    const wm = await plan('tokyo', { days: 3, mustVisit: ['아후리 라멘'], _routeCities: ['도쿄', '오키나와'], _regionDayPlan: [{ cityLabel: '도쿄', days: 2, unit: 'day' }, { cityLabel: '오키나와', days: 1, unit: 'day' }] });
+    const wmDays = wm.json?.itinerary || [];
+    const wmLunch3 = mealsOf(wmDays[2]).find((b) => b.startsWith('점심(')) || '';
+    const wmDinner3 = mealsOf(wmDays[2]).find((b) => b.startsWith('저녁(')) || '';
+    log(wm.json?.itineraryInfo?.kind === 'ai' && wmDays.length === 3 && /^도시 이동: 도쿄 -> 오키나와/.test(wmDays[2]?.blocks?.[0] || '')
+      && allBlocks(wm).filter((b) => /아후리 라멘/.test(b)).length === 1 && (wmDays[1]?.blocks || []).includes('저녁(18:00-19:30): 아후리 라멘 (에비스)')
+      && OKINAWA_FOOD.test(blockName(wmDinner3)) && (wm.json?.itineraryInfo?.missingMustVisit || []).length === 0
+      && sightBefore(wmDays[2], wmLunch3) && wmLunch3.startsWith('점심(12:00-13:00): ') && OKINAWA_FOOD.test(blockName(wmLunch3)) && blockName(wmLunch3) !== blockName(wmDinner3)
+      && mealsOf(wmDays[2]).every((b) => !TOKYO_FOOD.test(blockName(b))),
+      "wrong_city_must: must-visit '아후리 라멘' only on the Okinawa day -> moved to the Tokyo day 2 dinner (once, missingMustVisit []); Okinawa dinner is an Okinawa food; the repeated transfer-day lunch after an Okinawa sight becomes an Okinawa food too",
+      short({ missing: wm.json?.itineraryInfo?.missingMustVisit, pp: wm.json?.itineraryInfo?.postProcess, days: wmDays.map((d) => d.blocks) }, 800));
+    // 이동하는 날 도착 도시 관광 뒤의 떠나는 도시 가게 식사(검토 2026-10-03, 회귀): 앞에 그날 도시 관광(도착 근거)이 있으면 출발 전 식사가 아니다
+    // → 되풀이든(E1 신칸센·E2 비행기) 처음 쓰는 가게든(V2) 그날 도시 가게로 바꾼다. 그날 첫 블록인 아침(출발 전)은 떠나는 도시 가게로 둔다.
+    const OSAKA_FOOD = /^(쿠시카츠 다루마|타코야키 주하치반|후쿠타로 오코노미야키|오사카 (이자카야|라멘집) 찾기)$/;
+    const TOKYO1_OSAKA1 = { days: 2, _routeCities: ['도쿄', '오사카'], _regionDayPlan: [{ cityLabel: '도쿄', days: 1, unit: 'day' }, { cityLabel: '오사카', days: 1, unit: 'day' }] };
+    const transferDayOf = async (scenario, extra, transferRe) => {
+      mock.scenario = { gemini: scenario };
+      const r = await plan('tokyo', extra);
+      const ds = r.json?.itinerary || [];
+      const ti = ds.findIndex((d) => transferRe.test(d?.blocks?.[0] || ''));
+      const meals = mealsOf(ds[ti]);
+      const lunch = meals.find((b) => b.startsWith('점심(')) || '';
+      const unique = new Set(meals.map(blockName)).size === meals.length;
+      return { r, ds, ti, day: ds[ti], meals, lunch, unique, dump: short({ pp: r.json?.itineraryInfo?.postProcess, days: ds.map((d) => d.blocks) }, 900) };
+    };
+    const e1 = await transferDayOf('transfer_lunch_repeat', { days: 4, _routeCities: ['도쿄', '오사카'], _regionDayPlan: [{ cityLabel: '도쿄', days: 2, unit: 'day' }, { cityLabel: '오사카', days: 2, unit: 'day' }] }, /^도시 이동: 도쿄 -> 오사카/);
+    log(e1.r.json?.itineraryInfo?.kind === 'ai' && e1.ds.length === 4 && e1.ti === 2 && sightBefore(e1.day, e1.lunch)
+      && e1.lunch.startsWith('점심(12:30-13:30): ') && OSAKA_FOOD.test(blockName(e1.lunch)) && e1.meals.every((b) => OSAKA_FOOD.test(blockName(b))) && e1.unique,
+      "transfer_lunch_repeat (E1, 도쿄2·오사카2): the transfer day's '오사카성 -> 스시다이 (츠키지, day 1 lunch again)' lunch -> an Osaka food, not a Tokyo shop or Tokyo guide", e1.dump);
+    const e2 = await transferDayOf('transfer_flight_lunch_repeat', { days: 3, _routeCities: ['도쿄', '오키나와'], _regionDayPlan: [{ cityLabel: '도쿄', days: 2, unit: 'day' }, { cityLabel: '오키나와', days: 1, unit: 'day' }] }, /^도시 이동: 도쿄 -> 오키나와 \(비행기/);
+    log(e2.r.json?.itineraryInfo?.kind === 'ai' && e2.ds.length === 3 && e2.ti === 2 && sightBefore(e2.day, e2.lunch)
+      && e2.lunch.startsWith('점심(12:00-13:00): ') && OKINAWA_FOOD.test(blockName(e2.lunch)) && e2.meals.every((b) => OKINAWA_FOOD.test(blockName(b))) && e2.unique,
+      "transfer_flight_lunch_repeat (E2, 도쿄2·오키나와1 by plane): '아메리칸 빌리지 -> 토리키조쿠 (day 1 dinner again)' lunch -> an Okinawa food (no Tokyo meal between Okinawa sights)", e2.dump);
+    const v2 = await transferDayOf('transfer_lunch_first', TOKYO1_OSAKA1, /^도시 이동: 도쿄 -> 오사카/);
+    log(v2.r.json?.itineraryInfo?.kind === 'ai' && v2.ds.length === 2 && v2.ti === 1 && sightBefore(v2.day, v2.lunch)
+      && v2.lunch.startsWith('점심(12:30-13:30): ') && OSAKA_FOOD.test(blockName(v2.lunch)) && v2.meals.every((b) => OSAKA_FOOD.test(blockName(b))) && v2.unique,
+      "transfer_lunch_first (V2, 도쿄1·오사카1): a first-time Tokyo lunch '스시다이' after 오사카성 on the transfer day -> an Osaka food", v2.dump);
+    const tb = await transferDayOf('transfer_breakfast', TOKYO1_OSAKA1, /^도시 이동: 도쿄 -> 오사카/);
+    const tbBreakfast = tb.meals.find((b) => b.startsWith('아침(')) || '';
+    log(tb.r.json?.itineraryInfo?.kind === 'ai' && tb.ds.length === 2 && tb.ti === 1 && tb.day?.blocks?.[1] === tbBreakfast
+      && tbBreakfast.startsWith('아침(07:30-08:30): ') && TOKYO_FOOD.test(blockName(tbBreakfast)) && blockName(tbBreakfast) !== '스시다이'
+      && tb.meals.filter((b) => b !== tbBreakfast).length >= 1 && tb.meals.filter((b) => b !== tbBreakfast).every((b) => OSAKA_FOOD.test(blockName(b))),
+      "transfer_breakfast (control): the transfer day's first block '아침(07:30) 스시다이' (day 1 lunch again) is eaten before leaving -> stays a Tokyo food, another one; later meals are Osaka foods", tb.dump);
+    // 이동하는 날 '출발 전' 점심이 남아야 하는 모양(검토 2026-10-03: 앞의 블록을 모두 '도착' 근거로 세던 수정이 만든 회귀).
+    // 점심 뒤에 시각이 적힌 이동·공항 블록이 있거나, 앞에 체크아웃·떠나는 도시 관광·떠나는 도시 가게만 있거나, 점심이 그날 첫 블록이면 출발 전 식사다
+    // → 처음 쓰는 떠나는 도시 가게 '스시다이'는 그대로 둔다(오사카 가게로 바꾸면 '도쿄에서 오사카 가게 점심 → 신칸센' 같은 모순)
+    const TOKYO1_OKINAWA1 = { days: 2, _routeCities: ['도쿄', '오키나와'], _regionDayPlan: [{ cityLabel: '도쿄', days: 1, unit: 'day' }, { cityLabel: '오키나와', days: 1, unit: 'day' }] };
+    const TO_OSAKA = /^도시 이동: 도쿄 -> 오사카/;
+    const TO_OKINAWA = /^도시 이동: 도쿄 -> 오키나와/;
+    const keptLunch = (x, lunch, need) => x.r.json?.itineraryInfo?.kind === 'ai' && x.ds.length === 2 && x.ti === 1 && x.lunch === lunch
+      && need.every((b) => (x.day?.blocks || []).includes(b)) && x.r.json?.itineraryInfo?.postProcess?.mealsCityFixed === 0;
+    const tmv = await transferDayOf('transfer_timed_move', TOKYO1_OSAKA1, TO_OSAKA);
+    log(keptLunch(tmv, '점심(11:00-12:00): 스시다이 (츠키지)', ['오전(09:00-10:00): 호텔 체크아웃 (신주쿠)', '오후(12:30-15:00): 신칸센 이동 (도쿄역 → 신오사카)'])
+      && OSAKA_FOOD.test(blockName(tmv.meals.find((b) => b.startsWith('저녁(')) || '')),
+      "transfer_timed_move: '체크아웃 09:00 -> 스시다이 11:00 -> 신칸센 이동 12:30' keeps the Tokyo lunch (eaten before the timed shinkansen, mealsCityFixed 0)", tmv.dump);
+    const tmvEn = await transferDayOf('transfer_timed_move', { ...TOKYO1_OSAKA1, lang: 'en' }, /^Transfer: Tokyo -> Osaka/);
+    log(tmvEn.r.json?.itineraryInfo?.kind === 'ai' && tmvEn.ti === 1 && tmvEn.lunch === '점심(11:00-12:00): Sushi Dai (Tsukiji)' && tmvEn.r.json?.itineraryInfo?.postProcess?.mealsCityFixed === 0,
+      "transfer_timed_move (en): the lunch before the timed shinkansen stays 'Sushi Dai (Tsukiji)'", tmvEn.dump);
+    const tfl = await transferDayOf('transfer_timed_flight', TOKYO1_OKINAWA1, TO_OKINAWA);
+    log(keptLunch(tfl, '점심(10:30-11:30): 스시다이 (츠키지)', ['오전(08:30-09:30): 호텔 체크아웃 (신주쿠)', '오후(12:00-15:00): 하네다 공항에서 나하로 이동 (공항)'])
+      && tfl.meals.filter((b) => b !== tfl.lunch).every((b) => OKINAWA_FOOD.test(blockName(b))),
+      "transfer_timed_flight: '체크아웃 08:30 -> 스시다이 10:30 -> 하네다 공항에서 나하로 이동 12:00' keeps the Tokyo lunch (not '고야참푸루 (차탄)' before the flight)", tfl.dump);
+    const tds = await transferDayOf('transfer_dep_sight', TOKYO1_OSAKA1, TO_OSAKA);
+    log(keptLunch(tds, '점심(11:30-12:30): 스시다이 (츠키지)', ['오전(09:00-11:00): 시부야 스카이 (시부야)']),
+      "transfer_dep_sight: a Tokyo sight '시부야 스카이' before the lunch is no sign of arrival -> the Tokyo lunch '스시다이' stays", tds.dump);
+    const tdb = await transferDayOf('transfer_dep_breakfast', TOKYO1_OSAKA1, TO_OSAKA);
+    const tdbBreakfast = tdb.meals.find((b) => b.startsWith('아침(')) || '';
+    log(tdb.r.json?.itineraryInfo?.kind === 'ai' && tdb.ti === 1 && tdbBreakfast === '아침(08:00-09:00): 스시다이 (츠키지)'
+      && tdb.lunch.startsWith('점심(10:00-11:00): ') && TOKYO_FOOD.test(blockName(tdb.lunch)) && !['스시다이', '토리키조쿠'].includes(blockName(tdb.lunch))
+      && OSAKA_FOOD.test(blockName(tdb.meals.find((b) => b.startsWith('저녁(')) || '')) && tdb.r.json?.itineraryInfo?.postProcess?.mealsCityFixed === 0,
+      "transfer_dep_breakfast: 'Tokyo breakfast 08:00 -> lunch 10:00 토리키조쿠 (day 1 dinner again)' -> the lunch is another Tokyo food (no Osaka lunch at 10:00 right after a Tokyo breakfast)", tdb.dump);
+    const tlo = await transferDayOf('transfer_lunch_opening', TOKYO1_OKINAWA1, TO_OKINAWA);
+    log(keptLunch(tlo, '점심(12:00-13:00): 스시다이 (츠키지)', ['오후(13:30-15:00): 국제거리 (나하)']) && tlo.day?.blocks?.[1] === tlo.lunch,
+      "transfer_lunch_opening: the lunch is the transfer day's first block (nothing filled before it) -> the Tokyo lunch '스시다이' stays", tlo.dump);
+    // 반대로 시각이 적힌 신칸센 이동이 점심 전에 끝나면 도착한 뒤다 → 오사카 가게로 바꾼다
+    const tmf = await transferDayOf('transfer_move_first', TOKYO1_OSAKA1, TO_OSAKA);
+    log(tmf.r.json?.itineraryInfo?.kind === 'ai' && tmf.ti === 1 && tmf.day?.blocks?.[1] === '오전(08:00-10:30): 신칸센 이동 (도쿄역 → 신오사카)'
+      && tmf.lunch.startsWith('점심(11:30-12:30): ') && tmf.meals.every((b) => OSAKA_FOOD.test(blockName(b))) && tmf.unique
+      && tmf.r.json?.itineraryInfo?.postProcess?.mealsCityFixed === 1,
+      "transfer_move_first: '신칸센 이동 08:00-10:30 -> 스시다이 11:30' is after arrival -> the lunch becomes an Osaka food", tmf.dump);
+    // 먹고 싶은 음식(라멘)과 다른 도시 가게가 겹칠 때: 그날 도시의 라멘 가게는 아직 안 갔을 때만 고르고, 이미 갔으면 덜 겹치는 가게로
+    // (오키나와 날 점심·저녁이 모두 '오키나와 라멘집 찾기'가 되던 문제)
+    mock.scenario = { gemini: 'wrong_city_wish' };
+    const ww = await plan('tokyo', { days: 4, foodWishes: ['라멘'], _routeCities: ['도쿄', '오키나와'], _regionDayPlan: [{ cityLabel: '도쿄', days: 1, unit: 'day' }, { cityLabel: '오키나와', days: 3, unit: 'day' }] });
+    const wwMeals = mealNamesByDay(ww);
+    log(ww.json?.itineraryInfo?.kind === 'ai' && wwMeals.length === 4 && wwMeals[0].includes('아후리 라멘')
+      && wwMeals.slice(1).every((names) => names.length >= 1 && names.every((n) => OKINAWA_FOOD.test(n)) && new Set(names).size === names.length)
+      && wwMeals[2].length === 2 && wwMeals.slice(1).flat().includes('오키나와 라멘집 찾기'),
+      "wrong_city_wish: '아후리 라멘' on Okinawa days with foodWishes ['라멘'] -> Okinawa foods, the ramen guide once where unused, never the same food twice a day",
+      short({ pp: ww.json?.itineraryInfo?.postProcess, days: (ww.json?.itinerary || []).map((d) => d.blocks) }, 900));
+    // 날짜별 도시가 경로 도시 밖(지역별 일수에만 있는 교토)이면 그 도시의 서버 내장 가게를 보탠다('찾기' 안내만이 아니라 실제 가게)
+    mock.scenario = { gemini: 'kyoto_day_osaka_food' };
+    const kd = await plan('osaka', { days: 2, _regionDayPlan: [{ cityLabel: '오사카', days: 1, unit: 'day' }, { cityLabel: '교토', days: 1, unit: 'day' }] });
+    const kdDays = kd.json?.itinerary || [];
+    const kdDinner2 = mealsOf(kdDays[1]).find((b) => b.startsWith('저녁(')) || '';
+    log(kd.json?.itineraryInfo?.kind === 'ai' && kdDays.length === 2 && /^도시 이동: 오사카 -> 교토/.test(kdDays[1]?.blocks?.[0] || '')
+      && /^저녁\(18:00-19:30\): (오멘 긴카쿠지|기온 우오신) \(/.test(kdDinner2) && kd.json?.itineraryInfo?.postProcess?.mealsCityFixed === 1,
+      "kyoto_day_osaka_food: Kyoto (only in the day plan, no Kyoto foods passed) day dinner '쿠시카츠 다루마' -> a real Kyoto shop from the built-in data",
+      short({ pp: kd.json?.itineraryInfo?.postProcess, days: kdDays.map((d) => d.blocks) }, 600));
+    // 먹고 싶은 음식(h-3)이 꼭 갈 곳 식당 칸을 덮어쓰지 않는다
+    mock.scenario = { gemini: 'wish_vs_must' };
+    const wv = await plan('tokyo', { days: 1, foodWishes: ['스시'], mustVisit: ['토리키조쿠'] });
+    const wvBlocks = allBlocks(wv);
+    log(wv.json?.itineraryInfo?.kind === 'ai' && wvBlocks.includes('저녁(18:00-19:30): 토리키조쿠 (신주쿠)') && wvBlocks.includes('점심(12:00-13:00): 스시다이 (츠키지)')
+      && (wv.json?.itineraryInfo?.missingMustVisit || []).length === 0,
+      "wish_vs_must: foodWishes ['스시'] goes to the lunch, the must-visit dinner '토리키조쿠' stays", short(wvBlocks, 400));
+
+    // 긴 여러 도시 일정의 후보 몫(알려진 문제 3, 2026-10-03): 예전에는 후보를 앞에서 20곳만 잘라 마지막 도시(미야자키)가 2곳뿐이고 마지막 날이 '자유 일정'이었다.
+    // 이제 도시마다 그 도시 일수×3곳(하루짜리 제외)을 받는다. 가짜 AI(ok)는 도쿄 장소만 내므로 관광 칸은 모두 후처리가 그날 도시 후보로 채운다.
+    mock.scenario = { gemini: 'ok' };
+    const kyu = await plan('kumamoto', { days: 8, _routeCities: ['구마모토', '가고시마', '미야자키'] });
+    const kyuPrompt = lastItinPrompt();
+    const kyuCtx = ctxOf(kyuPrompt) || {};
+    const kyuDays = kyu.json?.itinerary || [];
+    const kyuPlan = kyuCtx.dayPlan || [];
+    const kyuPicks = kyuCtx.picks || [];
+    const regularOf = (c) => kyuPicks.filter((p) => p.city === c && !p.allDay);
+    const daysOf = (c) => kyuPlan.filter((d) => d.city === c).map((d) => d.day);
+    const lastCity = kyuPlan[kyuPlan.length - 1]?.city || '';
+    const lastNames = new Set(regularOf(lastCity).map((p) => p.name));
+    const lastSights = daysOf(lastCity).map((n) => sightBlocks(kyuDays[n - 1]).map(blockName));
+    const quotaShort = ['구마모토', '가고시마', '미야자키'].filter((c) => regularOf(c).length < daysOf(c).length * 3);
+    log(kyu.json?.itineraryInfo?.kind === 'ai' && kyuDays.length === 8 && lastCity === '미야자키' && daysOf('미야자키').length >= 2 && quotaShort.length === 0
+      && regularOf('미야자키').length >= lastSights.flat().length && lastSights.every((names) => names.length >= 2 && names.every((n) => lastNames.has(n))),
+      "8-day 구마모토·가고시마·미야자키 (AI): every city gets (its days × 3) regular candidates, and each 미야자키 day's sights are 미야자키 candidates (as many as its slots)",
+      short({ days: kyuPlan.map((d) => d.city), perCity: ['구마모토', '가고시마', '미야자키'].map((c) => `${c}:${regularOf(c).length}`), lastSights }, 600));
+    log(!allBlocks(kyu).some((b) => /자유 일정/.test(b)) && kyuPicks.every((p) => 'id' in p && 'city' in p && 'allDay' in p) && kyuPicks.filter((p) => !p.allDay).length <= 8 * 3,
+      "8-day 3-city AI plan has no '자유 일정' block; the candidate list stays within days × 3 regular places (Groq token budget)", short({ n: kyuPicks.length, free: allBlocks(kyu).filter((b) => /자유 일정/.test(b)) }));
+    // 도시가 하나면 후보 수·필드는 예전 그대로(3일 = 9곳, 추천 시간·머무는 시간 포함)
+    const one = await plan('tokyo', { days: 3 });
+    const onePrompt = lastItinPrompt();
+    const oneCtx = ctxOf(onePrompt) || {};
+    log(one.json?.itineraryInfo?.kind === 'ai' && (oneCtx.picks || []).length === 9 && !(oneCtx.dayPlan || []).length
+      && (oneCtx.picks || []).every((p) => p.city === '도쿄' && 'bestTime' in p && 'stayMin' in p),
+      '1-city 3-day AI plan (도쿄): still 9 candidates with bestTime/stayMin (unchanged)', short({ n: (oneCtx.picks || []).length, first: (oneCtx.picks || [])[0] }));
+    // 여러 도시 프롬프트는 후보 줄의 기본값(10:00-17:00, 90분)을 빼므로 빠진 값의 뜻을 지시문 한 줄로 알린다(도시가 하나면 그 줄이 없다)
+    log(kyuPicks.some((p) => !('bestTime' in p) || !('stayMin' in p))
+      && /A pick without bestTime\/stayMin is a daytime visit \(10:00-17:00, about 90 min\)\./.test(kyuPrompt.split('Context:\n')[0] || '')
+      && !/A pick without bestTime/.test(onePrompt),
+      'multi-city prompt: candidates drop the default bestTime/stayMin and one instruction line says what a missing value means (none in the 1-city prompt)',
+      short(kyuPicks.slice(0, 2)));
+    // 날짜별 도시는 후보 확장 전 후보로 정한다: AI 일정과 규칙 일정의 도시 분배가 같다.
+    // 확장이 도시 목표에서 멈춰도, 허용 수(5일 = 1곳)를 넘는 하루짜리 명소(히메지성·고야산)는 예전처럼 추천 카드로 남는다.
+    const ok5 = await plan('osaka', { days: 5, _routeCities: ['오사카', '교토'] });
+    const ok5Ctx = ctxOf(lastItinPrompt()) || {};
+    const rule5 = await postJson('/api/travel-plan', { city: 'osaka', theme: 'mixed', days: 5, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: false, _routeCities: ['오사카', '교토'] }, { ip: nextIntentIp() });
+    const cityAt = (r) => { let cur = r.json?.city || ''; return (r.json?.itinerary || []).map((d) => { const m = /^도시 이동: .+ -> (\S+)/.exec((d.blocks || [])[0] || ''); if (m) cur = m[1]; return cur; }).join(','); };
+    log(ok5.json?.itineraryInfo?.kind === 'ai' && (ok5Ctx.dayPlan || []).map((d) => d.city).join(',') === cityAt(rule5) && cityAt(ok5) === cityAt(rule5)
+      && ['히메지성', '고야산'].every((n) => (ok5.json?.recommendations || []).some((r) => r.name === n)),
+      "5-day 오사카·교토: the AI dayPlan equals the rule plan's city per day; unrequested day trips over the allowance (히메지성, 고야산) stay recommendation cards",
+      short({ ai: (ok5Ctx.dayPlan || []).map((d) => d.city), aiDays: cityAt(ok5), rule: cityAt(rule5), cards: (ok5.json?.recommendations || []).map((r) => r.name) }, 500));
+    // 화면에서 고른 카드는 도시 몫(오사카 2일 = 6곳)보다 많아도 모두 후보에 남고, 다른 도시(교토)의 몫은 그대로 채운다
+    const chosen7 = ['오사카성', '도톤보리', '우메다 스카이 빌딩', '신세카이', '시텐노지', '스미요시 대사', '국립국제미술관'];
+    await plan('osaka', { days: 4, _routeCities: ['오사카', '교토'], _regionDayPlan: [{ cityLabel: '오사카', days: 2, unit: 'day' }, { cityLabel: '교토', days: 2, unit: 'day' }],
+      _picks: chosen7.map((name) => ({ name, city: '오사카' })) });
+    const chCtx = ctxOf(lastItinPrompt()) || {};
+    const chNames = (chCtx.picks || []).map((p) => p.name);
+    log(chosen7.every((n) => chNames.includes(n)) && (chCtx.picks || []).filter((p) => p.city === '교토' && !p.allDay).length >= 6,
+      '4-day 오사카2·교토2 with 7 chosen 오사카 cards: every chosen card stays a candidate and 교토 still gets its 6', short(chCtx.picks?.map((p) => `${p.city}:${p.name}`), 500));
+
+    // 추천 카드(검토 반영, 2026-10-03): 경로 도시의 추천 목록은 24장에서 자르지 않는다(24장까지는 더한 장소만 채운다).
+    // 나머지 도시의 추천 수는 예전 그대로(첫 도시 몫 ÷ 도시 수, 최소 6곳)라 마지막 도시 카드가 밀려나지 않고 규칙 일정의 날짜 분배도 그대로다.
+    const rulePlan = (city, days, extra = {}) => postJson('/api/travel-plan', { city, theme: 'mixed', days, budget: 'mid', startDate: futureDate(20), lang: 'ko', useAi: false, ...extra }, { ip: nextIntentIp() });
+    const cardsIn = (r, c) => (r.json?.recommendations || []).filter((x) => x.city === c).map((x) => x.nameKo || x.name);
+    const KYU3 = ['구마모토', '가고시마', '미야자키'];
+    const r10 = await rulePlan('kumamoto', 10, { _routeCities: KYU3,
+      _regionDayPlan: [{ cityLabel: '구마모토', days: 2, unit: 'day' }, { cityLabel: '가고시마', days: 4, unit: 'day' }, { cityLabel: '미야자키', days: 4, unit: 'day' }] });
+    // 가운데 도시의 추천 수(추천 목록 몫)는 예전 그대로다(가고시마 <= 6). 규칙 일정은 일정에 넣은 곳을 24장 상한과 상관없이 카드로 더하므로
+    // (아래 '규칙 일정이 넣은 곳의 카드') 추천 목록 몫은 같은 경로의 AI 일정(규칙 일정이 더 넣은 곳이 없다)으로 잰다.
+    // 규칙 일정의 가고시마 카드는 그 몫(AI 일정의 가고시마 카드)과 규칙 일정이 넣은 곳뿐이어야 한다(일정 밖 카드를 더 붙이지 않는다).
+    const a10 = await plan('kumamoto', { days: 10, _routeCities: KYU3,
+      _regionDayPlan: [{ cityLabel: '구마모토', days: 2, unit: 'day' }, { cityLabel: '가고시마', days: 4, unit: 'day' }, { cityLabel: '미야자키', days: 4, unit: 'day' }] });
+    const r10Sights = new Set((r10.json?.itinerary || []).flatMap((d) => sightBlocks(d).map(blockName)));
+    const a10Kago = cardsIn(a10, '가고시마');
+    const r10KagoExtra = cardsIn(r10, '가고시마').filter((n) => !a10Kago.includes(n) && !r10Sights.has(n));
+    log(r10.json?.itineraryInfo?.kind === 'rule' && a10.json?.itineraryInfo?.kind === 'ai'
+      && cardsIn(r10, '미야자키').length >= 6 && ['미야자키 신궁', '헤이와다이 공원'].every((n) => cardsIn(r10, '미야자키').includes(n))
+      && a10Kago.length <= 6 && r10KagoExtra.length === 0,
+      '10-day 구마모토2·가고시마4·미야자키4: the last city keeps its cards (rule 미야자키 >= 6 with 미야자키 신궁·헤이와다이 공원); the middle city recommendation count is unchanged (AI 가고시마 <= 6; the rule plan adds only the 가고시마 places it scheduled)',
+      short({ rule: KYU3.map((c) => `${c}:${cardsIn(r10, c).length}`), ai: KYU3.map((c) => `${c}:${cardsIn(a10, c).length}`), ruleExtra: r10KagoExtra }));
+    const in10 = await plan('tokyo', { days: 10, _routeCities: ['도쿄', '교토', '오사카'], _specialPrefs: { indoorFocus: true } });
+    const in10Kept = { 교토: ['아라시야마 대나무숲', '후시미 이나리', '기요미즈데라'], 오사카: ['오사카성', '신세카이', '도톤보리'] };
+    log(in10.json?.itineraryInfo?.kind === 'ai' && Object.entries(in10Kept).every(([c, names]) => names.every((n) => cardsIn(in10, c).includes(n))),
+      '10-day AI plan 도쿄·교토·오사카 (indoor focus): the outdoor cards of 교토/오사카 are not cut at 24 (아라시야마·후시미 이나리·기요미즈데라, 오사카성·신세카이·도톤보리)',
+      short(['도쿄', '교토', '오사카'].map((c) => `${c}:${cardsIn(in10, c).length}`)));
+    const kyuPrefs = { _routeCities: KYU3, _specialPrefs: { removeShopping: true, indoorFocus: true } };
+    const k8ai = await plan('kumamoto', { days: 8, ...kyuPrefs });
+    const k8rule = await rulePlan('kumamoto', 8, kyuPrefs);
+    const miyaKept = ['우도신궁', '미야자키 신궁', '헤이와다이 공원'];
+    log(k8ai.json?.itineraryInfo?.kind === 'ai' && k8rule.json?.itineraryInfo?.kind === 'rule' && [k8ai, k8rule].every((r) => miyaKept.every((n) => cardsIn(r, '미야자키').includes(n))),
+      '8-day 구마모토·가고시마·미야자키 (no shopping + indoor), AI and rule: 미야자키 keeps its 우도신궁·미야자키 신궁·헤이와다이 공원 cards',
+      short([k8ai, k8rule].map((r) => KYU3.map((c) => `${c}:${cardsIn(r, c).length}`).join('/'))));
+    // 짧은 여러 도시 일정: 도시마다 후보가 넉넉하면 확장하지 않아 '일정에 넣지 않은 하루짜리' 카드가 붙지 않는다(도시가 하나일 때와 같다)
+    const DAY_TRIPS = ['도쿄 디즈니랜드', '도쿄 디즈니씨', '후지큐 하이랜드', '닛코 도쇼구', '가마쿠라', '유니버셜 스튜디오 재팬', '히메지성', '고야산', '나라 공원·도다이지', '아마노하시다테'];
+    const s2rule = await rulePlan('tokyo', 2, { _routeCities: ['도쿄', '교토', '오사카'] });
+    const s2ai = await plan('osaka', { days: 2, _routeCities: ['오사카', '교토'] });
+    const s2Cards = [s2rule, s2ai].flatMap((r) => (r.json?.recommendations || []).map((x) => x.nameKo || x.name));
+    log(s2rule.json?.itineraryInfo?.kind === 'rule' && s2ai.json?.itineraryInfo?.kind === 'ai' && s2Cards.length > 0 && !s2Cards.some((n) => DAY_TRIPS.includes(n)),
+      '2-day 도쿄·교토·오사카 (rule) and 오사카·교토 (AI): no unrequested day-trip cards (디즈니·후지큐·닛코·USJ·히메지성 …) when every city already has enough candidates',
+      short(s2Cards.filter((n) => DAY_TRIPS.includes(n))));
+    // 규칙 일정의 날짜 분배(후보 수 비례)는 후보 확장 변경 전과 같다: 9일 도쿄·오사카 = 5·4일, 9일 후쿠오카·구마모토 = 5·4일
+    // (assets/city-places.json 30곳 데이터 기준. 확장 변경 없이 같은 데이터로 잰 값과 같음 — 2026-10-03 측정. 옛 데이터에서는 후쿠오카 4·구마모토 5)
+    const d9a = await rulePlan('tokyo', 9, { _routeCities: ['도쿄', '오사카'] });
+    const d9b = await rulePlan('fukuoka', 9, { _routeCities: ['후쿠오카', '구마모토'] });
+    const tally = (r) => cityAt(r).split(',').reduce((m, c) => ({ ...m, [c]: (m[c] || 0) + 1 }), {});
+    log(tally(d9a)['도쿄'] === 5 && tally(d9a)['오사카'] === 4 && tally(d9b)['후쿠오카'] === 5 && tally(d9b)['구마모토'] === 4,
+      '9-day rule plans keep their city split (도쿄5·오사카4, 후쿠오카5·구마모토4): the other route cities get as many cards as before', short([tally(d9a), tally(d9b)]));
+    // 3·4일 여러 도시도 도시마다 후보가 넉넉하면 '일정에 넣지 않은 하루짜리' 카드가 붙지 않는다(검토 반영 2026-10-03 R3:
+    // 도쿄·시즈오카 3일에 디즈니·후지큐·닛코·가마쿠라 …, 도쿄·오사카 4일에 USJ·히메지성·고야산·나라 카드가 붙었다). 2일 검사와 같은 목록으로 본다.
+    const s34 = [await rulePlan('tokyo', 3, { _routeCities: ['도쿄', '시즈오카'] }), await plan('tokyo', { days: 3, _routeCities: ['도쿄', '시즈오카'] }),
+      await rulePlan('tokyo', 4, { _routeCities: ['도쿄', '오사카'] }), await plan('tokyo', { days: 4, _routeCities: ['도쿄', '오사카'] })];
+    const s34Trips = s34.map((r) => {
+      const scheduled = new Set(allBlocks(r).map(blockName));
+      return (r.json?.recommendations || []).map((x) => x.nameKo || x.name).filter((n) => DAY_TRIPS.includes(n) && !scheduled.has(n));
+    });
+    log(s34.every((r, i) => r.json?.itineraryInfo?.kind === (i % 2 ? 'ai' : 'rule') && (r.json?.recommendations || []).length >= 12) && s34Trips.every((x) => x.length === 0),
+      '3-day 도쿄·시즈오카 and 4-day 도쿄·오사카 (rule and AI): no unrequested, unscheduled day-trip cards (디즈니·후지큐·닛코·가마쿠라·USJ·히메지성·고야산·나라 …)',
+      short(s34Trips));
+    // 짧은 한 도시 일정도 같은 원칙(2026-10-03): 받은 후보가 목표(일수×3)만큼 있으면 하루짜리를 살피지 않는다. 반나절 명소를 세는 기준이
+    // 쇼핑·유료·생성 장소를 빼면서 2일 도쿄(쇼핑 제외)에 디즈니·후지큐·해리포터·가마쿠라·닛코·하코네 … 11장, 2일 도쿄(저예산)에 9장,
+    // 2일 오사카·나고야에 USJ·히메지성·고야산·나라·지브리파크 카드가 일정 밖에 붙었다. 3일 도쿄는 예전처럼 하루짜리 카드를 보여 준다(직접 넣을 수 있게).
+    const LONG_TRIPS = [...DAY_TRIPS, '도쿄 해리포터 스튜디오', '에노시마', '쿠사츠 온천', '가루이자와', '가와구치코', '하코네', '지브리파크', '나가시마 스파랜드', '게로 온천', '이세 신궁', '다카야마 산마치', '노보리베츠 온천', '데이네산'];
+    const unscheduledTrips = (r) => { const scheduled = new Set(allBlocks(r).map(blockName)); return (r.json?.recommendations || []).map((x) => x.nameKo || x.name).filter((n) => LONG_TRIPS.includes(n) && !scheduled.has(n)); };
+    const short1 = [['tokyo', 2, { _specialPrefs: { removeShopping: true }, request: '쇼핑은 빼줘' }], ['tokyo', 2, { budget: 'low', _specialPrefs: { lowBudget: true }, request: '저예산으로' }],
+      ['osaka', 2, { _specialPrefs: { removeShopping: true } }], ['nagoya', 2, {}], ['sapporo', 2, {}], ['osaka', 2, {}]];
+    const short1Res = [];
+    for (const [city, days, extra] of short1) {
+      for (const r of [await rulePlan(city, days, extra), await plan(city, { days, ...extra })]) short1Res.push({ key: `${city}${days}${r.json?.itineraryInfo?.kind}${Object.keys(extra._specialPrefs || {}).join('')}`, r, trips: unscheduledTrips(r) });
+    }
+    const tokyo3 = await rulePlan('tokyo', 3);
+    log(short1Res.every((x) => x.r.status === 200 && (x.r.json?.recommendations || []).length >= 6 && x.trips.length === 0) && ['도쿄 디즈니랜드', '하코네'].every((n) => unscheduledTrips(tokyo3).includes(n)),
+      '2-day one-city trips (도쿄 no shopping / low budget, 오사카, 나고야, 삿포로; rule and AI): no unrequested day-trip cards outside the plan (디즈니·후지큐·USJ·히메지성·지브리파크 …); a 3-day 도쿄 still shows them as cards',
+      short({ bad: short1Res.filter((x) => x.trips.length || x.r.status !== 200).map((x) => `${x.key}: ${x.trips.join('/')}`), tokyo3: unscheduledTrips(tokyo3) }, 600));
+    // 규칙 일정 + 실내 위주 + 여러 도시(검토 반영 2026-10-03 R1): 실내 명소가 모두 도시 주변 생성 장소인 도시(히로시마)의 날에도
+    // 그날 도시 장소만 쓴다(다른 도시 후보로 넘어가 히로시마 날에 오사카 주택박물관·구로몬 시장, 구마모토 날에 캐널시티 하카타가 들어갔다).
+    for (const [city, route] of [['hiroshima', ['히로시마', '오사카']], ['fukuoka', ['후쿠오카', '구마모토']]]) {
+      const r = await rulePlan(city, 5, { _routeCities: route, _specialPrefs: { indoorFocus: true }, request: '비 오는 날이라 실내 위주로' });
+      const cardCity = new Map((r.json?.recommendations || []).map((x) => [x.nameKo || x.name, x.city]));
+      const dayCities = cityAt(r).split(',');
+      const perDay = (r.json?.itinerary || []).map((d, i) => sightBlocks(d).map(blockName).map((n) => `${n}@${cardCity.get(n) || '?'}/${dayCities[i]}`));
+      const wrong = perDay.flat().filter((x) => { const [, cities] = x.split('@'); const [placeCity, dayCity] = cities.split('/'); return placeCity !== dayCity; });
+      log(r.json?.itineraryInfo?.kind === 'rule' && route.every((c) => dayCities.includes(c)) && perDay.every((names, i) => dayCities[i] !== route[0] || names.length >= 1) && wrong.length === 0,
+        `5-day rule plan ${route.join('·')} (indoor focus): every sightseeing slot is a place of that day's city (${route[0]} days keep their own indoor places)`,
+        short({ wrong, perDay }, 600));
+    }
+    // AI + 실내 위주 + 여러 도시(검토 반영 2026-10-03 R6): 후처리가 비거나 바뀐 칸을 채울 때도 하루 바깥 관광은 하나까지(g-1b와 같은 규칙).
+    // 예전에는 빈 낮 채우기가 남은 야외 후보로 구마모토 날 하나에 스이젠지 공원·레이간도·가토 신사(야외 3곳)를 넣었다.
+    for (const [city, route] of [['fukuoka', ['후쿠오카', '구마모토']], ['sapporo', ['삿포로', '하코다테']]]) {
+      const r = await plan(city, { days: 5, _routeCities: route, _specialPrefs: { indoorFocus: true }, request: '비 오는 날이라 실내 위주로' });
+      const ctxPicks = (ctxOf(lastItinPrompt()) || {}).picks || [];
+      const outdoor = new Set(ctxPicks.filter((p) => p.indoor === false).map((p) => p.name));
+      const perDay = (r.json?.itinerary || []).map((d) => sightBlocks(d).map(blockName).filter((n) => outdoor.has(n)));
+      const sights = (r.json?.itinerary || []).flatMap((d) => sightBlocks(d));
+      log(r.json?.itineraryInfo?.kind === 'ai' && ctxPicks.some((p) => p.indoor === true) && outdoor.size >= 3 && sights.length >= 5 && perDay.every((x) => x.length <= 1),
+        `5-day AI plan ${route.join('·')} (indoor focus): at most one outdoor sight per day, also after post-processing fills empty slots`,
+        short({ perDay, sights: sights.length }, 500));
+    }
+    // 실내 후보가 하루 하나도 안 되는(3곳 미만) 섬 일정은 규칙 일정(실내가 모자라면 야외로 채움)처럼 빈 낮을 야외 후보로 채운다(예전과 같음)
+    const isl = await plan('ishigaki', { days: 3, _specialPrefs: { indoorFocus: true }, request: '비 오는 날이라 실내 위주로' });
+    const islIndoor = ((ctxOf(lastItinPrompt()) || {}).picks || []).filter((p) => p.indoor === true && !p.allDay).length;
+    log(isl.json?.itineraryInfo?.kind === 'ai' && islIndoor < 3 && (isl.json?.itinerary || []).length === 3 && (isl.json?.itinerary || []).every((d) => sightBlocks(d).length >= 2),
+      '3-day AI plan 이시가키 (indoor focus, < 3 indoor candidates): empty daytime is still filled with outdoor candidates (>= 2 sights a day, as before)',
+      short({ islIndoor, days: (isl.json?.itinerary || []).map((d) => sightBlocks(d).map(blockName)) }, 500));
+    // AI 이름 되돌리기(검토 반영 2026-10-03 R8): 후보에 없는 이름(가짜 AI의 '메이지 신궁 (하라주쿠)')을 글자 겹침으로 되돌릴 때 그날 도시 후보만 본다.
+    // 예전에는 가고시마 날의 '메이지 신궁'이 미야자키 후보 '이키메 신사'로 바뀌고 AI가 쓴 지역 '하라주쿠'가 남았다.
+    const km = await plan('kagoshima', { days: 10, _routeCities: ['가고시마', '미야자키'] });
+    const kmCtx = ctxOf(lastItinPrompt()) || {};
+    const kmPickCity = new Map((kmCtx.picks || []).map((p) => [p.name, p.city]));
+    const kmPlan = (kmCtx.dayPlan || []).map((d) => d.city);
+    const kmWrong = (km.json?.itinerary || []).flatMap((d, i) => sightBlocks(d).map(blockName).filter((n) => kmPickCity.has(n) && kmPickCity.get(n) !== kmPlan[i]).map((n) => `${i + 1}:${n}`));
+    log(km.json?.itineraryInfo?.kind === 'ai' && kmPlan.length === 10 && new Set(kmPlan).size === 2 && kmWrong.length === 0 && !allBlocks(km).some((b) => /하라주쿠/.test(b))
+      && (km.json?.itinerary || []).every((d) => sightBlocks(d).length >= 1),
+      "10-day AI plan 가고시마·미야자키: a name restored by letter overlap is a candidate of that day's city (no 미야자키 '이키메 신사' on a 가고시마 day) and takes the candidate's area (no '하라주쿠')",
+      short({ kmWrong, day1: (km.json?.itinerary || [])[0]?.blocks }, 500));
+
+    // 짧은 일정의 조건 후보(검토 반영, 2026-10-03): 실내 명소는 대부분 도시 주변 생성 장소라, 실내 위주인데 생성 장소를 뒤로 미루고
+    // 야외 큐레이션 명소로 목표 수(일수×3)를 채우면 AI 후보에 실내가 0곳이 됐다(가나자와·히로시마 1일, 센다이·야마가타 2일).
+    // 쇼핑 제외·저예산도 빠질 장소로 목표를 채워 1일 후보가 2곳뿐이었다(후쿠오카·삿포로). 이제 조건 뒤에 남을 장소만 목표에 센다.
+    for (const city of ['kanazawa', 'hiroshima']) {
+      const r = await plan(city, { days: 1, _specialPrefs: { indoorFocus: true } });
+      const ctxPicks = (ctxOf(lastItinPrompt()) || {}).picks || [];
+      const indoorNames = new Set(ctxPicks.filter((p) => p.indoor === true && !p.allDay).map((p) => p.name));
+      const sights = sightBlocks((r.json?.itinerary || [])[0]).map(blockName);
+      log(r.json?.itineraryInfo?.kind === 'ai' && indoorNames.size >= 2 && sights.filter((n) => indoorNames.has(n)).length >= 2,
+        `1-day ${city} indoor focus (AI): the prompt has >= 2 indoor candidates and the day has >= 2 indoor sights`,
+        short({ picks: ctxPicks.map((p) => `${p.name}${p.indoor ? '(in)' : ''}`), sights }, 500));
+    }
+    const sy = await plan('sendai', { days: 2, _routeCities: ['센다이', '야마가타'], _specialPrefs: { indoorFocus: true } });
+    const syCtx = ctxOf(lastItinPrompt()) || {};
+    const syIndoor = (c) => (syCtx.picks || []).filter((p) => p.city === c && p.indoor === true && !p.allDay).length;
+    log(sy.json?.itineraryInfo?.kind === 'ai' && (syCtx.dayPlan || []).map((d) => d.city).join(',') === '센다이,야마가타' && syIndoor('센다이') >= 1 && syIndoor('야마가타') >= 1,
+      '2-day 센다이·야마가타 indoor focus (AI): each city has >= 1 indoor candidate in the prompt',
+      short({ dayPlan: (syCtx.dayPlan || []).map((d) => d.city), picks: (syCtx.picks || []).map((p) => `${p.city}:${p.name}${p.indoor ? '(in)' : ''}`) }, 500));
+    const SHOP_NAME = /쇼핑|캐널시티|백화점|아울렛|파르코|다이마루|미츠코시|돈키호테|지하상가|라라포트|이온몰/;
+    const fkNoShop = await plan('fukuoka', { days: 1, _specialPrefs: { removeShopping: true } });
+    const fkPicks = ((ctxOf(lastItinPrompt()) || {}).picks || []).filter((p) => !p.allDay);
+    log(fkNoShop.json?.itineraryInfo?.kind === 'ai' && fkPicks.length >= 3 && !fkPicks.some((p) => SHOP_NAME.test(p.name)),
+      '1-day 후쿠오카 without shopping (AI): >= 3 regular candidates and none is a shopping place', short(fkPicks.map((p) => p.name)));
+    const PAID_NAME = /타워|스카이|전망대|하루카스|수족관|팀랩/;
+    const spLow = await plan('sapporo', { days: 1, _specialPrefs: { lowBudget: true } });
+    const spPicks = ((ctxOf(lastItinPrompt()) || {}).picks || []).filter((p) => !p.allDay);
+    log(spLow.json?.itineraryInfo?.kind === 'ai' && spPicks.length >= 3 && !spPicks.some((p) => PAID_NAME.test(p.name)),
+      '1-day 삿포로 low budget (AI): >= 3 regular candidates and none is a paid tower/observatory/aquarium', short(spPicks.map((p) => p.name)));
+    // 실내 위주 여러 도시(검토 반영, 2026-10-03): 실내 생성 장소(도시 주변 실제 명소, assets/city-places.json)를 뒤로 미루지 않게 되자
+    // 추천 카드 순서대로 큐레이션 실내 명소보다 앞에 서서, 도시 몫(일수×3)에서 팀랩 플래닛·도쿄 스카이트리·구로몬 시장·마린 월드가 빠졌다.
+    // 실내 후보 안에서도 요청하지 않은 생성 장소는 큐레이션 실내 명소 뒤에 둔다(규칙 일정 createItinerary와 같은 순서).
+    const GEN_CITY = { 도쿄: 'tokyo', 교토: 'kyoto', 오사카: 'osaka', 후쿠오카: 'fukuoka', 구마모토: 'kumamoto' };
+    let genNames = {};
+    try { genNames = JSON.parse(read('assets/city-places.json')).cities || {}; } catch { genNames = {}; }
+    const isGenName = (p) => ((genNames[GEN_CITY[p.city]] || {}).places || []).some((x) => x.name === p.name);
+    for (const [city, days, route, kept] of [
+      ['tokyo', 6, ['도쿄', '교토', '오사카'], { 도쿄: ['팀랩 플래닛', '도쿄 스카이트리'] }],
+      ['osaka', 4, ['오사카', '교토'], { 오사카: ['오사카 주택박물관', '구로몬 시장'] }],
+      ['fukuoka', 4, ['후쿠오카', '구마모토'], { 후쿠오카: ['마린 월드 우미노나카미치', '후쿠오카 아시아 미술관'] }]
+    ]) {
+      const r = await plan(city, { days, _routeCities: route, _specialPrefs: { indoorFocus: true } });
+      const ctx = ctxOf(lastItinPrompt()) || {};
+      const picks = (ctx.picks || []).filter((p) => !p.allDay);
+      const indoorOf = (c) => picks.filter((p) => p.city === c && p.indoor === true);
+      // 도시마다 실내 후보 줄에서 생성 장소가 나온 뒤에 큐레이션 실내 명소가 다시 나오면 순서가 어긋난 것이다
+      const misordered = route.filter((c) => { const l = indoorOf(c); const g = l.findIndex(isGenName); return g >= 0 && l.slice(g).some((p) => !isGenName(p)); });
+      const missing = Object.entries(kept).flatMap(([c, names]) => names.filter((n) => !indoorOf(c).some((p) => p.name === n)).map((n) => `${c}:${n}`));
+      log(r.json?.itineraryInfo?.kind === 'ai' && Object.keys(genNames).length > 0 && route.every((c) => indoorOf(c).length >= 3) && missing.length === 0 && misordered.length === 0,
+        `${days}-day ${route.join('·')} indoor focus (AI): curated indoor sights stay candidates (${Object.values(kept).flat().join('·')}) and come before generated indoor places in every city`,
+        short({ missing, misordered, picks: picks.map((p) => `${p.city}:${p.name}${p.indoor ? '(in)' : ''}${isGenName(p) ? '#' : ''}`) }, 600));
+    }
+
+    // 규칙 일정이 넣은 곳의 카드(검토 반영, 2026-10-03): 추천 카드 24장 상한이 뒤 도시의 '일정에 든 곳' 카드를 잘라
+    // (10일 오사카·교토의 금각사·니조성, 6일 도쿄·교토·오사카의 니조성·가이유칸) 지도 좌표도 못 찾았다. 일정에 든 곳은 상한과 상관없이 카드로 둔다.
+    for (const [city, days, route] of [['osaka', 10, ['오사카', '교토']], ['tokyo', 6, ['도쿄', '교토', '오사카']]]) {
+      const r = await rulePlan(city, days, { _routeCities: route });
+      const cards = r.json?.recommendations || [];
+      const cardOf = (n) => cards.find((x) => x.name === n || x.nameKo === n);
+      const sights = (r.json?.itinerary || []).flatMap((d) => sightBlocks(d).map((b) => ({ day: d.day, name: blockName(b) })));
+      const noCard = sights.filter((s) => !cardOf(s.name)).map((s) => `D${s.day}:${s.name}`);
+      const placeOf = (s) => ((r.json?.itinerary || [])[s.day - 1]?.places || []).find((p) => p.name === s.name);
+      // 좌표가 있는 카드의 장소는 지도 좌표(day.places)도 있어야 한다(좌표 데이터가 없는 츠키지 외시장 같은 곳은 따로 본다)
+      const noCoord = sights.filter((s) => { const c = cardOf(s.name); return c && Number.isFinite(Number(c.lat)) && c.lat !== null && !(placeOf(s) && placeOf(s).lat !== null); })
+        .map((s) => `D${s.day}:${s.name}`);
+      const kyotoSights = sights.filter((s) => cardOf(s.name)?.city === '교토');
+      log(r.json?.itineraryInfo?.kind === 'rule' && sights.length >= days && noCard.length === 0 && noCoord.length === 0 && kyotoSights.length >= 2
+        && kyotoSights.every((s) => placeOf(s) && placeOf(s).lat !== null),
+        `${days}-day rule plan ${route.join('·')}: every sight of the plan has a recommendation card and a map coordinate (교토 sights included)`,
+        short({ cards: cards.length, noCard, noCoord }, 500));
+    }
 
     // (3) 입력 검증과 제외
     const big = await postJson('/api/travel-plan', { city: 'tokyo', days: 2, startDate: futureDate(20), request: 'x'.repeat(700) }, { ip: nextIntentIp() });

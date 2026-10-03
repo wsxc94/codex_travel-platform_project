@@ -1003,7 +1003,7 @@ const AI_SYSTEM_MESSAGE = [
   'Return only JSON that matches the provided schema.',
   'Use the provided picks and foods; avoid inventing places not in input (the only exception: every mustVisit place, even when it is not in picks).',
   'Copy every place and food name exactly as written in picks, foods and mustVisit, character for character, even when it is in Japanese or another script than the output language; never translate, transliterate, shorten or extend a name.',
-  'Every 점심/저녁 block is a name from foods; a food may be used again on another day, but never write a placeholder such as "자유 식사" or "free meal".',
+  'Every 점심/저녁 block is a name from foods (with dayPlan, only foods whose city is that day\'s city); use each of those foods once before repeating any of them, and never write a placeholder such as "자유 식사" or "free meal".',
   'Respect flight timing if provided (arrival and departure).',
   'If stay details are supplied, mention the picked property and honor its check-in/out window when planning the first and last days.',
   'Schedule blocks in local time. Every block is ONE string in exactly this format: "<period>(HH:MM-HH:MM): <place name> (<area>)".',
@@ -1385,7 +1385,9 @@ const EXTRA_PLACES = [
 
 // ══════════════════════════════════════════════════════════════════════
 // 도시 주변 실제 명소: assets/city-places.json (scripts/build-city-places.js가 위키데이터에서 만든다)
-//  - 큐레이션 명소(highlights·MUST_ATTRACTIONS·EXTRA_PLACES)가 반나절 명소 12곳에 못 미치는 도시를 채운다.
+//  - 추천 카드(도시 명소 highlights + 이 목록)가 반나절 명소 30곳이 되도록 채운다(2026-10-03, 예전 12곳). 대표 명소(MUST_ATTRACTIONS)·
+//    추가 명소(EXTRA_PLACES)는 겹침만 뺀다. 규칙 일정·AI 후보는 요청하지 않은 이 명소를 큐레이션 명소 뒤에 쓴다(isGeneratedCityPlace).
+//  - 한국어 이름을 만들 수 없는 곳(일본어 이름만 있는 곳)과 숙박 시설(호텔·리조트)은 생성 스크립트가 받지 않는다.
 //  - 모두 위키데이터 항목(QID)·좌표가 있는 실제 장소다. 규칙 일정과 AI 일정은 이 목록 안에서만 고른다(지어낸 장소 없음).
 //  - EXTRA_PLACES 뒤에 generated: true로 붙인다 → 도시 명소 풀(curatedCityPool)의 마지막 순서. 이름·en/ja·지역·좌표·분류는 파일 그대로.
 //  - 큐레이션 명소가 3곳보다 적은 도시(설명형 이름을 지운 섬 등)는 도시 명소(highlights)도 이 목록의 앞쪽 명소로 3곳까지 채운다.
@@ -1422,7 +1424,13 @@ function loadCityPlaces() {
         const en = text(p.en, 80);
         const ja = text(p.ja, 80);
         // 도시 이름을 앞에 붙인 이름('구시로 이쓰쿠시마 신사')의 원래 이름: 다른 곳과 겹치지 않을 때만 말로 찾는다(generatedMatchNames)
-        const aliases = (Array.isArray(p.aliases) ? p.aliases : []).map((a) => text(a, 80)).filter(Boolean).slice(0, 4);
+        // 장음 기호를 뺀 영어 이름(Daijingū → 'Yamanoue Daijingu Shrine', 'Ino no Hi'): 영어 채팅은 보통 장음 기호 없이 쓴다(2026-10-03).
+        // 별칭이라 말로 찾기·'skip X'·로마자 no 판정(romajiNoLabels)에 함께 쓰이고, 겹치는 이름은 generatedMatchNames가 거른다.
+        const enPlain = en.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        const aliases = [...new Set([
+          ...(Array.isArray(p.aliases) ? p.aliases : []).map((a) => text(a, 80)).filter(Boolean).slice(0, 4),
+          ...(enPlain && enPlain !== en ? [enPlain] : [])
+        ])];
         places.push({
           name,
           ...(aliases.length ? { aliases } : {}),
@@ -1501,31 +1509,64 @@ for (const [ck, c] of CITY_PLACES.cities) {
   }
 }
 
+// 도시 주변 실제 명소(generated)의 '<cityKey>|<이름 키>'. 도시 명소로 올라간 것도 같은 이름이다.
+// 규칙 일정은 이 장소를 요청하지 않았으면 큐레이션 명소(도시 명소·대표 명소·추가 명소)를 다 쓴 뒤에만 쓴다(createItinerary).
+const GENERATED_PLACE_KEYS = new Set(EXTRA_PLACES.filter((e) => e.generated).map((e) => `${e.cityKey}|${placeNameKey(e.name)}`));
+function isGeneratedCityPlace(p, fallbackCityKey) {
+  const ck = cityKeyByLabel(p?.city) || fallbackCityKey;
+  return Boolean(ck) && GENERATED_PLACE_KEYS.has(`${ck}|${placeNameKey(placeOriginalName(p))}`);
+}
+
 // 도시 주변 반나절 명소가 적은 도시인지(few) — 일정 팁으로 알린다
 function cityHasFewSights(cityKey) {
   return Boolean(CITY_PLACES.cities.get(String(cityKey || ''))?.few);
 }
 
 // 도시 주변 실제 명소(generated)의 이름 중 말로 한 장소 찾기에 쓰는 이름. 다른 도시의 대표·큐레이션 명소나 도시 이름과 같은 이름
-// (구시로의 'Itsukushima Shrine'), 두 도시 이상에 같은 이름이 있는 것, 두 글자 이하('城山')·한 단어 로마자 6자 미만('Toro')은 뺀다
+// (구시로의 'Itsukushima Shrine', 쇼나이의 '松山城'·'Matsuyama Castle' = 마쓰야마 도시 명소의 en/ja 이름), 서로 다른 두 곳 이상에 같은
+// 이름이 있는 것, 두 글자 이하('城山')·한 단어 로마자 6자 미만('Toro')은 뺀다
 // → 'Hiroshima 2 days, must see Itsukushima Shrine'이 구시로로, 'toro sushi'가 시즈오카 토로 유적으로 가지 않는다.
+// 같은 위키데이터 항목이 이웃한 두 도시에 함께 있으면(삿포로·삿포로 오카다마의 나카지마 공원) 한 곳으로 센다(cityOfNamedPlace가 고른다).
 let GENERATED_MATCH_NAMES = null;
 function generatedMatchNames(e) {
   if (!GENERATED_MATCH_NAMES) {
     const owners = new Map(); // 이름 키 → Set(cityKey)
     const add = (label, owner) => { const k = cityPlaceKey(label); if (!k) return; if (!owners.has(k)) owners.set(k, new Set()); owners.get(k).add(owner); };
-    for (const m of MUST_ATTRACTIONS) [m.name, ...(m.aliases || []), ...(m.contextAliases || [])].forEach((a) => add(a, m.cityKey));
+    // 큐레이션 명소의 사진 데이터 en/ja 이름(place-images.json labels)도 그 도시의 이름이다.
+    // 다만 같은 위키데이터 항목인 다른 도시의 도시 주변 실제 명소에는 '다른 장소'가 아니다(사진 이름 주인에 항목을 함께 적는다):
+    // 시모지시마 '이라부 대교'의 'Irabu Bridge'·'伊良部大橋'가 미야코지마의 이라부 대교를, 삿포로 'TV 타워'의 'さっぽろテレビ塔'가
+    // 오카다마의 TV 타워를 말로 찾기에서 빼면 'Irabu Bridge 2 days'가 도시를 못 찾아 폼 도시(도쿄)로 간다(2026-10-03).
+    // 한글 이름·별칭이 같은 경우는 예전처럼 뺀다(같은 곳이 두 이름으로 두 번 잡히지 않게).
+    const mediaOwners = new Map(); // 이름 키 → [{ ck, qid }]
+    const addMediaLabels = (ck, name) => {
+      const m = placeMediaFor(ck, name);
+      if (!m || !m.labels) return;
+      for (const l of [m.labels.en, m.labels.ja]) {
+        const k = cityPlaceKey(l);
+        if (!k) continue;
+        if (!mediaOwners.has(k)) mediaOwners.set(k, []);
+        mediaOwners.get(k).push({ ck, qid: m.wikidata || '' });
+      }
+    };
+    for (const m of MUST_ATTRACTIONS) {
+      [m.name, ...(m.aliases || []), ...(m.contextAliases || [])].forEach((a) => add(a, m.cityKey));
+      addMediaLabels(m.cityKey, m.name);
+    }
     for (const [ck, c] of Object.entries(CITY_DATA)) {
-      for (const h of c.highlights || []) if (!h.generated) add(h.name, ck);
+      for (const h of c.highlights || []) {
+        if (h.generated) continue;
+        add(h.name, ck);
+        addMediaLabels(ck, h.name);
+      }
       for (const a of CITY_ALIASES[ck] || []) add(a, ck);
     }
     for (const x of EXTRA_PLACES) if (!x.generated) [x.name, x.en, x.ja, ...(x.aliases || [])].forEach((a) => add(a, x.cityKey));
-    const genCities = new Map();
+    const genPlaces = new Map(); // 이름 키 → Set(위키데이터 ID, 없으면 도시) — 서로 다른 장소 수
     for (const x of EXTRA_PLACES) {
       if (!x.generated) continue;
       for (const k of new Set([x.name, x.en, x.ja, ...(x.aliases || [])].filter(Boolean).map(cityPlaceKey))) {
-        if (!genCities.has(k)) genCities.set(k, new Set());
-        genCities.get(k).add(x.cityKey);
+        if (!genPlaces.has(k)) genPlaces.set(k, new Set());
+        genPlaces.get(k).add(x.wikidata || `city:${x.cityKey}`);
       }
     }
     GENERATED_MATCH_NAMES = new Map();
@@ -1538,7 +1579,8 @@ function generatedMatchNames(e) {
         if (!k || (k.length <= 2 && !SHORT_CJK_NAME_RE.test(t))) return false;
         if (/^[a-z0-9'-]+$/i.test(t) && t.length < 6) return false;
         if ([...(owners.get(k) || [])].some((ck) => ck !== x.cityKey)) return false;
-        return (genCities.get(k)?.size || 0) <= 1;
+        if ((mediaOwners.get(k) || []).some((o) => o.ck !== x.cityKey && !(o.qid && o.qid === x.wikidata))) return false;
+        return (genPlaces.get(k)?.size || 0) <= 1;
       }));
     }
   }
@@ -1588,14 +1630,59 @@ function matchExtraPlaces(text, preferredCityKeys = []) {
     .sort((a, b) => Number(prefer.has(b.cityKey)) - Number(prefer.has(a.cityKey)));
 }
 
+// 위키데이터 항목 → 그 항목이 큐레이션 명소(대표 명소·도시 명소·추가 명소, 사진 데이터의 항목)로 든 도시 키들
+let CURATED_QID_CITIES = null;
+function curatedCityKeysOfQid(qid) {
+  if (!CURATED_QID_CITIES) {
+    CURATED_QID_CITIES = new Map();
+    const add = (ck, name) => {
+      const q = PLACE_IMAGES.byKey.get(`${ck}|${String(name || '').trim()}`)?.wikidata;
+      if (!q || !CITY_DATA[ck]) return;
+      if (!CURATED_QID_CITIES.has(q)) CURATED_QID_CITIES.set(q, new Set());
+      CURATED_QID_CITIES.get(q).add(ck);
+    };
+    for (const m of MUST_ATTRACTIONS) add(m.cityKey, m.name);
+    for (const [ck, c] of Object.entries(CITY_DATA)) for (const h of c.highlights || []) if (!h.generated) add(ck, h.name);
+    for (const x of EXTRA_PLACES) if (!x.generated) add(x.cityKey, x.name);
+  }
+  return [...(CURATED_QID_CITIES.get(qid) || [])];
+}
+
 // 도시 없이 장소 이름만 말한 글('다케토미섬 2일', 'Hashima Island 2 days')의 도시: 그 장소(추가 명소·도시 주변 실제 명소)의 도시.
-// 세 글자 이상 이름만 보고, 가장 긴 이름이 여러 도시에 걸치면 정하지 않는다.
+// 세 글자 이상 이름만 보고, 가장 긴 이름이 여러 도시에 걸치면 정하지 않는다. 다만 이웃한 두 도시에 함께 든 같은 위키데이터 항목
+// (삿포로·삿포로 오카다마의 나카지마 공원)은 한 곳이라 도시 중심이 더 가까운 도시로 정한다.
+// 도시 주변 실제 명소가 다른 도시의 큐레이션 명소와 같은 항목이면(오카다마의 'さっぽろテレビ塔' = 삿포로 TV 타워, 삿포로의
+// 'Moerenuma Park' = 오카다마 모에레누마 공원, 미야코지마의 'Irabu Bridge' = 시모지시마 이라부 대교) 그 도시도 함께 견준다.
+// 도시 중심이 아주 가까운 두 도시(삿포로·삿포로 오카다마 2.4km, SAME_AREA_CITY_KM 안)는 사실상 한 도시라 거리 대신 큰 도시
+// (큐레이션 명소가 많은 쪽 = 삿포로, 국제선 CTS)로 정한다: 아쓰베쓰구의 홋카이도 박물관·홋카이도 역사 마을은 오카다마 중심이 1.4km
+// 더 가까워 'I want to visit Hokkaido Museum'이 오카다마(국내선만 있는 OKD) 일정이 됐다(2026-10-03). 오카다마는 '오카다마/丘珠'라고
+// 말했을 때만 고른다(그때는 말한 도시가 있어 여기까지 오지 않는다). 미야코지마·시모지시마(13.9km)는 섬이 달라 예전처럼 가까운 쪽이다.
+const SAME_AREA_CITY_KM = 5;
+function curatedPlaceCountOf(cityKey) {
+  const c = CITY_DATA[cityKey];
+  if (!c) return 0;
+  return (c.highlights || []).filter((h) => !h.generated).length + MUST_ATTRACTIONS.filter((m) => m.cityKey === cityKey).length
+    + EXTRA_PLACES.filter((e) => e.cityKey === cityKey && !e.generated).length;
+}
 function cityOfNamedPlace(text) {
   const hits = extraPlaceHits(text).filter((h) => h.len >= 3 || SHORT_CJK_NAME_RE.test(String(h.label).trim()));
   if (!hits.length) return '';
   const longest = Math.max(...hits.map((h) => h.len));
-  const cities = new Set(hits.filter((h) => h.len === longest).map((h) => h.place.cityKey));
-  return cities.size === 1 ? [...cities][0] : '';
+  const top = hits.filter((h) => h.len === longest);
+  const cities = new Set(top.map((h) => h.place.cityKey));
+  const qids = new Set(top.map((h) => h.place.wikidata || ''));
+  const p = top[0].place;
+  if (qids.size === 1 && p.generated && p.wikidata) curatedCityKeysOfQid(p.wikidata).forEach((ck) => cities.add(ck));
+  if (cities.size === 1) return [...cities][0];
+  if (qids.size !== 1 || !p.wikidata || !hasLatLng(p)) return '';
+  const dist = (ck) => { const c = resolveCityCenter(ck); return c ? haversineKm(c, p) : Infinity; };
+  const byDist = [...cities].sort((a, b) => dist(a) - dist(b));
+  const nearest = byDist[0] || '';
+  const nearestCenter = nearest ? resolveCityCenter(nearest) : null;
+  if (!nearestCenter) return nearest;
+  // 가장 가까운 도시와 중심이 SAME_AREA_CITY_KM 안인 도시 중 큐레이션 명소가 많은 도시(같으면 가까운 쪽)
+  const sameArea = byDist.filter((ck) => { const c = resolveCityCenter(ck); return c && haversineKm(c, nearestCenter) <= SAME_AREA_CITY_KM; });
+  return sameArea.sort((a, b) => curatedPlaceCountOf(b) - curatedPlaceCountOf(a))[0] || nearest;
 }
 
 // 장소 이름 속 다른 도시 이름·랜드마크는 도시로 보지 않도록 지운 글('Matsumoto Seicho Memorial Museum'(기타큐슈)의 'Matsumoto',
@@ -1639,11 +1726,18 @@ function placeCityKeyOf(name) {
   return extraPlaceByName(n)?.cityKey || '';
 }
 
-// 이름·별칭·en/ja 이름이 정확히 같은 추가 명소(대소문자·공백 무시)
-function extraPlaceByName(name) {
+// 이름·별칭·en/ja 이름이 정확히 같은 추가 명소(대소문자·공백 무시).
+// preferCityKeys(도시 키 하나나 배열)를 주면 그 도시의 것을 먼저 찾는다: 같은 장소가 이웃한 두 도시에 함께 든 경우
+// (삿포로·삿포로 오카다마의 나카지마 공원) 파일 순서상 앞 도시(오카다마)가 아니라 지금 일정의 도시(삿포로) 것을 쓴다.
+function extraPlaceByName(name, preferCityKeys) {
   const k = String(name || '').toLowerCase().replace(/\s+/g, '');
   if (!k) return null;
-  return EXTRA_PLACES.find((e) => [e.name, e.en, e.ja, ...(e.aliases || [])].some((a) => a && String(a).toLowerCase().replace(/\s+/g, '') === k)) || null;
+  const same = (e) => [e.name, e.en, e.ja, ...(e.aliases || [])].some((a) => a && String(a).toLowerCase().replace(/\s+/g, '') === k);
+  for (const ck of (Array.isArray(preferCityKeys) ? preferCityKeys : [preferCityKeys]).filter(Boolean)) {
+    const hit = EXTRA_PLACES.find((e) => e.cityKey === ck && same(e));
+    if (hit) return hit;
+  }
+  return EXTRA_PLACES.find(same) || null;
 }
 
 // 별칭이 글 속에 '단어로' 있는지: 로마자 별칭은 단어 경계, 두 글자 이하 한글 별칭('나라')은 앞에 한글이 붙지 않을 때만
@@ -2345,7 +2439,8 @@ function stripDateAndDayNumberPhrases(text) {
     .replace(/(\d{1,2})\s*일\s*차/g, ' ')
     .replace(/(\d{1,2})\s*日目/g, ' ')
     .replace(/(?:첫|둘|셋|넷)째\s*날/g, ' ')
-    .replace(/\bday\s*(\d{1,2})\b/gi, ' ')
+    // 'Day 2'는 일차지만 'Koyasan 1 day 2 days in Kyoto'의 'day 2'는 일차가 아니다(뒤에 일수 단위가 온다)
+    .replace(/\bday\s*(\d{1,2})\b(?!\s*(?:days?|nights?)\b)/gi, ' ')
     .replace(/(\d{1,2})(?:st|nd|rd|th)\s+day\b/gi, ' ');
 }
 
@@ -2354,6 +2449,9 @@ function stripDateAndDayNumberPhrases(text) {
 const EN_NUMBER_WORDS = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
 const JA_NUMBER_CHARS = { '一': 1, '二': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
 const KO_DAY_WORDS = { '하루': 1, '이틀': 2, '사흘': 3, '나흘': 4, '닷새': 5, '엿새': 6 };
+const PER_DAY_PLACES_JA_RE = /1\s*日\s*[1-5]\s*(?:か所|ヶ所|カ所|箇所|ヵ所)/;
+// 하루 예산('予算は1日1万円', '예산 1일 5만원')도 여행 일수가 아니다
+const PER_DAY_MONEY_RE = /(?<!\d)(?:1|一)\s*(?:日|일)\s*(?:あたり|当たり|につき|당|에)?\s*\d[\d,.]*\s*(?:万|만|千|천)?\s*(?:円|엔|원)/;
 function stripDayDeltaPhrases(text) {
   return String(text || '')
     .replace(/(하루|이틀|사흘|나흘|\d{1,2}\s*일)\s*(?:만|정도|씩)?\s*(?:더\s*)?(?:늘|추가|연장|줄|빼|단축|덜)/g, ' ')
@@ -2362,7 +2460,8 @@ function stripDayDeltaPhrases(text) {
     .replace(/\b(?:an?|one|two|three|\d{1,2})\s+(?:more|extra|less|fewer)\s+days?\b/gi, ' ')
     .replace(/(?:もう\s*)?[1-9一二三]\s*日\s*(?:増やし|追加|延長|伸ば|減らし|短く|短縮)/g, ' ')
     .replace(/もう\s*[1-9一二三]\s*日/g, ' ')
-    .replace(/1\s*日\s*[1-5]\s*(?:か所|ヶ所|カ所|箇所|ヵ所)/g, ' ');
+    .replace(new RegExp(PER_DAY_PLACES_JA_RE.source, 'g'), ' ')
+    .replace(new RegExp(PER_DAY_MONEY_RE.source, 'g'), ' ');
 }
 
 // 메시지에 나온 여행 전체 일수(없으면 null). 'N박 M일'은 M, 범위('3-4일')는 큰 값, 'N박'만 있으면 N+1.
@@ -2426,8 +2525,15 @@ function exactCityKeyForToken(token) {
 
 // ── 부정 표현: "쇼핑은 빼줘", "디즈니랜드는 빼고", "no shopping" ──
 const NEG_SHOPPING_RE = /(쇼핑|ショッピング|買い物)\s*(은|는|을|이|は|を)?\s*(빼|제외|말고|없이|안\s*해|안\s*할|なし|抜き|しない)|\bno\s+shopping\b|\bwithout\s+shopping\b|\bskip\s+(the\s+)?shopping\b/i;
+// 'X 대신 Y'의 '대신'('대신에'·'대신해서'도). 장소 이름 '야마노우에 대신궁'(山上大神宮)·'야마구치 대신궁'의 '대신궁'만 빼서
+// '야마노우에 대신 궁'으로 읽어 '궁'이라는 없는 장소를 넣지 않게 한다(2026-10-03). 데이터에서 '대신' 뒤에 글자가 붙는 이름은 '대신궁'뿐이다.
+// 띄어 쓰지 않은 'X대신Y'('디즈니대신시부야'·'금각사대신은각사')는 그대로 'X 대신 Y'다(한글이 붙으면 모두 막아 X가 꼭 갈 곳이 되던 회귀).
+// '해'는 뒤에 한글이 바로 붙으면 다음 이름의 첫 글자다('대신해유관' = 대신 + 해유관, '대신해서'·'대신해 Y'는 그대로).
+// 바로 붙은 '에'는 보통 '대신에'지만 '에'로 시작하는 장소('대신에노시마')는 insteadGluedPlaceHead가 이름으로 돌려준다(2026-10-03 3차 검토).
+const INSTEAD_WORD_SRC = '대신(?:에|해서|해(?![가-힣])|하여)?(?!궁)';
 // 단어 바로 뒤에 붙는 부정 꼬리(조사 포함)
-const NEGATION_TAIL_SRC = '\\s*(?:은|는|을|를|이|가|도|은요|는요|は|を|も)?\\s*(?:빼고|빼줘|빼 줘|빼주세요|빼|제외하고|제외|말고|없이|대신|안\\s*가|안\\s*갈|안\\s*해|skip|なし|抜きで|抜き|以外|の代わりに|には行かない|行かない)';
+const NEGATION_TAIL_SRC = '\\s*(?:은|는|을|를|이|가|도|은요|는요|は|を|も)?\\s*(?:빼고|빼줘|빼 줘|빼주세요|빼|제외하고|제외|말고|없이|' + INSTEAD_WORD_SRC
+  + '|안\\s*가|안\\s*갈|안\\s*해|skip|なし|抜きで|抜き|以外|の代わりに|には行かない|行かない)';
 // 부정된 구절(앞 단어 + 부정 꼬리)과 영어 "no X / skip X / without X / except X".
 // '랑/와/과/하고/및'으로 이어진 앞 낱말까지 함께 부정된다("기요미즈데라랑 쇼핑은 빼고" → 둘 다).
 // (띄어쓰기가 없는 일본어의 と/や는 도시 이름까지 지울 수 있어 여기서는 쓰지 않는다. 이름 단위 판정 isNameNegatedIn은 と/や도 본다.)
@@ -2454,7 +2560,8 @@ let ROMAJI_NO_LABELS = null;
 function romajiNoLabels() {
   if (!ROMAJI_NO_LABELS) {
     const set = new Set();
-    const add = (l) => { const s = String(l || '').toLowerCase().trim(); if (/[a-z]\s+no\s+[a-z]/.test(s)) set.add(s); };
+    // 장음 기호가 붙은 글자('Inō no Hi')도 로마자다
+    const add = (l) => { const s = String(l || '').toLowerCase().trim(); if (/[a-z\u00e0-\u017f]\s+no\s+[a-z\u00e0-\u017f]/.test(s)) set.add(s); };
     for (const e of EXTRA_PLACES) [e.en, ...(e.aliases || [])].forEach(add);
     for (const m of MUST_ATTRACTIONS) (m.aliases || []).forEach(add);
     for (const v of Object.values(CURATED_PLACE_I18N)) add(v.en);
@@ -2470,17 +2577,58 @@ function enNegatedMatches(text) {
   return [...raw.matchAll(EN_NEGATED_PHRASE_RE)].filter((m) => !spans.some(([a, b]) => m.index > a && m.index < b)).map((m) => ({ text: m[0], index: m.index }));
 }
 
+// 'X대신에노시마'·'X대신에비스'처럼 '대신' 바로 뒤에 붙은 '에'가 데이터 속 장소·동네 이름('에노시마'·'에비스'·'에도성')의 첫 글자면 그 '에'.
+// 부정 꼬리('대신에')가 그 글자를 먹어 '노시마'라는 없는 장소가 꼭 갈 곳이 되고 에노시마가 사라지던 회귀를 막는다(2026-10-03 3차 검토).
+// 이름 목록은 처음 쓸 때 만든다(도시 안 동네 이름 CITY_AREA_WORDS가 이 아래에 있다). 띄어 쓴 '대신에 에노시마'·이름이 아닌 '대신에시부야'는 '대신에'다.
+let INSTEAD_E_PLACE_NAMES = null;
+function insteadGluedPlaceHead(matched, rest) {
+  if (!/대신에$/.test(String(matched || '')) || !/^[가-힣]/.test(String(rest || ''))) return '';
+  if (!INSTEAD_E_PLACE_NAMES) {
+    const set = new Set();
+    const add = (l) => { const s = String(l || '').replace(/\s+/g, ''); if (/^에[가-힣]{2,}/.test(s)) set.add(s); };
+    for (const m of MUST_ATTRACTIONS) [m.name, ...(m.aliases || []), ...(m.contextAliases || [])].forEach(add);
+    for (const e of EXTRA_PLACES) [e.name, ...(e.aliases || [])].forEach(add);
+    for (const c of Object.values(CITY_DATA)) [c.label, ...(c.highlights || []).map((h) => h.name)].forEach(add);
+    for (const list of [...Object.values(CITY_ALIASES), ...Object.values(LANDMARK_CITY_HINTS), ...Object.values(CITY_AREA_WORDS)]) (list || []).forEach(add);
+    Object.keys(LOCALITY_PARENT_CITY_MAP).forEach(add);
+    INSTEAD_E_PLACE_NAMES = [...set];
+  }
+  const w = `에${rest}`.replace(/\s+/g, '');
+  return INSTEAD_E_PLACE_NAMES.some((n) => w.startsWith(n)) ? '에' : '';
+}
+
 function negatedPhrases(text) {
   const raw = String(text || '');
   const out = [];
-  for (const m of raw.matchAll(NEGATED_PHRASE_RE)) out.push(m[0]);
+  for (const m of raw.matchAll(NEGATED_PHRASE_RE)) {
+    const head = insteadGluedPlaceHead(m[0], raw.slice(m.index + m[0].length));
+    out.push(head ? m[0].slice(0, -head.length) : m[0]);
+  }
   for (const m of enNegatedMatches(raw)) out.push(m.text);
   return out;
 }
 
 // 부정된 구절을 지운 글(테마·가고 싶은 곳 판정용)
+// 띄어 쓰지 않은 '도시+일수+장소+부정'('오사카3일유니버설대신수족관'·'후쿠오카3일유후인대신벳푸')은 앞의 '도시+일수'를 남긴다:
+// 통째로 지우면 도시를 잃어 다른 도시(폼의 도쿄, 장소의 오이타)로 바뀐다(띄어 쓴 '오사카3일 유니버설대신 수족관'과 같게, 2026-10-03).
+// 남기는 것은 일수 앞이 비었거나 도시 이름이고('3일'·'오사카3일'·'大阪3日間') 일수 뒤에 부정된 장소 이름이 있을 때뿐이다.
+// '디즈니1일은 빼줘'·'USJ1日抜きで'·'하코네1박은 빼고'의 일수는 빼 달라고 한 그곳의 일수라 함께 지운다
+// (남겨서 그 장소가 꼭 갈 곳이 되던 회귀, 2026-10-03 3차 검토).
+const NEGATED_KEEP_DAYS_PREFIX_RE = /^([^\s,.!?、。\d]*)(?:\d{1,2}\s*(?:박|일(?!\s*(?:차|권))|日間|日(?![目中券])|泊))+(?=[가-힣A-Za-z一-鿿゠-ヿ])/;
+function keptDaysPrefix(words) {
+  const w = String(words || '');
+  const m = NEGATED_KEEP_DAYS_PREFIX_RE.exec(w);
+  if (!m) return '';
+  const rest = w.slice(m[0].length).trim();
+  if (!rest || /^(?:은|는|을|를|이|가|도|만|만은|정도|쯤|씩|째|は|を|も|に|で)$/.test(rest)) return '';
+  if (m[1] && !exactCityKeyForToken(m[1]) && !exactCityKeyForToken(m[1].replace(/(?:で|は|に|では)$/, ''))) return '';
+  return m[0];
+}
 function stripNegatedPhrases(text) {
-  let out = String(text || '').replace(NEGATED_PHRASE_RE, ' ');
+  let out = String(text || '').replace(NEGATED_PHRASE_RE, (m, words, offset, whole) => {
+    const keep = keptDaysPrefix(words);
+    return `${keep ? `${keep} ` : ' '}${insteadGluedPlaceHead(m, whole.slice(offset + m.length))}`;
+  });
   for (const m of enNegatedMatches(out).reverse()) out = `${out.slice(0, m.index)} ${out.slice(m.index + m.text.length)}`;
   return out;
 }
@@ -2522,11 +2670,15 @@ function findExcludedPlaceNames(text, cityKeys = []) {
   return out;
 }
 
-// 'X 대신 Y' (X는 빼고 Y를 넣는다)
+// 'X 대신 Y'·'X대신Y' (X는 빼고 Y를 넣는다). '대신궁'처럼 이름 속 '대신'은 보지 않는다(INSTEAD_WORD_SRC).
+const INSTEAD_PHRASE_RE = new RegExp(`([^\\s,.!?]+?)\\s*(?:은|는|을|를)?\\s*${INSTEAD_WORD_SRC}\\s*([^\\s,.!?]+)`);
 function parseInsteadPhrase(text) {
-  const m = /([^\s,.!?]+?)\s*(?:은|는|을|를)?\s*대신(?:에)?\s*([^\s,.!?]+)/.exec(String(text || ''));
+  const m = INSTEAD_PHRASE_RE.exec(String(text || ''));
   if (!m) return null;
-  return { from: m[1].replace(/(은|는|을|를|이|가)$/, ''), to: m[2].replace(/(으로|로|을|를|이|가|은|는|넣어.*|추가.*)$/, '') };
+  // '하코네대신에노시마': 바로 붙은 '에'가 장소 이름의 첫 글자면 이름에 돌려준다(insteadGluedPlaceHead)
+  const to = insteadGluedPlaceHead(m[0].slice(0, m[0].length - m[2].length), m[2]) + m[2];
+  // '가마쿠라당일치기'·'가마쿠라 당일치기로'의 '당일치기'는 장소 이름이 아니다
+  return { from: m[1].replace(/(은|는|을|를|이|가)$/, ''), to: to.replace(/(으로|로|을|를|이|가|은|는|넣어.*|추가.*|당일치기.*)$/, '') };
 }
 
 // 테마 키워드. 한 글자 '산'·'절'은 '저예산'·'산책'·'부산'·'절약'·'친절'로 오인되지 않게 구체적인 단어만 쓴다.
@@ -2999,7 +3151,8 @@ function normalizeWantedPlaceName(name) {
 // 사용자가 말한 장소(데이터에 없을 수도 있음)를 후보 카드 모양으로 만든다.
 // 도시 명소(highlights)·추가 명소(EXTRA_PLACES)에 같은 이름이 있으면 그 지역·추천 시간·머무는 시간을 그대로 쓴다(도톤보리 = 난바 18:00-21:00).
 // 대표 명소(MUST_ATTRACTIONS)면 그 도시와 '하루 전체' 표시(fullDay/dayTrip)를 붙인다. 같은 이름이 여러 도시에 있으면 cityKey 도시를 먼저 쓴다.
-// hints = { allDay: [이름], evening: [이름] }: 말로 한 "당일치기 하루"·"저녁에"
+// hints = { allDay: [이름], evening: [이름], routeCityKeys: [도시 키] }: 말로 한 "당일치기 하루"·"저녁에", 일정의 다른 도시
+// (이웃한 두 도시에 함께 든 추가 명소는 cityKey 다음으로 일정 도시의 것을 쓴다: 도쿄·삿포로 일정의 나카지마 공원 = 삿포로, 오카다마 아님)
 function buildSyntheticWantedDestinations(wantedPlaces, cityKey, max = 4, hints = {}) {
   const city = CITY_DATA[cityKey] || CITY_DATA.tokyo;
   const list = [];
@@ -3010,7 +3163,7 @@ function buildSyntheticWantedDestinations(wantedPlaces, cityKey, max = 4, hints 
     if (!name || seen.has(name)) continue;
     seen.add(name);
     const mustMeta = MUST_ATTRACTIONS.find((m) => m.name === name && m.cityKey === cityKey) || MUST_ATTRACTIONS.find((m) => m.name === name);
-    const extra = mustMeta ? null : extraPlaceByName(name);
+    const extra = mustMeta ? null : extraPlaceByName(name, [cityKey, ...(Array.isArray(hints.routeCityKeys) ? hints.routeCityKeys : [])]);
     const metaCityKey = (mustMeta && CITY_DATA[mustMeta.cityKey] ? mustMeta.cityKey : '') || (extra && CITY_DATA[extra.cityKey] ? extra.cityKey : '') || cityKey;
     const destCity = CITY_DATA[metaCityKey] || city;
     const highlight = [metaCityKey, cityKey].map((k) => (CITY_DATA[k]?.highlights || []).find((h) => h.name === name)).find(Boolean) || null;
@@ -3054,11 +3207,80 @@ const CITY_TRANSFER_HINTS = {
   '도쿄|오사카': '신칸센 약 2시간 30분',
   '오사카|나라': '전철 약 40~60분',
   '오사카|고베': '전철 약 30~50분',
-  '교토|나라': '전철 약 45~60분'
+  '교토|나라': '전철 약 45~60분',
+  // 신칸센 구간: 도시 중심 거리가 250km를 넘어도 비행기가 아니고, 100~250km여도 2시간이 안 걸린다
+  '도쿄|나고야': '신칸센 약 1시간 40분',
+  '도쿄|센다이': '신칸센 약 1시간 30분',
+  '도쿄|가나자와': '신칸센 약 2시간 30분',
+  '도쿄|시즈오카': '신칸센 약 1시간',
+  '오사카|나고야': '신칸센 약 50분',
+  '교토|나고야': '신칸센 약 35분',
+  '오사카|오카야마': '신칸센 약 45분',
+  '오사카|히로시마': '신칸센 약 1시간 30분',
+  '교토|히로시마': '신칸센 약 1시간 40분',
+  '오카야마|히로시마': '신칸센 약 35분',
+  '오사카|후쿠오카': '신칸센 약 2시간 30분',
+  '히로시마|후쿠오카': '신칸센 약 1시간',
+  '후쿠오카|구마모토': '신칸센 약 35분',
+  '후쿠오카|가고시마': '신칸센 약 1시간 20분',
+  '구마모토|가고시마': '신칸센 약 45분',
+  '고베|히로시마': '신칸센 약 1시간 10분',
+  '교토|후쿠오카': '신칸센 약 2시간 40분',
+  '도쿄|니가타': '신칸센 약 2시간',
+  '도쿄|도야마': '신칸센 약 2시간 10분',
+  '센다이|아오모리': '신칸센 약 1시간 30분',
+  '후쿠오카|나가사키': '신칸센·특급 약 1시간 20분',
+  // 같은 노선 100~250km 중 자주 쓰는 구간(나머지는 거리 구간의 신칸센 시간대로 안내한다)
+  '고베|오카야마': '신칸센 약 30분',
+  '교토|오카야마': '신칸센 약 1시간',
+  '시즈오카|나고야': '신칸센 약 1시간',
+  '히로시마|기타큐슈': '신칸센 약 45분',
+  '도쿄|후쿠시마': '신칸센 약 1시간 30분',
+  // 거리보다 오래 걸리는 특급·버스·배 구간(산·바다를 돌아간다)
+  '삿포로|아사히카와': '특급 약 1시간 25분',
+  '삿포로|하코다테': '특급 약 3시간 40분',
+  '삿포로|구시로': '특급 약 4시간',
+  '후쿠오카|오이타': '특급 약 2시간',
+  '구마모토|미야자키': '버스 약 3시간',
+  '구마모토|오이타': '특급 약 3시간',
+  '가고시마|미야자키': '특급 약 2시간 10분',
+  '마쓰야마|고치': '버스 약 2시간 30분',
+  '도쿠시마|난키 시라하마': '와카야마 경유 배와 특급 약 4~5시간',
+  // 다리로 이어진 섬
+  '미야코지마|시모지시마': '이라부 대교로 차 약 30분',
+  // 짧은 배편이 있는 섬(널리 알려진 소요 시간만 쓴다. 표에 없는 섬 구간은 '배나 비행기로 이동, 반나절 안팎')
+  '왓카나이|리시리': '페리 약 1시간 40분',
+  '가고시마|야쿠시마': '고속선 약 2시간, 페리 약 4시간',
+  '가고시마|다네가시마': '고속선 약 1시간 40분',
+  '야쿠시마|다네가시마': '고속선 약 50분'
 };
 
-// 도시 중심 사이가 이보다 멀면 기차·버스 1~3시간 거리가 아니다(도쿄 → 이시가키, 히로시마 → 구시로): 비행기 이동으로 알린다
+// 신칸센으로 바로 이어진 도시(같은 배열 안끼리). 표에 없는 구간도 거리만 보고 비행기로 안내하지 않게 쓴다.
+// 미니 신칸센(야마가타·아키타)과 릴레이 특급을 갈아타는 나가사키는 넣지 않는다(필요한 구간은 표에 쓴다).
+const SHINKANSEN_LINES = [
+  ['tokyo', 'shizuoka', 'nagoya', 'kyoto', 'osaka', 'kobe', 'okayama', 'hiroshima', 'iwakuni', 'yamaguchi_ube', 'kitakyushu', 'fukuoka', 'kumamoto', 'kagoshima'],
+  ['tokyo', 'fukushima', 'sendai', 'hanamaki', 'aomori', 'hakodate'],
+  ['tokyo', 'niigata'],
+  ['tokyo', 'toyama', 'kanazawa']
+];
+// 기차·버스로 갈 수 없는 섬 도시(오키나와 본섬 포함): 가까워도 배나 비행기로 간다
+const ISLAND_CITY_KEYS = new Set(['okinawa', 'rishiri', 'amami', 'tokunoshima', 'yakushima', 'tanegashima', 'miyako', 'shimojishima', 'ishigaki', 'kumejima', 'kita_daito', 'yonaguni']);
+
+function onSameShinkansenLine(keyA, keyB) {
+  return Boolean(keyA && keyB) && SHINKANSEN_LINES.some((line) => line.includes(keyA) && line.includes(keyB));
+}
+
+// 표에 없는 구간은 도시 중심 직선거리로 나눈다(시간은 대략값):
+// - 250km 이하: 섬이 끼면 배·비행기, 100km 미만은 1~3시간(산·바다를 돌아가면 3시간 가까이 걸린다: 구마모토 → 오이타),
+//   100~250km는 같은 신칸센 노선이면 신칸센 시간대(200km까지 30분~1시간 30분: 기타큐슈 → 구마모토 약 50분,
+//   그 위는 1시간 30분~2시간: 시즈오카 → 교토 약 1시간 40분), 아니면 대중교통 약 2~4시간
+// - 250km 초과: 같은 신칸센 노선이면 신칸센 시간대(450km까지 1~3시간, 700km까지 2~4시간 30분),
+//   아니면 기차·버스로 갈 거리가 아니다(도쿄 → 이시가키, 히로시마 → 구시로): 비행기 이동으로 알린다
+const NEAR_TRANSFER_KM = 100;
+const SHINKANSEN_NEAR_KM = 200;
 const FLIGHT_TRANSFER_KM = 250;
+const SHINKANSEN_MID_KM = 450;
+const SHINKANSEN_MAX_KM = 700;
 function transferHint(fromCity, toCity) {
   const a = String(fromCity || '').trim();
   const b = String(toCity || '').trim();
@@ -3066,10 +3288,90 @@ function transferHint(fromCity, toCity) {
   const key1 = `${a}|${b}`;
   const key2 = `${b}|${a}`;
   if (CITY_TRANSFER_HINTS[key1] || CITY_TRANSFER_HINTS[key2]) return CITY_TRANSFER_HINTS[key1] || CITY_TRANSFER_HINTS[key2];
-  const ca = CITY_CENTER_COORDS[cityKeyForExactLabel(a)];
-  const cb = CITY_CENTER_COORDS[cityKeyForExactLabel(b)];
-  if (ca && cb && haversineKm(ca, cb) > FLIGHT_TRANSFER_KM) return '비행기 이동, 공항 오가는 시간 포함 반나절 이상';
-  return '대중교통 기준 1~3시간';
+  const ka = cityKeyForExactLabel(a);
+  const kb = cityKeyForExactLabel(b);
+  const ca = CITY_CENTER_COORDS[ka];
+  const cb = CITY_CENTER_COORDS[kb];
+  // 좌표를 모르는 곳(당일치기 장소에서 돌아오는 이동 등)은 예전처럼 넓게 안내한다
+  if (!ca || !cb) return '대중교통 기준 1~3시간';
+  const km = haversineKm(ca, cb);
+  const shinkansen = onSameShinkansenLine(ka, kb);
+  if (km > FLIGHT_TRANSFER_KM) {
+    if (shinkansen && km <= SHINKANSEN_MID_KM) return '신칸센 약 1~3시간';
+    if (shinkansen && km <= SHINKANSEN_MAX_KM) return '신칸센 약 2~4시간 30분';
+    return '비행기 이동, 공항 오가는 시간 포함 반나절 이상';
+  }
+  if (ISLAND_CITY_KEYS.has(ka) || ISLAND_CITY_KEYS.has(kb)) return '배나 비행기로 이동, 항구·공항 오가는 시간 포함 반나절 안팎';
+  if (km < NEAR_TRANSFER_KM) return '대중교통 기준 1~3시간';
+  if (shinkansen && km <= SHINKANSEN_NEAR_KM) return '신칸센 약 30분~1시간 30분';
+  if (shinkansen) return '신칸센 약 1시간 30분~2시간';
+  return '대중교통 기준 약 2~4시간';
+}
+
+// 같은 장소(위키데이터 항목)가 이웃한 두 도시에 함께 든 곳이 있다: 삿포로·삿포로 오카다마(도시 중심 2.4km)의 나카지마 공원·홋카이도 신궁 등
+// 도시 주변 실제 명소 23곳과 삿포로 TV 타워·모에레누마 공원, 미야코지마·시모지시마의 해변 등 5곳과 이라부 대교.
+// 일정 도시(경로 도시)에도 있는 장소를 다른 도시 이름으로 고른 카드(예전 채팅이 낸 '나카지마 공원 (삿포로 오카다마)')는 일정 도시의 장소로 본다.
+// 안 그러면 deriveRouteCities가 그 카드의 도시를 경로에 더해, 한 도시 일정이 두 도시로 나뉘고('도시 이동: 삿포로 -> 삿포로 오카다마 1~3시간')
+// 같은 곳이 두 이름으로 두 번 들어간다('삿포로 TV 타워 (오도리)'와 '삿포로 TV타워 (삿포로 오카다마)', 2026-10-03).
+// 장소의 위키데이터 ID: 그 도시의 추가 명소(도시 주변 실제 명소 포함)나 큐레이션 명소의 사진 데이터(place-images.json)
+function cityPlaceQid(cityKey, names) {
+  const keys = (names || []).map((n) => String(n || '').toLowerCase().replace(/\s+/g, '')).filter(Boolean);
+  if (!cityKey || !keys.length) return '';
+  const same = (a) => Boolean(a) && keys.includes(String(a).toLowerCase().replace(/\s+/g, ''));
+  const extra = EXTRA_PLACES.find((e) => e.cityKey === cityKey && e.wikidata && [e.name, e.en, e.ja, ...(e.aliases || [])].some(same));
+  if (extra) return extra.wikidata;
+  for (const n of names || []) {
+    const media = PLACE_IMAGES.byKey.get(`${cityKey}|${String(n || '').trim()}`);
+    if (media?.wikidata) return media.wikidata;
+  }
+  return '';
+}
+// 그 도시에 있는 같은 위키데이터 항목의 장소들(도시 명소 → 대표 명소 → 추가 명소 순): [{ name(한글), area, allDay('fullDay'|'dayTrip'|'') }]
+function cityPlacesByQid(cityKey, qid) {
+  const c = CITY_DATA[cityKey];
+  if (!c || !qid) return [];
+  const mediaQid = (name) => PLACE_IMAGES.byKey.get(`${cityKey}|${name}`)?.wikidata || '';
+  return [
+    ...(c.highlights || []).filter((h) => mediaQid(h.name) === qid),
+    ...MUST_ATTRACTIONS.filter((m) => m.cityKey === cityKey && mediaQid(m.name) === qid),
+    ...EXTRA_PLACES.filter((e) => e.cityKey === cityKey && e.wikidata === qid)
+  ].map((x) => ({ name: x.name, area: x.area || c.label, allDay: x.fullDay ? 'fullDay' : (x.dayTrip ? 'dayTrip' : '') }));
+}
+// 고른 카드(_picks) 중 경로 도시가 아닌 도시의 카드가 경로 도시에도 있는 장소면(같은 위키데이터 항목) 그 경로 도시의 카드로 바꾼다.
+// 이름은 그대로 둔다: 같은 항목이라도 하는 일이 다를 수 있다(오카다마의 '오도리 야경'과 삿포로의 '오도리 공원'은 같은 오도리 공원).
+// 띄어쓰기만 다른 같은 이름(오카다마 '삿포로 TV타워', 삿포로 '삿포로 TV 타워')은 그 도시의 한글 이름으로 맞춰, 한 일정에 두 번 들어가지 않게 한다.
+// 경로 도시에 같은 항목이 없는 장소(삿포로 일정의 '하코다테 아침시장')는 그대로 둔다(그 도시가 경로에 더해진다).
+// 이웃 도시 쌍 밖의 큐레이션 당일치기 겹침에도 쓰인다: 오사카 일정의 '히메지성 (고베)', 오사카 일정의 '나라 공원·도다이지 (교토)',
+// 구마모토 일정의 '구로카와 온천 (오이타)', 다카마쓰 일정의 '지추 미술관 (오카야마)', 아오모리 일정의 '오이라세 계류 (미사와)'는
+// 그 도시로 따로 이동하지 않고 경로 도시의 당일치기로 든다. 경로 도시에서 하루짜리인 곳(아오모리의 '오이라세 계곡')은
+// 이름이 달라도('오이라세 계류') 하루짜리로 둔다(90분 방문으로 줄지 않게).
+function foldSharedPlacePicks(picks, routeCityKeys) {
+  const route = [...new Set((routeCityKeys || []).filter((k) => CITY_DATA[k]))];
+  if (!Array.isArray(picks) || !route.length) return picks;
+  return picks.map((p) => {
+    const pk = cityKeyByLabel(p?.city);
+    if (!pk || !CITY_DATA[pk] || route.includes(pk)) return p;
+    const koGuess = koPlaceNameForLabel(p.name, pk);
+    const qid = cityPlaceQid(pk, [p.nameKo, p.name, koGuess]);
+    if (!qid) return p;
+    const nameIsKo = /[가-힣]/.test(String(p.name || ''));
+    const ko = String(p.nameKo || (nameIsKo ? p.name : koGuess) || '').trim();
+    for (const rk of route) {
+      const hits = cityPlacesByQid(rk, qid);
+      if (!hits.length) continue;
+      const hit = hits.find((h) => placeNameKey(h.name) === placeNameKey(ko)) || hits[0];
+      const out = { ...p, city: CITY_DATA[rk].label };
+      if (ko && hit.name !== ko && placeNameKey(hit.name) === placeNameKey(ko)) {
+        if (p.nameKo || !nameIsKo) out.nameKo = hit.name; else out.name = hit.name;
+      }
+      const oldCityNames = new Set([CITY_DATA[pk].label, ...['ko', 'en', 'ja'].map((l) => localizedCityName(pk, l))]);
+      if (!out.area || oldCityNames.has(String(out.area).trim())) out.area = hit.area;
+      const allDay = hit.allDay || hits.map((h) => h.allDay).find(Boolean) || '';
+      if (allDay && !allDayPlaceKind(out, rk)) Object.assign(out, { [allDay]: true, bestTime: '09:00-18:00', stayMin: 480 });
+      return out;
+    }
+    return p;
+  });
 }
 
 function deriveRouteCities(payload, picks, defaultCityLabel) {
@@ -3130,22 +3432,548 @@ function resolveCityLabelFromRegionToken(token, fallbackCityKey = '') {
   return '';
 }
 
-function extractRegionDayPlanFromText(text, fallbackCityKey = '') {
+// 도시별 일수를 셀 글: 날짜('10월 15일'·'Oct 15')·일차('2일차'·'2日目'·'Day 2')·하루 장소 수('1日2か所')·하루 예산('1日1万円')을 지운다.
+// '교토 2일 더' 같은 말은 남긴다(첫 메시지에서는 그 도시 몫이고, 후속 대화의 증감은 parseCityDayDeltas가 따로 본다).
+function regionDaysText(text) {
+  return stripDateAndDayNumberPhrases(text)
+    .replace(new RegExp(PER_DAY_PLACES_JA_RE.source, 'g'), ' ')
+    .replace(new RegExp(PER_DAY_MONEY_RE.source, 'g'), ' ');
+}
+
+// 도시별 일수 단위(ko/en/ja): 박·泊·nights / 일·日間·日·days. '2일차'·'2日目'·'一日中'과 '1일권'·'1日券'(하루 승차권)은 일수가 아니다.
+const REGION_NIGHT_UNIT_SRC = '(?:박|泊|nights?\\b)';
+const REGION_DAY_UNIT_SRC = '(?:일(?!\\s*(?:차|권))|日間|日(?![目中券])|days?\\b)';
+const REGION_NIGHT_IN_WINDOW_RE = new RegExp(`(\\d{1,2})\\s*${REGION_NIGHT_UNIT_SRC}`, 'i');
+const REGION_DAY_IN_WINDOW_RE = new RegExp(`(\\d{1,2})\\s*${REGION_DAY_UNIT_SRC}`, 'i');
+const REGION_UNIT_COUNT_RE = new RegExp(`\\d{1,2}\\s*(?:${REGION_NIGHT_UNIT_SRC}|${REGION_DAY_UNIT_SRC})`, 'gi');
+// 일수가 도시 앞에 오는 말(도시 이름 바로 앞 글의 끝).
+// 이어 주는 말이 있으면 그 도시 몫이 분명하다: "3 days in Osaka", "3日間は大阪"·"2泊は京都で", "3일은 오사카"·"3일 동안은 오사카".
+// 한국어 '3일간'·'3일 동안'은 조사 '은·는'이 붙을 때만 여기다: '오사카 3일간 교토 2일간'·'도쿄는 3일 동안 오사카는 2일 동안'의
+// '3일간'·'3일 동안'은 앞 도시 몫이다(다음 도시 몫으로 잘라 앞 도시가 일수를 잃던 문제, 2026-10-03).
+const DAYS_BEFORE_CITY_STRONG_RES = [
+  /(\d{1,2})\s*(days?|nights?)\s+(?:in|at)\s+$/i,
+  /(\d{1,2})\s*(日間|日|泊)\s*(?:は|を)\s*$/,
+  /(\d{1,2})\s*(일간|일|박)\s*(?:은|는|동안은|간은)\s*$/
+];
+// 일수만 붙어 있는 말("3일 오사카, 2일 교토", "3日間大阪、2日間京都", "3일 동안 도쿄, 2일 동안 오사카")은 '오사카 3일 교토 2일'의 '3일'(교토 바로 앞)과 모양이 같아서
+// 글 전체가 '일수 → 도시' 순서일 때(첫 도시 앞에 일수가 있고 마지막 도시 뒤에는 없을 때)나, 앞 도시가 그 일수를 쓰지 않았을 때만 쓴다.
+const DAYS_BEFORE_CITY_LOOSE_RE = /(\d{1,2})\s*(days?|nights?|日間|日|泊|일간|일|박)\s*(?:동안\s*)?$/i;
+// 다음 도시를 먼저 간다는 말(두 도시 사이 글의 끝): 'Kyoto 2 days after …', '… before that', 'その前に', '그 전에'
+const VISIT_EARLIER_MARK_RE = /(?:\bafter|\bbefore\s+that\s*,?|その前に\s*、?|그\s*전에\s*,?)\s*$/i;
+
+// 도시 바로 앞(from~to) 글 끝의 일수 { at(숫자 위치), days, unit, strong }. 'N박 M일'·'N nights M days'의 M일은 여행 전체 일수라서 뺀다.
+function daysBeforeCity(raw, from, to) {
+  const seg = raw.slice(Math.min(from, to), to);
+  const base = to - seg.length;
+  let hit = null;
+  let strong = false;
+  let topic = '';
+  for (const re of DAYS_BEFORE_CITY_STRONG_RES) {
+    hit = re.exec(seg);
+    if (hit) {
+      strong = true;
+      topic = re === DAYS_BEFORE_CITY_STRONG_RES[2] ? 'ko' : (re === DAYS_BEFORE_CITY_STRONG_RES[1] && /は\s*$/.test(hit[0]) ? 'ja' : '');
+      break;
+    }
+  }
+  if (!hit) hit = DAYS_BEFORE_CITY_LOOSE_RE.exec(seg);
+  if (!hit) return null;
+  if (/\d\s*(?:박|泊)\s*$|\d\s*nights?\s*(?:and\s*|,\s*|\/\s*)?$/i.test(seg.slice(0, hit.index))) return null;
+  // during: '2일 동안 오사카'(느슨한 말이지만 '동안'이 붙어 다음 도시 몫이 분명할 때가 많다, extractRegionDayPlanFromText의 afterElsewhere)
+  // topic: 'N일은·N박은'(ko)·'N泊は·N日間は'(ja). extractRegionDayPlanFromText가 앞 도시 바로 뒤에 붙은 것은 앞 도시 몫으로 돌린다
+  return { at: base + hit.index, days: Number(hit[1]), unit: /^(?:n|박|泊)/i.test(hit[2]) ? 'night' : 'day', strong, topic, during: !strong && /동안\s*$/.test(hit[0]) };
+}
+
+// 글 속 첫 도시별 일수 { at, days, unit }('오사카 3일', '大阪に2泊', 'Kyoto 1 night').
+// 도시 이름에서 가장 가까운 일수를 쓴다: 구간 뒤쪽의 박·泊('東京3日間、箱根で1泊', '도쿄 3일, 호텔 2박')은 그 도시 몫이 아니다.
+function firstRegionDaysIn(text, base = 0) {
+  const s = String(text || '');
+  const night = REGION_NIGHT_IN_WINDOW_RE.exec(s);
+  const day = REGION_DAY_IN_WINDOW_RE.exec(s);
+  const useNight = Boolean(night) && (!day || night.index <= day.index);
+  const m = useNight ? night : day;
+  return m ? { at: base + m.index, days: Number(m[1]), unit: useNight ? 'night' : 'day' } : null;
+}
+
+// 뒤의 일수가 앞 일수 안에 든다는 표시: "Tokyo 5 days including 2 days in Kyoto", "東京5日間、そのうち箱根2日", "도쿄 총 5일, 그중 하코네 2일".
+// 앞에 일수가 있고, 표시 바로 뒤(문장 부호 없이 16자 안)에 일수가 올 때만 본다('including Universal Studios'는 아니다). 위치, 없으면 -1.
+const INCLUDED_DAYS_MARK_SRC = '(?:\\bincluding\\b|\\bincl\\.|\\b(?:out\\s+)?of\\s+which\\b|そのうち|のうち|그\\s*중(?:에서|에)?|(?<=\\d\\s*(?:일|박)\\s*)중(?:에서|에)?)';
+function includedDaysMarkIndex(text) {
   const raw = String(text || '');
-  if (!raw) return [];
+  const re = new RegExp(`${INCLUDED_DAYS_MARK_SRC}(?=[^,.!?、。\\n]{0,16}?\\d{1,2}\\s*(?:${REGION_NIGHT_UNIT_SRC}|${REGION_DAY_UNIT_SRC}))`, 'gi');
+  const anyDays = new RegExp(REGION_UNIT_COUNT_RE.source, 'i');
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    if (anyDays.test(raw.slice(0, m.index))) return m.index;
+  }
+  return -1;
+}
+
+// 숫자 없이 말로 쓴 일수: '하루는 디즈니'·'이틀은'·'one day at Disney'·'一日はディズニー'. ('하루카스'·'a day trip'은 아니다)
+const INCLUDED_WORD_DAYS_SRC = '(?:(?:하루|이틀|사흘|나흘|닷새)(?:간)?(?:는|은|도|만|를|을|쯤|정도|종일)?(?![가-힣])'
+  + '|\\b(?:one|two|three|four|five|a)\\s+(?:full\\s+)?days?\\b(?!\\s*-?\\s*trips?\\b)|[一二三四五]\\s*(?:日間|日(?![目中本]))|半日)';
+// 위 표시(mark 위치) 바로 뒤에 온 첫 일수의 위치('도쿄 3일 중 1일은 디즈니'의 '1', 'including 2 days in Kyoto'의 '2',
+// '도쿄 4일 그중 하루는 디즈니랜드 오사카 2일'의 '하루'). 없으면 -1.
+function includedDaysNumberAt(text, mark) {
+  if (!(mark >= 0)) return -1;
+  const raw = String(text || '');
+  const re = new RegExp(`${INCLUDED_DAYS_MARK_SRC}[^,.!?、。\\n]{0,16}?(?=\\d{1,2}\\s*(?:${REGION_NIGHT_UNIT_SRC}|${REGION_DAY_UNIT_SRC})|${INCLUDED_WORD_DAYS_SRC})`, 'iy');
+  re.lastIndex = mark;
+  const m = re.exec(raw);
+  return m ? mark + m[0].length : -1;
+}
+// 표시 뒤 도시 목록이 끝나는 말: 'including 2 days in Kyoto, then Osaka 2 days'의 then, '그 다음', 'その後', 문장 끝
+const INNER_LIST_BREAK_RE = /\bthen\b|\bafter\b|\bafterwards?\b|\blater\b|그\s*다음|다음(?:에|으로)|그\s*후|이후|나서|끝나고|その後|それから|次に|[.。!?！？\n]/i;
+
+// 도시 안에서 하는 일(장소가 아닌 말): '도쿄 디즈니랜드 1일, 시내 3일'·'쇼핑 2일'·'Tokyo city 3 days'·'東京市内3日'.
+// 명소 몫 일수만 있는 도시에 더한다(extractRegionDayPlanFromText). 데이터 없는 지역으로는 세지 않는다(멈춤 낱말).
+const REGION_ACTIVITY_WORDS = new Set(['시내', '관광', '시내관광', '쇼핑', '자유', '자유시간', '자유일정', '휴식', '구경', '산책', '투어', '맛집', '먹방',
+  'city', 'downtown', 'sightseeing', 'shopping', 'free', 'rest', 'leisure', 'tour', 'tours', 'food',
+  '市内', '観光', '市内観光', 'ショッピング', '買い物', '自由', '自由行動', '街歩き', '散策', '休憩', 'フリー', 'グルメ', '食べ歩き']);
+
+// 그 도시의 하루짜리 대표 명소(fullDay: 테마파크 등) 이름·별칭·en/ja 이름. 도시마다 한 번 만든다.
+const _fullDayLabelCache = new Map();
+function fullDayPlaceLabelsOf(cityKey) {
+  if (_fullDayLabelCache.has(cityKey)) return _fullDayLabelCache.get(cityKey);
+  const names = new Set(MUST_ATTRACTIONS.filter((m) => m.cityKey === cityKey && m.fullDay).map((m) => m.name));
+  (CITY_DATA[cityKey]?.highlights || []).forEach((h) => { if (h.fullDay) names.add(h.name); });
+  const labels = names.size === 0 ? [] : Array.from(new Set([
+    ...Array.from(names),
+    ...MUST_ATTRACTIONS.filter((m) => m.cityKey === cityKey && names.has(m.name)).flatMap((m) => m.aliases || []),
+    ...placeLabelIndex().filter((e) => e.ck === cityKey && names.has(e.ko)).map((e) => e.label)
+  ].map((l) => String(l || '').toLowerCase().trim()).filter(Boolean)));
+  _fullDayLabelCache.set(cityKey, labels);
+  return labels;
+}
+
+// 낱말이 그 도시의 하루짜리 명소를 가리키는지: '디즈니랜드'·'디즈니'·'유니버셜'·'USJ'·'Disneyland'·'ディズニーランド'.
+// 도시 이름('도쿄'·'Tokyo')과 멈춤 낱말('Japan'·'재팬'처럼 이름 속 일반 낱말)은 아니다.
+function isFullDayPlaceWordOf(token, cityKey) {
+  const t = String(token || '').toLowerCase().trim();
+  if (t.length < 2 || !CITY_DATA[cityKey] || exactCityKeyForToken(t)) return false;
+  if (REGION_SEGMENT_STOP_WORDS.has(t) || REGION_SEGMENT_STOP_WORDS_EN.has(t) || REGION_SEGMENT_STOP_WORDS_JA.has(t)) return false;
+  const labels = fullDayPlaceLabelsOf(cityKey);
+  if (/^[a-z0-9 .'-]+$/.test(t)) {
+    if (t.length < 3) return false;
+    return labels.some((l) => l === t || aliasInText(l, t) || (t.length >= 5 && l.split(/[^a-z0-9]+/).some((w) => w.startsWith(t))));
+  }
+  return labels.some((l) => l.includes(t));
+}
+
+// 도시 이름과 일수 사이 글(between)에 그 도시의 하루짜리 명소가 있는지('도쿄 디즈니랜드 1일'의 ' 디즈니랜드 ')
+function fullDayPlaceBetween(between, cityKey) {
+  const tokens = String(between || '').match(/[가-힣]{2,}|[A-Za-z][A-Za-z'-]+|[一-鿿゠-ヿ]{2,}/g) || [];
+  return tokens.some((t) => isFullDayPlaceWordOf(t.replace(/(에서|으로|은|는|에|쪽|의)$/, ''), cityKey));
+}
+
+// 일수 앞(또는 영어 'N days in X'의 뒤) 낱말이 그 도시 몫인지: 시내·관광·쇼핑 같은 일, 같은 도시 이름('도쿄 시내 3일'·'東京市内3日'),
+// 그 도시 안의 동네·명소. 다른 도시의 동네·명소와 데이터 없는 지역(하코네 등, 따로 더한다)은 아니다.
+// activityOnly: 도시 이름이 글에 없을 때(명소 이름으로 도시를 찾은 글) — 도시로 읽히는 낱말은 이미 그 도시 일수로 세었다.
+function isCityPartDayToken(token, cityKey, activityOnly = false) {
+  const base = String(token || '').trim().replace(/(에서|으로|은|는|에|쪽)$/, '');
+  const variants = Array.from(new Set([base, base.replace(JA_REGION_SUFFIX_RE, '')])).filter((v) => v.length >= 2);
+  const label = CITY_DATA[cityKey]?.label || '';
+  return variants.some((v) => {
+    const lower = v.toLowerCase();
+    if (REGION_ACTIVITY_WORDS.has(lower)) return true;
+    const resolved = resolveCityLabelFromRegionToken(v, '');
+    if (resolved) return !activityOnly && resolved === label;
+    if (cityAreaWordSet().has(lower)) return (CITY_AREA_WORDS[cityKey] || []).some((w) => String(w).toLowerCase() === lower);
+    return isInCityPlaceWord(v, [cityKey]);
+  });
+}
+
+// 앞 일수가 뒤 일수 안에 든다는 말: '도쿄 디즈니랜드 1일 포함해서 도쿄 4일'·'디즈니랜드 1일 포함 3일'·'…1日含めて東京4日' → 뒤 일수가 그 도시 전체다
+const INCLUDES_PREV_DAYS_RE = /포함|\bincluding\b|\bincl\b|含め|込み/i;
+const INCLUDES_PREV_TOKEN_RE = /^(?:포함(?:해서|하여|하고|한)?|총|including|incl|含めて|込み|込みで|合計)$/i;
+// 일수 바로 앞('…포함 총 3일')이나 바로 뒤('Tokyo 4 days in total including Disney')에 전체라는 말이 있는지
+const INCLUDES_PREV_TAIL_RE = /(?:포함(?:해서|하여|하고|한)?|\bincluding\b|\bincl\.?|含めて|込みで?)\s*(?:총|전체|全部で|合計|in\s+total|total)?\s*$/i;
+const TOTAL_DAYS_AFTER_RE = /^\d{1,2}\s*[^\s\d,，、。.;；]*\s*(?:은|는)?\s*(?:in\s+total|total|including|incl\b|in\s+all|전체|합계|포함|含め|込み|全部で|合計)/i;
+// 글(seg)의 마지막 일수 표현 뒤 글: '도쿄 3일(디즈니 포함) 오사카 2일 도쿄 1일'의 '포함'은 두 번째 도쿄 일수와 상관없다
+function textAfterLastDays(seg) {
+  const s = String(seg || '');
+  const last = [...s.matchAll(REGION_UNIT_COUNT_RE)].pop();
+  return last ? s.slice(last.index + last[0].length) : s;
+}
+
+// win(from = 명소 몫 일수의 숫자 위치, to = 그 도시 구간 끝) 안에서 다른 도시가 쓰지 않은(used) 같은 단위 일수 중 그 도시 몫인 것
+// [{ at, days, total }]. total: 앞 일수를 포함한 그 도시 전체 일수('…1일 포함해서 도쿄 4일'의 4일, 더하지 않고 바꾼다)
+function cityPartDaysIn(raw, win, unit, used, activityOnly = false) {
+  const out = [];
+  const start = win.from + ((/^\d{1,2}/.exec(raw.slice(win.from)) || [''])[0].length);
+  const re = new RegExp(`(\\d{1,2})\\s*(${REGION_NIGHT_UNIT_SRC}|${REGION_DAY_UNIT_SRC})`, 'gi');
+  re.lastIndex = start;
+  let m;
+  while ((m = re.exec(raw)) !== null && m.index < win.to) {
+    if (used.has(m.index)) continue;
+    if ((/^(?:박|泊|n)/i.test(m[2]) ? 'night' : 'day') !== unit) continue;
+    const pre = raw.slice(start, m.index);
+    // 'N박 M일'·'N nights M days'의 M일은 여행 전체 일수다
+    if (/\d\s*(?:박|泊)\s*$|\d\s*nights?\s*(?:and\s*|,\s*|\/\s*)?$/i.test(pre)) continue;
+    const tm = /([가-힣]{2,15}|[A-Za-z][A-Za-z'-]{1,15}|[一-鿿゠-ヿ]{2,12})\s*(?:で|に|は|を)?\s*[:：]?\s*$/.exec(pre);
+    const em = /^\d{1,2}\s*(?:days?|nights?)\s+(?:in|at|of|for)\s+(?:the\s+)?([A-Za-z][A-Za-z'-]{1,15})/i.exec(raw.slice(m.index));
+    const totalWord = Boolean(tm && INCLUDES_PREV_TOKEN_RE.test(tm[1])) || INCLUDES_PREV_TAIL_RE.test(pre);
+    if (totalWord || [tm && tm[1], em && em[1]].filter(Boolean).some((t) => isCityPartDayToken(t, win.key, activityOnly))) {
+      out.push({ at: m.index, days: Number(m[1]), total: totalWord || INCLUDES_PREV_DAYS_RE.test(textAfterLastDays(pre)) || TOTAL_DAYS_AFTER_RE.test(raw.slice(m.index)) });
+    }
+  }
+  return out;
+}
+
+// 도시 이름과 일수 사이 글이 숙소 이야기면('오사카 난바 숙소 3일', '도쿄 디즈니랜드 근처 숙소 3일') 그 일수는 도시 전체 몫이다
+const STAY_WORDS_RE = /숙소|호텔|숙박|민박|료칸|근처|주변|\bstay(?:ing)?\b|\bhotels?\b|\bnear(?:by)?\b|\baround\b|宿|ホテル|旅館|近く|周辺/i;
+// '시내'·'관광' 말고 도시 안 일을 가리키는 말(그 밖의 말은 REGION_ACTIVITY_WORDS)
+const CITY_PART_EXTRA_WORDS = new Set(['center', 'centre', 'central', 'area', '도심', '중심가', '中心部', '街中']);
+
+// 도시 이름과 일수 사이 글(between)의 낱말. 조사는 extractUnknownRegionSegments처럼 뗀다('삿포로'·'이케부쿠로'의 '로'는 떼지 않는다).
+function betweenWords(between) {
+  return (String(between || '').match(/[가-힣]{2,}|[A-Za-z][A-Za-z'-]+|[一-鿿゠-ヿ]{2,}/g) || [])
+    .map((w) => w.replace(/(에서|으로|은|는|에|쪽|의)$/, '')).filter((w) => w.length >= 2);
+}
+
+// 사이 글에 그 도시의 동네·명소·당일치기 지역 같은 장소가 있는지('교토 아라시야마 1일', '도쿄 하코네 1일', 'Tokyo Disneyland 1 day').
+// 그러면 그 일수는 도시 전체가 아니라 그곳 몫이다. 멈춤 낱말·하는 일('여행'·'쇼핑')·도시 이름·부사('여유롭게')와 숙소 이야기는 아니다.
+function subPlaceBetween(between) {
+  if (STAY_WORDS_RE.test(String(between || ''))) return false;
+  return betweenWords(between).some((w) => !isRegionStopToken(w) && !REGION_ACTIVITY_WORDS.has(w.toLowerCase()) && !exactCityKeyForToken(w)
+    && !/[가-힣](?:게|히|서|며|면)$/.test(w));
+}
+
+// 일수 바로 앞 낱말이 데이터 없는 지역이면('도쿄 하코네 1일'의 하코네) 그 일수는 그 지역 몫이다(extractUnknownRegionSegments가 따로 더한다).
+// 영어·일본어는 그 함수처럼 아는 지역 이름일 때만(unitWord: 일수 단위 낱말 'day'·'日'·'일')
+function regionTokenBeforeDays(between, cityKey, unitWord = '일') {
+  const words = betweenWords(between);
+  const w = words[words.length - 1];
+  return Boolean(w) && !resolveCityLabelFromRegionToken(w, '') && !isRegionStopToken(w) && !isInCityPlaceWord(w, [cityKey])
+    && !isFullDayPlaceWordOf(w, cityKey) && !REGION_ACTIVITY_WORDS.has(w.toLowerCase())
+    && (!isEnJaRegionPhrase(w, unitWord) || isKnownRegionNameEnJa(w));
+}
+
+// 같은 도시를 다시 말한 곳 [{ key, idx, end }]: 첫 언급(mentions) 뒤의 같은 이름. 다른 낱말 속('히가시오사카'·'東京都'의 京都·'Tokyoite')은 뺀다.
+// (일본어는 앞 글자가 한자일 때만 다른 낱말 속으로 본다: 'また大阪1日'의 'た'는 조사·말이다)
+function findCityReMentions(raw, mentions) {
+  const lower = String(raw || '').toLowerCase();
+  const script = (ch) => (/[가-힣]/.test(ch) ? 'ko' : /[一-鿿]/.test(ch) ? 'ja' : /[a-z]/i.test(ch) ? 'en' : '');
+  const spans = mentions.map((m) => [m.idx, m.idx + String(m.matched || '').trim().length]);
+  const out = [];
+  for (const m of mentions) {
+    const name = String(m.matched || '').trim().toLowerCase();
+    if (name.length < 2) continue;
+    const sc = script(name[0]);
+    let from = m.idx + name.length;
+    let at;
+    while ((at = lower.indexOf(name, from)) >= 0) {
+      from = at + name.length;
+      if (sc && script(raw[at - 1] || '') === sc) continue;
+      if (sc === 'en' && script(raw[at + name.length] || '') === 'en') continue;
+      if (spans.some(([s, e]) => at < e && at + name.length > s)) continue;
+      out.push({ key: m.key, idx: at, end: at + name.length });
+    }
+  }
+  return out.sort((a, b) => a.idx - b.idx);
+}
+
+// 다시 말한 도시 이름과 그 일수 사이 글이 조사뿐이면 direct('다시 도쿄 1일', 'Osaka 1 day'),
+// 시내·관광 같은 말뿐이면 part('교토 시내 2일', 'Tokyo city 3 days', '東京市内3日'), 그 밖('도쿄 디즈니랜드 1일'·'오사카성 1일')은 ''.
+function reMentionKind(between) {
+  const s = String(between || '');
+  if (/[^\s:：,，、가-힣A-Za-z぀-ヿ一-鿿'-]/.test(s)) return '';
+  const words = s.replace(/[:：,，、]/g, ' ').trim().split(/\s+/).filter(Boolean)
+    .map((w) => w.replace(/(?:에서|으로|은|는|에|로|도|만|의|쪽|で|は|に|も|の|を|へ)+$/, '')).filter((w) => w && !/^(?:again|다시|또|また|再び)$/i.test(w));
+  if (words.length === 0) return 'direct';
+  return words.every((w) => REGION_ACTIVITY_WORDS.has(w.toLowerCase()) || CITY_PART_EXTRA_WORDS.has(w.toLowerCase())) ? 'part' : '';
+}
+
+// 앞 도시와 'N박은·N일은'(ko)·'N泊は·N日間は'(ja) 사이 글(between)의 모양(extractRegionDayPlanFromText).
+// 'particle': 조사뿐('오사카 2박은'·'오사카에 2박은'·'도쿄는 3일은'·'大阪2泊は'·'大阪で2泊は'). 'words'(한국어만): 쉼표·마침표·다른 일수 없이
+// 한글 낱말만('오사카 도착 2박은'·'오사카 호텔 2박은'·'오사카에서 먼저 2박은'·'도쿄 여행에서 3일은'). 그 밖은 ''.
+function topicDaysBetweenKind(between, topic) {
+  const s = String(between || '');
+  if (topic === 'ja') return /^\s*(?:で|に|は|には|では|も)?\s*$/.test(s) ? 'particle' : '';
+  if (/^\s*(?:에서는|에서|에는|에|은|는|도|만|으로|로)?\s*$/.test(s)) return 'particle';
+  return /^[\s가-힣]+$/.test(s) ? 'words' : '';
+}
+
+function extractRegionDayPlanFromText(text, fallbackCityKey = '') {
+  // 날짜·일차·'1日2か所'은 도시별 일수가 아니라서 먼저 지운다('大阪3日間、2日目にUSJ' → 오사카 3일만)
+  const raw = regionDaysText(text);
+  if (!raw.trim()) return [];
   const byCityWindow = [];
   const mentions = detectCityMentionsDetailed(raw);
+  const endOf = (m) => m.idx + String(m.matched || '').trim().length;
+  // 도시 앞 일수("3 days in Osaka", "3日間は大阪", "3일 오사카")
+  const before = mentions.map((m, i) => daysBeforeCity(raw, i > 0 ? endOf(mentions[i - 1]) : 0, m.idx));
+  // 'N박은·N일은'(ko)·'N泊は·N日間は'(ja)이 앞 도시 뒤에 쉼표 없이 붙었고 앞 도시 앞에 제 일수가 없으면 앞 도시 몫이다(예전 HEAD처럼 앞 도시 구간의 일수):
+  // - 사이가 조사뿐: '오사카 2박은 교토 1박은'·'오사카에 2박은 교토에 1박은'·'도쿄는 3일은 오사카는 2일은'·'大阪2泊は京都で1泊' → 오사카 2박 + 교토 1박
+  // - 사이에 다른 한국어 낱말: 마지막 도시 뒤에도 일수가 있어 글 전체가 '도시 → 일수' 순서일 때만('오사카 도착 2박은 교토 1박'·
+  //   '오사카 호텔 2박은 교토 료칸 1박은'. 다음 도시가 뒤 일수를 가져 이 일수가 버려지고 낱말이 '데이터 없는 지역'으로 알려지던 문제).
+  //   '도쿄 여행에서 3일은 오사카 2일은 교토'처럼 마지막 도시 뒤에 일수가 없으면 다음 도시 몫이다.
+  // 도시가 셋이어도 같다('도쿄 3일 오사카 2일은 교토 1일은' → 도쿄 3 + 오사카 2 + 교토 1)
+  // (다음 도시 몫으로 잘라 앞 도시가 일수를 잃고 도시 하나가 빠지던 회귀, 2026-10-03 · 3차 검토).
+  // 글 맨 앞·쉼표 뒤('3일은 오사카, 2일은 교토'·'2泊は大阪、1泊は京都')와 앞 도시가 이미 앞에 일수를 가진 글('3일은 오사카 2일은 교토')은
+  // 그대로 다음 도시 몫이다. 앞 도시 앞의 느슨한 일수가 그 앞 도시 바로 뒤 일수면('도쿄 3일 오사카'의 3일 = 도쿄 몫) 앞 도시의 것이 아니다.
+  const lastMention = mentions[mentions.length - 1];
+  const daysAfterLast = Boolean(lastMention && firstRegionDaysIn(raw.slice(endOf(lastMention))));
+  for (let i = 1; i < mentions.length; i += 1) {
+    const b = before[i];
+    if (!b || !b.topic) continue;
+    const prev = before[i - 1];
+    if (prev && (prev.strong || i === 1 || /[\d,，、。.;；!?]/.test(raw.slice(endOf(mentions[i - 2]), prev.at)))) continue;
+    const kind = topicDaysBetweenKind(raw.slice(endOf(mentions[i - 1]), b.at), b.topic);
+    if (kind === 'particle' || (kind === 'words' && daysAfterLast)) before[i] = null;
+  }
+  const last = mentions[mentions.length - 1];
+  const beforeOrder = Boolean(before[0]) && Boolean(last) && !firstRegionDaysIn(raw.slice(endOf(last)));
+  // 같은 도시를 다시 말한 곳('교토 아라시야마 1일, 교토 시내 2일', '…오사카 2일 그리고 도쿄 시내 1일')과 앞 일수 안에 든다는 표시.
+  // 다시 말한 곳마다 그 이름에 붙은 일수를 먼저 찾아 둔다: after(이름 뒤, 사이 글이 조사·'시내'뿐) 또는 before('3 days in Tokyo'처럼 이어 주는 말).
+  // 'N일은 <장소>'로 나눈 일수('오사카에서 1일은 유니버셜')는 그 도시 몫이 아니다.
+  const reMentions = findCityReMentions(raw, mentions);
+  const occurrenceAt = [...mentions.map((m) => m.idx), ...reMentions.map((r) => r.idx)].sort((a, b) => a - b);
+  for (const rm of reMentions) {
+    const limit = occurrenceAt.find((p) => p > rm.idx) ?? raw.length;
+    rm.prevAt = occurrenceAt.filter((p) => p < rm.idx).pop() ?? 0;
+    const d = firstRegionDaysIn(raw.slice(rm.end, Math.max(rm.end, limit)), rm.end);
+    const split = d && /^\d{1,2}\s*(?:일간|일|박|日間|日|泊|days?|nights?)\s*(?:은|는|は)\s*[^\s,，、。.]/i.test(raw.slice(d.at));
+    const kind = d && !split ? reMentionKind(raw.slice(rm.end, d.at)) : '';
+    rm.after = kind ? { d, kind } : null;
+    const b = daysBeforeCity(raw, rm.prevAt, rm.idx);
+    rm.before = b && b.strong ? b : null;
+  }
+  const markAt = includedDaysMarkIndex(raw);
+  // 일수 표현 하나는 도시 하나에만 붙는다
+  const used = new Set();
   for (let i = 0; i < mentions.length; i += 1) {
     const curr = mentions[i];
-    const next = mentions[i + 1];
-    const end = next ? next.idx : raw.length;
-    const window = raw.slice(curr.idx, end);
     const cityLabel = CITY_DATA[curr.key]?.label || '';
     if (!cityLabel) continue;
-    const night = window.match(/(\d{1,2})\s*박/i);
-    const day = window.match(/(\d{1,2})\s*일/i);
-    if (night) byCityWindow.push({ cityLabel, days: clamp(Number(night[1]), 1, 10), unit: 'night' });
-    else if (day) byCityWindow.push({ cityLabel, days: clamp(Number(day[1]), 1, 10), unit: 'day' });
+    const own = before[i] && !used.has(before[i].at) ? before[i] : null;
+    let pick = null;
+    let partialWin = null;
+    let partial = false;
+    let regionFirst = false;
+    if (beforeOrder) {
+      pick = own;
+    } else {
+      // '오사카 3일', 'Osaka 3 days then', '大阪3日間、', '大阪に2泊', 'Kyoto 1 night'. 다음 도시 앞 일수에 이어 주는 말이 있으면
+      // ('Osaka and 2 days in Kyoto', '大阪、2日間は京都') 그 구절은 다음 도시 몫이라 이 도시의 구간은 그 앞에서 끊는다.
+      // 다른 도시를 다시 말한 곳('도쿄 디즈니랜드 1일 그리고 오사카 2일 그리고 도쿄 시내 1일'의 두 번째 도쿄)에서도 끊는다.
+      const next = mentions[i + 1];
+      const nb = next ? before[i + 1] : null;
+      let end = next ? (nb && nb.strong ? nb.at : next.idx) : raw.length;
+      const otherAgain = reMentions.find((r) => (r.after || r.before) && r.key !== curr.key && r.idx > curr.idx && r.idx < end);
+      if (otherAgain) end = otherAgain.before && !otherAgain.after ? Math.min(otherAgain.idx, otherAgain.before.at) : otherAgain.idx;
+      const after = firstRegionDaysIn(raw.slice(curr.idx, Math.max(curr.idx, end)), curr.idx);
+      // 도시 뒤 일수가 우선이다('5日間は大阪3日、京都2日'의 오사카는 3일). 없으면 도시 앞 일수('3日間は大阪、京都2日間',
+      // 'Osaka 3 days then 2 days Kyoto'처럼 앞 도시가 쓰지 않은 일수).
+      // 다만 도시 앞에 이어 주는 말로 일수가 붙어 있고('2 days in Kyoto', '2일은 교토', '2일 동안 오사카') 뒤 일수가 쉼표 뒤 다른 이름 몫이면
+      // ('2 days in Kyoto, Nara 1 day', '2일은 교토, 나라 1일', '2일 동안 오사카, 나라 1일') 앞 일수를 쓴다(교토 1일로 읽던 문제, 2026-10-03).
+      const afterElsewhere = Boolean(own && (own.strong || own.during) && after) && /[,，、。;；]\s*[^\s\d]/.test(raw.slice(endOf(curr), after.at));
+      pick = after && !used.has(after.at) && !afterElsewhere ? after : own;
+      if (pick && pick === after) {
+        const between = raw.slice(endOf(curr), after.at);
+        // 도시와 일수 사이(또는 일수 바로 뒤, 쉼표 전)에 그 도시의 장소가 있으면('교토 아라시야마 1일', '도쿄 하코네 1일', '도쿄 1일 디즈니,')
+        // 그 일수는 그곳 몫이다(partial). 일수 앞 장소가 데이터 없는 지역이면(하코네) 일수는 그 지역 몫이라 따로 더해진다(regionFirst).
+        const tail = /^\d{1,2}\s*[^\s\d,，、。.;；]*\s*([^,，、。.;；\d]{0,20})/.exec(raw.slice(after.at, Math.max(after.at, end)));
+        partial = subPlaceBetween(between) || Boolean(tail && subPlaceBetween(tail[1]));
+        regionFirst = subPlaceBetween(between) && regionTokenBeforeDays(between, curr.key, (/^\d{1,2}\s*(\S+)/.exec(raw.slice(after.at)) || [])[1]);
+        // '도쿄 디즈니랜드 1일', '오사카 유니버셜 1일', '東京ディズニーランド1日': 하루짜리 명소(테마파크)면
+        // 이 도시 구간에서 뒤에 오는 같은 도시·시내·관광·도시 안 장소 일수를 아래에서 더한다.
+        if (partial && fullDayPlaceBetween(between, curr.key)) partialWin = { from: after.at, to: end, key: curr.key };
+      }
+    }
+    if (!pick) continue;
+    used.add(pick.at);
+    const entry = { key: curr.key, cityLabel, days: clamp(pick.days, 1, 10), unit: pick.unit, at: pick.at, phraseAt: pick === own ? pick.at : curr.idx,
+      mentionAt: curr.idx, partialWin, partial, regionFirst, grown: false };
+    // '유니버셜 1일, 오사카 시내 2일': 도시 이름 뒤가 '시내'뿐이면 그 일수는 도시 일부다. 도시 이름 앞(앞 도시 뒤)에 그 도시의 하루짜리 명소
+    // 일수가 따로 있으면 더한다(오사카 2일만 남던 문제, 2026-10-03). '오사카 3일, 유니버셜 1일'처럼 도시 일수가 먼저면 그 안이다(위 partialWin과 같음).
+    if (pick === own || reMentionKind(raw.slice(endOf(curr), pick.at)) !== 'part') {
+      byCityWindow.push(entry);
+      continue;
+    }
+    const preFrom = i > 0 ? endOf(mentions[i - 1]) : 0;
+    const dayRe = new RegExp(`(\\d{1,2})\\s*(${REGION_NIGHT_UNIT_SRC}|${REGION_DAY_UNIT_SRC})`, 'gi');
+    dayRe.lastIndex = preFrom;
+    let dm;
+    while ((dm = dayRe.exec(raw)) !== null && dm.index < curr.idx) {
+      if (used.has(dm.index) || (/^(?:박|泊|n)/i.test(dm[2]) ? 'night' : 'day') !== entry.unit) continue;
+      const tm = /([가-힣]{2,15}|[A-Za-z][A-Za-z'-]{1,15}|[一-鿿゠-ヿ]{2,12})\s*(?:で|に|は|を)?\s*[:：]?\s*$/.exec(raw.slice(preFrom, dm.index));
+      const em = /^\d{1,2}\s*(?:days?|nights?)\s+(?:in|at|of|for)\s+(?:the\s+)?([A-Za-z][A-Za-z'-]{1,15})/i.exec(raw.slice(dm.index));
+      if (![tm && tm[1], em && em[1]].filter(Boolean).some((t) => isFullDayPlaceWordOf(t.replace(/(에서|으로|은|는|에|쪽)$/, ''), curr.key))) continue;
+      used.add(dm.index);
+      entry.days = clamp(entry.days + Number(dm[1]), 1, 10);
+      entry.grown = true;
+    }
+    byCityWindow.push(entry);
+  }
+  // 더하거나(앞 일수가 그곳 몫) 바꾼다(앞 일수를 포함한 전체 일수, 또는 앞 일수가 데이터 없는 지역 몫)
+  const grow = (e, extra, total) => {
+    if (total) e.days = Math.max(e.days, extra);
+    else if (e.regionFirst && !e.grown) e.days = extra;
+    else e.days += extra;
+    e.days = clamp(e.days, 1, 10);
+    e.grown = true;
+  };
+  // 명소 몫 일수만 있는 도시(위 partialWin): 다른 도시가 쓰지 않은 같은 도시·시내·관광·쇼핑·도시 안 장소 일수를 더한다.
+  // '도쿄 디즈니랜드 1일, 도쿄 시내 3일' → 도쿄 4일(같은 도시를 두 번 말한 두 번째 일수를 버려 1일 여행이 되던 문제, 2026-10-03).
+  // 도시 바로 뒤 일수('도쿄 3일, 쇼핑 1일', '도쿄 3일, 디즈니랜드 1일')는 그 도시 전체라 더하지 않는다.
+  // '도쿄 디즈니랜드 1일 포함해서 도쿄 4일'·'…1일 포함 3일'은 뒤 일수가 도쿄 전체다(더하면 5일이 되던 문제).
+  for (const e of byCityWindow) {
+    if (!e.partialWin) continue;
+    for (const extra of cityPartDaysIn(raw, e.partialWin, e.unit, used)) {
+      used.add(extra.at);
+      grow(e, extra.days, extra.total);
+    }
+  }
+  // 같은 도시를 다시 말한 곳의 일수를 그 도시 일수에 더한다(같은 도시를 두 번 말한 두 번째 일수를 버려 일수가 줄던 문제, 2026-10-03).
+  // - 도시 이름 바로 뒤 일수('다시 도쿄 1일', 'Osaka 1 day')는 사이에 다른 곳의 일수가 있거나('오사카 3일 교토 2일 오사카 1일', '도쿄 2박, 하코네 1박, 도쿄 1박')
+  //   '다시'가 있거나 앞 일수가 그 도시 안 장소 몫일 때 더한다. '오사카 2일, 오사카에서 1일은 유니버셜'처럼 바로 이어 다시 말한 것은 앞 일수 안이다.
+  // - '시내'·'관광'만 사이에 둔 일수('교토 시내 2일', 'Tokyo city 3 days')는 앞 일수가 그 도시 안 장소 몫일 때만 더한다
+  //   ('교토 아라시야마 1일, 교토 시내 2일' → 교토 3일, '도쿄 하코네 1일, 도쿄 시내 2일' → 도쿄 2일 + 하코네 1일. '도쿄 3일, 도쿄 시내 1일'은 3일).
+  // - 장소 이름 속 도시 이름('도쿄 3일, 도쿄 디즈니랜드 1일', '오사카성 1일'), 'N일은 <장소>'로 나눈 일수('…오사카에서 1일은 유니버셜'),
+  //   앞 일수 안에 든다는 표시 뒤('그중 …')는 더하지 않는다.
+  for (const rm of reMentions) {
+    if (markAt >= 0 && rm.idx > markAt) continue;
+    const prevAt = rm.prevAt;
+    let e = byCityWindow.find((x) => x.key === rm.key);
+    let d = null;
+    let kind = '';
+    if (rm.after && !used.has(rm.after.d.at)) ({ d, kind } = rm.after);
+    // 'Tokyo Disneyland 1 day and 3 days in Tokyo', '…、1日は東京'
+    else if (rm.before && !used.has(rm.before.at)) { d = rm.before; kind = 'direct'; }
+    if (!kind || (e && d.unit !== e.unit)) continue;
+    if (!e) {
+      // 첫 언급에 일수가 없던 도시('Osaka and Kyoto, Osaka 3 days Kyoto 2 days'): 다시 말한 곳의 일수가 그 도시 몫이다
+      if (kind !== 'direct') continue;
+      e = { key: rm.key, cityLabel: CITY_DATA[rm.key]?.label || '', days: 0, unit: d.unit, at: d.at, phraseAt: rm.idx,
+        mentionAt: (mentions.find((m) => m.key === rm.key) || {}).idx ?? rm.idx, partialWin: null, partial: false, regionFirst: false, grown: true };
+      if (!e.cityLabel) continue;
+      byCityWindow.push(e);
+      byCityWindow.sort((a, b) => a.mentionAt - b.mentionAt);
+    } else if (!e.partial) {
+      if (kind === 'part') continue;
+      const daysBetween = (raw.slice(e.at, Math.min(rm.idx, d.at)).match(REGION_UNIT_COUNT_RE) || []).length;
+      if (daysBetween < 2 && !/(?:다시|또|\bagain\b|\bback\s+to\b|再び|また)\s*$/i.test(raw.slice(prevAt, rm.idx))) continue;
+    }
+    used.add(d.at);
+    grow(e, d.days, INCLUDES_PREV_DAYS_RE.test(textAfterLastDays(raw.slice(e.at, Math.min(rm.idx, d.at)))) || TOTAL_DAYS_AFTER_RE.test(raw.slice(d.at)));
+  }
+  // "Tokyo 5 days including 2 days in Kyoto", "大阪5日間のうち2日は京都": 표시 바로 뒤 일수가 도시 몫이면 그 도시와 목록으로 이어지는 도시들
+  // ('東京5日間、そのうち京都2日、大阪1日', 'including 2 days in Kyoto and 1 day in Osaka')의 일수는 앞 도시 일수 안에 든다(도쿄 2 + 교토 2 + 오사카 1).
+  // 'then'·'그 다음'·'その後'나 문장 끝에서 목록이 끝나고, 안에 든 일수의 합은 앞 도시 일수보다 작아야 한다.
+  // 표시 바로 뒤 일수가 도시가 아닌 곳 몫이면('도쿄 3일 중 1일은 디즈니, 오사카 2일', '그중 하루는 디즈니랜드 오사카 2일')
+  // 뒤에 따로 말한 도시(오사카 2일)는 빼지 않는다(2026-10-03).
+  const mark = byCityWindow.length > 1 ? markAt : -1;
+  if (mark >= 0) {
+    const firstAt = includedDaysNumberAt(raw, mark);
+    const carrier = byCityWindow.filter((e) => e.at < mark).pop();
+    const start = byCityWindow.findIndex((e) => e.at === firstAt && e.at > mark);
+    let innerDays = 0;
+    if (carrier && start >= 0) {
+      for (let k = start; k < byCityWindow.length; k += 1) {
+        const e = byCityWindow[k];
+        if (e.at < mark || (k > start && INNER_LIST_BREAK_RE.test(raw.slice(byCityWindow[k - 1].at, Math.max(byCityWindow[k - 1].at, e.phraseAt))))) break;
+        if (innerDays + e.days >= carrier.days) break;
+        innerDays += e.days;
+      }
+    }
+    if (carrier && innerDays > 0) carrier.days -= innerDays;
+  }
+  // 숫자 없이 말로 쓴 일수가 일수 없는 도시에 붙은 한국어 글: '나고야 3일인데 하루는 교토 당일치기', '오사카 5일 중 하루는 교토, 하루는 고베',
+  // '도쿄 5일 이틀은 교토', '나고야 3일, 교토 당일치기'(당일치기 = 하루), '오사카 5일 여행 교토 하루 고베 하루'.
+  // 그 일수는 앞에서 숫자로 일수를 말한 도시(하나뿐일 때)의 일수 안에 든다 → 나고야 2 + 교토 1, 오사카 3 + 교토 1 + 고베 1.
+  // 예전에는 읽지 못해 남는 날을 도시별 후보 수로 나눠 교토 2일·나고야 1일처럼 뒤집혔다(2026-10-03).
+  // 확실한 모양만 본다(아니면 예전 그대로): 도시 앞 '하루는·이틀은·하루만'(조사 없는 '하루'는 앞 도시가 이미 일수를 가졌을 때만),
+  // 도시 뒤 '당일치기', 도시 뒤 '하루'(앞 일수가 여행 전체라는 말 '5일 여행'·'5일 중'이 있을 때만). 그 도시 뒤(다음 도시 전)에 숫자 일수가 없고,
+  // 앞 도시에 하루 이상 남고, 말한 도시가 모두 일수를 가질 때만 쓴다(일수 없는 도시가 일정에서 빠지지 않게).
+  // 4차 수정(2026-10-03): 같은 뜻의 다른 모양도 읽는다(카드 수 비율로 나눠 주 도시가 줄던 회귀).
+  // - 앞 도시의 'N박M일'은 여행 전체 M일이다: '나고야 2박3일 하루는 교토' → 나고야 2 + 교토 1.
+  // - 두 도시 사이의 '하루는'은 뒤 도시에 일수가 따로 없으면 뒤 도시 몫이다: '오사카 5일 여행 교토 하루는 고베' → 고베 1, 일수를 따로 말하지 않은
+  //   교토는 하루, 오사카가 나머지(3). '교토 하루는 고베 이틀'은 예전처럼 교토 1 + 고베 2.
+  // - 영어 당일치기 목록: 'with a day trip to Kyoto and a day trip to Kobe', 'with day trips to Kyoto and Kobe', 'Nagoya 3 days, one day trip to Kyoto',
+  //   'Osaka 5 days, two days in Kyoto'(쉼표·with 뒤 말로 쓴 일수).
+  const WORD_DAYS = { 하루: 1, 이틀: 2, 사흘: 3, 나흘: 4, 닷새: 5 };
+  const EN_WORD_DAYS = { one: 1, two: 2, three: 3, four: 4, five: 5 };
+  const WHOLE_TRIP_CUE_RE = /^(?:\d{1,2}\s*박\s*)?\d{1,2}\s*(?:일간|일)\s*(?:짜리\s*)?(?:여행|일정|동안|중|인데|그\s*중|코스)/;
+  const wordTargets = mentions.filter((m, i) => i > 0 && CITY_DATA[m.key] && !byCityWindow.some((e) => e.key === m.key));
+  if (wordTargets.length > 0) {
+    const carriers = byCityWindow.filter((e) => e.mentionAt < wordTargets[0].idx);
+    const c0 = carriers.length === 1 ? carriers[0] : null;
+    const nightsDays = c0 && c0.unit === 'night'
+      ? (/^\d{1,2}\s*(?:박|泊)\s*(\d{1,2})\s*(?:일|日)/.exec(raw.slice(c0.at)) || /^\d{1,2}\s*nights?\s*(?:and\s*|,\s*)?(\d{1,2})\s*days?\b/i.exec(raw.slice(c0.at)))
+      : null;
+    const carrier = c0 && (c0.unit === 'day' || nightsDays) ? c0 : null;
+    const added = [];
+    const usedWordAt = new Set();
+    let left = carrier ? (nightsDays ? clamp(Number(nightsDays[1]), 1, 10) : carrier.days) : 0;
+    let prevEn = null;
+    // mentions[j] 도시 바로 뒤(그다음 도시 전)에 그 도시의 일수(말로 쓴 일수·당일치기·숫자 일수)가 있는지
+    const nextCityHasOwnDays = (j) => {
+      const after = raw.slice(endOf(mentions[j]), mentions[j + 1] ? mentions[j + 1].idx : raw.length);
+      return /^\s*(?:에서|에|은|는|도|으로|로)?\s*(?:하루|이틀|사흘|나흘|닷새|당일치기)/.test(after) || new RegExp(REGION_UNIT_COUNT_RE.source, 'i').test(after);
+    };
+    for (let i = 1; carrier && i < mentions.length; i += 1) {
+      const curr = mentions[i];
+      if (!wordTargets.includes(curr)) { prevEn = null; continue; }
+      const preFrom = endOf(mentions[i - 1]);
+      const postFrom = endOf(curr);
+      const pre = raw.slice(preFrom, curr.idx);
+      const post = raw.slice(postFrom, mentions[i + 1] ? mentions[i + 1].idx : raw.length);
+      if (new RegExp(REGION_UNIT_COUNT_RE.source, 'i').test(post) || byCityWindow.filter((e) => e.mentionAt < curr.idx).length !== 1) break;
+      const prevHasDays = byCityWindow.some((e) => e.key === mentions[i - 1].key) || added.some((e) => e.key === mentions[i - 1].key);
+      let days = 0;
+      let at = -1;
+      const wm = /(?:^|[^가-힣])(하루|이틀|사흘|나흘|닷새)(?:간)?(은|는|만|도)?\s*$/.exec(pre);
+      const wmAt = wm ? preFrom + wm.index + wm[0].indexOf(wm[1]) : -1;
+      if (wm && !usedWordAt.has(wmAt) && (wm[2] || prevHasDays)) { days = WORD_DAYS[wm[1]]; at = wmAt; }
+      // 영어도 같은 뜻의 말만: 'Kyoto 3 days with a day trip to Tokyo', 'Tokyo 5 days, with a 2 day side trip to Kyoto'.
+      // 쉼표 뒤('Nagoya 3 days, one day trip to Kyoto')와 바로 앞 도시가 당일치기였을 때의 'and'('… and a day trip to Kobe')도 같다.
+      const enLead = prevEn ? '(?:\\b(?:with|including|and)|[,，])' : '(?:\\b(?:with|including)|[,，])';
+      const em = !days && new RegExp(`${enLead}\\s+(?:a\\s+)?(?:(one|two|three|[1-3])\\s*-?\\s*days?\\s+side\\s*-?\\s*|(?:one\\s*-?\\s*|1\\s*-?\\s*)?day\\s*-?\\s*)(trips?)\\s+(?:to|in)\\s+$`, 'i').exec(pre);
+      if (em) { days = em[1] ? ({ one: 1, two: 2, three: 3 })[em[1].toLowerCase()] || Number(em[1]) : 1; at = preFrom + em.index; }
+      // 'with day trips to Kyoto and Kobe': 여럿을 묶은 당일치기의 다음 도시도 하루
+      if (!days && prevEn && prevEn.plural && /^\s*(?:,\s*)?(?:and|&)?\s*$/i.test(pre) && pre.trim()) { days = 1; at = curr.idx; }
+      // 'Osaka 5 days, two days in Kyoto', 'Tokyo 5 days with two days in Kyoto'(숫자 '2 days in'은 위 도시별 일수가 읽는다).
+      // 앞 도시에 그보다 적게 남으면('Tokyo 3 days, two days in Kyoto') 안에 든다고 보기 어려워 읽지 않는다(예전 분배 그대로).
+      const ew = !days && /(?:\b(?:with|including)|[,，])\s+(one|two|three|four|five)\s+days?\s+(?:in|at)\s+$/i.exec(pre);
+      const ewDays = ew ? EN_WORD_DAYS[ew[1].toLowerCase()] : 0;
+      if (ew && left - ewDays >= ewDays) { days = ewDays; at = preFrom + ew.index; }
+      const enDays = days > 0;
+      if (!days) {
+        const am = /^\s*(?:에서|에|은|는|도)?\s*(하루|이틀|사흘|나흘|닷새)(?:간)?(?:은|는|만|도|정도)?(?![가-힣])(?!\s*더)/.exec(post);
+        if (/^\s*(?:은|는|에|에서|으로|로|도)?\s*당일치기/.test(post)) { days = 1; at = curr.idx; }
+        // '5일 여행 교토 하루는 고베': 도시 뒤 '하루는'이 다음 도시 바로 앞이면 다음 도시 몫이다. 이 도시는 일수를 말하지 않은 도시라 하루
+        // (앞 일수가 여행 전체라는 말이 있을 때만, 아래 '도시 뒤 하루'와 같은 조건).
+        // 다음 도시 뒤에 그 도시의 일수가 따로 있으면('교토 하루는 고베 이틀', '교토 이틀은 고베 하루', '교토 하루는 고베 당일치기')
+        // '하루는'은 이 도시 몫이다(아래 '도시 뒤 하루'가 읽는다). 다음 도시가 그 일수를 가져가 교토·고베가 뒤바뀌던 문제(2026-10-03 검토).
+        else if (mentions[i + 1] && wordTargets.includes(mentions[i + 1]) && /^\s*(?:하루|이틀|사흘|나흘|닷새)(?:간)?(?:은|는)\s*$/.test(post)
+          && WHOLE_TRIP_CUE_RE.test(raw.slice(carrier.at)) && !nextCityHasOwnDays(i + 1)) { days = 1; at = curr.idx; }
+        else if (am && WHOLE_TRIP_CUE_RE.test(raw.slice(carrier.at))) { days = WORD_DAYS[am[1]]; at = postFrom + am[0].indexOf(am[1]); }
+      }
+      prevEn = enDays ? { plural: Boolean(em && /s$/i.test(em[2] || '')) || Boolean(prevEn && prevEn.plural && !em && !ew) } : null;
+      if (!days || left - days < 1) break;
+      left -= days;
+      usedWordAt.add(at);
+      added.push({ key: curr.key, cityLabel: CITY_DATA[curr.key].label, days, unit: 'day', at, phraseAt: at, mentionAt: curr.idx,
+        partialWin: null, partial: false, regionFirst: false, grown: true });
+    }
+    if (carrier && added.length === wordTargets.length && mentions.every((m) => !CITY_DATA[m.key] || byCityWindow.some((e) => e.key === m.key) || added.some((e) => e.key === m.key))) {
+      carrier.days = left;
+      carrier.unit = 'day';
+      byCityWindow.push(...added);
+      byCityWindow.sort((a, b) => a.mentionAt - b.mentionAt);
+    }
+  }
+  // 뒤에 말한 도시를 먼저 가는 글: "Kyoto 2 days after 3 days in Osaka", "京都2日間、その前に大阪3日間", "교토 2일, 그 전에 오사카 3일"
+  // → 두 도시의 순서를 바꾼다(일정은 도시별 일수 순서로 도시를 돈다). 'after that'·'その後'는 말한 순서 그대로다.
+  for (let i = 0; i + 1 < byCityWindow.length; i += 1) {
+    const a = byCityWindow[i];
+    const b = byCityWindow[i + 1];
+    if (VISIT_EARLIER_MARK_RE.test(raw.slice(a.at, Math.max(a.at, b.phraseAt)))) {
+      byCityWindow[i] = b;
+      byCityWindow[i + 1] = a;
+      i += 1;
+    }
   }
   if (byCityWindow.length > 0) {
     return normalizeRegionDayPlan(byCityWindow, []);
@@ -3202,6 +4030,16 @@ function extractRegionDayPlanFromText(text, fallbackCityKey = '') {
     const label = String(x.cityLabel || '');
     return !/^(으로|로|에서|여행|일정)$/.test(label);
   }).slice(0, 6);
+  // 도시 이름 없이 하루짜리 명소로만 도시를 찾은 글('디즈니랜드 1일 시내 3일'): 시내·관광·쇼핑 일수도 그 도시 몫이라 더한다(2026-10-03)
+  if (mentions.length === 0 && normalized.length === 1) {
+    const only = normalized[0];
+    const onlyKey = cityKeyByLabel(only.cityLabel);
+    if (onlyKey && fullDayPlaceBetween(raw, onlyKey)) {
+      for (const extra of cityPartDaysIn(raw, { from: 0, to: raw.length, key: onlyKey }, only.unit, new Set(), true)) {
+        only.days = clamp(extra.total ? Math.max(only.days, extra.days) : only.days + extra.days, 1, 10);
+      }
+    }
+  }
   if (normalized.length > 0) return normalized;
   if (fallbackCityKey && CITY_DATA[fallbackCityKey]) {
     return [];
@@ -3247,7 +4085,78 @@ function isWholeTripRegionPlan(plan, routeCount, days) {
   return (only.unit === 'night' ? n + 1 : n) >= (Number(days) || 1);
 }
 
-function allocateDaysByCities(routeCities, picks, totalDays, regionDayPlan = []) {
+// 주 도시: '아사히카와 3일 아라시야마 공원'처럼 전체 일수가 이름으로 말한 도시 하나에 붙었고(위 분배라 버린다),
+// 경로의 다른 도시는 모두 도시 이름 없이 장소로만 들어왔으면(아라시야마 → 교토) 그 도시다. 채팅이 specialPrefs.mainCity로 넘기고
+// allocateDaysByCities가 장소 도시에는 그 도시의 꼭 갈 곳을 넣을 만큼만(placeCityMinDays, 보통 하루), 주 도시에 남는 날을 준다.
+// 다른 도시도 이름으로 말했거나('도쿄 오사카 5일', '2박3일 도쿄 갔다가 오키나와') 주 도시 몫이 2일이 안 되면 정하지 않는다(예전 분배 그대로).
+function mainCityForPlaceOnlyRoute(plan, routeCities, days, namedCityLabels) {
+  const route = Array.from(new Set((Array.isArray(routeCities) ? routeCities : []).map((c) => String(c || '').trim()).filter(Boolean)));
+  if (!isWholeTripRegionPlan(plan, route.length, days)) return '';
+  const main = String(plan[0]?.cityLabel || '').trim();
+  if (!route.includes(main) || !namedCityLabels.has(main)) return '';
+  const others = route.filter((c) => c !== main);
+  if (others.length === 0 || others.some((c) => namedCityLabels.has(c))) return '';
+  return (Number(days) || 0) - others.length >= 2 ? main : '';
+}
+
+// 주 도시 분배의 일수 기준(allocateDaysByCities의 mainCtx): 꼭 갈 곳(resolveMustVisit 결과)의 도시와 하루짜리 종류(fullDay 테마파크 |
+// dayTrip 먼 당일치기 | ''), 첫날·마지막 날 시간 경계(flightDayBounds, '첫날 짧게'면 15:00), 하루 장소 수. 일정 요청 하나에서 한 번 만들어
+// 규칙 일정(createItinerary)·규칙 후처리·AI dayPlan이 같은 값을 쓴다(_mainCityCtx). 화면이 보낸 값은 쓰지 않는다(INTERNAL_MAIN_CTX).
+const INTERNAL_MAIN_CTX = new WeakSet();
+function mainCityNeedContext(mustVisit, payload, prefs = {}) {
+  const bounds = flightDayBounds(payload || {}, prefs || {});
+  const day1 = Number.isFinite(bounds.day1MinStart) ? bounds.day1MinStart : (prefs?.firstDayShort ? 15 * 60 : null);
+  const overnightKey = typeof prefs?.overnightAt === 'string' ? placeNameKey(prefs.overnightAt) : '';
+  const ctx = {
+    musts: (Array.isArray(mustVisit) ? mustVisit : []).filter((m) => m && m.city).map((m) => ({
+      city: String(m.city).trim(),
+      kind: m.allDay ? (allDayPlaceKind(m.pick || m.synthetic || { name: m.nameKo || m.name, city: m.city }, cityKeyByLabel(m.city)) || 'dayTrip') : '',
+      // 묵고 오는 곳('하코네 온천 료칸')은 다음 날도 그 도시에서 시작한다
+      ...(overnightKey && [m.nameKo, m.name].some((n) => placeNameKey(n) === overnightKey) ? { overnight: true } : {})
+    })),
+    day1MinStart: day1,
+    lastDayMaxEnd: Number.isFinite(bounds.lastDayMaxEnd) ? bounds.lastDayMaxEnd : null,
+    maxPlacesPerDay: clamp(Number(prefs?.maxPlacesPerDay) || 3, 1, 4)
+  };
+  INTERNAL_MAIN_CTX.add(ctx);
+  return ctx;
+}
+
+// 주 도시 분배에서 장소로만 들어온 도시(경로 idx번째, 모두 n곳)가 받아야 할 일수: 그 도시의 꼭 갈 곳을 다 넣을 수 있는 가장 적은 날 수.
+// - 반나절 장소는 하루 2곳(오전·오후, '하루 1곳'이면 1곳), 하루짜리(테마파크·먼 당일치기)는 하루에 하나만.
+// - 테마파크(fullDay)는 그 도시의 첫날(여행 첫날이거나 도시 이동일)과 여행 마지막 날에 넣지 않는다(createItinerary의 '종일' 칸과 같다).
+// - 늦게 도착한 첫날(도착+90분이 14시 넘음)·일찍 떠나는 마지막 날(출발−120분이 13시 전)에는 아무것도 넣지 않는다고 본다.
+// - 묵고 오는 곳(specialPrefs.overnightAt, '하코네 온천 료칸')이 있으면 다음 날 하루를 더 둔다.
+// 꼭 갈 곳이 없으면 하루. 주 도시 몫을 남기지 못하면 totalDays(= 주 도시 분배를 쓰지 않는다).
+// ('도쿄 5일 유니버설 오후 3시 도착'·'도쿄 5일 아라시야마 금각사 기요미즈데라 후시미이나리'에서 장소 도시를 하루로 줄여
+// 유니버설·기요미즈데라가 일정에서 빠지던 문제, 2026-10-03 검토)
+function placeCityMinDays(city, idx, n, totalDays, ctx) {
+  const musts = (ctx && Array.isArray(ctx.musts) ? ctx.musts : []).filter((m) => m && m.city === city);
+  if (musts.length === 0) return 1;
+  const full = musts.filter((m) => m.kind === 'fullDay').length;
+  const dayTrip = musts.filter((m) => m.kind === 'dayTrip').length;
+  const half = musts.length - full - dayTrip;
+  // 묵고 오는 곳이 있으면 다음 날 하루를 더 둔다(아래 반나절 칸 수에 하루를 더한다)
+  const overnight = musts.some((m) => m.overnight) ? 1 : 0;
+  const perDay = Math.min(2, clamp(Number(ctx.maxPlacesPerDay) || 3, 1, 4));
+  const isFirst = idx === 0;
+  const isLast = idx === n - 1;
+  const lateArrival = isFirst && Number.isFinite(ctx.day1MinStart) && ctx.day1MinStart > 14 * 60;
+  const earlyDeparture = isLast && Number.isFinite(ctx.lastDayMaxEnd) && ctx.lastDayMaxEnd < 13 * 60;
+  for (let k = 1; k < totalDays; k += 1) {
+    let usable = 0;
+    let fullOk = 0;
+    for (let i = 0; i < k; i += 1) {
+      if ((lateArrival && i === 0) || (earlyDeparture && i === k - 1)) continue;
+      usable += 1;
+      if (i > 0 && !(isLast && i === k - 1)) fullOk += 1;
+    }
+    if (fullOk >= full && usable - full >= dayTrip + Math.ceil(half / perDay) + overnight) return k;
+  }
+  return totalDays;
+}
+
+function allocateDaysByCities(routeCities, picks, totalDays, regionDayPlan = [], mainCity = '', mainCtx = null) {
   const days = Math.max(1, Number(totalDays) || 1);
   if (!Array.isArray(routeCities) || routeCities.length === 0) return new Array(days).fill('');
   if (routeCities.length === 1) return routeCities.flatMap((c) => new Array(days).fill(c));
@@ -3362,6 +4271,24 @@ function allocateDaysByCities(routeCities, picks, totalDays, regionDayPlan = [])
     return sequence.slice(0, days);
   }
 
+  // 지역별 일수가 없을 때: 주 도시(mainCityForPlaceOnlyRoute)가 있으면 장소로만 들어온 도시는 그 도시의 꼭 갈 곳을 넣을 만큼만
+  // (placeCityMinDays, mainCtx), 주 도시가 나머지(경로 순서). 주 도시가 아래 후보 수 분배보다 더 받을 때만 쓴다(장소 도시가 꼭 갈 곳을 넣을
+  // 날을 잃지 않고, 주 도시가 줄지 않게). 후보 수 비율로 나누면 30곳 데이터로 장소 도시의 후보가 늘어 '아사히카와 3일 아라시야마 공원'의
+  // 아사히카와가 하루만 받았다(2026-10-03).
+  const main = typeof mainCity === 'string' ? mainCity.trim() : '';
+  if (main && routeCities.includes(main) && distinctRoute.size === routeCities.length) {
+    const base = allocateDaysByPickCounts(routeCities, picks, days);
+    const baseMain = base.filter((c) => c === main).length;
+    const needs = routeCities.map((c, i) => (c === main ? 0 : placeCityMinDays(c, i, routeCities.length, days, mainCtx)));
+    const mainDays = days - needs.reduce((a, b) => a + b, 0);
+    if (mainDays >= 2 && mainDays > baseMain) return routeCities.flatMap((c, i) => new Array(c === main ? mainDays : needs[i]).fill(c));
+    return base;
+  }
+  return allocateDaysByPickCounts(routeCities, picks, days);
+}
+
+// 지역별 일수가 없을 때의 기본 분배: 도시마다 하루, 남는 날은 후보 수 비율의 소수 부분이 큰 도시부터 돌아가며.
+function allocateDaysByPickCounts(routeCities, picks, days) {
   const counts = new Map(routeCities.map((c) => [c, 1]));
   (Array.isArray(picks) ? picks : []).forEach((p) => {
     const c = String(p?.city || '').trim();
@@ -3406,22 +4333,182 @@ function dedupeMustMatches(matches, preferredCityKeys = []) {
   return Array.from(byName.values());
 }
 
-const REGION_SEGMENT_STOP_WORDS = new Set(['여행', '일정', '총', '전체', '하루', '이틀', '주말', '평일', '연휴', '휴가', '겨울', '여름', '가을', '정도', '최소', '최대', '대략', '그리고', '추가', '포함', '부모님', '가족', '친구', '혼자', '커플', '먹방', '온천', '료칸', '위주', '중심']);
+const REGION_SEGMENT_STOP_WORDS = new Set(['여행', '일정', '총', '전체', '하루', '이틀', '주말', '평일', '연휴', '휴가', '겨울', '여름', '가을', '정도', '최소', '최대', '대략', '그리고', '추가', '포함', '부모님', '가족', '친구', '혼자', '커플', '먹방', '온천', '료칸', '위주', '중심',
+  // 장소가 아닌 말('도쿄 3일, 호텔 2박'·'쇼핑 1일'·'자유시간 1일'·'예산 1일 5만원')
+  '호텔', '숙소', '숙박', '쇼핑', '자유', '자유시간', '자유일정', '예산', '관광', '휴식', '시내', '렌터카', '투어',
+  // 앞 일수 안에 든다는 표시('오사카 3일 그중 1일은 유니버셜'의 '그중'은 지역이 아니다)
+  '그중', '그중에', '그중에서', '중에', '중에서',
+  // 나라 이름('유니버셜 스튜디오 재팬 1일'의 '재팬'은 지역이 아니다), 남은 날('나머지 3일은 도쿄 시내'), '도쿄는 다시 1일'의 '다시'
+  '재팬', '일본', '나머지', '남은', '다시',
+  // '디즈니랜드 1일 포함해서 4일'의 '포함해서'
+  '포함해서', '포함하여', '포함하고', '포함한', '포함해', '포함하면']);
 
 // "오사카 3일 교토 2일 나라 1일"처럼 도시별 일수 중, 데이터에 도시가 없는 곳(나라 등)의 일수.
 // 전체 일수에 더하고(빠뜨리지 않게) 미지원 지역으로 알린다.
-function extractUnknownRegionSegments(text) {
+// 영어·일본어도 본다: 'Koyasan 1 day', '1 day in Koyasan', '高野山1日', '高野山で1泊'.
+// 영어는 대문자로 시작하는 이름만(문장 첫 낱말 'Then'·'Japan' 같은 말은 뺀다), 일본어는 한자·가타카나 이름만('のんびり1日'은 장소가 아니다).
+const REGION_SEGMENT_STOP_WORDS_EN = new Set(['then', 'and', 'also', 'plus', 'just', 'only', 'about', 'around', 'another', 'extra', 'spend', 'stay', 'maybe', 'total',
+  'japan', 'trip', 'day', 'days', 'night', 'nights', 'first', 'last', 'next', 'for', 'in', 'at', 'the', 'with', 'after', 'before', 'free', 'rest',
+  'visit', 'see', 'explore', 'go', 'add', 'include', 'including',
+  // 장소가 아닌 말('JR Pass 7 days'·'Shopping 1 day'·'Hotel 2 nights')
+  'jr', 'pass', 'rail', 'shopping', 'hotel', 'hotels', 'ryokan', 'onsen', 'budget', 'food', 'gourmet', 'relax', 'relaxing', 'leisure', 'beach',
+  'city', 'downtown', 'tour', 'tours', 'travel', 'transit', 'flight', 'drive', 'driving', 'rental', 'car', 'nightlife', 'remaining', 'again']);
+const REGION_SEGMENT_STOP_WORDS_JA = new Set(['日本', '観光', '自由', '自由行動', '移動', '休養', '温泉', '旅行', '合計', '全部', '全体', '滞在', '日程', '予定', '週末', '連休', '家族', '一人',
+  // 장소가 아닌 말('ショッピング1日'·'ホテルは2泊'·'予算は1日…')
+  'ショッピング', '買い物', 'ホテル', '旅館', '宿', '宿泊', 'グルメ', '食べ歩き', 'フリー', '予算', '休み', '休憩', 'パス', 'レンタカー', 'ドライブ',
+  '市内', '街歩き', '散策', '温泉旅館', 'テーマパーク', '残り']);
+// 지역 이름 뒤에 붙는 말: '浅草観光1日' → 浅草
+const JA_REGION_SUFFIX_RE = /(?:観光|散策|巡り|めぐり|周辺|エリア|方面|旅行|滞在)$/;
+
+// 도시 이름도 지역 이름도 아닌 말: 멈춤 낱말, 단위('最終日'·'自由時間'·'2泊'), 패스('JR패스'·'JR Pass'), 일반 표현·금액·음식
+function isRegionStopToken(token) {
+  const t = String(token || '').trim();
+  if (!t) return true;
+  if (REGION_SEGMENT_STOP_WORDS.has(t) || REGION_SEGMENT_STOP_WORDS_JA.has(t) || REGION_SEGMENT_STOP_WORDS_EN.has(t.toLowerCase())) return true;
+  if (/박|일|night|day/i.test(t)) return true;
+  if (/日間|泊|時間|行動|日$/.test(t)) return true;
+  if (/(?:패스|pass)$/i.test(t)) return true;
+  return NON_PLACE_GENERIC_RE.test(t) || MONEY_OR_BUDGET_RE.test(t) || isFoodWord(t);
+}
+
+// 데이터 도시 안의 동네·명소 이름(ko/en/ja). '東京3日間、浅草1日'·'Tokyo 3 days, Harajuku 1 day'의 동네는 그 도시 몫이라
+// 데이터 없는 지역으로 세지 않는다(한국어 '아사쿠사'·'하라주쿠'처럼. 랜드마크 낱말 LANDMARK_CITY_HINTS에 없는 이름도 여기 둔다).
+// 당일치기 명소(하코네·나라·고야산)는 넣지 않는다: 한국어처럼 데이터 없는 지역으로 세고 당일치기로 넣는다.
+const CITY_AREA_WORDS = {
+  tokyo: ['아사쿠사', '시부야', '신주쿠', '긴자', '하라주쿠', '우에노', '이케부쿠로', '아키하바라', '롯폰기', '롭폰기', '오다이바', '츠키지', '쓰키지', '오모테산도',
+    '에비스', '나카메구로', '시모키타자와', '기치조지', '신바시', '마루노우치', '니혼바시', '아카사카', '료고쿠', '시나가와', '도요스', '야나카', '디즈니', '디즈니랜드', '디즈니씨', '스카이트리',
+    'asakusa', 'shibuya', 'shinjuku', 'ginza', 'harajuku', 'ueno', 'ikebukuro', 'akihabara', 'akiba', 'roppongi', 'odaiba', 'tsukiji', 'omotesando',
+    'ebisu', 'nakameguro', 'shimokitazawa', 'kichijoji', 'shinbashi', 'shimbashi', 'marunouchi', 'nihonbashi', 'akasaka', 'ryogoku', 'shinagawa', 'toyosu', 'yanaka',
+    'disney', 'disneyland', 'disneysea', 'skytree',
+    '浅草', '渋谷', '新宿', '銀座', '原宿', '上野', '池袋', '秋葉原', 'アキバ', '六本木', 'お台場', '台場', '築地', '表参道',
+    '恵比寿', '中目黒', '下北沢', '吉祥寺', '新橋', '丸の内', '日本橋', '赤坂', '両国', '品川', '豊洲', '谷中', 'ディズニー', 'ディズニーランド', 'ディズニーシー', 'スカイツリー'],
+  osaka: ['난바', '우메다', '신사이바시', '도톤보리', '신세카이', '덴노지', '텐노지', '쓰루하시', '츠루하시', '나카노시마', '구로몬',
+    'namba', 'umeda', 'shinsaibashi', 'dotonbori', 'shinsekai', 'tennoji', 'tsuruhashi', 'nakanoshima', 'kuromon', 'usj',
+    '難波', 'なんば', '梅田', '心斎橋', '道頓堀', '新世界', '天王寺', '鶴橋', '中之島', '黒門', '通天閣', 'ユニバ', 'ユニバーサル'],
+  kyoto: ['기온', '아라시야마', '후시미', '가와라마치', '히가시야마', '폰토초', '사가노', '니시키',
+    'gion', 'arashiyama', 'fushimi', 'kawaramachi', 'higashiyama', 'pontocho', 'sagano', 'nishiki',
+    '祇園', '嵐山', '伏見', '河原町', '東山', '先斗町', '嵯峨野', '錦市場'],
+  fukuoka: ['하카타', '텐진', '덴진', '나카스', '모모치', '캐널시티', 'hakata', 'tenjin', 'nakasu', 'momochi', 'canal city', '博多', '天神', '中洲', '百道', 'ももち', 'キャナルシティ'],
+  sapporo: ['스스키노', '오도리', 'susukino', 'odori', 'すすきの', '薄野', '大通'],
+  okinawa: ['나하', '국제거리', '온나', '차탄', '츄라우미', 'naha', 'kokusai dori', 'kokusai-dori', 'onna', 'chatan', 'churaumi', '那覇', '国際通り', '恩納', '北谷', '美ら海'],
+  hiroshima: ['미야지마', '이쓰쿠시마', '이츠쿠시마', 'miyajima', 'itsukushima', '宮島', '厳島'],
+  nagoya: ['사카에', '오스', 'sakae', 'osu', '大須'],
+  kanazawa: ['겐로쿠엔', '히가시차야', 'kenrokuen', 'higashi chaya', '兼六園', 'ひがし茶屋街', '東茶屋街']
+};
+let _cityAreaWordSet = null;
+function cityAreaWordSet() {
+  if (!_cityAreaWordSet) {
+    _cityAreaWordSet = new Set(Object.entries(CITY_AREA_WORDS).filter(([k]) => CITY_DATA[k]).flatMap(([, words]) => words.map((w) => String(w).toLowerCase())));
+  }
+  return _cityAreaWordSet;
+}
+
+// 낱말이 데이터 도시 안의 동네·명소면(위 표, 또는 데이터 속 장소 이름의 일부: 'Disneyland' ⊂ 'Tokyo Disneyland', '浅草' ⊂ '浅草寺')
+// 지역이 아니라 도시 안의 장소다. 당일치기 명소(하코네·나라)는 한국어처럼 지역으로 둔다.
+// 한국어 낱말은 위 표만 본다(나머지는 랜드마크 낱말로 이미 걸러진다. 표에 없는 한국어 낱말은 예전과 같다).
+// cityKeys(여행 도시)를 주면 다른 도시 장소 이름에만 든 낱말은 일반 낱말일 때만 도시 안 장소로 본다(아래 isGenericPlaceNamePart).
+function isInCityPlaceWord(token, cityKeys = null) {
+  const t = String(token || '').toLowerCase().trim();
+  if (t.length < 2) return false;
+  const sub = dayTripSubstituteFor(t);
+  if (sub && MUST_ATTRACTIONS.some((m) => m.name === sub && m.dayTrip)) return false;
+  if (cityAreaWordSet().has(t)) return true;
+  if (/[가-힣]/.test(t)) return false;
+  // 로마자는 장소 이름 속 낱말로('Ueno' ⊂ 'Ueno Park'), 한자·가나는 장소 이름 속 글자로('宮島'처럼 두 글자도) 본다
+  const roman = /^[a-z0-9 .'-]+$/.test(t);
+  if (roman && t.length < 3) return false;
+  const hit = (e) => (roman ? aliasInText(e.lower, t) : e.lower.includes(t));
+  const keys = Array.isArray(cityKeys) && cityKeys.length > 0 ? new Set(cityKeys) : null;
+  if (!keys) return placeLabelIndex().some(hit);
+  if (placeLabelIndex().some((e) => keys.has(e.ck) && hit(e))) return true;
+  return isGenericPlaceNamePart(t, placeLabelIndex().filter((e) => !keys.has(e.ck) && hit(e)), roman);
+}
+
+// 이름 앞·가운데에만 나오는 일본어 일반 낱말(花見 ⊂ 후쿠시마 '花見山公園'): 장소 종류·하는 일이지 지역 이름이 아니다
+const JA_GENERIC_PLACE_WORDS = new Set(['花見', '紅葉', '花火', '夜桜']);
+
+// 여행 도시가 아닌 도시의 장소 이름(others)에만 든 낱말이 장소 종류 같은 일반 낱말인지(그러면 예전처럼 지역으로 세지 않는다).
+// - 이름 끝에 붙는 말은 장소 종류다: 水族館 ⊂ 'サンシャイン水族館', ビーチ ⊂ '米原ビーチ', 'Aquarium' ⊂ 'Sunshine Aquarium'
+// - 여러 도시 장소 이름에 드는 말도 일반 낱말이다: 海水浴 ⊂ '下浜海水浴場'·'一湊海水浴場', 高原 ⊂ '美ヶ原高原美術館'·'城島高原パーク'
+// - 가타카나 낱말(ラベンダー·スパ)은 외래어 일반 낱말로 본다
+// 한 도시 장소 이름의 앞·가운데에만 들면 일반 낱말이 아니다: '京都3日間、宇治1日'의 宇治(가고시마 '一宇治城').
+// (데이터 없는 지역으로 셀지는 extractUnknownRegionSegments가 아는 지역 이름(isKnownRegionNameEnJa)으로 따로 정한다: 宇治는 세고 長浜은 세지 않는다)
+// (그전에는 여행 도시만 보아 '大阪3日間、水族館1日'의 水族館까지 지역으로 세어 하루가 늘던 문제를 고쳤다)
+function isGenericPlaceNamePart(t, others, roman) {
+  if (others.length === 0) return false;
+  if (JA_GENERIC_PLACE_WORDS.has(t)) return true;
+  if (/^[゠-ヿ]+$/.test(t)) return true;
+  if (new Set(others.map((e) => e.ck)).size >= 2) return true;
+  return others.some((e) => (roman ? e.lower.endsWith(` ${t}`) : (e.lower.length > t.length && e.lower.endsWith(t))));
+}
+
+// 영어·일본어로 쓴 '이름 + 일수'('Koyasan 1 day'·'高野山1日'·'1 day in Hakone')는 서버가 아는 지역 이름일 때만 데이터 없는 지역으로 센다(2026-10-03).
+// 아는 이름: 당일치기 대표 명소(MUST_ATTRACTIONS dayTrip: 하코네·나라·고야산·가마쿠라·닛코·히메지 …)의 이름·en/ja 별칭과 아래 작은 목록
+// (데이터에 도시도 당일치기 명소도 없는 근교 지역: 우지·요코하마·오노미치 …).
+// 그 밖의 낱말은 예전처럼 세지 않는다(하루를 더하지 않고 '데이터 없음' 알림도 없다): 일반 낱말(紅葉·寺院·デパート·'Temples'·'Museums'),
+// 도시 안 명소의 별칭('Kinkakuji'·'Byodoin'·'Sensoji'·'Meiji Shrine'·'Disney Sea'), 여러 곳에 쓰이는 이름(長浜·Nagahama).
+// 그런 낱말을 지역으로 세어 하루가 늘고 거짓 알림이 나가던 회귀(일본어 일반 낱말 200건 등)를 고쳤다. 한국어 낱말 + 한국어 단위('우지 1일')는 예전 그대로다.
+const KNOWN_REGION_WORDS_EN_JA = new Set(['uji', '宇治', 'yokohama', '横浜', 'onomichi', '尾道', 'itoshima', '糸島', 'jozankei', '定山渓',
+  'inuyama', '犬山', 'takao', 'mt takao', 'mount takao', 'takaosan', '高尾山', 'kawagoe', '川越']);
+function isKnownRegionNameEnJa(token) {
+  const t = String(token || '').toLowerCase().trim();
+  if (t.length < 2) return false;
+  if (KNOWN_REGION_WORDS_EN_JA.has(t)) return true;
+  return MUST_ATTRACTIONS.some((m) => m.dayTrip && (mustNameEquals(m, t)
+    || (m.aliases || []).some((a) => aliasInText(t, String(a).toLowerCase())) || (m.contextAliases || []).some((a) => contextAliasInText(t, a))));
+}
+// 영어·일본어 쪽으로 볼 '이름 + 일수': 단위가 영어·일본어(days·日間·泊)이거나 이름이 한자·가나일 때. 한국어 단위의 한글·로마자 이름('Hakone 1일')은 한국어 쪽이다.
+function isEnJaRegionPhrase(token, unitWord) {
+  return !/^(?:일|박)/.test(String(unitWord || '')) || /[぀-ヿ一-鿿]/.test(String(token || ''));
+}
+
+// cityKeys: 여행 도시(다른 도시 장소 이름에만 든 낱말은 일반 낱말일 때만 도시 안 장소로 본다, isInCityPlaceWord)
+function extractUnknownRegionSegments(text, cityKeys = null) {
   const out = [];
-  const re = /([가-힣A-Za-z]{2,12})\s*(?:에서|은|는|에|쪽)?\s*(\d{1,2})\s*(일|박)(?!\s*차)/g;
+  const raw = regionDaysText(text);
+  // "Tokyo 5 days in total, including 2 days in Hakone": 표시 뒤의 일수는 전체 일수 안에 든다(더하지 않는다, included)
+  const mark = includedDaysMarkIndex(raw);
+  // 일수 표현 하나는 이름 하나에만 붙는다: 쉼표 없는 '1 day in Koyasan 2 days in Kyoto'의 '2 days'를 'Koyasan 2 days'로 또 세지 않는다
+  const usedAt = new Set();
+  const claim = (at) => {
+    if (usedAt.has(at)) return false;
+    usedAt.add(at);
+    return true;
+  };
+  const push = (token, amount, unitWord, at) => {
+    if (!token || token.length < 2) return;
+    if (resolveCityLabelFromRegionToken(token, '')) return;
+    if (isRegionStopToken(token)) return;
+    if (isInCityPlaceWord(token, cityKeys)) return;
+    if (isEnJaRegionPhrase(token, unitWord) && !isKnownRegionNameEnJa(token)) return;
+    out.push({ token, days: clamp(Number(amount), 1, 10), unit: /^(?:박|泊|night)/i.test(unitWord) ? 'night' : 'day', included: mark >= 0 && at > mark });
+  };
   let m;
-  while ((m = re.exec(String(text || ''))) !== null) {
+  // 영어 이름 앞 일수('1 day in Koyasan')부터 본다: 이어 주는 말(in/at)이 있어 그 이름 몫이 분명하다('Spend 1 day in Koyasan')
+  const enName = "[A-Z][A-Za-z'-]{1,15}(?:\\s+[A-Z][A-Za-z'-]{1,15})?";
+  const enBefore = new RegExp(`\\b(\\d{1,2})\\s*([Dd]ays?|[Nn]ights?)\\s+(?:in|at)\\s+(${enName})`, 'g');
+  const enAfter = new RegExp(`(?<![A-Za-z])(${enName})\\s+(\\d{1,2})\\s*([Dd]ays?|[Nn]ights?)\\b`, 'g');
+  const enToken = (name) => {
+    const words = String(name || '').split(/\s+/).filter((w) => !REGION_SEGMENT_STOP_WORDS_EN.has(w.toLowerCase()));
+    return words.join(' ');
+  };
+  while ((m = enBefore.exec(raw)) !== null) if (claim(m.index)) push(enToken(m[3]), m[1], m[2], m.index);
+  // 한국어(기존)·일본어: 이름 + (조사) + N일/N박/N日間/N日/N泊
+  const re = /([가-힣A-Za-z]{2,12}|[一-鿿゠-ヿ]{2,12})\s*(?:에서|은|는|에|쪽|で|に|は)?\s*(\d{1,2})\s*(일(?!\s*차)|박|日間|日(?![目中])|泊)/g;
+  while ((m = re.exec(raw)) !== null) {
+    const at = m.index + m[0].search(/\d/);
+    if (!claim(at)) continue;
     // 도시 이름 자체가 '로'로 끝나는 곳(삿포로)이 있어서, 조사를 떼기 전 낱말로 먼저 도시인지 본다.
     if (resolveCityLabelFromRegionToken(m[1], '')) continue;
-    const token = m[1].replace(/(에서|으로|은|는|에|쪽)$/, '');
-    if (!token || token.length < 2 || REGION_SEGMENT_STOP_WORDS.has(token)) continue;
-    if (resolveCityLabelFromRegionToken(token, '')) continue;
-    if (/박|일|night|day/i.test(token)) continue;
-    out.push({ token, days: clamp(Number(m[2]), 1, 10), unit: m[3] === '박' ? 'night' : 'day' });
+    let token = m[1].replace(/(에서|으로|은|는|에|쪽)$/, '');
+    const bare = token.replace(JA_REGION_SUFFIX_RE, '');
+    if (bare !== token && bare.length >= 2) token = bare;
+    push(token, m[2], m[3], at);
+  }
+  // 영어 이름 뒤 일수: 'Koyasan 1 day'. 대소문자를 구분해 고유 이름만 본다.
+  while ((m = enAfter.exec(raw)) !== null) {
+    const at = m.index + m[0].search(/\d/);
+    if (claim(at)) push(enToken(m[1]), m[2], m[3], at);
   }
   return out;
 }
@@ -3482,15 +4569,18 @@ function parseTravelChatInput(payload = {}) {
     .filter((k) => CITY_DATA[k]);
   const routeCities = routeCityKeys.map((k) => CITY_DATA[k]?.label || k);
   const explicitRouteKeys = Array.from(new Set([cityFromMessage, ...mustMatches.map((m) => m.cityKey), ...mentionedCityKeys].filter((k) => k && CITY_DATA[k])));
-  const regionDayPlan = normalizeRegionDayPlan(extractRegionDayPlanFromText(positive, cityKey), []);
+  // 도시별 일수는 도시 찾기용 글로 읽는다('Matsumoto Seicho Memorial Museum 2 days'가 '마쓰모토 2일'이 되지 않게)
+  const regionDayPlan = normalizeRegionDayPlan(extractRegionDayPlanFromText(cityText, cityKey), []);
   const hasGlobalTripDays = /(\d{1,2})\s*[박泊]\s*(\d{1,2})\s*[일日]|(\d{1,2})\s*일\s*(\d{1,2})\s*박|\d{1,2}\s*nights?\s*(?:and\s*|,\s*)?\d{1,2}\s*days?/i.test(message);
   const parsedDays = parseDaysFromText(message, context.days || 4);
   const daysExplicit = parseExplicitDaysFromText(message) !== null;
   // 도시 데이터가 없는 지역의 일수(예: '나라 1일')도 전체 일수에 넣는다.
   // 'N일/N박' 표현이 도시별 일수보다 많을 때만 찾는다("교토 산책 위주 2일"의 2일은 이미 교토 몫이다).
-  const daySegmentCount = (positive.match(/\d{1,2}\s*(?:일|박)(?!\s*차)/g) || []).length;
-  const unknownSegments = (!hasGlobalTripDays && regionDayPlan.length > 0 && daySegmentCount > regionDayPlan.length) ? extractUnknownRegionSegments(positive) : [];
-  const extraDays = unknownSegments.reduce((acc, s) => acc + s.days, 0);
+  // (ko/en/ja 단위를 모두 센다. 날짜·일차·'1日2か所'은 세지 않는다)
+  const daySegmentCount = (regionDaysText(positive).match(REGION_UNIT_COUNT_RE) || []).length;
+  const unknownSegments = (!hasGlobalTripDays && regionDayPlan.length > 0 && daySegmentCount > regionDayPlan.length) ? extractUnknownRegionSegments(positive, routeCityKeys) : [];
+  // '東京5日間、そのうち箱根2日'의 箱根 2일은 전체 5일 안에 든다(더하지 않고 미지원·당일치기 알림만)
+  const extraDays = unknownSegments.filter((s) => !s.included).reduce((acc, s) => acc + s.days, 0);
   const inferredDays = regionDayPlan.length > 0 ? clamp(inferDaysFromRegionPlan(regionDayPlan, parsedDays) + extraDays, 1, 10) : parsedDays;
   const finalDays = hasGlobalTripDays ? parsedDays : Math.max(parsedDays, inferredDays);
   const unsupportedPlaces = [];
@@ -3527,6 +4617,16 @@ function parseTravelChatInput(payload = {}) {
     return aliases.some((a) => new RegExp(`${escapeRegExp(a)}\\s*(?:에서|은|는|에)?\\s*\\d{1,2}\\s*[박泊]`, 'i').test(lowerMsg)) || (aliases.length > 0 && overnightWordRe.test(message));
   }).slice(0, 1);
   if (dayTripStay[0]) specialPrefs.overnightAt = dayTripStay[0];
+  // 주 도시('아사히카와 3일 아라시야마 공원' → 아사히카와 2일 + 교토 1일). 도시 이름으로 말한 도시만 '말한 도시'다(장소로 들어온 도시는 아니다).
+  const namedCityLabels = Array.from(mentionAt.keys()).map((k) => CITY_DATA[k]?.label).filter(Boolean);
+  // 일수를 하나 더 말했으면('도쿄 5일 중 이틀은 유니버설', '도쿄 5일 유니버설 이틀') 장소에 붙인 일수라 주 도시를 정하지 않는다(예전 분배 그대로).
+  // 'N박M일'은 하나로 센다. '하루'는 장소 도시 하루와 같은 뜻이라 센다고 보지 않는다('도쿄 5일 동안 유니버설 하루').
+  const tripSpanRe = /\d{1,2}\s*[박泊]\s*\d{1,2}\s*[일日]|\d{1,2}\s*nights?\s*(?:and\s*|,\s*)?\d{1,2}\s*days?\b/gi;
+  const daysWords = regionDaysText(positive);
+  const dayCountMentions = (daysWords.match(tripSpanRe) || []).length + (daysWords.replace(tripSpanRe, ' ').match(REGION_UNIT_COUNT_RE) || []).length;
+  const placeDayWord = /(?:^|[^가-힣])(?:이틀|사흘|나흘|닷새)|\b(?:two|three|four|five)\s+(?:full\s+)?days?\b/i.test(positive);
+  const mainCity = dayCountMentions <= 1 && !placeDayWord ? mainCityForPlaceOnlyRoute(regionDayPlan, routeCities, finalDays, new Set(namedCityLabels)) : '';
+  if (mainCity) specialPrefs.mainCity = mainCity;
 
   const seasonalStart = inferSeasonalStartDate(message, '');
   const explicitDate = seasonalStart || parseStartDateFromText(message);
@@ -3553,6 +4653,7 @@ function parseTravelChatInput(payload = {}) {
     // 내부용(응답에서는 뺀다)
     _cityFromMessage: cityFromMessage,
     _routeExplicit: explicitRouteKeys.map((k) => CITY_DATA[k].label),
+    _namedCities: namedCityLabels,
     _daysExplicit: Boolean(daysExplicit || regionDayPlan.length > 0),
     _dateExplicit: Boolean(explicitDate),
     _localityAsCity: useLocalityAsCity,
@@ -4101,6 +5202,11 @@ function normalizeTravelChatParsed(candidate, fallback, opts = {}) {
   }
   if (NEG_SHOPPING_RE.test(message) || negThemes.has('shopping')) specialPrefs.removeShopping = true;
   if (budget === 'low') specialPrefs.lowBudget = true;
+  // 주 도시(규칙 해석이 정함)는 AI 경로에서도 경로에 있고 다른 도시를 이름으로 말하지 않았을 때만 둔다
+  if (specialPrefs.mainCity) {
+    const named = new Set(Array.isArray(fallback._namedCities) ? fallback._namedCities : []);
+    if (!routeCities.includes(specialPrefs.mainCity) || routeCities.some((c) => c !== specialPrefs.mainCity && named.has(c))) delete specialPrefs.mainCity;
+  }
   // 시각: AI 값은 메시지에 그 시각을 말한 근거(도착·출발·시작)가 있을 때만 쓴다
   const timeField = (name) => {
     const ai = clockOrEmpty(raw[name]);
@@ -4219,6 +5325,8 @@ function parseGlobalDayDelta(text) {
   return 0;
 }
 
+// 후속 대화에서 도시를 바꾸는 말('하코다테 대신 삿포로', '삿포로로 바꿔'). 이름 속 '대신'(야마노우에 대신궁)은 아니다.
+const SWITCH_CITY_WORD_RE = new RegExp(`${INSTEAD_WORD_SRC}|바꿔|변경|말고|로\\s*가|instead|change|switch|代わり|変更`, 'i');
 // 후속 대화: 이전 조건(prev)을 기본값으로 두고, 이번 메시지에서 분명히 바꾼 것(빼줘·대신·추가·하루 더)만 덮어쓴다.
 function applyFollowUpRules(parsed, prev, message, fallback) {
   const out = { ...parsed, specialPrefs: { ...(parsed.specialPrefs || {}) } };
@@ -4229,7 +5337,7 @@ function applyFollowUpRules(parsed, prev, message, fallback) {
   const removedCities = detectMentionedCityKeysOrdered(negSpans).map((k) => CITY_DATA[k]?.label).filter(Boolean);
   const msgCity = fallback._cityFromMessage || '';
   const msgCityLabel = CITY_DATA[msgCity]?.label || '';
-  const switchCity = Boolean(msgCityLabel) && !prevRoute.includes(msgCityLabel) && /대신|바꿔|변경|말고|로\s*가|instead|change|switch|代わり|変更/i.test(msg);
+  const switchCity = Boolean(msgCityLabel) && !prevRoute.includes(msgCityLabel) && SWITCH_CITY_WORD_RE.test(msg);
   if (prevKey && !switchCity) {
     out.cityKey = prevKey;
     out.cityLabel = (typeof prev.cityLabel === 'string' && prev.cityLabel) || CITY_DATA[prevKey].label;
@@ -4252,6 +5360,12 @@ function applyFollowUpRules(parsed, prev, message, fallback) {
   // 저예산·당일치기 장소 숙박도 이전 대화에서 이어 간다
   if (prevPrefs.lowBudget === true || out.budget === 'low') out.specialPrefs.lowBudget = true;
   if (typeof prevPrefs.overnightAt === 'string' && prevPrefs.overnightAt && !out.specialPrefs.overnightAt) out.specialPrefs.overnightAt = prevPrefs.overnightAt;
+  // 주 도시('아사히카와 3일 아라시야마 공원')도 이어 간다. 경로에서 빠졌거나 경로가 한 도시면 버린다.
+  if (typeof prevPrefs.mainCity === 'string' && prevPrefs.mainCity && !out.specialPrefs.mainCity) out.specialPrefs.mainCity = prevPrefs.mainCity;
+  if (out.specialPrefs.mainCity && (route.length < 2 || !route.includes(out.specialPrefs.mainCity))) delete out.specialPrefs.mainCity;
+  // 이번 메시지가 경로에 새 도시를 이름으로 더하면('오사카도 가고 싶어') 장소로만 들어온 경로가 아니라 주 도시를 버린다
+  if (out.specialPrefs.mainCity && [...msgCityLabels].some((c) => c !== out.specialPrefs.mainCity && route.includes(c) && !prevRoute.includes(c))) delete out.specialPrefs.mainCity;
+  const mainCity = out.specialPrefs.mainCity || '';
   if (!parseMaxPlacesPerDay(msg) && Number(prevPrefs.maxPlacesPerDay) > 0) out.specialPrefs.maxPlacesPerDay = clamp(Number(prevPrefs.maxPlacesPerDay), 1, 5);
   for (const t of ['arrivalTime', 'departureTime', 'startTimeMin']) {
     if (!out[t] && clockOrEmpty(prev[t])) { out[t] = clockOrEmpty(prev[t]); out.specialPrefs[t] = out[t]; }
@@ -4268,8 +5382,14 @@ function applyFollowUpRules(parsed, prev, message, fallback) {
   const baseDays = clamp(Number(prev.days) || Number(out.days) || 4, 1, 10);
   const prevPlan = normalizeRegionDayPlan(Array.isArray(prev.regionDayPlan) ? prev.regionDayPlan : [], []);
   const deltas = parseCityDayDeltas(msg);
+  // 주 도시의 장소 도시 몫은 일정 요청과 같은 기준(꼭 갈 곳의 종일·반나절, 도착·출발 시각)으로 정한다. 여기서 나온 도시별 일수가
+  // 그대로 지역별 일수가 되므로, 장소 도시를 하루로 줄여 꼭 갈 곳이 빠지지 않게 한다.
+  const mainCtx = mainCity
+    ? mainCityNeedContext(resolveMustVisit(out.wantedPlaces, [], route.map((c) => cityKeyByLabel(c)).filter(Boolean), 'ko', resolveExcludedNameKeys(out.excludedPlaces)), {},
+      { ...out.specialPrefs, arrivalTime: out.arrivalTime || out.specialPrefs.arrivalTime || '', departureTime: out.departureTime || out.specialPrefs.departureTime || '' })
+    : null;
   if (deltas.length > 0) {
-    const seq = allocateDaysByCities(route, [], baseDays, prevPlan);
+    const seq = allocateDaysByCities(route, [], baseDays, prevPlan, mainCity, mainCtx);
     const counts = new Map(route.map((c) => [c, 0]));
     seq.forEach((c) => counts.set(c, (counts.get(c) || 0) + 1));
     for (const { cityLabel, delta } of deltas) {
@@ -4288,7 +5408,7 @@ function applyFollowUpRules(parsed, prev, message, fallback) {
     // 도시 없이 "하루 더 늘려줘"/"add one more day"/"이틀 줄여줘": 전체 일수를 바꾸고, 여러 도시면 마지막 도시에서 더하고 뺀다
     const newDays = clamp(baseDays + parseGlobalDayDelta(msg), 1, 10);
     if (route.length > 1) {
-      const seq = allocateDaysByCities(route, [], baseDays, prevPlan);
+      const seq = allocateDaysByCities(route, [], baseDays, prevPlan, mainCity, mainCtx);
       const counts = new Map(route.map((c) => [c, 0]));
       seq.forEach((c) => counts.set(c, (counts.get(c) || 0) + 1));
       let diff = newDays - baseDays;
@@ -4692,7 +5812,7 @@ async function buildTravelChatPlan(payload = {}) {
     if (real) {
       card = { ...real };
     } else {
-      const synth = buildSyntheticWantedDestinations([want], parsed.cityKey, 1, { allDay: [...allDayNames], evening: [...eveningNames] })[0];
+      const synth = buildSyntheticWantedDestinations([want], parsed.cityKey, 1, { allDay: [...allDayNames], evening: [...eveningNames], routeCityKeys: (parsed.routeCities || []).map((c) => cityKeyByLabel(c)) })[0];
       if (!synth) continue;
       const ck = cityKeyByLabel(synth.city) || parsed.cityKey;
       card = localizeCuratedPlace(withCityPhotoFallback(attachPlaceMedia(synth, ck, synth.name), ck), ck, lang);
@@ -4717,7 +5837,8 @@ async function buildTravelChatPlan(payload = {}) {
       const cityData = CITY_DATA[ck];
       const anchor = (cityData?.highlights || []).find((h) => notExcluded(h));
       if (!anchor) continue;
-      selectedDestinations.push({
+      // 꼭 갈 곳 카드처럼 화면 언어로 표기한다(en/ja: name은 현지화 이름, 원래 한글 이름은 nameKo — 일정 후처리가 이 이름으로 후보를 알아본다)
+      selectedDestinations.push(localizeCuratedPlace(withCityPhotoFallback(attachPlaceMedia({
         name: anchor.name,
         city: cityData.label,
         area: anchor.area || cityData.label,
@@ -4726,7 +5847,7 @@ async function buildTravelChatPlan(payload = {}) {
         stayMin: Number(anchor.stayMin || 90),
         mapUrl: mapUrl(`${anchor.name} ${cityData.label}`),
         aiScore: 95
-      });
+      }, ck, anchor.name), ck), ck, lang));
       selectedCities.add(cityData.label);
       if (selectedDestinations.length >= 8) break;
     }
@@ -5989,8 +7110,40 @@ const TRANSFER_HINT_I18N = {
   '전철 약 40~60분': { en: 'Train, about 40-60 min', ja: '電車 約40～60分' },
   '전철 약 30~50분': { en: 'Train, about 30-50 min', ja: '電車 約30～50分' },
   '전철 약 45~60분': { en: 'Train, about 45-60 min', ja: '電車 約45～60分' },
+  '신칸센 약 30분': { en: 'Shinkansen, about 30 min', ja: '新幹線 約30分' },
+  '신칸센 약 35분': { en: 'Shinkansen, about 35 min', ja: '新幹線 約35分' },
+  '신칸센 약 45분': { en: 'Shinkansen, about 45 min', ja: '新幹線 約45分' },
+  '신칸센 약 50분': { en: 'Shinkansen, about 50 min', ja: '新幹線 約50分' },
+  '신칸센 약 1시간': { en: 'Shinkansen, about 1 h', ja: '新幹線 約1時間' },
+  '신칸센 약 1시간 20분': { en: 'Shinkansen, about 1 h 20 min', ja: '新幹線 約1時間20分' },
+  '신칸센 약 1시간 30분': { en: 'Shinkansen, about 1 h 30 min', ja: '新幹線 約1時間30分' },
+  '신칸센 약 1시간 40분': { en: 'Shinkansen, about 1 h 40 min', ja: '新幹線 約1時間40分' },
+  '신칸센 약 1시간 10분': { en: 'Shinkansen, about 1 h 10 min', ja: '新幹線 約1時間10分' },
+  '신칸센 약 2시간': { en: 'Shinkansen, about 2 h', ja: '新幹線 約2時間' },
+  '신칸센 약 2시간 40분': { en: 'Shinkansen, about 2 h 40 min', ja: '新幹線 約2時間40分' },
+  '신칸센·특급 약 1시간 20분': { en: 'Shinkansen and limited express, about 1 h 20 min', ja: '新幹線・特急 約1時間20分' },
+  '신칸센 약 30분~1시간 30분': { en: 'Shinkansen, about 30 min-1 h 30 min', ja: '新幹線 約30分～1時間30分' },
+  '신칸센 약 1시간 30분~2시간': { en: 'Shinkansen, about 1 h 30 min-2 h', ja: '新幹線 約1時間30分～2時間' },
+  '신칸센 약 1~3시간': { en: 'Shinkansen, about 1-3 h', ja: '新幹線 約1～3時間' },
+  '신칸센 약 2~4시간 30분': { en: 'Shinkansen, about 2-4.5 h', ja: '新幹線 約2～4時間30分' },
+  '특급 약 1시간 25분': { en: 'Limited express, about 1 h 25 min', ja: '特急 約1時間25分' },
+  '특급 약 2시간': { en: 'Limited express, about 2 h', ja: '特急 約2時間' },
+  '특급 약 2시간 10분': { en: 'Limited express, about 2 h 10 min', ja: '特急 約2時間10分' },
+  '특급 약 3시간': { en: 'Limited express, about 3 h', ja: '特急 約3時間' },
+  '특급 약 3시간 40분': { en: 'Limited express, about 3 h 40 min', ja: '特急 約3時間40分' },
+  '특급 약 4시간': { en: 'Limited express, about 4 h', ja: '特急 約4時間' },
+  '버스 약 2시간 30분': { en: 'Bus, about 2 h 30 min', ja: 'バス 約2時間30分' },
+  '버스 약 3시간': { en: 'Bus, about 3 h', ja: 'バス 約3時間' },
+  '와카야마 경유 배와 특급 약 4~5시간': { en: 'Ferry and limited express via Wakayama, about 4-5 h', ja: '和歌山経由でフェリーと特急 約4～5時間' },
+  '이라부 대교로 차 약 30분': { en: 'About 30 min by car over the Irabu Bridge', ja: '伊良部大橋経由で車 約30分' },
+  '페리 약 1시간 40분': { en: 'Ferry, about 1 h 40 min', ja: 'フェリー 約1時間40分' },
+  '고속선 약 2시간, 페리 약 4시간': { en: 'High-speed boat, about 2 h; ferry, about 4 h', ja: '高速船 約2時間、フェリー 約4時間' },
+  '고속선 약 1시간 40분': { en: 'High-speed boat, about 1 h 40 min', ja: '高速船 約1時間40分' },
+  '고속선 약 50분': { en: 'High-speed boat, about 50 min', ja: '高速船 約50分' },
   '대중교통 기준 이동': { en: 'by public transport', ja: '公共交通機関で移動' },
   '대중교통 기준 1~3시간': { en: 'about 1-3 h by public transport', ja: '公共交通機関で約1～3時間' },
+  '대중교통 기준 약 2~4시간': { en: 'about 2-4 h by public transport', ja: '公共交通機関で約2～4時間' },
+  '배나 비행기로 이동, 항구·공항 오가는 시간 포함 반나절 안팎': { en: 'by ferry or plane, about half a day with port/airport transfers', ja: 'フェリーか飛行機で移動、港・空港への移動を含め半日前後' },
   '비행기 이동, 공항 오가는 시간 포함 반나절 이상': { en: 'by plane, half a day or more with airport transfers', ja: '飛行機で移動、空港への移動を含め半日以上' }
 };
 
@@ -6061,6 +7214,28 @@ function localizeCuratedArea(area, lang, fallback = '') {
   if (ck) return localizedCityName(ck, lang);
   const out = KO_AREA_TO_EN[a] || a;
   return fallback && /[가-힣]/.test(out) && !/[가-힣]/.test(fallback) ? fallback : out;
+}
+
+// localizeCuratedArea의 반대: en/ja 지역명('Chuo Ward'·'中央区') → 원래 한글 지역명(모르면 '')
+function koAreaFromLocalized(area) {
+  const a = String(area || '').trim();
+  if (!a || /[가-힣]/.test(a)) return '';
+  for (const [ko, v] of Object.entries(CURATED_AREA_I18N)) {
+    if (v && (v.en === a || v.ja === a)) return ko;
+  }
+  const lower = a.toLowerCase();
+  return Object.prototype.hasOwnProperty.call(JP_KO_AREA, lower) ? String(JP_KO_AREA[lower] || '') : '';
+}
+
+// localizeCuratedCategory의 반대: 'Culture/Hiking'·'文化/トレッキング' → '문화/트레킹'(한 조각이라도 모르면 '')
+function koCategoryFromLocalized(category) {
+  const c = String(category || '').trim();
+  if (!c || /[가-힣]/.test(c)) return '';
+  const one = (s) => Object.keys(CURATED_CATEGORY_I18N).find((ko) => CURATED_CATEGORY_I18N[ko]?.en === s || CURATED_CATEGORY_I18N[ko]?.ja === s) || '';
+  const whole = one(c);
+  if (whole) return whole;
+  const parts = c.split('/').map((p) => one(p.trim()));
+  return parts.length > 1 && parts.every(Boolean) ? parts.join('/') : '';
 }
 
 // 대표 명소(MUST_ATTRACTIONS)의 영문 표기: 가장 긴 로마자 별칭(예: 'universal studios japan' → 'Universal Studios Japan')
@@ -6643,40 +7818,148 @@ function indoorPicksForCities(cityKeys, lang) {
   return out;
 }
 
+// AI 일정 후보: 하루에 넘기는 후보 수. 하루 2~3곳을 채우고(후처리의 빈 낮 채우기 포함) 같은 곳을 되풀이하지 않을 만큼.
+// 후보 확장 목표(expandPicksForAi)와 AI에 넘기는 도시별 몫(selectAiPicks)이 같은 값을 쓴다.
+const AI_PICKS_PER_DAY = 3;
+
+// 사진 데이터(place-images.json)에 있는 그 도시 명소 → 후보 카드(필요한 만큼만 만든다)
+function* placeImageCandidates(ck, c, lang) {
+  for (const mapKey of PLACE_IMAGES.byKey.keys()) {
+    if (!mapKey.startsWith(`${ck}|`)) continue;
+    const name = mapKey.slice(ck.length + 1);
+    yield localizeCuratedPlace(attachPlaceMedia({
+      name, city: c.label, area: c.label, category: '대표 명소', bestTime: '10:00-17:00', stayMin: 90,
+      mapUrl: mapUrl(`${name} ${c.label}`)
+    }, ck, name), ck, lang);
+  }
+}
+
 // AI 일정 후보가 모자라면(무료 모드·대체 데이터) 경로 도시의 대표 명소와 사진 데이터(place-images.json)의
-// 같은 도시 명소를 보태 최소 days×2곳(최대 20곳)을 만든다. 이미 있는 장소(이름·위키데이터 ID)는 건너뛴다.
+// 같은 도시 명소를 보탠다. 이미 있는 장소(이름·위키데이터 ID)는 건너뛴다.
+// - 도시가 하나면(opts.cityTargets 없음): 전체 days×3곳(최대 20곳)까지.
+// - 도시가 여럿이면 opts.cityTargets(도시 키 → 목표 수 = 그 도시 일수×3)만큼 도시마다 채운다.
+//   첫 도시만 채우고 멈추지 않는다. 날짜가 없는 도시(목표 0)는 보태지 않는다.
+// opts.countable(p): 목표 수에 세는 후보(도시가 하나일 때도 같다). 하루짜리는 늘 세지 않고, 나중에 조건으로 걸러질 장소
+//   (쇼핑 제외의 쇼핑 장소·저예산의 유료 명소)와 실내 위주일 때의 야외 장소도 세지 않는다. 세면 그 장소로 목표가 차서
+//   확장을 멈추고, 조건 필터 뒤에 후보가 모자란다(후쿠오카 1일 쇼핑 제외 2곳, 가나자와 1일 실내 위주 실내 0곳 — 2026-10-03).
 // skip(p): 보태지 않을 후보(예: 요청하지 않은 하루짜리 장소) — 그 대신 다른 명소로 목표 수를 채운다.
-function expandPicksForAi(picks, cityKeys, lang, days, skip = null) {
-  const base = Array.isArray(picks) ? [...picks] : [];
-  // 하루 2~3곳을 채우고(후처리의 빈 낮 채우기 포함) 같은 곳을 되풀이하지 않도록 날마다 3곳(최대 20곳)
-  const target = Math.min(20, Math.max(0, Number(days) || 0) * 3);
-  if (base.length >= target) return base;
-  const seenNames = new Set(base.map((p) => placeNameKey(placeOriginalName(p))));
-  const seenQids = new Set(base.map((p) => p?.wikidata).filter(Boolean));
+// opts.keep(p): 뒤로 미루지 않을 곳(요청한 곳, 실내 위주일 때의 실내 장소). 그 밖의 도시 주변 실제 명소(generated) 카드는
+//   큐레이션 명소(대표 명소·추가 명소) 뒤로 미룬다(실내 명소는 대부분 생성 장소라 미루면 야외 큐레이션 명소만 남는다).
+//   미루지 않은 실내 생성 장소는 받은 순서대로 남고, 큐레이션 실내 명소 뒤로 보내는 것은 buildTravelPlan의 조건 필터(applyPrefFilters)가 한다.
+// opts.allDaySlots: 이 일정이 요청하지 않은 하루짜리를 넣을 수 있는 수(buildTravelPlan의 unrequestedAllDayLimit, 여러 도시일 때만 본다).
+// 추천 카드가 도시 명소 + 생성 장소(30곳까지)라 카드 순서 그대로 쓰면 교토 2일 6곳이 카드(히에이산·료안지·도지)로 다 차서
+// 금각사·니시키 시장이 AI 후보에서 빠진다(2026-10-03). 그래서 일수·도시 수와 관계없이 요청하지 않은 생성 장소는
+// 큐레이션 명소를 다 넣은 뒤에만, 목표 수까지만 쓴다(규칙 일정 createItinerary와 같은 순서). 여러 도시면 그 목표가 도시마다다.
+function expandPicksForAi(picks, cityKeys, lang, days, skip = null, opts = {}) {
+  const input = Array.isArray(picks) ? picks : [];
+  const keep = opts && typeof opts.keep === 'function' ? opts.keep : null;
+  const countable = opts && typeof opts.countable === 'function' ? opts.countable : () => true;
+  const cityTargets = opts && opts.cityTargets instanceof Map && opts.cityTargets.size > 1 ? opts.cityTargets : null;
+  const target = Math.min(20, Math.max(0, Number(days) || 0) * AI_PICKS_PER_DAY);
+  const firstCity = (cityKeys || [])[0];
+  const late = (p) => !(keep && keep(p)) && isGeneratedCityPlace(p, firstCity);
+  const base = input.filter((p) => !late(p)); // 받은 카드 중 요청한 곳·큐레이션 명소(목표 수를 넘어도 모두 남긴다)
+  const added = []; // 보탠 큐레이션 명소(도시 명소 풀·사진 데이터)
+  const lateList = input.filter(late); // 요청하지 않은 생성 장소(카드 → 보탠 것 순서)
+  const seenNames = new Set(input.map((p) => placeNameKey(placeOriginalName(p))));
+  const seenQids = new Set(input.map((p) => p?.wikidata).filter(Boolean));
+  // 보탠 곳이 큐레이션 명소면 'added', 생성 장소면 'late'(뒤로 미룸), 건너뛰면 ''
   const tryAdd = (p) => {
     const k = placeNameKey(placeOriginalName(p));
-    if (!k || seenNames.has(k) || (p.wikidata && seenQids.has(p.wikidata))) return;
-    if (typeof skip === 'function' && skip(p)) return;
+    if (!k || seenNames.has(k) || (p.wikidata && seenQids.has(p.wikidata))) return '';
+    if (typeof skip === 'function' && skip(p)) return '';
     seenNames.add(k);
     if (p.wikidata) seenQids.add(p.wikidata);
-    base.push(p);
+    if (late(p)) { lateList.push(p); return 'late'; }
+    added.push(p);
+    return 'added';
+  };
+  if (cityTargets) {
+    // 받은 후보 전체(생성 장소 포함)로 센다(예전 확장의 'base.length >= target이면 그대로'와 같은 기준). 생성 장소를 뺀 base로 세면
+    // 거의 늘 목표보다 적어, 이미 목표를 채운 도시(도쿄)의 하루짜리까지 살펴 3·4일 도쿄·시즈오카에 디즈니·후지큐·닛코 …
+    // '일정에 넣지 않은 하루짜리' 카드가 12장 붙었다(2026-10-03 R3).
+    const belowSingleTarget = input.length < target;
+    // 목표를 못 채운 도시의 하루짜리도 후보가 넉넉하면(belowSingleTarget 아님) 일정에 요청하지 않은 하루짜리를 넣을 수 있는
+    // 일정(opts.allDaySlots > 0: 5일 이상)일 때만 살핀다. 4일 이하는 하루짜리를 일정에 못 넣어 카드만 늘어난다
+    // (4일 도쿄·오사카에 USJ·히메지성·고야산·나라, 4일 도쿄·나고야에 디즈니·후지큐 …, 2026-10-03 R3). allDaySlots가 없으면 살핀다.
+    const allDaySlots = opts.allDaySlots === undefined ? Infinity : (Number(opts.allDaySlots) || 0);
+    const lookAllDay = belowSingleTarget || allDaySlots > 0;
+    const have = new Map();
+    const bump = (p, ck) => { if (countable(p)) have.set(ck, (have.get(ck) || 0) + 1); };
+    base.forEach((p) => bump(p, cityKeyByLabel(p?.city)));
+    for (const ck of [...new Set(cityKeys || [])]) {
+      const c = CITY_DATA[ck];
+      const goal = Number(cityTargets.get(ck)) || 0;
+      if (!c || goal <= 0) continue;
+      const full = () => (have.get(ck) || 0) >= goal;
+      // 이미 목표만큼 있는 도시는 보태지 않고 하루짜리도 살피지 않는다. 단 전체 후보가 도시가 하나일 때의 목표
+      // (days×3, 최대 20)보다 적으면 예전처럼 하루짜리를 살핀다(5일 오사카·교토의 히메지성·고야산 카드).
+      // 짧은 여러 도시 일정에 '일정에 넣지 않은 하루짜리' 카드가 도시마다 잔뜩 붙지 않게
+      // (예: 2일 도쿄·교토·오사카에 디즈니·후지큐·닛코 …: 도시가 하나일 때 후보가 넉넉하면 확장하지 않는 것과 같다)
+      if (full() && !belowSingleTarget) continue;
+      const add = (p) => { if (tryAdd(p) === 'added') bump(p, ck); };
+      // 보태는 도시의 하루짜리(테마파크·먼 당일치기)는 목표와 상관없이 도시가 하나일 때처럼 skip에 맡긴다
+      // (허용 수만큼 넣고, 나머지는 '일정에 넣지 않은 하루짜리' 추천 카드로 남는다). 살피지 않을 때(lookAllDay 아님)는 건너뛴다.
+      // 사진 데이터 후보의 하루짜리(나고야의 게로 온천·지브리파크 …)도 같다.
+      const addAllDay = (p) => { if (lookAllDay) tryAdd(p); };
+      for (const p of curatedCityPool(ck, lang)) {
+        if (allDayPlaceKind(p, ck)) { addAllDay(p); continue; }
+        if (!full()) add(p);
+      }
+      for (const p of placeImageCandidates(ck, c, lang)) {
+        if (full()) break;
+        if (allDayPlaceKind(p, ck)) { addAllDay(p); continue; }
+        add(p);
+      }
+    }
+    // 큐레이션 명소로 목표를 채우지 못한 도시만 요청하지 않은 생성 장소로 채운다(도시마다 목표 수까지, 날짜 없는 도시는 0)
+    const out = [...base, ...added];
+    for (const p of lateList) {
+      const ck = cityKeyByLabel(p?.city) || firstCity;
+      if ((have.get(ck) || 0) >= (Number(cityTargets.get(ck)) || 0)) continue;
+      out.push(p);
+      bump(p, ck);
+    }
+    return out;
+  }
+  // 목표 수에는 반나절 명소만 센다: 하루짜리(오우치주쿠·아소 화산)는 하루를 다 쓰고, 요청하지 않았으면 4일 이하 일정에서 뒤(limitAllDay)에 빠진다
+  // (세면 후쿠시마 1일 후보가 2곳뿐이 된다). 조건으로 빠지거나 뒤로 갈 장소(opts.countable이 아닌 것)도 세지 않는다.
+  const counts = (p) => !allDayPlaceKind(p, firstCity) && countable(p);
+  const baseCount = base.filter(counts).length;
+  let have = baseCount;
+  // 받은 카드(큐레이션)는 모두, 보탠 명소 → 생성 장소는 반나절 명소가 목표 수가 될 때까지만(전체 20곳까지)
+  const finish = () => {
+    const out = [...base];
+    let n = baseCount;
+    for (const p of [...added, ...lateList]) {
+      if (n >= target || out.length >= 20) break;
+      out.push(p);
+      if (counts(p)) n += 1;
+    }
+    return out;
+  };
+  if (have >= target) return finish();
+  // 하루짜리(테마파크·먼 당일치기)는 여러 도시일 때와 같은 기준으로만 살핀다: 받은 후보 전체가 목표보다 적거나(예전 확장 기준),
+  // 이 일정이 요청하지 않은 하루짜리를 넣을 수 있을 때(opts.allDaySlots > 0: 5일 이상). 반나절 명소를 세는 기준(counts)이 쇼핑·유료·
+  // 생성 장소를 빼면서 2일 일정도 여기까지 와, 2일 도쿄(쇼핑 제외)에 디즈니·후지큐·닛코·하코네 … 일정에 못 넣는 하루짜리 카드가
+  // 11장 붙었다(2026-10-03). 살피지 않는 하루짜리는 skip에 넘기지 않아 '일정에 넣지 않은 하루짜리' 카드도 되지 않는다.
+  const allDaySlots = opts.allDaySlots === undefined ? Infinity : (Number(opts.allDaySlots) || 0);
+  const lookAllDay = input.length < target || allDaySlots > 0;
+  const addOne = (p, ck) => {
+    if (!lookAllDay && allDayPlaceKind(p, ck)) return;
+    if (tryAdd(p) === 'added' && counts(p)) have += 1;
   };
   for (const ck of [...new Set(cityKeys || [])]) {
     const c = CITY_DATA[ck];
     if (!c) continue;
-    curatedCityPool(ck, lang).forEach(tryAdd);
-    for (const mapKey of PLACE_IMAGES.byKey.keys()) {
-      if (base.length >= target) break;
-      if (!mapKey.startsWith(`${ck}|`)) continue;
-      const name = mapKey.slice(ck.length + 1);
-      tryAdd(localizeCuratedPlace(attachPlaceMedia({
-        name, city: c.label, area: c.label, category: '대표 명소', bestTime: '10:00-17:00', stayMin: 90,
-        mapUrl: mapUrl(`${name} ${c.label}`)
-      }, ck, name), ck, lang));
+    curatedCityPool(ck, lang).forEach((p) => addOne(p, ck));
+    for (const p of placeImageCandidates(ck, c, lang)) {
+      if (have >= target) break;
+      addOne(p, ck);
     }
-    if (base.length >= target) break;
+    if (have >= target) break;
   }
-  return base.slice(0, Math.max(target, picks?.length || 0));
+  return finish();
 }
 
 function localizeTransferHint(hint, lang) {
@@ -6876,8 +8159,12 @@ function resolveMustVisit(rawList, picks, routeCityKeys, lang, excludedKeys) {
       }
     }
     if (!ck) ck = mainKey;
-    const synthetic = buildSyntheticWantedDestinations([baseName || tok], ck, 1)[0];
+    // 추가 명소는 일정의 다른 도시 것을 먼저 찾는다(도쿄·삿포로 일정의 '나카지마 공원' = 삿포로, 파일 순서상 앞인 오카다마 아님 → 없는 도시 이동이 생기지 않는다)
+    const synthetic = buildSyntheticWantedDestinations([baseName || tok], ck, 1, { routeCityKeys: keys })[0];
     if (!synthetic) continue;
+    // 그 추가 명소가 주 도시가 아닌 경로 도시의 것이면 사진·en/ja 이름도 그 도시로 찾는다(en 일정에 '나카지마 공원'이 한글로 남지 않게)
+    const synthKey = cityKeyByLabel(synthetic.city);
+    if (!must && !baseName && synthKey && synthKey !== ck && keys.includes(synthKey)) ck = synthKey;
     const highlight = (CITY_DATA[ck]?.highlights || []).find((h) => h.name === baseName);
     if (highlight) Object.assign(synthetic, { area: highlight.area || synthetic.area, category: highlight.category || synthetic.category, bestTime: highlight.bestTime || synthetic.bestTime, stayMin: highlight.stayMin || synthetic.stayMin });
     const localized = localizeCuratedPlace(attachPlaceMedia(synthetic, ck, synthetic.name), ck, lang);
@@ -6977,8 +8264,14 @@ function createItinerary(payload) {
     ? payload._picks
     : city.highlights.map((p) => localizeCuratedPlace(attachPlaceMedia({ ...p, city: city.label, mapUrl: mapUrl(`${p.name} ${city.label}`), aiScore: 65 }, key, p.name), key, lang));
   const routeCities = deriveRouteCities(payload, picks, city.label);
-  const dayCitySequence = allocateDaysByCities(routeCities, picks, days, payload._regionDayPlan);
   const prefs = typeof payload._specialPrefs === 'object' && payload._specialPrefs ? payload._specialPrefs : {};
+  // 주 도시 분배의 꼭 갈 곳 기준: buildTravelPlan이 만든 것(규칙 후처리의 날짜별 도시와 같아야 한다), 없으면(/api/itinerary) 여기서 만든다
+  const mainCtx = typeof prefs.mainCity === 'string' && prefs.mainCity
+    ? (INTERNAL_MAIN_CTX.has(payload._mainCityCtx) ? payload._mainCityCtx
+      : mainCityNeedContext(resolveMustVisit((Array.isArray(payload.mustVisit) ? payload.mustVisit : []).filter((x) => typeof x === 'string'), picks,
+        routeCities.map((c) => cityKeyByLabel(c)).filter(Boolean), lang, resolveExcludedNameKeys(payload.excludedPlaces)), payload, prefs))
+    : null;
+  const dayCitySequence = allocateDaysByCities(routeCities, picks, days, payload._regionDayPlan, prefs.mainCity, mainCtx);
   // 화면에 쓰는 도시 이름(내부 비교는 한글 label 그대로)
   const cityDisplay = (label) => {
     const ck = cityKeyForExactLabel(label);
@@ -7033,14 +8326,30 @@ function createItinerary(payload) {
   // 요청한 곳(꼭 갈 곳·고른 카드)의 이름 키(buildTravelPlan이 넘긴다). 조건 필터보다 앞선다.
   const requestedNames = new Set(Array.isArray(payload._requestedNames) ? payload._requestedNames : []);
   const isRequestedPick = (p) => requestedNames.has(placeNameKey(placeKey(p)));
+  // 도시 주변 실제 명소(generated, assets/city-places.json)는 요청하지 않았으면 후보에서 빼고 도시 명소 풀의 맨 뒤에서만 쓴다
+  // (큐레이션 명소: 도시 명소·대표 명소·추가 명소를 다 쓴 뒤). 추천 카드가 도시 명소 + 생성 장소(30곳까지)라 그대로 쓰면
+  // 3일 관광 칸 6개가 카드로 다 차서 금각사·니시키 시장 같은 대표 명소가 빠진다(2026-10-03).
+  const isGeneratedPick = (p) => !isRequestedPick(p) && isGeneratedCityPlace(p, key);
+  let indoorOnly = false;
   if (prefs.indoorFocus) {
-    // 실내 위주: 실내 후보가 충분하면(하루 하나 이상) 실내 후보와 요청한 곳만 쓰고, 모자라면 실내 후보를 앞에 둔다
+    // 실내 위주: 실내 후보가 충분하면(하루 하나 이상) 실내 후보와 요청한 곳만 쓰고, 모자라면 실내 후보를 앞에 둔다.
+    // 실내 후보 수에는 생성 장소의 실내 명소(무로 사이세이 기념관 등)도 센다. 생성 장소를 먼저 빼고 세면 실내가 모자란 것으로
+    // 판정되어 겐로쿠엔 같은 야외 명소가 들어간다(2026-10-03). 충분하면 센 생성 장소는 아래에서 빼고 도시 명소 풀(실내만)의 뒤에서 쓴다.
     const indoor = planPicks.filter((p) => isLikelyIndoor(p) || isRequestedPick(p));
-    if (indoor.length >= Math.min(days, 3)) planPicks = indoor;
+    if (indoor.length >= Math.min(days, 3)) { planPicks = indoor; indoorOnly = true; }
     else if (indoor.length > 0) planPicks = [...indoor, ...planPicks.filter((p) => !indoor.includes(p))];
   }
+  // 실내 위주인데 실내가 모자라면(섬 등): 실내 생성 장소는 실내 후보로 남기고, 야외 생성 장소는 도시 명소 풀(실내만)까지 다 쓴 뒤
+  // 자유 일정 전에 쓴다(실내 명소가 없는 리시리에 예전처럼 리시리 후레아이 온천 등을 넣는다)
+  const indoorShort = Boolean(prefs.indoorFocus) && !indoorOnly;
+  const keepGeneratedPick = (p) => indoorShort && isLikelyIndoor(p);
+  let lateGeneratedPicks = indoorShort ? planPicks.filter((p) => isGeneratedPick(p) && !keepGeneratedPick(p)) : [];
+  planPicks = planPicks.filter((p) => !isGeneratedPick(p) || keepGeneratedPick(p));
   // 저예산: 요청하지 않은 유료 전망대·수족관·테마파크는 쓰지 않는다(빈 칸은 무료 명소 풀·자유 일정으로)
-  if (prefs.lowBudget) planPicks = planPicks.filter((p) => isRequestedPick(p) || !isPaidSight(p));
+  if (prefs.lowBudget) {
+    planPicks = planPicks.filter((p) => isRequestedPick(p) || !isPaidSight(p));
+    lateGeneratedPicks = lateGeneratedPicks.filter((p) => !isPaidSight(p));
+  }
 
   // 하루 전체가 드는 곳(테마파크·먼 당일치기: 디즈니, 후지큐, 쿠사츠 온천 …)은 반나절 칸에 넣지 않고 '종일' 칸에 혼자 넣는다.
   const isAllDayPlace = (p) => Boolean(p && !p.freeTime && allDayPlaceKind(p, key));
@@ -7051,11 +8360,41 @@ function createItinerary(payload) {
     const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/.exec(String(timeRange || ''));
     return m ? [Number(m[1]) * 60 + Number(m[2]), Number(m[3]) * 60 + Number(m[4])] : null;
   };
+  // 같은 장소(위키데이터 항목)는 이름이 달라도 일정에 한 번만 넣는다: 삿포로의 큐레이션 명소 '오도리 공원'과 도시 주변 실제 명소
+  // '삿포로 오도리 공원', 미사와 '오이라세 계류'와 아오모리 '오이라세 계곡'이 이틀에 걸쳐 두 번 들어갔다(2026-10-03).
+  // 요청한 곳(꼭 갈 곳 먼저, 그다음 고른 카드)의 항목은 그 이름으로만 쓰고, 요청하지 않은 둘이면 먼저 쓴 쪽만 쓴다
+  // (명소 풀은 큐레이션 명소가 생성 장소보다 앞이라 큐레이션 이름이 남는다). 야경·석양(저녁 명소: 오카다마 '오도리 야경')은
+  // 낮 방문과 하는 일이 달라 같은 항목이어도 함께 둔다.
+  const qidCache = new Map();
+  const placeQidOf = (p) => {
+    if (!p || p.freeTime || isEveningPlace(p)) return '';
+    const ck = cityKeyByLabel(p.city) || key;
+    const k = `${ck}|${placeKey(p)}`;
+    if (!qidCache.has(k)) qidCache.set(k, String(p.wikidata || cityPlaceQid(ck, [placeKey(p), p.name]) || ''));
+    return qidCache.get(k);
+  };
+  const mustNames = new Set(Array.isArray(payload._mustNames) ? payload._mustNames : []);
+  const qidOwner = new Map(); // 위키데이터 항목 → 그 항목으로 쓸 요청한 곳의 이름 키
+  for (const p of [...planPicks.filter((x) => mustNames.has(placeNameKey(placeKey(x)))), ...planPicks.filter(isRequestedPick)]) {
+    const q = placeQidOf(p);
+    if (q && !qidOwner.has(q)) qidOwner.set(q, placeNameKey(placeKey(p)));
+  }
+  const usedQids = new Set(); // 지난날까지 일정에 넣은 항목
+  const dayQids = new Set(); // 이날 고른 항목
+  const qidTaken = (p) => {
+    const q = placeQidOf(p);
+    if (!q) return false;
+    if (usedQids.has(q) || dayQids.has(q)) return true;
+    const owner = qidOwner.get(q);
+    return Boolean(owner) && owner !== placeNameKey(placeKey(p));
+  };
+  const noteDayQid = (p) => { const q = placeQidOf(p); if (q) dayQids.add(q); };
   const allDayPicks = planPicks.filter(isAllDayPlace);
   const regularPicks = planPicks.filter((p) => !isAllDayPlace(p));
   const morningPool = regularPicks.filter((p) => startHour(p.bestTime) < 12);
   const afternoonPool = regularPicks.filter((p) => startHour(p.bestTime) >= 12);
-  const fallbackPool = regularPicks.length > 0 ? regularPicks : picks.filter((p) => !isAllDayPlace(p) && notExcluded(p));
+  // (실내 후보만 쓰기로 했으면 카드가 생성 장소뿐이라 비어도 야외 카드로 되돌아가지 않는다: 빈 칸은 실내 도시 명소 풀·자유 일정으로)
+  const fallbackPool = regularPicks.length > 0 || indoorOnly ? regularPicks : picks.filter((p) => !isAllDayPlace(p) && notExcluded(p) && !isGeneratedPick(p));
   // 저녁 식사 칸: 실제 가게(내장 큐레이션)를 먼저 쓰고, 없을 때만 '<도시> 이자카야 찾기' 같은 일반 안내를 쓴다.
   const foodsByCity = Object.fromEntries(
     Object.entries(CITY_DATA).map(([k, c]) => {
@@ -7146,7 +8485,7 @@ function createItinerary(payload) {
       const idx = (start + step) % main.length;
       const cand = main[idx];
       const name = placeKey(cand);
-      if (!name || bannedNames.has(name) || usedPlaceNamesGlobal.has(name)) continue;
+      if (!name || bannedNames.has(name) || usedPlaceNamesGlobal.has(name) || qidTaken(cand)) continue;
       return cand;
     }
     return null;
@@ -7160,6 +8499,7 @@ function createItinerary(payload) {
     const dayCity = dayCitySequence[i] || city.label;
     const dayCityName = cityDisplay(dayCity);
     const dayCityKey = cityKeyByLabel(dayCity) || key;
+    dayQids.clear();
     if (i === restDayIndex) {
       itinerary.push({
         day: i + 1,
@@ -7200,11 +8540,22 @@ function createItinerary(payload) {
     const dayAfternoonPool = fitsB(afternoonPool.filter(inDayCity));
     const dayFallbackPool = fallbackPool.filter(inDayCity);
     const cityPool = buildCityAttractionPool(dayCity);
-    const cityExpandedPool = cityPool.filter((p) => !isAllDayPlace(p));
-    const poolA = dayMorningPool.length > 0 ? dayMorningPool : (dayFallbackPool.length > 0 ? dayFallbackPool : morningPool);
-    const poolB = dayAfternoonPool.length > 0 ? dayAfternoonPool : (fitsB(dayFallbackPool).length > 0 ? fitsB(dayFallbackPool) : fitsB(afternoonPool));
+    // 반나절 명소 풀: 큐레이션 명소를 먼저(예전과 같은 순환 순서), 도시 주변 실제 명소(generated)는 다 쓴 뒤에 파일 순서(많이 다룬 순)대로
+    const cityExpandedPool = cityPool.filter((p) => !isAllDayPlace(p) && !isGeneratedCityPlace(p, dayCityKey));
+    const cityGeneratedPool = cityPool.filter((p) => !isAllDayPlace(p) && isGeneratedCityPlace(p, dayCityKey));
+    // 실내가 모자란 실내 위주 일정의 야외 생성 장소(위 lateGeneratedPicks): 실내 풀까지 다 쓴 뒤에
+    const dayLateGenerated = lateGeneratedPicks.filter((p) => !isAllDayPlace(p) && inDayCity(p));
+    const fromCityPool = (pick, seed, banned) => choosePlace(pick(cityExpandedPool), [], seed, banned) || choosePlace(pick(cityGeneratedPool), [], 0, banned)
+      || choosePlace(pick(dayLateGenerated), [], 0, banned);
+    // 경로 도시가 여럿이면 그날 도시 후보만 쓴다: 그날 도시 후보가 비어도 다른 도시 후보(전체 오전·오후·대체 목록)로 넘어가지 않고
+    // 그 도시 명소 풀(큐레이션 → 생성 장소, fromCityPool)·자유 일정으로 채운다. 실내 위주에서 실내 명소가 모두 생성 장소인 도시
+    // (히로시마)는 생성 장소를 후보에서 빼면 그날 후보가 비어, 히로시마 날에 오사카 주택박물관·구로몬 시장이 들어갔다(2026-10-03 R1).
+    const otherCityPools = routeCities.length <= 1;
+    const poolA = dayMorningPool.length > 0 ? dayMorningPool : (dayFallbackPool.length > 0 ? dayFallbackPool : (otherCityPools ? morningPool : []));
+    const poolB = dayAfternoonPool.length > 0 ? dayAfternoonPool : (fitsB(dayFallbackPool).length > 0 ? fitsB(dayFallbackPool) : (otherCityPools ? fitsB(afternoonPool) : []));
+    const anyFallbackPool = otherCityPools ? fallbackPool : dayFallbackPool;
     const recentSet = new Set(recentNamesByCity.get(dayCity) || []);
-    const aFromPicks = choosePlace(notEvening(poolA), notEvening(fallbackPool), i * 3 + 1, recentSet);
+    const aFromPicks = choosePlace(notEvening(poolA), notEvening(anyFallbackPool), i * 3 + 1, recentSet);
 
     // 종일 칸 후보: 이 도시의 추천·선택 후보 중 하루가 다 드는 곳 → 없으면(3일 이상, 전날이 종일이 아니고 후보를 다 쓴 날) 도시 명소 풀에서
     const flightBoundDay = (i === 0 && (Number.isFinite(day1MinStart) || Boolean(prefs.firstDayShort)))
@@ -7231,17 +8582,19 @@ function createItinerary(payload) {
       placed.push(allDay);
     } else {
       const a = aFromPicks
-        || choosePlace(notEvening(cityExpandedPool), notEvening(cityExpandedPool), i * 5 + 11, recentSet)
+        || fromCityPool(notEvening, i * 5 + 11, recentSet)
         || freeTimeSlot(dayCity);
+      noteDayQid(a);
       const banForB = new Set([...(recentNamesByCity.get(dayCity) || []), a.freeTime ? '' : placeKey(a)].filter(Boolean));
-      let b = choosePlace(poolB, fitsB(fallbackPool), i * 3 + 2, banForB)
-        || choosePlace(fitsB(cityExpandedPool), fitsB(cityExpandedPool), i * 5 + 17, banForB)
+      let b = choosePlace(poolB, fitsB(anyFallbackPool), i * 3 + 2, banForB)
+        || fromCityPool(fitsB, i * 5 + 17, banForB)
         || freeTimeSlot(dayCity);
       if (!a.freeTime && !b.freeTime && placeKey(a) === placeKey(b)) {
-        const alt = choosePlace(fitsB(dayFallbackPool), fitsB(fallbackPool), i * 7 + 3, new Set([placeKey(a)]))
-          || choosePlace(fitsB(cityExpandedPool), fitsB(cityExpandedPool), i * 7 + 5, new Set([placeKey(a)]));
+        const alt = choosePlace(fitsB(dayFallbackPool), fitsB(anyFallbackPool), i * 7 + 3, new Set([placeKey(a)]))
+          || fromCityPool(fitsB, i * 7 + 5, new Set([placeKey(a)]));
         b = alt || freeTimeSlot(dayCity);
       }
+      noteDayQid(b);
       const morningRaw = clampRange(baseRanges.morning, minStart, maxEnd, 60);
       // 출국일 아침에 1시간도 안 남으면 관광 대신 체크아웃·공항 이동 안내로 둔다(아래 빈 날 처리).
       const morningRange = morningRaw && (i === days - 1 && Number.isFinite(lastDayMaxEnd) && morningRaw[1] - morningRaw[0] < 60) ? null : morningRaw;
@@ -7263,7 +8616,7 @@ function createItinerary(payload) {
             const banC = new Set([...banForB, placeKey(b)].filter(Boolean));
             const c = choosePlace(notEvening(poolB), [], i * 11 + 7, banC)
               || choosePlace(notEvening(dayFallbackPool), [], i * 11 + 5, banC)
-              || choosePlace(notEvening(cityExpandedPool), [], i * 11 + 3, banC);
+              || fromCityPool(notEvening, i * 11 + 3, banC);
             if (c && placeKey(c) !== placeKey(a)) {
               blocks.push(`오후(${formatRange(afternoonRange)}): ${blockPlace(c, dayCityName)}`);
               placed.push(c);
@@ -7351,6 +8704,8 @@ function createItinerary(payload) {
     realPlaces.forEach((p) => {
       pushExtra(p, dayCity);
       usedPlaceNamesGlobal.add(placeKey(p));
+      const q = placeQidOf(p);
+      if (q) usedQids.add(q);
     });
     recentNamesByCity.set(dayCity, realPlaces.map(placeKey));
     if (allDay) allDayCount += 1;
@@ -7409,7 +8764,58 @@ function itineraryStartDate(payload) {
   return legs[0]?.date || payload?.startDate || new Date().toISOString().slice(0, 10);
 }
 
-// AI 일정 컨텍스트. payload._aiIntent = { mustVisit, excluded, dayPlan, routeCityKeys } (buildTravelPlan이 만든다)
+// AI에 넘길 후보를 고른다. 후처리도 이 후보(ctx.picks)만 쓴다(AI 일정은 서버 후보만: 절대 규칙 6).
+// - 도시가 하나면(dayPlan 없음): 예전처럼 앞에서부터 min(20, max(12, 일수×3))곳.
+// - 도시가 여럿이면: 도시마다 '그 도시 일수×3곳'이 몫이다. 요청한 곳(꼭 갈 곳·화면에서 고른 카드)과 하루짜리 장소
+//   (종일 칸에 혼자 쓰고, 일수에 맞춰 이미 걸러 왔다: 몫에 세지 않는다)를 먼저 넣고, 도시를 돌아가며 하나씩 몫을 채운다.
+//   그래도 전체가 max(12, 일수×3)(최대 30)보다 적으면 남은 후보로 도시를 돌아가며 더 채운다.
+//   날짜가 없는 도시의 후보는 넣지 않는다(그날 도시의 후보만 쓰므로). 고른 후보는 원래 순서(요청한 곳·추천 순)를 지킨다.
+function selectAiPicks(picks, days, dayPlan, priorityKeys, fallbackCityKey) {
+  const cityDays = new Map();
+  (Array.isArray(dayPlan) ? dayPlan : []).forEach((d) => {
+    const c = String(d?.city || '').trim();
+    if (c) cityDays.set(c, (cityDays.get(c) || 0) + 1);
+  });
+  if (cityDays.size < 2) return (picks || []).slice(0, Math.min(20, Math.max(12, days * AI_PICKS_PER_DAY)));
+  const list = (Array.isArray(picks) ? picks : []).filter((p) => p && p.name);
+  const budget = Math.min(30, Math.max(12, days * AI_PICKS_PER_DAY));
+  const priority = priorityKeys instanceof Set ? priorityKeys : new Set(priorityKeys || []);
+  const cityOf = (p) => {
+    const c = String(p.city || '').trim();
+    if (cityDays.has(c)) return c;
+    const label = CITY_DATA[cityKeyByLabel(c)]?.label || '';
+    return cityDays.has(label) ? label : '';
+  };
+  const isAllDay = (p) => Boolean(allDayPlaceKind(p, cityKeyByLabel(p.city) || fallbackCityKey));
+  const chosen = new Set();
+  const used = new Map();
+  const take = (p, c) => {
+    chosen.add(p);
+    if (!isAllDay(p)) used.set(c, (used.get(c) || 0) + 1);
+  };
+  list.forEach((p) => {
+    const c = cityOf(p);
+    if (priority.has(placeNameKey(placeOriginalName(p))) || (c && isAllDay(p))) take(p, c);
+  });
+  const queues = [...cityDays.keys()].map((c) => ({ c, quota: cityDays.get(c) * AI_PICKS_PER_DAY, rest: list.filter((p) => !chosen.has(p) && cityOf(p) === c) }));
+  const roundRobin = (capOf, limit) => {
+    let moved = true;
+    while (moved && chosen.size < limit) {
+      moved = false;
+      for (const x of queues) {
+        if (chosen.size >= limit) break;
+        if (!x.rest.length || (used.get(x.c) || 0) >= capOf(x)) continue;
+        take(x.rest.shift(), x.c);
+        moved = true;
+      }
+    }
+  };
+  roundRobin((x) => x.quota, Infinity); // 도시별 몫(요청한 곳이 많아도 다른 도시 몫은 채운다)
+  roundRobin(() => Infinity, budget); // 남은 자리
+  return list.filter((p) => chosen.has(p));
+}
+
+// AI 일정 컨텍스트. payload._aiIntent = { mustVisit, excluded, dayPlan, routeCityKeys, requested } (buildTravelPlan이 만든다)
 function buildAiContext(payload, picks, city) {
   const days = Math.max(1, Math.min(10, Number(payload.days) || 3));
   const startDate = itineraryStartDate(payload);
@@ -7418,6 +8824,14 @@ function buildAiContext(payload, picks, city) {
   const intent = payload._aiIntent && typeof payload._aiIntent === 'object' ? payload._aiIntent : {};
   const prefs = planPrefs(payload);
   const routeKeys = Array.isArray(intent.routeCityKeys) && intent.routeCityKeys.length ? intent.routeCityKeys : [cityKey];
+  // 먼저 넣을 후보: 요청한 곳(꼭 갈 곳 + 화면에서 고른 카드, 원래 이름 키)
+  const priorityKeys = new Set([
+    ...(Array.isArray(intent.requested) ? intent.requested : []),
+    ...(Array.isArray(intent.mustVisit) ? intent.mustVisit.map((m) => placeNameKey(m?.nameKo || m?.name)) : [])
+  ].filter(Boolean));
+  // 여러 도시 일정은 후보가 많아(일수×3곳) 후보 줄의 기본값(추천 시간 10:00-17:00, 머무는 시간 90분)은 빼서 프롬프트를 줄인다
+  // (Groq 무료는 분당 8천 토큰). 머무는 시간이 없으면 서버도 90분으로 본다(normalizeAiItinerary). 도시가 하나면 예전 그대로.
+  const multiCity = new Set((Array.isArray(intent.dayPlan) ? intent.dayPlan : []).map((d) => String(d?.city || '').trim()).filter(Boolean)).size > 1;
   const ctx = {
     language: ({ ko: 'Korean', en: 'English', ja: 'Japanese' })[lang],
     city: city.label,
@@ -7427,15 +8841,15 @@ function buildAiContext(payload, picks, city) {
     days,
     startDate,
     maxPlacesPerDay: Number(prefs.maxPlacesPerDay) > 0 ? clamp(Number(prefs.maxPlacesPerDay), 1, 5) : 4,
-    // 하루 3곳 기준으로 넉넉히(최소 12, 최대 20곳: expandPicksForAi 목표와 같다) 넘겨 같은 장소를 여러 날 반복하지 않게 한다.
+    // 하루 3곳 기준으로 넉넉히 넘겨 같은 장소를 여러 날 반복하지 않게 한다(도시가 여럿이면 도시마다 그 도시 일수×3곳: selectAiPicks).
     // id = 후보 번호, city = 그 후보의 도시(dayPlan과 같은 표기), allDay = 하루 전체가 드는 곳(종일 칸 전용)
-    picks: (picks || []).slice(0, Math.min(20, Math.max(12, days * 3))).map((p, i) => ({
+    picks: selectAiPicks(picks, days, intent.dayPlan, priorityKeys, cityKey).map((p, i) => ({
       id: i,
       name: p.name,
       area: p.area,
       category: p.category,
-      bestTime: p.bestTime,
-      stayMin: p.stayMin,
+      ...(multiCity && p.bestTime === '10:00-17:00' ? {} : { bestTime: p.bestTime }),
+      ...(multiCity && Number(p.stayMin) === 90 ? {} : { stayMin: p.stayMin }),
       city: p.city || city.label,
       allDay: Boolean(allDayPlaceKind(p, cityKeyByLabel(p.city) || cityKey)),
       ...(prefs.indoorFocus ? { indoor: isLikelyIndoor(p) } : {})
@@ -7470,6 +8884,8 @@ function aiIntentInstructions(ctx, lang) {
   if (ctx.mustVisit) lines.push('Schedule every mustVisit exactly once, even if it is not in picks; keep the name as written. A mustVisit with allDay:true gets its own 종일 day; a mustVisit with bestTime is scheduled at that time (e.g. an evening 오후 block).');
   if (ctx.excluded) lines.push('Never schedule excluded places.');
   if (ctx.dayPlan) lines.push(`Follow dayPlan: each day only uses picks/foods of that day's city; when transferFrom is set, start that day with one plain block (no period, no time) like "${T.transfer('<from>', '<to>', '<how>')}".`);
+  // 여러 도시 일정은 후보 줄에서 기본값(추천 시간·머무는 시간)을 뺀다(buildAiContext): 빠진 값이 무엇인지 한 줄로 알린다
+  if ((ctx.picks || []).some((p) => !('bestTime' in p) || !('stayMin' in p))) lines.push('A pick without bestTime/stayMin is a daytime visit (10:00-17:00, about 90 min).');
   if (ctx.foodWishes) lines.push('If foodWishes is set, choose matching foods for 저녁 when available.');
   return lines;
 }
@@ -7784,9 +9200,25 @@ function newPostBlock(period, start, end, name, area) {
   return { plain: false, period, start, end, name: String(name || ''), area: String(area || ''), title: `${name || ''}${area ? ` (${area})` : ''}` };
 }
 
+// 도시 하나의 맛집(postProcessItinerary의 맛집 모양: 화면 언어 이름 name + 한국어 원래 이름 nameKo, city = 그 도시 label).
+// 맛집 목록에 그 도시 가게가 하나도 없을 때 쓴다(경로 도시 밖의 날짜별 도시: 고른 카드·지역별 일수에만 있는 도시).
+// 내장 도시면 그 도시 맛집 전체(실제 가게 먼저, '찾기' 안내는 뒤에: postFoods와 같은 순서), 아니면 도시 이름을 지역으로 '찾기' 안내 2곳을 만든다.
+// (장소를 지어내지 않는다: 서버 내장 목록이고, '<도시> 이자카야 찾기 (<지역> 주변)'은 지도 검색 안내다)
+function cityFallbackFoodsFor(cityLabel, lang) {
+  const label = String(cityLabel || '').trim();
+  if (!label) return [];
+  const ck = cityKeyForExactLabel(label);
+  const city = ck && CITY_DATA[ck] ? CITY_DATA[ck] : null;
+  const own = city ? [...(city.foods || [])].sort((a, b) => Number(Boolean(a.generic)) - Number(Boolean(b.generic))) : [];
+  const src = own.length ? own : Object.keys(GENERIC_FOOD_KINDS).map((kind) => ({ name: genericFoodName(kind, label, label), area: label, genre: GENERIC_FOOD_KINDS[kind].genre, generic: true }));
+  const shownCity = city ? localizedCityName(ck, lang) : cityLabelForLang(label, lang);
+  return src.map((f) => ({ name: localizeCuratedFoodName(f.name, ck, lang), nameKo: f.name, area: localizeCuratedArea(f.area, lang, shownCity), areaKo: f.area, genre: f.genre, city: label, ...(f.generic ? { generic: true } : {}) }));
+}
+
 /**
  * AI 일정 결정적 후처리. 순서: 식사·관광 분류(b·c) → 종일 병합(d) → 제외 정리(g-1) → 꼭 갈 곳(e) → 제약(f: 시작 시각·출발·겹침·하루 관광 수)
- * → 반복 정리(g-2, 제약으로 빠진 후보도 다시 쓴다) → 도시 이동 → 빈 날 채우기 → 확인 안 된 관광 수(i) → 시간 순 정렬.
+ * → 반복 정리(g-2, 제약으로 빠진 후보도 다시 쓴다) → 빈 낮 채우기(h) → 식사(그날 도시 가게로 맞추기 h-1a, 빈 식사 채우기 h-1b·h-2,
+ * 먹고 싶은 음식 h-3, 같은 식당 되풀이 h-4, 당일치기 현지 식사 h-5) → 도시 이동 → 빈 날 채우기 → 확인 안 된 관광 수(i) → 시간 순 정렬.
  * opts: { picks, foods, mustVisit, excludedKeys, prefs, payload, dayPlan, lang, cityLabel, ruleMode }
  *  - ruleMode: 규칙 일정에는 꼭 갈 곳 넣기(e)만 한다(나머지는 createItinerary가 이미 지킨다).
  * 돌려주는 값: { itinerary, stats: {mealsMoved, sightsRelabeled, allDayMerged, mustInserted, trimmed, shifted, repeatsReplaced, unverified}, missingMustVisit }
@@ -7795,13 +9227,22 @@ function postProcessItinerary(itinerary, opts = {}) {
   const lang = normalizeLang(opts.lang);
   const T = RULE_PLAN_TEXT[lang] || RULE_PLAN_TEXT.ko;
   const prefs = opts.prefs || {};
-  // 앞의 8개는 응답 계약(itineraryInfo.postProcess). 뒤의 4개는 진단용: 채운 저녁 수·채운 관광 수·실내로 바꾼 수·후보 이름으로 되돌린 수
-  const stats = { mealsMoved: 0, sightsRelabeled: 0, allDayMerged: 0, mustInserted: 0, trimmed: 0, shifted: 0, repeatsReplaced: 0, unverified: 0, mealsAdded: 0, sightsAdded: 0, indoorSwapped: 0, namesRestored: 0 };
+  // 앞의 8개는 응답 계약(itineraryInfo.postProcess). 뒤의 5개는 진단용: 채운 저녁 수·채운 관광 수·실내로 바꾼 수·후보 이름으로 되돌린 수·
+  // 그날 도시 가게로 바꾼 식사 수(mealsCityFixed, mealsMoved에도 함께 센다)
+  const stats = { mealsMoved: 0, sightsRelabeled: 0, allDayMerged: 0, mustInserted: 0, trimmed: 0, shifted: 0, repeatsReplaced: 0, unverified: 0, mealsAdded: 0, sightsAdded: 0, indoorSwapped: 0, namesRestored: 0, mealsCityFixed: 0 };
   const picks = (opts.picks || []).filter((p) => p && p.name);
-  const foods = (opts.foods || []).filter((f) => f && f.name);
+  const baseFoods = (opts.foods || []).filter((f) => f && f.name);
   const must = (opts.mustVisit || []).filter((m) => m && m.name);
   const excludedKeys = opts.excludedKeys instanceof Set ? opts.excludedKeys : new Set();
   const dayPlan = Array.isArray(opts.dayPlan) ? opts.dayPlan : [];
+  // 날짜별 도시(dayPlan) 가운데 맛집 목록에 가게가 하나도 없는 도시(경로 도시 밖에서 생긴 도시·내장 데이터에 없는 도시)는
+  // 그 도시 맛집(내장 도시면 그 도시 가게, 아니면 '찾기' 안내)을 보탠다.
+  // 식사 칸을 그날 도시 가게로 맞추거나 채울 때(h-1a·h-1b·h-2) 다른 도시 가게로 넘어가지 않게 한다.
+  const foods = baseFoods.length
+    ? [...baseFoods, ...Array.from(new Set(dayPlan.map((dp) => dp?.city).filter(Boolean)))
+      .filter((c) => !baseFoods.some((f) => !f.city || f.city === c))
+      .flatMap((c) => cityFallbackFoodsFor(c, lang))]
+    : baseFoods;
   const ruleMode = Boolean(opts.ruleMode);
   const days = (Array.isArray(itinerary) ? itinerary : []).map((d) => ({ ...d, items: (Array.isArray(d.blocks) ? d.blocks : []).map(parsePostBlock) }));
   const nDays = days.length;
@@ -7874,11 +9315,18 @@ function postProcessItinerary(itinerary, opts = {}) {
       && !(prefs.removeShopping && isLikelyShopping(p)));
   };
   let unused = null;
-  // pred(p): 더 고를 조건(예: 실내). 맞는 후보가 없으면 null
-  const takeUnused = (di, pred = null) => {
+  // 실내 위주(비 오는 날)의 그날 바깥 관광 수: (g-1b)와 같은 기준(꼭 갈 곳·종일 칸은 세지 않는다). except = 바꾸려는 칸 자신.
+  const outdoorSightsOn = (di, except = null) => (days[di]?.items || []).filter((b) => b !== except && isSightBlock(b) && b.period !== '종일'
+    && !mustOf(b.name) && !isIndoorBlockName(b.name)).length;
+  // pred(p): 더 고를 조건(예: 실내). 맞는 후보가 없으면 null. replacing: 이 후보로 바꿀 칸(바깥 관광 수에서 뺀다)
+  // 실내 위주이고 실내 후보가 넉넉하면(indoorStrict) 그날 바깥 관광이 이미 있을 때 바깥 후보를 쓰지 않는다(하루 바깥 관광은 하나까지, g-1b).
+  // 실내 후보가 없으면 null이라 칸이 비거나 그대로다(규칙 일정이 실내 후보만 쓰기로 한 일정에서 모자란 날을 자유 일정으로 두는 것과 같다).
+  // 예전에는 빈 낮 채우기(h)·바꾸기가 남은 야외 후보로 구마모토 날 하나에 스이젠지 공원·레이간도·가토 신사를 넣었다(2026-10-03 R6).
+  const takeUnused = (di, pred = null, replacing = null) => {
     if (!unused) unused = unusedPool();
     const city = dayPlan.length ? dayCityLabel(di) : '';
-    const ok = (p) => (!city || !p.city || p.city === city) && (!pred || pred(p));
+    const outdoorOk = !indoorStrict || outdoorSightsOn(di, replacing) === 0;
+    const ok = (p) => (!city || !p.city || p.city === city) && (!pred || pred(p)) && (outdoorOk || isIndoorPick(p));
     // 실내 위주면 실내 후보부터
     let idx = prefs.indoorFocus && !pred ? unused.findIndex((p) => ok(p) && isIndoorPick(p)) : -1;
     if (idx < 0) idx = unused.findIndex(ok);
@@ -7887,6 +9335,11 @@ function postProcessItinerary(itinerary, opts = {}) {
   };
   // 실내 판정: 후보(picks)의 원래 이름·종류로 본다
   const isIndoorPick = (p) => Boolean(p) && isLikelyIndoor({ ...p, name: p.name, nameKo: p.nameKo });
+  // 실내 위주에서 바깥 관광을 하루 하나로 묶을지(takeUnused): 실내 후보(하루짜리 제외)가 하루 하나 이상(일수, 최대 3곳) 있을 때만.
+  // 규칙 일정(createItinerary)이 실내 후보만 쓰는 기준(indoorOnly)과 같다. 실내 후보가 그보다 적은 일정(이시가키·아마미 같은 섬)은
+  // 규칙 일정처럼 남은 칸을 야외 후보로 채운다(묶으면 하루 관광이 1곳뿐인 날이 이어진다).
+  const indoorStrict = Boolean(prefs.indoorFocus)
+    && picks.filter((p) => !(p.allDay || p.fullDay || p.dayTrip) && isIndoorPick(p)).length >= Math.min(nDays, 3);
   const isIndoorBlockName = (name) => { const p = pickOf(name) || mustOf(name); return isLikelyIndoor({ name, ...(p ? { nameKo: p.nameKo, category: p.category, indoor: p.indoor } : {}) }); };
   // 하루짜리 중 '먼 당일치기'(나라·하코네·모토부·사용자가 말한 당일치기)인지(테마파크는 아님)
   const isDayTripName = (name, di) => {
@@ -7897,7 +9350,7 @@ function postProcessItinerary(itinerary, opts = {}) {
     if (m?.synthetic?.dayTrip) return true;
     return allDayPlaceKind({ name: ko, stayMin }, dayCityKey(di)) === 'dayTrip';
   };
-  // 식당: 그날 도시의 맛집 목록에서(먹고 싶은 것 → 아직 안 간 실제 가게 → '찾기' 안내 → 아무거나)
+  // 식당: 그날 도시의 맛집 목록에서(먹고 싶은 것 → 아직 안 간 실제 가게 → '찾기' 안내 → 이미 간 곳 중 전날·다음날·그날과 겹치지 않는 곳)
   const wishes = (Array.isArray(opts.foodWishes) ? opts.foodWishes : []).map((w) => String(w || '').trim()).filter(Boolean).slice(0, 3);
   const foodOfName = (name) => { const i = findIdx(name, foodKeys); return i >= 0 ? foods[i] : null; };
   const foodMatchesWish = (f, w) => {
@@ -7907,25 +9360,73 @@ function postProcessItinerary(itinerary, opts = {}) {
   };
   const mealBlocks = () => days.flatMap((d) => d.items.filter((b) => !b.plain && MEAL_PERIODS.has(b.period)));
   const wishMet = (w) => mealBlocks().some((b) => foodMatchesWish(foodOfName(b.name), w) || String(b.title).includes(w));
-  const usedFoodKeys = () => new Set(mealBlocks().map((b) => { const f = foodOfName(b.name); return f ? placeNameKey(f.nameKo || f.name) : placeNameKey(b.name); }));
+  const foodKeyOf = (f) => placeNameKey(f.nameKo || f.name);
+  const mealKeyOf = (b) => { const f = foodOfName(b.name); return f ? foodKeyOf(f) : placeNameKey(b.name); };
+  // 날짜별 도시가 있는 날은 그 도시 가게만(다른 도시로 넘어가지 않는다: 그 도시 가게가 없으면 위에서 보탠 '찾기' 안내).
+  // 날짜별 도시가 없으면(한 도시 일정) 도시 이름이 맞는 가게, 없으면 전체.
+  const foodsOfCity = (c) => foods.filter((f) => !c || !f.city || f.city === c);
   const cityFoodsOf = (di) => {
-    const c = dayCityLabel(di);
-    const list = foods.filter((f) => !c || !f.city || f.city === c);
-    return list.length ? list : foods;
+    const list = foodsOfCity(dayCityLabel(di));
+    return list.length || dayPlan[di]?.city ? list : foods;
+  };
+  // 이름이 c 도시 맛집인지(같은 이름의 향토 음식이 두 도시에 있으면('기리탄포'·'바사시') 어느 도시든 맞다)
+  const foodInCity = (name, c) => foodsOfCity(c).some((x) => findIdx(name, [keysOf(x)]) >= 0);
+  // 도시를 옮기는 날의 아침·점심이 떠나는 도시 가게이고 '출발 전' 식사인지(그대로 둔다: 출발 전에 먹는다).
+  // (1) 그날 이 식사 뒤에 시작하는 이동 블록(시각이 적힌 '신칸센 이동 (도쿄역 → 신오사카)'·'하네다 공항에서 나하로 이동')이 있으면 출발 전이다.
+  // (2) 그런 블록이 없으면, 이 식사보다 먼저 시작하는 블록에 '이미 도착했다'는 근거가 있을 때만 출발 전이 아니다:
+  //     이동 블록, 그날 도시의 후보 관광·꼭 갈 곳(빈 낮 채우기(h)가 넣은 칸도 센다), 그날 도시 가게 식사.
+  //     체크아웃·자유 일정, 떠나는 도시 관광·가게, 목록에 없는 이름(일반 문구)은 근거가 아니다(떠나는 도시 가게로 둔다).
+  // 근거가 있으면 그날 도시 가게로 바꾼다(검토: '오사카성 → 스시다이 (츠키지) → 도톤보리'는 오사카 가게로,
+  // '호텔 체크아웃 → 스시다이 → 신칸센 이동'·'시부야 스카이 → 스시다이 → 오후 오사카'는 스시다이 그대로).
+  // 규칙 일정도 이동 안내를 그날 첫 줄에 두고 이동 날 식사를 도착 도시로 잡는다. 시각 없는 이동 안내 줄은 보지 않는다.
+  const MOVE_TITLE_RE = /이동|transfer|移動|공항|airport|空港|신칸센|shinkansen|新幹線|비행기|항공편|flight|飛行機|페리|ferry|フェリー|->|→/i;
+  const isMoveBlock = (x) => !x.plain && MOVE_TITLE_RE.test(x.title);
+  const placeCityOf = (name) => pickOf(name)?.city || mustOf(name)?.city || '';
+  const departureMeal = (di, b) => {
+    const from = dayPlan[di]?.transferFrom || '';
+    const city = dayCityLabel(di);
+    if (!from || b.period === '저녁' || foodInCity(b.name, city) || !foodInCity(b.name, from)) return false;
+    const others = (days[di]?.items || []).filter((x) => x !== b && !x.plain);
+    if (others.some((x) => x.start > b.start && isMoveBlock(x))) return true;
+    const arrivedBy = (x) => {
+      if (isMoveBlock(x)) return true;
+      if (MEAL_PERIODS.has(x.period)) return foodInCity(x.name, city) && !foodInCity(x.name, from);
+      return !isFreeOrMove(x) && placeCityOf(x.name) === city;
+    };
+    return !others.some((x) => x.start < b.start && arrivedBy(x));
+  };
+  // 가게 f를 di일째에 쓰면 얼마나 겹치는지: 0 아직 안 감 → 1 이미 갔지만 전날·다음날·그날은 아님 → 2 전날·다음날에 감 → 3 그날 이미 감.
+  // skip: 셈에서 뺄 블록(바꾸려는 칸 자신) 또는 그런 블록들의 Set
+  const foodTier = (di, f, skip = null) => {
+    const k = foodKeyOf(f);
+    const skipped = (b) => (skip instanceof Set ? skip.has(b) : b === skip);
+    let tier = 0;
+    days.forEach((d, i) => d.items.forEach((b) => {
+      if (skipped(b) || b.plain || !MEAL_PERIODS.has(b.period) || mealKeyOf(b) !== k) return;
+      tier = Math.max(tier, i === di ? 3 : (Math.abs(i - di) === 1 ? 2 : 1));
+    }));
+    return tier;
+  };
+  // 가장 덜 겹치는 가게({ food, tier }). 같은 단계면 아직 안 간 곳은 실제 가게 먼저, 이미 간 곳은 '찾기' 안내 먼저
+  // (가게 수보다 식사 칸이 많을 때 같은 실제 가게를 이어서 넣지 않게). 그다음은 목록 순서.
+  const pickByTier = (di, list, skip = null) => {
+    let best = null;
+    for (const f of list) {
+      const tier = foodTier(di, f, skip);
+      const score = tier * 2 + ((tier === 0) === Boolean(f.generic) ? 1 : 0);
+      if (!best || score < best.score) best = { food: f, tier, score };
+    }
+    return best;
   };
   const chooseFood = (di, avoid = new Set()) => {
-    const list = cityFoodsOf(di);
+    const list = cityFoodsOf(di).filter((f) => !avoid.has(foodKeyOf(f)));
     if (!list.length) return null;
-    const used = usedFoodKeys();
-    const k = (f) => placeNameKey(f.nameKo || f.name);
     for (const w of wishes) {
       if (wishMet(w)) continue;
-      const hit = list.find((f) => foodMatchesWish(f, w) && !avoid.has(k(f)));
+      const hit = list.find((f) => foodMatchesWish(f, w));
       if (hit) return hit;
     }
-    return list.find((f) => !f.generic && !used.has(k(f)) && !avoid.has(k(f)))
-      || list.find((f) => f.generic && !used.has(k(f)) && !avoid.has(k(f)))
-      || list.find((f) => !avoid.has(k(f))) || null;
+    return pickByTier(di, list)?.food || null;
   };
   const foodBlock = (period, start, end, f) => newPostBlock(period, start, end, f.name, f.generic ? '' : (f.area || ''));
 
@@ -7981,19 +9482,27 @@ function postProcessItinerary(itinerary, opts = {}) {
         labelCache.set(p, labels);
         return labels;
       };
-      const restorable = [...picks, ...must.map((m) => m.pick || { name: m.name, nameKo: m.nameKo, area: m.area, city: m.city })];
-      const resolvePick = (name) => {
+      const mustRestorable = must.map((m) => m.pick || { name: m.name, nameKo: m.nameKo, area: m.area, city: m.city });
+      const restorable = [...picks, ...mustRestorable];
+      const exactPick = (name) => {
         const k = placeNameKey(name);
         if (!k) return null;
-        const exact = restorable.find((p) => labelsOfPick(p).some((l) => placeNameKey(l) === k));
-        if (exact) return exact;
+        return restorable.find((p) => labelsOfPick(p).some((l) => placeNameKey(l) === k)) || null;
+      };
+      // 날짜별 도시가 있으면 글자 겹침으로 되돌릴 때는 그날 도시 후보(도시가 없는 후보·꼭 갈 곳 포함)만 본다. 다른 도시 후보로 되돌리면
+      // 그날 도시가 아닌 장소가 남는다(가고시마 날 '메이지 신궁' → 미야자키 '이키메 신사', 2026-10-03 R8). 그날 도시에서 못 찾으면
+      // 아래 unknown으로 가서 takeUnused(di)가 그날 도시 후보로 바꾼다. 같은 표기(exactPick)는 예전처럼 모든 후보에서 찾는다.
+      const overlapPick = (name, di) => {
+        if (!placeNameKey(name)) return null;
         // 글자(한글·한자·가나) 겹침 비율: 가장 비슷한 후보가 0.6 이상이고 3글자 이상 겹치며 둘째와 분명히 다를 때만.
         // 로마자뿐인 이름은 글자 수가 적어 아무 이름과도 겹치므로 같은 표기만 본다.
         if (nameLetters(name).filter((ch) => !/[a-z0-9]/.test(ch)).length < 3) return null;
+        const city = dayPlan.length ? dayCityLabel(di) : '';
+        const pool = city ? [...picks.filter((p) => !p.city || p.city === city), ...mustRestorable] : restorable;
         let best = null;
         let bestScore = 0;
         let secondScore = 0;
-        for (const p of restorable) {
+        for (const p of pool) {
           const s = Math.max(...labelsOfPick(p).map((l) => nameOverlap(name, l)));
           if (s > bestScore) { secondScore = bestScore; bestScore = s; best = p; } else if (s > secondScore) secondScore = s;
         }
@@ -8009,10 +9518,12 @@ function postProcessItinerary(itinerary, opts = {}) {
         const same = pickOf(b.name);
         if (same && same.name !== b.name) b.name = same.name;
         if (same || mustOf(b.name) || isFoodName(b.name)) return;
-        const hit = resolvePick(b.name);
+        const exact = exactPick(b.name);
+        const hit = exact || overlapPick(b.name, di);
         if (hit) {
           b.name = hit.name;
-          if (!b.area && hit.area) b.area = hit.area;
+          // 겹침으로 되돌린 이름은 지역도 후보 값으로(AI가 쓴 다른 장소의 지역 '하라주쿠'가 남지 않게)
+          if (hit.area && (!b.area || !exact)) b.area = hit.area;
           stats.namesRestored += 1;
           return;
         }
@@ -8024,7 +9535,7 @@ function postProcessItinerary(itinerary, opts = {}) {
       for (const [di, b] of unknown) {
         stats.unverified += 1;
         const d = days[di];
-        const next = b.period === '종일' ? null : takeUnused(di);
+        const next = b.period === '종일' ? null : takeUnused(di, null, b);
         d.items = next ? d.items.map((x) => (x === b ? newPostBlock(b.period, b.start, b.end, next.name, next.area || '') : x)) : d.items.filter((x) => x !== b);
       }
       unused = null;
@@ -8080,16 +9591,18 @@ function postProcessItinerary(itinerary, opts = {}) {
     });
 
     // (g-1) 제외: 빼 달라고 한 곳과 '쇼핑 제외'일 때의 쇼핑 장소(꼭 갈 곳은 예외)는 아직 쓰지 않은 후보로 바꾸거나 지운다.
+    // (칸을 하나씩 그 자리에서 바꾼다: 실내 위주의 그날 바깥 관광 수를 takeUnused가 바뀐 칸까지 보고 센다)
     days.forEach((d, di) => {
-      d.items = d.items.flatMap((b) => {
-        if (b.plain || !SIGHT_PERIODS.has(b.period) || isFreeOrMove(b)) return [b];
+      for (const b of [...d.items]) {
+        if (b.plain || !SIGHT_PERIODS.has(b.period) || isFreeOrMove(b)) continue;
         const excluded = isExcludedPlace(b.name, excludedKeys)
           || (prefs.removeShopping && !mustOf(b.name) && isLikelyShopping({ ...(pickOf(b.name) || {}), name: b.name, area: b.area }));
-        if (!excluded) return [b];
+        if (!excluded) continue;
         stats.trimmed += 1;
-        const next = b.period === '종일' ? null : takeUnused(di);
-        return next ? [newPostBlock(b.period, b.start, b.end, next.name, next.area || '')] : [];
-      });
+        const next = b.period === '종일' ? null : takeUnused(di, null, b);
+        if (next) Object.assign(b, newPostBlock(b.period, b.start, b.end, next.name, next.area || ''));
+        else d.items = d.items.filter((x) => x !== b);
+      }
     });
 
     // (g-1b) 실내 위주(비 오는 날): 하루 바깥 관광은 하나까지. 넘치는 바깥 관광(꼭 갈 곳 제외)은 아직 쓰지 않은 실내 후보로 바꾼다.
@@ -8110,13 +9623,13 @@ function postProcessItinerary(itinerary, opts = {}) {
     if (prefs.lowBudget) {
       const paidName = (name) => { const p = pickOf(name) || mustOf(name); return isPaidSightPlace({ name, ...(p ? { nameKo: p.nameKo, category: p.category, city: p.city } : {}) }, dayCityKey(0)); };
       days.forEach((d, di) => {
-        d.items = d.items.map((b) => {
-          if (!isSightBlock(b) || b.period === '종일' || mustOf(b.name) || !paidName(b.name)) return b;
-          const next = takeUnused(di, (p) => !isPaidSightPlace(p, dayCityKey(di)));
-          if (!next) return b;
+        for (const b of d.items) {
+          if (!isSightBlock(b) || b.period === '종일' || mustOf(b.name) || !paidName(b.name)) continue;
+          const next = takeUnused(di, (p) => !isPaidSightPlace(p, dayCityKey(di)), b);
+          if (!next) continue;
           stats.trimmed += 1;
-          return newPostBlock(b.period, b.start, b.end, next.name, next.area || '');
-        });
+          Object.assign(b, newPostBlock(b.period, b.start, b.end, next.name, next.area || ''));
+        }
       });
     }
   }
@@ -8332,21 +9845,22 @@ function postProcessItinerary(itinerary, opts = {}) {
     unused = null;
     const seen = new Set();
     days.forEach((d, di) => {
-      d.items = d.items.flatMap((b) => {
-        if (b.plain || !SIGHT_PERIODS.has(b.period) || isFreeOrMove(b)) return [b];
+      for (const b of [...d.items]) {
+        if (b.plain || !SIGHT_PERIODS.has(b.period) || isFreeOrMove(b)) continue;
         const key = keyOfBlock(b);
         const repeat = seen.has(key) && Boolean(pickOf(b.name) || mustOf(b.name));
-        if (!repeat) { seen.add(key); return [b]; }
-        const next = b.period === '종일' ? null : takeUnused(di);
+        if (!repeat) { seen.add(key); continue; }
+        const next = b.period === '종일' ? null : takeUnused(di, null, b);
         if (next) {
           seen.add(placeNameKey(next.nameKo || next.name));
           stats.repeatsReplaced += 1;
-          return [newPostBlock(b.period, b.start, b.end, next.name, next.area || '')];
+          Object.assign(b, newPostBlock(b.period, b.start, b.end, next.name, next.area || ''));
+          continue;
         }
         // 바꿀 후보가 없으면(명소가 적은 섬 등) 같은 곳을 또 넣지 않고 지운다: 빈 시간은 아래 단계가 자유 일정으로 둔다
         stats.trimmed += 1;
-        return [];
-      });
+        d.items = d.items.filter((x) => x !== b);
+      }
     });
 
     // (h) 빈 낮 채우기: 관광이 목표(하루 2곳, 여유·적게 걷기·아이 동반이 아니면 3곳, 하루 장소 수 이하)보다 적은 날은
@@ -8388,6 +9902,85 @@ function postProcessItinerary(itinerary, opts = {}) {
       days.forEach((d, di) => fillDay(d, di, upTo));
     }
 
+    // (h-1a) 식사 도시 맞추기: 날짜별 도시(dayPlan)가 있으면 맛집 목록(foods)에 있는 가게 중 그날 도시 가게가 아닌 것
+    // (실측: 도쿄→오키나와 일정의 오키나와 날 '아후리 라멘 (에비스)')은 그날 도시 가게로 바꾼다(먹고 싶은 음식 → 아직 안 간 곳 → '찾기' 안내).
+    // 도시를 옮기는 날의 '출발 전' 아침·점심(뒤에 이동 블록이 있거나 앞에 도착 근거가 없음, departureMeal)은 떠나는 도시(transferFrom) 가게도 그대로 둔다.
+    // 앞에 그날 도시 관광·가게·이동 블록이 있는 이동 날 식사는 도착한 뒤라 그날 도시 가게로 바꾼다. 목록에 없는 일반 문구('점심 식사 (난바)')는 건드리지 않는다.
+    // 바꿀 가게도 그날 도시 목록에서만 고른다(서버 목록만 쓴다. 다른 도시로 넘어가지 않고, 비면 위에서 보탠 그 도시 맛집).
+    // 같은 이름의 향토 음식이 두 도시에 있으면('기리탄포'·'바사시') 그날 도시 것으로 본다(foodInCity).
+    if (dayPlan.length) {
+      const wrong = [];
+      days.forEach((d, di) => {
+        const city = dayPlan[di]?.city;
+        if (!city) return;
+        d.items.forEach((b) => {
+          if (b.plain || !MEAL_PERIODS.has(b.period)) return;
+          const f = foodOfName(b.name);
+          if (!f || foodInCity(b.name, city) || departureMeal(di, b)) return;
+          wrong.push({ di, b, f });
+        });
+      });
+      // 꼭 갈 곳 식당(mustVisit)은 말없이 지우지 않는다(예: 꼭 갈 곳 '아후리 라멘'을 AI가 오키나와 날 저녁에만 넣음).
+      // 다른 칸에 이미 있으면 이 칸만 그날 도시 가게로 바꾸고, 없으면 그 가게 도시 날의 식사 칸으로 옮긴다
+      // (다른 도시 가게 칸 → '찾기' 안내·일반 문구 칸 → 같은 시각이 비면 새 칸 → 실제 가게 칸, 같은 식사 먼저, 가까운 날 먼저).
+      // 꼭 갈 곳·먹고 싶은 음식 칸과 먼 당일치기 날(저녁이 현지 식사로 바뀜, h-5)에는 옮기지 않는다. 옮길 곳이 없으면 그대로 둔다.
+      const wrongSet = new Set(wrong.map((x) => x.b));
+      const settled = new Set(); // 더 바꾸지 않을 칸: 그대로 둔 꼭 갈 곳, 꼭 갈 곳을 옮겨 받은 다른 도시 가게 칸
+      const stays = (y) => !wrongSet.has(y) || settled.has(y);
+      const mustSlotFor = (di, b) => {
+        let best = null;
+        const consider = (rank, tj, y) => { const s = rank * 100 + Math.abs(tj - di); if (!best || s < best.s) best = { s, tj, y }; };
+        days.forEach((d, tj) => {
+          if (tj === di || !dayPlan[tj]?.city || !foodInCity(b.name, dayPlan[tj].city)) return;
+          if (d.items.some((x) => !x.plain && x.period === '종일' && isDayTripName(x.name, tj))) return;
+          d.items.forEach((y) => {
+            if (y.plain || !MEAL_PERIODS.has(y.period) || mustOf(y.name)) return;
+            const yf = foodOfName(y.name);
+            if (yf && wishes.some((w) => foodMatchesWish(yf, w))) return;
+            const content = !stays(y) ? 0 : (!yf || yf.generic ? 1 : 3);
+            consider(content * 2 + (y.period === b.period ? 0 : 1), tj, y);
+          });
+          if (!d.items.some((y) => !y.plain && y.period === b.period)) {
+            const hi = (tj === nDays - 1 && lastDayMaxEnd !== null) ? lastDayMaxEnd : 22 * 60;
+            const free = d.items.every((y) => y.plain || b.end <= y.start || b.start >= y.end);
+            if (free && b.start >= loOf(tj) && b.end <= hi) consider(4, tj, null);
+          }
+        });
+        return best;
+      };
+      for (const { di, b, f } of wrong) {
+        const m = mustOf(b.name);
+        if (!m || settled.has(b)) continue;
+        if (days.some((d) => d.items.some((y) => y !== b && !y.plain && stays(y) && findIdx(y.name, [keysOf(m)]) >= 0))) continue;
+        const slot = mustSlotFor(di, b);
+        if (!slot) { settled.add(b); continue; }
+        if (slot.y) {
+          if (!stays(slot.y)) { settled.add(slot.y); stats.mealsCityFixed += 1; }
+          Object.assign(slot.y, foodBlock(slot.y.period, slot.y.start, slot.y.end, f));
+        } else {
+          days[slot.tj].items.push(foodBlock(b.period, b.start, b.end, f));
+          sortItems(days[slot.tj]);
+        }
+        stats.mealsMoved += 1;
+      }
+      // 바꿀 칸들은 '이미 간 곳' 셈에서 뺀다(곧 바뀌므로): 도쿄 날에 오키나와 날의 '아후리 라멘'이 있다고 '찾기' 안내로 밀리지 않게
+      const todo = wrong.filter((x) => !settled.has(x.b));
+      const pending = new Set(todo.map((x) => x.b));
+      for (const { di, b, f } of todo) {
+        const here = cityFoodsOf(di);
+        // 먹고 싶은 음식이면 그날 도시의 같은 음식으로. 단 그 가게를 이미 갔으면(그 음식은 다른 칸에서 이미 먹는다) 덜 겹치는 가게로
+        // (오키나와 날 점심·저녁이 모두 '아후리 라멘'일 때 '오키나와 라멘집 찾기'를 그날 두 번 넣지 않게)
+        const w = wishes.find((x) => foodMatchesWish(f, x));
+        const wished = w ? pickByTier(di, here.filter((x) => foodMatchesWish(x, w)), pending) : null;
+        const best = wished && wished.tier === 0 ? wished : pickByTier(di, here, pending);
+        pending.delete(b);
+        if (!best) continue;
+        Object.assign(b, foodBlock(b.period, b.start, b.end, best.food));
+        stats.mealsMoved += 1;
+        stats.mealsCityFixed += 1;
+      }
+    }
+
     // (h-1b) 식사 칸에 들어간 '자유 일정'·'자유 식사'(예: "점심(12:30-13:30): 자유 일정 (오사카 주변 식당)", 맛집이 적은 도시에서
     // AI가 반복을 피하려고 쓴 "저녁(18:00-19:30): 자유 식사 (이즈모)")는 장소가 아니므로 그날 도시 맛집으로 바꾼다
     const FREE_MEAL_RE = /^(?:자유\s*(?:식사|점심|저녁)|식사\s*자유|free\s*(?:meal|lunch|dinner)|(?:lunch|dinner|meal)\s+on\s+your\s+own|自由(?:食|に食事|な食事|昼食|夕食)|食事は自由)/i;
@@ -8426,7 +10019,7 @@ function postProcessItinerary(itinerary, opts = {}) {
       sortItems(d);
     });
 
-    // (h-3) 먹고 싶다고 한 음식(foodWishes)이 일정의 식사에 없으면 그 음식점으로 저녁(없으면 점심) 하나를 바꾼다.
+    // (h-3) 먹고 싶다고 한 음식(foodWishes)이 일정의 식사에 없으면 그 음식점으로 저녁(없으면 점심) 하나를 바꾼다. 꼭 갈 곳 식당은 바꾸지 않는다.
     for (const w of wishes) {
       if (wishMet(w)) continue;
       let done = false;
@@ -8434,7 +10027,7 @@ function postProcessItinerary(itinerary, opts = {}) {
         if (days[di].items.some((b) => !b.plain && b.period === '종일' && isDayTripName(b.name, di))) continue; // 당일치기 날은 현지 식사
         const hit = cityFoodsOf(di).find((f) => foodMatchesWish(f, w));
         if (!hit) continue;
-        const replaceable = (b) => !b.plain && isMealBlock(b) && !wishes.some((x) => foodMatchesWish(foodOfName(b.name), x) || String(b.title).includes(x));
+        const replaceable = (b) => !b.plain && isMealBlock(b) && !mustOf(b.name) && !wishes.some((x) => foodMatchesWish(foodOfName(b.name), x) || String(b.title).includes(x));
         const meal = days[di].items.find((b) => b.period === '저녁' && replaceable(b))
           || days[di].items.find((b) => b.period === '점심' && replaceable(b));
         if (!meal) continue;
@@ -8444,7 +10037,11 @@ function postProcessItinerary(itinerary, opts = {}) {
       }
     }
 
-    // (h-4) 같은 식당을 여러 날 되풀이하면(그 도시에 아직 안 간 곳이 있을 때) 다른 곳으로 바꾼다. 먹고 싶다고 한 음식점은 그대로 둔다.
+    // (h-4) 같은 식당 되풀이: 두 번째부터는 덜 겹치는 그날 도시 가게로 바꾼다. 아직 안 간 곳이 있으면 그곳으로,
+    // 가게를 다 썼으면(도쿄 실제 가게 3곳 + '찾기' 안내 2곳보다 식사 칸이 많을 때) 전날·다음날·그날과 겹칠 때만 겹치지 않는 곳으로
+    // ('찾기' 안내 먼저, 실측: 스시다이 1·3일째). 더 나은 곳이 없으면 그대로 둔다. 먹고 싶다고 한 음식점은 그대로 둔다.
+    // 도시를 옮기는 날의 '출발 전' 아침·점심이 떠나는 도시 가게면(h-1a가 남긴 칸, departureMeal) 떠나는 도시 가게 중에서 바꾼다.
+    // 그 밖의 칸(이동 날이라도 앞에 그날 도시 관광·가게·이동 블록이 있는 칸)은 그날 도시 가게 중에서 고른다.
     {
       const seenFood = new Set();
       days.forEach((d, di) => {
@@ -8452,14 +10049,14 @@ function postProcessItinerary(itinerary, opts = {}) {
           if (b.plain || !MEAL_PERIODS.has(b.period)) return;
           const f = foodOfName(b.name);
           if (!f) return;
-          const k = placeNameKey(f.nameKo || f.name);
+          const k = foodKeyOf(f);
           if (!seenFood.has(k)) { seenFood.add(k); return; }
           if (wishes.some((w) => foodMatchesWish(f, w))) return;
-          const used = usedFoodKeys();
-          const next = cityFoodsOf(di).find((x) => !used.has(placeNameKey(x.nameKo || x.name)));
-          if (!next) return;
-          Object.assign(b, foodBlock(b.period, b.start, b.end, next));
-          seenFood.add(placeNameKey(next.nameKo || next.name));
+          const list = departureMeal(di, b) ? foodsOfCity(dayPlan[di].transferFrom) : cityFoodsOf(di);
+          const best = pickByTier(di, list.filter((x) => foodKeyOf(x) !== k), b);
+          if (!best || best.tier >= foodTier(di, f, b)) return;
+          Object.assign(b, foodBlock(b.period, b.start, b.end, best.food));
+          seenFood.add(foodKeyOf(best.food));
           stats.repeatsReplaced += 1;
         });
       });
@@ -8536,14 +10133,15 @@ function postProcessItinerary(itinerary, opts = {}) {
 
     // (i-0) 장소가 아닌 이름의 관광 블록("저녁엔", "紅葉の名所", "무료 명소")은 아직 쓰지 않은 후보로 바꾸거나 지운다
     days.forEach((d, di) => {
-      d.items = d.items.flatMap((b) => {
-        if (!isSightBlock(b) || pickOf(b.name) || mustOf(b.name)) return [b];
+      for (const b of [...d.items]) {
+        if (!isSightBlock(b) || pickOf(b.name) || mustOf(b.name)) continue;
         const bare = String(b.name || '').replace(MUST_GO_PARTICLE_RE, '').trim();
-        if (!(MUST_GO_STOP_WORDS.has(b.name) || MUST_GO_STOP_WORDS.has(bare) || isNonPlaceWord(b.name))) return [b];
+        if (!(MUST_GO_STOP_WORDS.has(b.name) || MUST_GO_STOP_WORDS.has(bare) || isNonPlaceWord(b.name))) continue;
         stats.trimmed += 1;
-        const next = b.period === '종일' ? null : takeUnused(di);
-        return next ? [newPostBlock(b.period, b.start, b.end, next.name, next.area || '')] : [];
-      });
+        const next = b.period === '종일' ? null : takeUnused(di, null, b);
+        if (next) Object.assign(b, newPostBlock(b.period, b.start, b.end, next.name, next.area || ''));
+        else d.items = d.items.filter((x) => x !== b);
+      }
     });
 
     // (i) 확인되지 않은 관광 블록 수: picks·foods·mustVisit·내장 장소 이름표 어디에도 없는 이름
@@ -8777,6 +10375,7 @@ function mergeSelectedDestinations(userPicks, basePicks, cityLabel, lang = 'ko')
       const base = baseByName.get(pick.name) || baseByName.get(ko);
       let out = { ...pick };
       const cityOnlyArea = !out.area || out.area === out.city || Boolean(cityKeyForExactLabel(out.area)) || out.area === localizedCityName(ck, lang);
+      let known = null;
       if (base) {
         mediaFields.forEach((f) => { if (base[f] !== undefined && base[f] !== null) out[f] = base[f]; });
         if (GENERIC_BEST_TIMES.has(out.bestTime) && base.bestTime && Number(out.stayMin) < 360) out.bestTime = base.bestTime;
@@ -8785,8 +10384,8 @@ function mergeSelectedDestinations(userPicks, basePicks, cityLabel, lang = 'ko')
         out = attachPlaceMedia(out, ck, ko);
         // 도시 명소·추가 명소(가이유칸 등)는 실제 지역·추천 시간·좌표를 쓴다
         const hl = (CITY_DATA[ck]?.highlights || []).find((h) => h.name === ko);
-        const extra = extraPlaceByName(ko);
-        const known = hl || extra;
+        const extra = extraPlaceByName(ko, ck);
+        known = hl || extra;
         if (known) {
           if (ko !== out.name && !out.nameKo) out.nameKo = ko;
           if (GENERIC_BEST_TIMES.has(out.bestTime) && known.bestTime && Number(out.stayMin) < 360) out.bestTime = known.bestTime;
@@ -8794,8 +10393,54 @@ function mergeSelectedDestinations(userPicks, basePicks, cityLabel, lang = 'ko')
           if (!hasLatLng(out) && extra && Number.isFinite(extra.lat)) { out.lat = extra.lat; out.lng = extra.lng; }
           if (extra?.indoor) out.indoor = true;
         }
-        if (lang !== 'ko' && /[가-힣]/.test(String(out.area || ''))) out.area = localizeCuratedArea(out.area, lang, ck ? localizedCityName(ck, lang) : '');
       }
+      // en/ja 일정인데 카드 이름이 한글이면(예전 화면·저장 상태가 보낸 카드, 도시별 대표 카드) 화면 언어 이름으로 바꾼다.
+      // 원래 한글 이름은 nameKo로 꼭 남긴다: 일정 후처리가 AI가 쓴 한국어 이름도 이 후보로 알아본다(지어낸 장소 판정이 느슨해지지 않게).
+      if (lang !== 'ko' && /[가-힣]/.test(String(out.name || ''))) {
+        const koName = String(out.nameKo || out.name);
+        const localizedName = (base && base.name && !/[가-힣]/.test(String(base.name))) ? base.name
+          : localizeCuratedPlace({ ...out, name: koName, nameKo: koName }, ck, lang).name;
+        if (localizedName && !/[가-힣]/.test(String(localizedName))) {
+          out.nameKo = koName;
+          out.name = localizedName;
+        }
+      }
+      // en↔ja로 화면 언어를 바꿔 다시 만든 경우: 카드 이름이 이전 언어이면(ja 일정에 'Osaka Castle', en 일정에 '大阪城') 원래 한글 이름으로 다시 현지화한다.
+      // 같은 곳의 서버 카드(원래 한글 이름이 같은 base)가 있으면 그 이름·지역·분류를 쓰고, 없으면(다른 도시의 대표 카드) 내장 표기로 바꾼다.
+      const jaScript = /[぀-ヿ一-鿿]/.test(String(out.name || ''));
+      const otherLangName = !/[가-힣]/.test(String(out.name || '')) && ((lang === 'en' && jaScript) || (lang === 'ja' && !jaScript && /[A-Za-z]/.test(String(out.name || ''))));
+      const switchKo = otherLangName ? [out.nameKo, ko].find((n) => n && /[가-힣]/.test(String(n))) : '';
+      if (switchKo) {
+        const koName = String(switchKo);
+        const same = base && placeOriginalName(base) === koName ? base : null;
+        const areaKo = koAreaFromLocalized(out.area) || [known?.area].find((v) => v && /[가-힣]/.test(String(v)))
+          || (ck && ['en', 'ja'].some((l) => localizedCityName(ck, l) === out.area) ? CITY_DATA[ck]?.label : '');
+        const categoryKo = koCategoryFromLocalized(out.category) || [known?.category].find((v) => v && /[가-힣]/.test(String(v))) || '';
+        const src = same || localizeCuratedPlace({ ...out, name: koName, nameKo: koName, area: areaKo || out.area, category: categoryKo || out.category }, ck, lang);
+        if (src?.name && src.name !== out.name && !/[가-힣]/.test(String(src.name))) {
+          out.nameKo = koName;
+          out.name = String(src.name);
+          if (src.area && !/[가-힣]/.test(String(src.area))) out.area = src.area;
+          if (src.category && !/[가-힣]/.test(String(src.category))) out.category = src.category;
+        }
+      }
+      if (lang !== 'ko' && /[가-힣]/.test(String(out.area || ''))) out.area = localizeCuratedArea(out.area, lang, ck ? localizedCityName(ck, lang) : '');
+      // ko 일정인데 카드 이름이 en/ja이면(en/ja로 채팅한 뒤 화면 언어를 ko로 바꿔 다시 만든 경우) 원래 한글 이름·지역·분류로 되돌린다.
+      // 한글 이름은 서버 카드(base) → 화면이 보낸 nameKo → 화면 이름으로 찾은 한글 이름 순서로 쓴다.
+      if (lang === 'ko' && !/[가-힣]/.test(String(out.name || ''))) {
+        const koName = [base?.name, out.nameKo, ko].find((n) => n && /[가-힣]/.test(String(n)));
+        if (koName) {
+          const src = base || known;
+          out.name = String(koName);
+          delete out.nameKo;
+          if (!/[가-힣]/.test(String(out.area || ''))) {
+            out.area = [src?.area, koAreaFromLocalized(out.area), out.city].find((v) => v && /[가-힣]/.test(String(v))) || out.area;
+          }
+          if (!/[가-힣]/.test(String(out.category || '')) && /[가-힣]/.test(String(src?.category || ''))) out.category = src.category;
+        }
+      }
+      // 이 카드의 두 이름(화면 이름·원래 한글 이름)을 모두 기억해 아래 서버 카드에서 같은 곳을 다시 넣지 않는다
+      [out.name, out.nameKo].filter(Boolean).forEach((n) => seen.add(String(n)));
       merged.push(out);
     }
   });
@@ -9524,6 +11169,10 @@ async function buildTravelPlan(rawPayload) {
   const uniqueAdditionalKeys = [...new Set(additionalCityKeys)];
 
   if (uniqueAdditionalKeys.length > 0) {
+    // 나머지 도시의 추천 카드 수는 첫 도시 몫을 도시 수로 나눈 값(recommendDestinations가 최소 6곳)이다.
+    // 이 수를 늘리지 않는다: 규칙 일정의 날짜 분배(allocateDaysByCities)가 후보 수로 정해져 바뀌고(9일 도쿄·오사카 5·4일 → 4·5일),
+    // 가운데 도시 카드만 늘어나며, Google 모드면 카드 사진(유료 Place Photo)이 는다.
+    // 긴 여러 도시 일정의 AI 후보는 expandPicksForAi가 도시마다(그 도시 일수×3곳) 채운다(무료 모드·대체 데이터).
     const extraRecs = await Promise.all(uniqueAdditionalKeys.map((ck) =>
       recommendDestinations({
         city: ck,
@@ -9543,6 +11192,13 @@ async function buildTravelPlan(rawPayload) {
 
   const lang = normalizeLang(payload.lang);
   const routeCityKeys = [key, ...uniqueAdditionalKeys];
+  // 경로 도시(지역별 일수의 도시 포함)에도 있는 장소를 이웃 도시 이름으로 고른 카드는 경로 도시의 카드로 본다(foldSharedPlacePicks):
+  // 삿포로 일정의 '나카지마 공원 (삿포로 오카다마)'가 오카다마를 경로에 더해 없는 도시 이동을 만들지 않게.
+  if (Array.isArray(payload._picks) && payload._picks.length) {
+    const regionKeys = (Array.isArray(payload._regionDayPlan) ? payload._regionDayPlan : [])
+      .map((x) => { const l = String(x?.cityLabel || '').trim(); return l ? (detectCityKeyByInput(l) || cityKeyByLabel(l)) : ''; });
+    payload._picks = foldSharedPlacePicks(payload._picks, [...routeCityKeys, ...regionKeys]);
+  }
   // 사용자가 빼 달라고 한 곳('디즈니' → 디즈니랜드·디즈니씨)은 추천·일정 후보에서 모두 뺀다.
   const excludedKeys = resolveExcludedNameKeys(payload.excludedPlaces);
   const notExcluded = (p) => !isExcludedPlace(p, excludedKeys);
@@ -9608,8 +11264,12 @@ async function buildTravelPlan(rawPayload) {
   const applyPrefFilters = (list) => {
     let out = limitAllDay(list.filter((p) => notExcluded(p) && (isMustPick(p) || !(prefs.removeShopping && isLikelyShopping(p)))));
     if (prefs.indoorFocus) {
+      // 실내 후보 안에서도 요청하지 않은 도시 주변 실제 명소(generated)는 큐레이션 실내 명소 뒤에 둔다(규칙 일정 createItinerary와 같은 순서).
+      // 실내 위주면 AI 후보 확장이 실내 생성 장소를 뒤로 미루지 않으므로(keepForExpand) 여기서 순서를 잡는다. 안 그러면 추천 카드 순서대로
+      // 국립신미술관 같은 생성 장소가 앞에 서서 도시 몫(일수×3)에서 팀랩 플래닛·도쿄 스카이트리·구로몬 시장이 빠진다(2026-10-03).
       const indoor = out.filter((p) => isMustPick(p) || isLikelyIndoor(p));
-      out = [...indoor, ...out.filter((p) => !indoor.includes(p))];
+      const lateIndoor = (p) => !isMustPick(p) && !isRequested(p) && isGeneratedCityPlace(p, key);
+      out = [...indoor.filter((p) => !lateIndoor(p)), ...indoor.filter(lateIndoor), ...out.filter((p) => !indoor.includes(p))];
     }
     if (prefs.lowBudget) {
       const free = out.filter((p) => isMustPick(p) || isRequested(p) || !isPaidSight(p));
@@ -9617,7 +11277,7 @@ async function buildTravelPlan(rawPayload) {
     }
     return out;
   };
-  // AI 후보: 내장 큐레이션 데이터(무료 모드·대체)일 때는 같은 도시의 대표 명소를 보태 최소 days×2곳을 만든다.
+  // AI 후보: 내장 큐레이션 데이터(무료 모드·대체)일 때는 같은 도시의 대표 명소를 보태 days×3곳(여러 도시면 도시마다 그 도시 일수×3곳)을 만든다.
   let expandAllDayUsed = 0;
   const skipForExpand = (p) => {
     if (!notExcluded(p) || (prefs.removeShopping && isLikelyShopping(p))) return true;
@@ -9630,25 +11290,51 @@ async function buildTravelPlan(rawPayload) {
     expandAllDayUsed += 1;
     return false;
   };
+  const expandBase = picksForItinerary.filter(notExcluded);
+  // 도시가 2곳 이상이면 날짜별 도시(dayPlan)를 정해 AI·후처리가 같은 분배를 쓴다.
+  // 분배는 후보 확장 전 후보(조건 필터 뒤)로 정한다: 확장이 이 분배에 맞춰 도시마다 후보를 채우고, 보탠 수가 분배를 바꾸지 않게.
+  // (확장이 아무것도 보태지 않으면 예전과 같은 분배다. 여기서는 일정에 넣지 않은 하루짜리 목록을 건드리지 않는다.)
+  const planPicks = (() => {
+    const n = unrequestedAllDay.length;
+    const out = applyPrefFilters(withMust(expandBase));
+    unrequestedAllDay.length = n;
+    return out;
+  })();
+  const startDate = itineraryStartDate(payload);
+  const routeLabels = deriveRouteCities(payload, planPicks, cityLabel);
+  // 주 도시('아사히카와 3일 아라시야마 공원')의 장소 도시 몫은 꼭 갈 곳(종일·반나절)과 첫날·마지막 날 시간으로 정한다(규칙·AI 같은 값)
+  const mainCtx = typeof prefs.mainCity === 'string' && prefs.mainCity ? mainCityNeedContext(mustVisit, payload, prefs) : null;
+  const daySeq = routeLabels.length > 1 ? allocateDaysByCities(routeLabels, planPicks, tripDays, payload._regionDayPlan, prefs.mainCity, mainCtx) : [];
+  const multiCityDays = daySeq.length > 1 && new Set(daySeq).size > 1;
+  // 여러 도시: 도시마다 그 도시 일수×3곳을 목표로 채운다(도시가 하나면 전체 일수×3곳).
+  // 목표에는 조건 필터(applyPrefFilters) 뒤에 앞에 남을 장소만 센다: 하루짜리, 쇼핑 제외의 쇼핑 장소, 저예산의 유료 명소,
+  // 실내 위주의 야외 장소(요청한 곳은 센다)는 세지 않는다. 실내 위주면 실내 장소(대부분 생성 장소)를 뒤로 미루지 않는다(keep).
+  // 그 실내 생성 장소는 applyPrefFilters가 큐레이션 실내 명소 뒤에 둔다(도시 몫에서 팀랩 플래닛 같은 큐레이션 실내 명소가 먼저 들어간다).
+  const cityTargets = multiCityDays
+    ? daySeq.reduce((m, label) => { const ck = cityKeyByLabel(label); if (ck) m.set(ck, (m.get(ck) || 0) + AI_PICKS_PER_DAY); return m; }, new Map())
+    : null;
+  const countsForCityTarget = (p) => !allDayKindOf(p)
+    && (isMustPick(p) || !(prefs.removeShopping && isLikelyShopping(p)))
+    && !(prefs.lowBudget && !isMustPick(p) && !isRequested(p) && isPaidSight(p))
+    && (!prefs.indoorFocus || isMustPick(p) || isRequested(p) || isLikelyIndoor(p));
+  const keepForExpand = (p) => isRequested(p) || isMustPick(p) || Boolean(prefs.indoorFocus && isLikelyIndoor(p));
   const aiPicks = applyPrefFilters(withMust(rec.sourceInfo?.kind === 'live'
     ? picksForItinerary
-    : expandPicksForAi(picksForItinerary.filter(notExcluded), routeCityKeys, lang, tripDays, skipForExpand)));
-  // 도시가 2곳 이상이면 날짜별 도시(dayPlan)를 정해 AI·후처리가 같은 분배를 쓴다.
-  const startDate = itineraryStartDate(payload);
-  const routeLabels = deriveRouteCities(payload, aiPicks, cityLabel);
-  const daySeq = routeLabels.length > 1 ? allocateDaysByCities(routeLabels, aiPicks, tripDays, payload._regionDayPlan) : [];
+    : expandPicksForAi(expandBase, routeCityKeys, lang, tripDays, skipForExpand, { cityTargets, countable: countsForCityTarget, keep: keepForExpand, allDaySlots: unrequestedAllDayLimit })));
   // 일수보다 도시가 많아 날짜 배분에서 빠진 경로 도시(일정 팁 맨 앞과 itineraryInfo.droppedCities로 알린다)
   // (후보 장소의 도시가 아니라 요청이 말한 경로 도시·지역별 일수의 도시만 본다: 말하지 않은 도시를 '못 넣었다'고 하지 않게)
   const requestedRoute = deriveRouteCities({ _routeCities: payload._routeCities, _regionDayPlan: payload._regionDayPlan }, [], cityLabel);
   const droppedCities = routeLabels.length > 1 ? requestedRoute.filter((c) => routeLabels.includes(c) && !daySeq.includes(c)) : [];
-  const dayPlan = daySeq.length > 1 && new Set(daySeq).size > 1
+  const dayPlan = multiCityDays
     ? daySeq.map((c, i) => ({ day: i + 1, date: getDateOffset(startDate, i), city: c, ...(i > 0 && daySeq[i - 1] !== c ? { transferFrom: daySeq[i - 1] } : {}) }))
     : [];
   const aiIntent = {
     mustVisit,
     excluded: (payload.excludedPlaces || []).filter(Boolean),
     dayPlan,
-    routeCityKeys
+    routeCityKeys,
+    // 요청한 곳(꼭 갈 곳 + 화면에서 고른 카드)의 원래 이름 키: 여러 도시 일정의 후보 몫을 고를 때 먼저 넣는다(프롬프트에는 넣지 않는다)
+    requested: [...requestedKeys]
   };
   // 후처리에서 맛집 이름을 알아보는 데 쓰는 목록(현지화 이름 + 원래 이름, 경로 도시 전체)
   // (실제 가게를 먼저, '찾기' 안내는 뒤에: 빈 저녁을 채울 때 실제 가게부터 쓴다)
@@ -9695,11 +11381,11 @@ async function buildTravelPlan(rawPayload) {
     const rulePicks = applyPrefFilters(picksForItinerary);
     // 명소 풀에서 요청하지 않은 하루짜리 장소를 꺼내 쓰는 것은 5일 이상(저예산이면 테마파크 제외)일 때 하나까지만
     const ruleAllDayFromPool = Math.max(0, unrequestedAllDayLimit - rulePicks.filter((p) => allDayKindOf(p) && !isRequested(p)).length);
-    it = createItinerary({ ...payload, city: key, _picks: rulePicks, _poolAllDayMax: ruleAllDayFromPool, _requestedNames: [...requestedKeys] });
+    it = createItinerary({ ...payload, city: key, _picks: rulePicks, _poolAllDayMax: ruleAllDayFromPool, _requestedNames: [...requestedKeys], _mustNames: [...mustKeySet], _mainCityCtx: mainCtx });
     // 규칙 일정: 빠진 꼭 갈 곳만 넣는다(나머지 규칙은 createItinerary가 이미 지킨다). 날짜별 도시는 createItinerary와 같은 방법으로 구한다.
     if (mustVisit.length) {
       const ruleRoute = deriveRouteCities(payload, rulePicks, cityLabel);
-      const ruleSeq = ruleRoute.length > 1 ? allocateDaysByCities(ruleRoute, rulePicks, tripDays, payload._regionDayPlan) : [];
+      const ruleSeq = ruleRoute.length > 1 ? allocateDaysByCities(ruleRoute, rulePicks, tripDays, payload._regionDayPlan, prefs.mainCity, mainCtx) : [];
       const ruleDayPlan = ruleSeq.length > 1 && new Set(ruleSeq).size > 1 ? ruleSeq.map((c, i) => ({ day: i + 1, city: c })) : [];
       post = postProcessItinerary(it.itinerary, { picks: rulePicks, foods: postFoods, mustVisit, excludedKeys, prefs, payload, dayPlan: ruleDayPlan, lang, cityLabel, ruleMode: true });
       it.itinerary = post.itinerary;
@@ -9721,16 +11407,28 @@ async function buildTravelPlan(rawPayload) {
   // 같은 장소가 두 이름으로 두 번 나오지 않게 이름(원래 이름)·위키데이터 ID로 겹침을 없앤다.
   // 끝으로, 자기 사진이 없는 카드(사진 데이터가 없는 명소·사용자가 고른 장소)는 도시 대표 사진(scope 'city')으로 채운다.
   const cardCityKey = (p) => cityKeyByLabel(p?.city) || key;
+  const ruleExtra = Array.isArray(it.extraRecommendations) ? it.extraRecommendations : [];
   const mergedRecommendations = (() => {
     const base = Array.isArray(rec.picks) ? [...rec.picks] : [];
+    // 추천 목록(rec.picks: 경로 도시 순)은 자르지 않는다. 규칙 일정이 실제로 넣은 곳(지금 일정 칸에 있는 장소)도 자르지 않는다.
+    // 24장 상한은 일정에 없는 더한 장소(일정에 넣지 않은 하루짜리 등)에만 건다.
+    // (예전에는 더한 장소 전체를 24장까지만 채워, 첫 도시 카드 12장이 자리를 먼저 차지하면 뒤 도시의 일정에 든 곳
+    //  — 10일 오사카·교토의 금각사·니조성, 6일 도쿄·교토·오사카의 니조성·가이유칸 — 카드가 빠지고 지도 좌표도 못 찾았다. 2026-10-03)
+    // 일정에 없는 생성 장소 카드를 빼서 24장을 지키는 방법은 쓰지 않는다: 추천 목록을 자르지 않는다는 앞의 결정과 어긋나고,
+    // 넘는 양이 일정의 관광 칸 수(일수×2~3)로 묶이며, 더한 카드는 내장 데이터(사진·좌표)라 유료 호출이 늘지 않는다.
+    const recCount = base.length;
     // 일정에 넣지 않은 하루짜리 후보(테마파크·먼 당일치기)는 카드로만 보여 준다(+ 일정에 넣기로 직접 넣을 수 있게)
     const unrequested = unrequestedAllDay.filter((p) => notExcluded(p) && !(prefs.lowBudget && allDayKindOf(p) === 'fullDay'));
-    const extra = [...(Array.isArray(it.extraRecommendations) ? it.extraRecommendations : []), ...unrequested];
+    const scheduledNames = new Set((Array.isArray(it.itinerary) ? it.itinerary : [])
+      .flatMap((d) => (Array.isArray(d?.blocks) ? d.blocks : []).map((b) => itineraryPlaceName(b)?.name).filter(Boolean)));
+    const scheduled = ruleExtra.filter((p) => scheduledNames.has(String(p?.name || '').trim()));
+    const extra = [...scheduled, ...ruleExtra.filter((p) => !scheduled.includes(p)), ...unrequested];
     if (extra.length === 0) return base;
     const nameKeyOf = (p) => `${String(p?.city || '').toLowerCase()}|${placeNameKey(placeOriginalName(p))}`;
     const seen = new Set(base.map(nameKeyOf));
     const seenQids = new Set(base.map((p) => p?.wikidata).filter(Boolean));
-    extra.forEach((raw) => {
+    let scheduledAdded = 0;
+    extra.forEach((raw, i) => {
       if (!raw?.name || isSyntheticFiller(raw) || !notExcluded(raw)) return;
       const ck = cityKeyByLabel(raw.city) || key;
       const p = localizeCuratedPlace(attachPlaceMedia(raw, ck, placeOriginalName(raw)), ck, lang);
@@ -9739,8 +11437,9 @@ async function buildTravelPlan(rawPayload) {
       seen.add(k);
       if (p.wikidata) seenQids.add(p.wikidata);
       base.push(p);
+      if (i < scheduled.length) scheduledAdded += 1;
     });
-    return base.slice(0, Math.max(10, Math.min(24, base.length)));
+    return base.slice(0, Math.max(recCount + scheduledAdded, Math.min(24, base.length)));
   })().map((p) => withCityPhotoFallback(p, cardCityKey(p)));
   // Fetch recommended foods near destinations + stay (for all route cities)
   const foodCityKeys = routeCityKeys;
@@ -9801,8 +11500,8 @@ async function buildTravelPlan(rawPayload) {
       : sourceInfo('curated', 'curated');
   }
 
-  // 지도용 좌표: 각 날의 places + 전체 placeCoords
-  const withCoords = attachItineraryCoordinates(it.itinerary, [...mergedRecommendations, ...picksForItinerary, ...aiPicks], foodCityKeys);
+  // 지도용 좌표: 각 날의 places + 전체 placeCoords (규칙 일정이 넣은 곳의 좌표도 본다: 같은 위키데이터 ID의 다른 이름 카드로 합쳐진 곳)
+  const withCoords = attachItineraryCoordinates(it.itinerary, [...mergedRecommendations, ...picksForItinerary, ...aiPicks, ...ruleExtra], foodCityKeys);
   // 도시 주변 명소가 적은 곳(작은 섬, assets/city-places.json few): 다른 도시 장소로 채우지 않았다고 팁 맨 앞에 알린다(규칙·AI 일정 모두)
   const tips = Array.isArray(it.tips) ? [...it.tips] : [];
   // 일수가 모자라 넣지 못한 경로 도시(1박2일에 도쿄·오사카·후쿠오카): 말없이 빼지 않고 맨 앞에 알린다(규칙·AI 일정 모두 같은 배분)

@@ -253,7 +253,7 @@ HTTP Request
 
 #### 출처 정보 객체 `{ kind, provider, reasonCode }`
 - `kind`: `live`(실시간 공급자) · `ai` · `curated`(무료 모드 정상 결과) · `fallback`(공급자 실패로 무료 데이터 사용) · `mock`(예시 데이터) · `rule`(규칙 기반 일정)
-- `reasonCode`: `GOOGLE_KEY_MISSING`, `GOOGLE_BILLING_DISABLED`, `GOOGLE_PERMISSION_DENIED`, `GOOGLE_QUOTA_EXCEEDED`, `GOOGLE_ERROR`, `GOOGLE_CIRCUIT_OPEN`, `NO_RESULTS`, `AI_KEY_MISSING`, `AI_TRUNCATED`, `AI_INVALID_OUTPUT`, `AI_ERROR`, `AI_BUSY`, `AI_DAILY_LIMIT`, `PROVIDER_UNAVAILABLE`, `NO_LIVE_DATA`, `NO_GENRE_MATCH`(`/api/foods` 전용)
+- `reasonCode`: `GOOGLE_KEY_MISSING`, `GOOGLE_BILLING_DISABLED`, `GOOGLE_PERMISSION_DENIED`, `GOOGLE_QUOTA_EXCEEDED`, `GOOGLE_ERROR`, `GOOGLE_CIRCUIT_OPEN`, `NO_RESULTS`, `AI_KEY_MISSING`, `AI_TRUNCATED`, `AI_INVALID_OUTPUT`, `AI_ERROR`, `AI_BUSY`, `AI_DAILY_LIMIT`, `HOTPEPPER_KEY_INVALID`, `HOTPEPPER_ERROR`, `PROVIDER_UNAVAILABLE`, `NO_LIVE_DATA`, `NO_GENRE_MATCH`(`/api/foods` 전용)
 - `itineraryInfo`: `useAi`가 없으면 `{rule, reasonCode:null}`, AI 키가 없으면 `AI_KEY_MISSING`, 그 밖에는 첫 AI 오류의 `reasonCode`(분당 429·503은 `AI_BUSY`, 시도한 모델이 모두 하루 무료 한도(quotaId `…PerDay…`)로 막히면 `AI_DAILY_LIMIT` + `aiErrors[].retryAfterSec` = 태평양 시간 자정까지 남은 초, 400 등은 `AI_ERROR`). 빈 AI 일정은 절대 `ai`로 표시하지 않는다. `postProcess`는 후처리를 거친 일정(AI 일정, 꼭 갈 곳이 있는 규칙 일정)에만, `missingMustVisit`(문자열 배열)은 늘 붙는다.
 - `aiErrors[]`: `{provider, code, reasonCode, action}` + 모델 쿨다운 중이면 `retryAfterSec`(초). `code`는 `quota_or_rate_limit`·`overloaded`·`invalid_key`·`output_truncated`·`invalid_model_response` 등(`classifyAiError()`).
 
@@ -392,7 +392,7 @@ AI 힌트 보너스: 선호 지역 +65,000, 오션뷰 +30,000, 공항 셔틀 +28
 
 **Gemini** `createItineraryWithGemini()`:
 - 프롬프트 = `AI_SYSTEM_MESSAGE`(블록 형식·시간대 토큰 규칙, 6.4) + `aiIntentInstructions()`(요청 원문·꼭 갈 곳·제외·dayPlan·foodWishes가 있을 때만 한 줄씩) + 출력 모양 예시 + 정확한 일수 + `Constraints:` 목록(`aiConstraintLines()`) + `Context:` JSON(`buildAiContext()`).
-- `buildAiContext()`의 `picks`는 `{id, name, area, category, bestTime, stayMin, city, allDay}`, `foods`는 경로 도시마다 8곳(전체 16곳, `city` 포함), 그 밖에 `maxPlacesPerDay`, 있을 때만 `userRequest`·`mustVisit[{name, area, allDay}]`·`excluded`·`dayPlan[{day, date, city, transferFrom}]`(도시 2곳 이상)·`foodWishes`·`constraints`. 원본 `specialPrefs` 객체는 넣지 않는다(조건은 문장으로).
+- `buildAiContext()`의 `picks`는 `{id, name, area, category, bestTime, stayMin, city, allDay}`(여러 도시면 기본값과 같은 `bestTime` 10:00-17:00·`stayMin` 90은 빼고, 빠진 값의 뜻을 지시문 한 줄로 알린다). 고르는 방법은 `selectAiPicks()`: 도시가 하나면 앞에서부터 min(20, max(12, 일수×3))곳, 여러 도시면 도시마다 '그 도시 일수×3곳' 몫(요청한 곳·하루짜리 먼저, 도시를 돌아가며). 몫을 다 채우고도 전체가 max(12, 일수×3)(최대 30)보다 적으면 남은 후보로 더 채운다. 하루짜리와 몫을 넘는 요청한 곳은 몫 밖이라 전체가 30곳을 넘을 수 있다(예: 10일·3도시 + 디즈니 2곳 = 32곳). 후보 확장 `expandPicksForAi()`는 요청하지 않은 생성 장소(`isGeneratedCityPlace`)를 큐레이션 명소 뒤로 미룬다(2026-10-03). `foods`는 경로 도시마다 8곳(전체 16곳, `city` 포함), 그 밖에 `maxPlacesPerDay`, 있을 때만 `userRequest`·`mustVisit[{name, area, allDay}]`·`excluded`·`dayPlan[{day, date, city, transferFrom}]`(도시 2곳 이상)·`foodWishes`·`constraints`. 원본 `specialPrefs` 객체는 넣지 않는다(조건은 문장으로).
 - `responseMimeType: application/json` + `responseSchema`(`GEMINI_ITINERARY_SCHEMA`, `properties.itinerary`가 있음 — 테스트의 가짜 Gemini는 이것으로 일정 요청과 채팅 요청을 가른다).
 - `maxOutputTokens` 4096(6일 이상 8192), 생각 토큰은 끔(모델별 형식은 6.1), temperature 0.28, 호출 하나의 타임아웃 30초(체인 전체는 `GEMINI_TOTAL_BUDGET_MS`).
 - `finishReason: MAX_TOKENS` → `AI_TRUNCATED`, 후보 없음·차단·STOP 외 → `AI_INVALID_OUTPUT`. 429·503(과부하·high demand)은 `classifyAiError()`가 `AI_BUSY`로 분류한다. 429 본문에 하루 한도 quotaId(`PerDay`)가 있으면 그 모델을 태평양 시간 자정까지(최대 6시간) 쉬게 하고, 모든 시도가 하루 한도면 `daily_quota` → `AI_DAILY_LIMIT`.
@@ -407,10 +407,11 @@ AI 힌트 보너스: 선호 지역 +65,000, 오션뷰 +30,000, 공항 셔틀 +28
 3. 제외 — `excludedPlaces`('디즈니' → 디즈니랜드·디즈니씨)와 쇼핑 제외일 때의 쇼핑 장소를 쓰지 않은 후보로 바꾸거나 지움.
 4. 꼭 갈 곳 — 첫 자유 일정 칸 → 관광이 가장 적은 날의 빈 시간(15:00 우선) → 관광 2곳 이상인 날의 마지막 관광 순. allDay인 곳은 중간 날의 '종일'. 못 넣으면 `missingMustVisit`(`mustInserted`).
 5. 제약 — 시작 시각(늦은 시작 10:30·`startTimeMin`·첫날 도착+90분)보다 이른 블록은 미루고, 마지막 날 출발−120분을 넘는 블록은 당기거나 지움, 겹침은 연쇄로 미룸(`shifted`·`trimmed`), 하루 관광 수 제한(꼭 갈 곳 우선), 시간대 토큰을 실제 시각에 다시 맞춤.
-6. 반복 — 여러 날 되풀이된 후보(picks·꼭 갈 곳)는 아직 쓰지 않은 후보로(`repeatsReplaced`). 식사·자유 일정은 대상이 아니다.
-7. 도시 이동 날의 첫 줄을 규칙 일정과 같은 이동 문구로(도시 중심이 250km보다 멀면 '비행기 이동'), 관광이 하나도 없는 날은 남은 후보나 자유 일정으로 채움.
+6. 반복 — 여러 날 되풀이된 후보(picks·꼭 갈 곳)는 아직 쓰지 않은 후보로(`repeatsReplaced`). 식당 반복은 (h-4)가 그날 도시 가게 중 안 쓴 곳 → 전날·다음날과 겹치지 않는 곳('찾기' 안내 먼저) 순으로 바꾼다(2026-10-03). 자유 일정은 대상이 아니다.
+7. 식사 도시 맞추기(h-1a, 2026-10-03) — 식사 칸의 가게가 foods에 있고 그날 도시(`dayPlan`)와 다른 도시면 그날 도시 가게로 바꾼다(`mealsCityFixed`). 그날 도시 목록에 가게가 없으면 다른 도시로 넘어가지 않고 그 도시의 '찾기' 안내. 꼭 갈 곳 식당은 지우지 않고 그 가게 도시 날의 식사 칸으로 옮긴다(`mustSlotFor`). foods에 없는 일반 문구('점심 식사 (난바)')는 건드리지 않는다. 핫페퍼 가게는 쓰지 않는다(약관, 결정 대기). 단, 도시를 옮기는 날의 '출발 전' 아침·점심(`departureMeal`: 뒤에 이동 블록이 있거나 앞에 도착 근거가 없음)이 떠나는 도시(`transferFrom`) 가게면 그대로 두고, 반복이면 떠나는 도시 가게 중에서 바꾼다(예: 체크아웃 → 스시다이 11:00 → 신칸센 12:30).
+8. 도시 이동 날의 첫 줄을 규칙 일정과 같은 이동 문구로(`transferHint()`: 자주 쓰는 쌍은 표 `CITY_TRANSFER_HINTS`, 섬이 끼면 배·비행기, 같은 신칸센 노선(`SHINKANSEN_LINES`)이면 700km까지 신칸센, 그 밖에는 거리 구간이고 250km보다 멀면 '비행기 이동'), 관광이 하나도 없는 날은 남은 후보나 자유 일정으로 채움.
    (c-2, 식사·관광 분류 바로 뒤) 후보 이름을 다르게 적은 관광 블록(일본어 표기·번역·음역·띄어쓰기·줄인 이름: '釜淵ノ滝'·'おび히로動物園'·'아사히교')은 같은 후보의 한·영·일 표기와 같거나 글자(한글·한자·가나)가 60% 이상 겹치면 그 후보 이름으로 되돌리고(`namesRestored`), 후보·꼭 갈 곳·경로 도시 내장 장소 어디에도 없는 이름은 아직 안 쓴 후보로 바꾸거나 지움(`unverified`로 셈). 식사 칸의 '자유 식사'는 그 도시 맛집으로, 바꿀 후보가 없는 반복 관광은 지움.
-- 알려진 한계: `dayPlan`과 다른 도시의 장소(오사카 날의 후시미 이나리)는 아직 고치지 않는다. 후보가 아닌 관광(예: picks에 없는 금각사)이 반복되면 그대로 남는다.
+- 알려진 한계: `dayPlan`과 다른 도시의 관광지(오사카 날의 후시미 이나리)는 아직 고치지 않는다(식사는 7번이 고침). 후보가 아닌 관광(예: picks에 없는 금각사)이 반복되면 그대로 남는다.
 
 **일정 블록 형식**(클라이언트 렌더러가 읽는 모양):
 ```json
@@ -535,7 +536,7 @@ Google `primaryType`을 언어별 카테고리명으로 바꾼다(예: tourist_a
 - 좌표는 `buildCoordIndex()`가 `day.places`, `placeCoords`, 추천·맛집 카드에서 모은다. 좌표가 없으면 지도를 숨기고 짧은 안내(`#itinMapNote`)를 보여준다. 일자별 경로선은 `DAY_COLORS`.
 
 ### 8.6 다국어
-`I18N` 사전(ko/en/ja, 각 567개 키, 세 언어 키 집합 동일, 중복 키 없음) + `t()` + `applyLanguage(lang)`(data-i18n / -placeholder / -title / -aria 처리, 카드·패널·출처 줄·의도 칩 다시 그리기). 부팅 때 `applyStaticI18n()`이 ko에서도 사전 값을 적용하고, `index.html`의 기본 글자는 ko 사전 값과 같게 둔다(테스트가 비교). 일본어 글자에는 `lang="ja"`와 시스템 일본어 글꼴(`:lang(ja)`)을 쓴다. 선택 언어는 localStorage `travelLang`(저장소가 막힌 브라우저에서도 부팅되도록 try/catch).
+`I18N` 사전(ko/en/ja, 세 언어 키 집합 동일, 중복 키 없음 — 테스트가 고정) + `t()` + `applyLanguage(lang)`(data-i18n / -placeholder / -title / -aria 처리, 카드·패널·출처 줄·의도 칩 다시 그리기). 부팅 때 `applyStaticI18n()`이 ko에서도 사전 값을 적용하고, `index.html`의 기본 글자는 ko 사전 값과 같게 둔다(테스트가 비교). 일본어 글자에는 `lang="ja"`와 시스템 일본어 글꼴(`:lang(ja)`)을 쓴다. 선택 언어는 localStorage `travelLang`(저장소가 막힌 브라우저에서도 부팅되도록 try/catch).
 
 브랜드: `BRAND_NAME`('Tabimaru') + 사전 키 `brand-subtitle`. `applyBrand()`가 `[data-brand]` 글자, `document.title`("Tabimaru — <부제>"), meta description(`meta-description`)을 언어에 맞춰 바꾸고, 내보내기·인쇄·공유 제목은 `shareTitle()`("Tabimaru 여행 일정" 등)을 쓴다. `index.html`의 기본 `<title>`과 `manifest.webmanifest`의 `name`은 "Tabimaru — AI 일본 여행 플래너", `short_name`은 "Tabimaru"다.
 
@@ -639,6 +640,7 @@ POST /api/flights
 | Rakuten Travel | 숙소(VacantHotelSearch → SimpleHotelSearch) | `RAKUTEN_APP_ID`·`RAKUTEN_ACCESS_KEY`, Referer/Origin 헤더는 운영 도메인 고정. 약관상 크레딧 배지 필수: `index.html` 숙소 결과(`#stayCards`) 아래 `.rakuten-credit`에 제공된 텍스트 HTML("Supported by Rakuten Developers")을 고치지 않고 그대로 둔다(webservice.rakuten.co.jp/guide/credit) |
 | Gemini API | 일정 생성, 채팅 해석(`AI_CHAT_PROVIDER_ORDER` 순서) | 헤더 키, JSON 응답 스키마. 경로 교통비에는 쓰지 않는다(2026-10-02) |
 | OpenAI 호환 API(OpenAI·Groq) | 일정은 Gemini 실패 시 대체, 채팅 해석은 `AI_CHAT_PROVIDER_ORDER` 순서 | Responses API + strict JSON Schema. 주소 `OPENAI_BASE_URL`, 키는 주소에 맞는 것만(Groq는 `GROQ_API_KEY`), 모델 체인 `OPENAI_MODEL` + `OPENAI_FALLBACK_MODELS`. Groq 무료: 모델마다 분당 30회·하루 1,000회·분당 8천 토큰·하루 20만 토큰, 입력은 기본 보관 안 함(악용 조사 최대 30일) |
+| ホットペッパー グルメサーチAPI(Recruit) | 무료 모드 맛집(탐색 30곳, 일정 추천 맛집 20곳) | `HOTPEPPER_API_KEY`(없으면 내장 맛집), 도시 중심 `range=5`(3km), 6시간 캐시(약관: 24시간 안 갱신), 가게 이름·예산 원문 그대로, 목록 아래 "Powered by ホットペッパー Webサービス" 크레딧, AI 일정 문장에 섞지 않음 |
 | Google Places API (New) / Geocoding / Directions | google 모드에서만 | 서버 키, `googleApiFetch()` 비용 가드 |
 | Google Maps JavaScript API | `MAP_PROVIDER=google`일 때만 | 브라우저 키(리퍼러 제한) |
 | Supabase | "내 일정" 저장(설정 시), `/api/travel-plan/*` | 서버 전용 키(`SUPABASE_SERVICE_ROLE_KEY`: 새 형식 `sb_secret_…`은 `apikey` 헤더만, 예전 JWT `eyJ…`일 때만 `Authorization: Bearer`도), 8초 타임아웃, 상태 확인(`runSupabaseCheck()` = `GET travel_plans?select=id&limit=1`, 5초) 캐시(정상 5분·이상 1분, 시작 직후·10분마다 갱신), keepalive 캐시(성공 10분·실패 15초). 오류 원문은 서버 로그에만(키는 가림, 상태 코드·PostgREST 코드별로 10분에 한 줄) |
@@ -685,7 +687,7 @@ POST /api/flights
 - **로그인 유지·저장소 장애 안내(샌드박스, `sandboxStorageTests()`)**: `/api/auth/me`가 한 번 502(서버가 깨어나는 중)여도 다시 물어 로그인 화면(내 일정 버튼·닉네임)이 나오는지, 내 일정 목록·불러오기·삭제·저장(목록이 503이면 저장 창을 닫음, 저장 POST가 503이면 안내)이 503일 때 `store-unavailable`("저장소에 연결할 수 없어요. 잠시 후 다시 시도해 주세요.", en/ja 포함)을 보여 주는지 본다. 저장 POST가 409 `PLAN_LIMIT`·413 `PLAN_TOO_LARGE`·400 `INVALID_PLAN`이면 `plan-limit`(`{n}` = 50)·`plan-too-large`·`plan-invalid`, 그 밖에는 `save-fail`, `/?authError=not_allowed`면 `auth-err-not-allowed`가 뜨는지도 본다.
 - **가짜 Supabase**(`tests/support/mock-vendor.js`, `<mock>/supabase/rest/v1`): `travel_plans` 한 표의 PostgREST 흉내. GET(`select` 열 목록·`eq` 필터·`order`·`limit`), POST(`on_conflict=plan_key` + `resolution=merge-duplicates`, `return=representation|minimal`, 열 검사: 모르는 열 400, `city_key`·`payload` not null, `start_date` 날짜, `days` 정수, 실제 Postgres처럼 NUL이 든 글자 400 `22P05`·짝 없는 서로게이트 400 `22P02`), DELETE(필터 필수), HEAD/GET 루트. 그 밖의 연산자·열·경로는 `unknownMockRoute`로 기록되어 실패한다. `scenario.supabase`: `'down'` 모든 요청에 503 + 원문(`SUPABASE_ERROR_TEXT`), `'auth'` 모든 요청에 401 Invalid API key, `'reject_post'` POST만 400 `22P05`. 가짜 OAuth 프로필의 `emailVerified`(기본 true)가 Google `verified_email`·Kakao `is_email_verified`로 나간다. `mock.supabaseRows()`·`mock.seedSupabase()`로 표를 보고 미리 채운다.
 - 각 단계 끝에서 모든 응답 본문·헤더에 서버 키·토큰이 없는지, 서버 로그에 크래시가 없는지 확인한다.
-- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`hotpepper`·`oauth`·`session`·`live`·`free`). `npm test`·CI는 늘 전체(2026-10-03 기준 815개).
+- 개발 중 부분 실행: `TEST_ONLY=sandbox,intent,itinerary node test_all.js`(이름: `sandbox`·`intent`·`itinerary`·`chain`·`openai`·`hotpepper`·`oauth`·`session`·`live`·`free`·`city`). `npm test`·CI는 늘 전체(2026-10-03 기준 1,103개).
 - CI: `.github/workflows/ci.yml`(push·PR, Node 20). `.github/workflows/keepalive.yml`(3일마다 운영 `/api/keepalive`)은 정적 검사로 내용(cron `17 3 */3 * *`, `workflow_dispatch`, `permissions: {}`, 5번 재시도, `"supabase":"ok"`일 때만 성공, 비밀값 없음)만 확인한다.
 
 ---
@@ -759,9 +761,10 @@ POST /api/flights
 | 2026-10-02 | **AI 일정 전국 점검 반영**: 62개 도시 말로 찾기(일본어·영어·표기 변형·더 긴 이름 우선·짧은 장소 이름), 장소만 말하면 그 장소의 도시, AI 해석의 '데이터 없음' 바로잡기, 먼 도시 이동은 비행기, 도시 주변 실제 명소 한국어 이름(`scripts/ja-names.js`)·이름 겹침 구분·검토로 뺀 곳·중복 합치기, AI가 바꿔 적은 후보 이름 되돌리기(`namesRestored`)·지어낸 곳 빼기·'자유 식사' 바꾸기, 프롬프트(이름 그대로 복사·식사는 foods에서), AI 후보 상한 하루 3곳, 테스트 729개 |
 | 2026-10-02 | **외부 서비스 규정 정비**(docs/api-review-2026-10-02.md 0번): Rakuten 크레딧 배지(제공 HTML 그대로, 숙소 결과 아래), OSM 타일 주소에서 `{s}` 서브도메인 제거, Frankfurter를 v2(`api.frankfurter.dev/v2/rates`, `providers=ecb`)로 교체 |
 | 2026-10-02 | **Groq 무료 연결**(같은 문서 1번): OpenAI 호환 경로에 `OPENAI_BASE_URL`·`GROQ_API_KEY`(키는 주소에 맞는 것만 보냄)·`OPENAI_FALLBACK_MODELS`(모델 체인 `callOpenAiResponses()`, 40초 예산, 잘림·형식·날짜 수 부족이면 다음 모델)·`OPENAI_MAX_OUTPUT_TOKENS`·`OPENAI_REASONING_EFFORT`·`AI_CHAT_PROVIDER_ORDER`, 지난 대화를 문자열 content로, health·diagnostics 필드, 가짜 서버의 Groq·OpenAI 흉내. 테스트 782개 |
+| 2026-10-02 | **교통비 AI 제거**(같은 문서 2번): `calculateRouteCost()`가 Gemini를 부르지 않고 거리로 추정(모든 구간 `estimated: true`, 화면 "예상 합계"·안내), 구간마다 Google 지도 대중교통 링크(`mapsUrl`, `safeMapsDirUrl()` 허용 목록), 일본어 도시 이름은 `CITY_NAME_I18N`에서도 찾음. 테스트 787개 |
 | 2026-10-02 | **ホットペッパー 맛집**: `HOTPEPPER_API_KEY`가 있으면 무료 모드의 맛집 검색(30곳)·일정 추천 맛집(경로 도시 최대 3곳 섞어 20곳)이 실제 가게. 장르 섞기, 6시간 캐시, 원문 표시, 크레딧("Powered by ホットペッパー Webサービス"), 사진·링크 허용 목록(`IMAGE_URL_RULES.food`, `safeHotpepperUrl()`), health `hotpepperConfigured`. **여행지 확장 준비**: `scripts/build-city-places.js` 목표 12 → 30(카드에 보이는 highlights 기준으로 모자란 만큼, `assets/city-places.json` 재생성·이름 검토는 다음 작업), 탐색 탭 30곳 + [더보기] 10곳씩. **제외 칩 버그**: 도시 주변 실제 명소의 별칭 중 다른 도시 큐레이션 이름과 같은 것은 버림(교토 '기요미즈데라는 빼고'에 '하나마키 기요미즈데라'가 끼던 문제), 의도 표 `excludedOnly` |
 | 2026-10-03 | **여러 도시 일정**: '1박2일로 도쿄 오사카 후쿠오카'·'2박3일 도쿄 갔다가 오키나와'처럼 전체 기간이 첫 도시 옆에 있으면 그 도시의 일수로 읽혀 나머지 도시가 말없이 빠지던 문제(`isWholeTripRegionPlan()`: 도시가 여럿인데 한 도시가 전체 기간을 다 가져가는 분배는 규칙·AI 해석과 `allocateDaysByCities()`에서 버림). 일수보다 도시가 많으면 앞의 도시부터 하루씩 넣고, 채팅 답장(`tooManyCities`)·일정 팁 맨 앞(`droppedCities`, 필요한 일수 n·권장 2n-1)·`itineraryInfo.droppedCities`로 알린다(요청한 경로 도시만 셈). 규칙 해석의 경로 도시는 메시지에 나온 순서. `scripts/prompt-matrix.mjs --prompts <file>`. 테스트 815개 |
-| 2026-10-02 | **교통비 AI 제거**(같은 문서 2번): `calculateRouteCost()`가 Gemini를 부르지 않고 거리로 추정(모든 구간 `estimated: true`, 화면 "예상 합계"·안내), 구간마다 Google 지도 대중교통 링크(`mapsUrl`, `safeMapsDirUrl()` 허용 목록), 일본어 도시 이름은 `CITY_NAME_I18N`에서도 찾음. 테스트 787개 |
+| 2026-10-03 | **원래 PC 세션(커밋 전 묶음)**: 알려진 문제 1~5·7 수정 — 영어·일본어·한국어 도시별 일수 해석(`extractRegionDayPlanFromText`: 'N days in X'·'X N days'·泊·日間·'N일간/동안'·'그중/のうち/including'·말로 쓴 일수·'after', 같은 도시 두 번, 쉼표 없는 'N박은'; 하루 예산·호텔 N박·JR패스는 일수 아님; 도시 안 동네 `CITY_AREA_WORDS`; 영어·일본어 데이터 없는 지역은 아는 지역 이름만), 'X대신Y' 붙여쓰기와 '대신궁', 영어 일정의 대표 카드 현지화와 ko로 되돌리기(`nameKo`), 긴 여러 도시 AI 후보 도시별 몫(`selectAiPicks`·`expandPicksForAi` `cityTargets`), 식사 도시 맞추기(h-1a·`mustSlotFor`·`departureMeal`)·식당 반복 줄이기, 이동 시간 표·신칸센 노선·섬·거리 구간(`CITY_TRANSFER_HINTS`·`SHINKANSEN_LINES`·`ISLAND_CITY_KEYS`), 실내 위주(실내 생성 장소 유지·큐레이션 실내 먼저·하루 야외 1곳·여러 도시 규칙 일정은 그날 도시 밖으로 채우지 않음), 추천 카드는 일정에 든 곳을 자르지 않음, 같은 QID가 두 도시에 있으면 도시 중심이 가까운 쪽(중심이 5km 안이면 큐레이션 명소가 많은 도시, 예: 삿포로 > 오카다마), 규칙 일정에서 같은 장소(같은 QID)는 한 번만, 짧은 일정(4일 이하)에는 요청하지 않은 하루짜리 카드를 붙이지 않음. 날짜 나눔: 전체 일수를 한 도시에 붙여 말하고 다른 도시는 장소로만 들어오면 그 도시를 주 도시(`specialPrefs.mainCity`)로 두고 장소 도시에는 꼭 갈 곳을 넣을 만큼만(`placeCityMinDays`). **대화 초기화 버튼**(`#btnChatReset`, 서버 호출 0). **여행지 30곳 데이터**(`assets/city-places.json` 1,378곳·사진 1,169곳·일본어로만 남은 이름 0, 한국어 이름 없는 후보·호텔·료칸 제외, 생성 장소는 큐레이션 뒤 `isGeneratedCityPlace`). Travelpayouts marker 고정 테스트, 문서 정리. HEAD 대비 채팅 5,863문장·일정 4,358건 비교로 회귀 확인. 테스트 1,103개 |
 
 ---
 

@@ -33,7 +33,7 @@
    - 첫 화면만 열었을 때는 일정·항공·숙소 조회가 일어나지 않는 것이 정상입니다.
    - 정적 파일(html/js/css)은 `Cache-Control: no-cache` + `ETag`라서 배포 직후에도 새 화면을 받습니다(따로 캐시를 비울 필요 없음).
 5. `GET /api/health`의 `sessionSecretConfigured`가 `true`, `sessionSecretWeak`가 `false`인지 봅니다. `sessionSecretConfigured: false`이거나 로그에 `[session] SESSION_SECRET이 없어…` 경고가 있으면 `SESSION_SECRET`을 넣습니다(없으면 재시작할 때마다 로그인이 풀림). `sessionSecretWeak: true`이거나 `[session] SESSION_SECRET이 너무 짧거나 단순해서 쓰지 않습니다` 경고가 있으면 넣어 둔 값이 32자 미만이거나 너무 단순해서 서버가 버린 것이니 아래 3)의 명령으로 만든 값으로 바꿉니다.
-   혼자 쓰는 앱이면 `loginRestricted: true`인지도 봅니다(`ALLOWED_LOGINS`, 3) 참고).
+   `ALLOWED_LOGINS`를 넣었다면 `loginRestricted: true`인지도 봅니다(3) 참고. 운영은 지금 비워 둠).
    Supabase를 쓰면 같은 응답의 `supabaseConfigured: true`, `supabaseReachable: true`, `supabaseCheck: "ok"`(서버 시작 직후 한 번 실제 조회로 확인해 채움)와 `GET /api/keepalive`의 `"supabase":"ok"`도 확인합니다(5번 참고).
 6. 저장소 이름을 바꾼 뒤 처음 배포할 때: Render 서비스 Settings → Build & Deploy의 Repository가 `wsxc94/tabimaru-japan-travel-planner`로 보이는지, push 뒤 자동 배포가 도는지 확인합니다. 연결이 끊겼으면 Repository를 다시 고릅니다. GitHub Actions 탭에서 CI 첫 실행이 초록색인지도 봅니다.
 
@@ -63,12 +63,12 @@
 
 1. **`SESSION_SECRET`을 새 무작위 값으로 바꿉니다.** 이제는 이 값 하나로 누구의 로그인 쿠키든 만들 수 있으므로(서버에 세션 기록이 없음) 추측할 수 없어야 합니다. 서버는 32자 미만이거나 서로 다른 글자가 10개 미만인 값은 쓰지 않습니다. 어차피 이번 배포로 예전 쿠키가 한 번 로그아웃되므로 지금 바꾸면 추가로 잃는 것이 없습니다.
    만들기: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"` → 나온 43자를 Render의 `SESSION_SECRET`에 붙여 넣습니다.
-2. **`ALLOWED_LOGINS`에 자기 계정만 넣습니다**(혼자 쓰는 앱). 비워 두면 아무 Google·Kakao·Naver 계정이나 로그인해 Supabase에 일정을 저장할 수 있습니다(사용자당 50개·하나 400KB 상한은 있지만, 계정을 여러 개 만들면 무료 500MB를 채울 수 있음).
+2. (선택, 운영은 사용자 결정으로 지금 비워 둠) **`ALLOWED_LOGINS`에 자기 계정만 넣을 수 있습니다**(혼자 쓰는 앱). 비워 두면 아무 Google·Kakao·Naver 계정이나 로그인해 Supabase에 일정을 저장할 수 있습니다(사용자당 50개·하나 400KB 상한은 있지만, 계정을 여러 개 만들면 무료 500MB를 채울 수 있음).
    - 가장 쉬운 방법: Google 계정 이메일을 넣습니다(예: `ALLOWED_LOGINS=me@gmail.com`). Google이 확인한 이메일일 때만 통과합니다. Kakao는 카카오가 확인한 이메일만, Naver 이메일은 보지 않습니다.
    - 또는 한 번 로그인한 뒤 `https://japanjapantravel.onrender.com/api/auth/me`에 보이는 `userId`(`u_`로 시작)를 넣습니다. 여러 개는 쉼표로 구분합니다(`u_…,me@gmail.com`).
    - 목록 밖 계정은 로그인 화면으로 돌아가며 "이 앱은 허용된 계정만 로그인할 수 있어요." 안내가 뜹니다. 목록을 바꾸면 모든 기기가 한 번 로그아웃됩니다.
 
-**Gemini 무료 한도는 키 단위로 함께 씁니다.** 로컬 `.env`와 Render에 같은 `GEMINI_API_KEY`를 넣었다면, 로컬에서 시험하거나 `node scripts/prompt-matrix.mjs`(16건 = Gemini 약 32회)를 돌린 만큼 운영의 하루·분당 한도도 줄어듭니다. 한도가 바닥나면 운영 화면은 규칙 기반 일정 + `AI_BUSY` 안내로 바뀝니다(서버는 429·503을 받은 모델을 60초부터 최대 5분까지 쉬게 하고 다음 모델을 씁니다). 시험용 키를 따로 쓰거나, 시험은 몇 건만(`--only`) 돌리세요.
+**Gemini 무료 한도는 프로젝트 단위로 함께 씁니다**(같은 Google 프로젝트라면 키를 여러 개 만들어도 한도는 같음). 로컬 `.env`와 Render가 같은 프로젝트의 `GEMINI_API_KEY`를 쓴다면, 로컬에서 시험하거나 `node scripts/prompt-matrix.mjs`(16건 = Gemini 약 32회)를 돌린 만큼 운영의 하루·분당 한도도 줄어듭니다. 한도가 바닥나면 운영 화면은 규칙 기반 일정 + `AI_BUSY` 안내로 바뀝니다(서버는 429·503을 받은 모델을 60초부터 최대 5분까지 쉬게 하고 다음 모델을 씁니다). 시험용 키를 따로 쓰거나, 시험은 몇 건만(`--only`) 돌리세요.
 
 **Gemini 모델 체인(2026-10-01).** 무료 한도는 모델마다 하루 20회라, 서버는 1순위 모델(`GEMINI_API_MODEL`, 운영은 `gemini-2.5-flash-lite` 권장) 다음에 대체 모델을 차례로 씁니다. 기본 순서(실측): `gemini-2.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-3-flash-preview` → `gemini-3.5-flash-lite` → `gemini-2.5-flash` → `gemini-3.6-flash` → `gemini-flash-latest`(1순위와 같은 이름은 빠짐). **새 필수 변수는 없습니다** — Render 설정을 바꾸지 않아도 이 순서가 적용됩니다.
 - 순서를 바꾸려면 `GEMINI_FALLBACK_MODELS`에 쉼표로 적습니다(예: `gemini-3.1-flash-lite,gemini-2.5-flash`). `none`이면 1순위 모델만 씁니다. 형식이 틀린 이름(대문자·공백 등)은 빼고 로그에 개수만 남깁니다.
@@ -80,11 +80,13 @@
 | 구분 | 변수 | 비고 |
 |---|---|---|
 | 권장 | `SESSION_SECRET` | 32자 이상 무작위 값(만들기: `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`). 로그인 쿠키 서명용. 32자 미만이거나 서로 다른 글자가 10개 미만이면 서버가 쓰지 않음(health `sessionSecretWeak: true`). 없거나 약하면 재시작 때마다 로그인이 풀림. 바꾸면 모든 기기가 로그아웃되지만 저장한 일정은 그대로 |
-| 권장 | `ALLOWED_LOGINS` | 로그인할 수 있는 계정(쉼표 구분): Google·Kakao가 확인한 이메일, `u_…`(`/api/auth/me`의 `userId`), `google:<id>` 등. 비우면 누구나 로그인. 위 "이번 배포 전에 할 일" 2번 |
+| 선택 | `ALLOWED_LOGINS` | 로그인할 수 있는 계정(쉼표 구분): Google·Kakao가 확인한 이메일, `u_…`(`/api/auth/me`의 `userId`), `google:<id>` 등. 비우면 누구나 로그인. 운영은 사용자 결정으로 꼭 필요할 때만 설정(지금은 비워 둠). 위 "이번 배포 전에 할 일" 2번 |
 | 권장 | `PUBLIC_BASE_URL` | `https://japanjapantravel.onrender.com` (CSRF 허용 출처) |
 | 로그인 | `OAUTH_BASE_URL` | 운영 주소와 같은 값. OAuth 콜백 기준 |
 | 로그인 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET`, `KAKAO_REST_API_KEY`, `KAKAO_CLIENT_SECRET` | 없는 공급자의 로그인 버튼은 숨겨지고, 그 주소(`/api/auth/<공급자>`)로 직접 들어오면 `/?authError=<공급자>`로 돌려보냄 |
 | AI | `GEMINI_API_KEY`, `GEMINI_API_MODEL`, `GEMINI_FALLBACK_MODELS`, `GEMINI_TOTAL_BUDGET_MS`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `AI_REQUEST_TIMEOUT_MS`, `CHAT_PARSE_STRICT_AI` | 없으면 규칙 기반 일정·채팅 해석(`AI_KEY_MISSING`). 대체 모델 순서·시간 예산은 아래 "Gemini 모델 체인" 문단. 무료 한도 공유 주의는 위 문단 |
+| AI(Groq) | `GROQ_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_FALLBACK_MODELS`, `OPENAI_MAX_OUTPUT_TOKENS`, `OPENAI_REASONING_EFFORT`, `AI_CHAT_PROVIDER_ORDER` | 운영 값은 README "Groq 무료 연결". Groq 키는 `OPENAI_API_KEY`가 아니라 `GROQ_API_KEY`에 넣는다(Groq 주소에만 보냄). 확인: health `ai.openaiKeySource`·`ai.openaiModelChain`·`ai.chatProviderOrder` |
+| 맛집 | `HOTPEPPER_API_KEY` | ホットペッパー グルメサーチAPI(무료, 메일로 신청). 없으면 내장 맛집 목록. 확인: health `hotpepperConfigured` |
 | 항공 | `TRAVELPAYOUTS_TOKEN` | 없으면 예시 데이터 |
 | 숙소 | `RAKUTEN_APP_ID`, `RAKUTEN_ACCESS_KEY` | 없으면 예시 데이터 |
 | 환율 | `FX_USD_KRW`, `FX_JPY_KRW` | 실시간 조회가 모두 실패할 때만 쓰는 고정값 |

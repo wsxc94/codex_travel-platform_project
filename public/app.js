@@ -177,6 +177,9 @@ let aiSpecialPrefs = {};
 var chatHistory = [], lastParsedConditions = null, aiRequestText = '', aiMustVisit = [], aiWantedNames = [], aiExcludedPlaces = [], aiFoodWishes = [];
 // 요청칸(#aiRequest)의 글 중 이미 처리한(채팅으로 적용했거나 조건 변경으로 무효가 된) 문장. 같은 글로 주 버튼을 다시 누르면 채팅을 또 부르지 않는다.
 var aiRequestHandledText = '';
+// 대화가 예산(숨은 #budget)을 처음 바꾸기 직전 값. 대화 초기화 때 이 값으로 되돌린다.
+// null이면 이번 대화는 예산을 바꾼 적이 없다(초안·저장한 일정에서 온 예산은 그대로 둔다).
+var budgetBeforeChat = null;
 
 function resetAiIntentState(keepHandledText) {
   chatHistory = [];
@@ -193,6 +196,7 @@ function resetAiIntentState(keepHandledText) {
   aiSpecialPrefs = {};
   // 예산도 말로 한 요청에서만 정해지므로 함께 표준으로 되돌린다(저장한 일정을 불러오면 그 값으로 다시 채운다).
   setBudgetTier('mid');
+  budgetBeforeChat = null;
   var box = document.getElementById('aiRequest');
   aiRequestHandledText = keepHandledText && box ? String(box.value || '').trim() : '';
 }
@@ -432,7 +436,8 @@ function setLoading(btnId, loading) {
 }
 
 // 일정 생성(유료 AI 호출)이 진행 중이면 관련 버튼을 모두 잠근다.
-var PLAN_BUSY_BUTTONS = ['btnPlan', 'btnAiAssist', 'btnPlanRefresh'];
+// [대화 초기화]도 잠근다: 해석·생성 중에 비우면 응답이 기록·조건을 다시 채운다.
+var PLAN_BUSY_BUTTONS = ['btnPlan', 'btnAiAssist', 'btnPlanRefresh', 'btnChatReset'];
 var planBusyCount = 0;
 
 function beginPlanBusy(triggerId) {
@@ -1060,7 +1065,11 @@ function applyAiConditions(parsed) {
     el('theme').value = parsed.theme;
   }
   // 예산(저예산·가성비 → low, 프리미엄 → high)은 화면에 고르는 칸이 없어 숨은 #budget에 담아 다음 요청에 싣는다.
-  if (['low', 'mid', 'high'].includes(parsed.budget)) setBudgetTier(parsed.budget);
+  // 대화가 처음 예산을 바꿀 때 그 전 값을 기억해 둔다(대화 초기화는 말로 정한 예산만 되돌린다).
+  if (['low', 'mid', 'high'].includes(parsed.budget)) {
+    if (budgetBeforeChat === null && parsed.budget !== currentBudgetTier()) budgetBeforeChat = currentBudgetTier();
+    setBudgetTier(parsed.budget);
+  }
   if (Number.isFinite(Number(parsed.days))) {
     el('days').value = Math.max(1, Math.min(10, Number(parsed.days)));
   }
@@ -2159,10 +2168,12 @@ function stayPayloadFromSelection() {
   return { name, provider, area, checkIn, checkOut, rooms, guests, pricePerNightKRW, totalPriceKRW, amenities };
 }
 
+// 채팅이 고른 카드 → /api/travel-plan의 _picks. en/ja 카드는 원래 한글 이름(nameKo)도 보낸다(서버가 후보 장소를 알아보는 데 쓴다).
 function normalizeDestinationForPlan(dest) {
   if (!dest) return null;
   return {
     name: dest.name || t('rec-dest'),
+    ...(dest.nameKo ? { nameKo: dest.nameKo } : {}),
     city: dest.city || cityLabelByKey(el('city').value) || '',
     area: dest.area || '',
     category: dest.category || '추천',
@@ -3185,6 +3196,31 @@ el('btnAiAssist')?.addEventListener('click', async () => {
   }
   if (!confirmOverwriteIfEdited()) return;
   await runChatPlan(message, 'btnAiAssist');
+});
+
+// [대화 초기화]: 채팅 말풍선·대화 기록과 말로 정한 조건(이전 해석·꼭 갈 곳·제외·경로·특별 조건)만 비운다.
+// 지금 일정(currentItineraryData)·조건 칸 값(도시·날짜·일수·테마)·저장 데이터·localStorage는 그대로 둔다. 서버 호출 없음.
+// 예산(숨은 #budget)은 이번 대화가 바꾼 경우에만 그 전 값으로 되돌린다(초안·저장한 일정의 예산은 남긴다).
+// 비웠으면 true, 일정 해석·생성 중이라 아무것도 하지 않았으면 false.
+function resetChatConversation() {
+  if (planBusyCount > 0) return false;
+  var budgetToKeep = budgetBeforeChat !== null ? budgetBeforeChat : currentBudgetTier();
+  // 요청칸: 이미 보낸 글이면 비운다(남기면 주 버튼이 같은 글을 새 대화로 다시 보낸다). 아직 안 보낸 새 글은 남긴다.
+  var box = el('aiRequest');
+  var boxText = box ? String(box.value || '').trim() : '';
+  if (box && boxText && boxText === aiRequestHandledText) box.value = '';
+  resetAiIntentState(false);
+  setBudgetTier(budgetToKeep);
+  var log = el('aiChatLog');
+  if (log) log.innerHTML = '';
+  chatIntentRecords = [];
+  renderSourceNote('aiSourceNote', 'chat', null);
+  showMemoToast(t('chat-reset-done'));
+  return true;
+}
+
+el('btnChatReset').addEventListener('click', function() {
+  resetChatConversation();
 });
 
 var flightSearchSeq = 0;
@@ -7805,6 +7841,9 @@ var I18N = {
     'ph-ai-request': '예: 유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고, 3박 4일로 이동 편한 숙소 추천해줘',
     'aria-ai-request': 'AI 여행 조건 입력',
     'btn-ai-assist': '이 내용으로 만들기',
+    'btn-chat-reset': '대화 초기화',
+    'aria-chat-reset': '대화 초기화: 채팅 기록과 말로 정한 조건만 지워요(지금 일정과 조건 칸은 그대로)',
+    'chat-reset-done': '대화를 비웠어요. 지금 일정과 조건 칸은 그대로예요.',
     'aria-rec-tabs': '추천 유형 선택',
     'plan-control-copy': '고른 항공권·숙소는 그대로 두고 일정만 새로 짜요.',
     'aria-undo': '일정 되돌리기 (Ctrl+Z)',
@@ -8344,6 +8383,9 @@ var I18N = {
     'ph-ai-request': 'e.g. I really want to see Universal Studios and Dotonbori. 4 days, 3 nights, with a hotel that\'s easy to get around from.',
     'aria-ai-request': 'Describe your trip for the AI',
     'btn-ai-assist': 'Plan from this',
+    'btn-chat-reset': 'Clear chat',
+    'aria-chat-reset': 'Clear chat: removes only the chat and the conditions it set (your plan and form stay)',
+    'chat-reset-done': 'Chat cleared. Your current plan and form are unchanged.',
     'aria-rec-tabs': 'Recommendation type',
     'plan-control-copy': 'Keeps your chosen flight and stay, and rebuilds only the plan.',
     'aria-undo': 'Undo (Ctrl+Z)',
@@ -8883,6 +8925,9 @@ var I18N = {
     'ph-ai-request': '例: USJと道頓堀は必ず行きたい。3泊4日で、移動しやすい宿を教えて',
     'aria-ai-request': 'AIへの旅行条件の入力',
     'btn-ai-assist': 'この内容で作る',
+    'btn-chat-reset': '会話をリセット',
+    'aria-chat-reset': '会話をリセット：会話の記録と会話で決めた条件だけを消します（今の日程と条件欄はそのまま）',
+    'chat-reset-done': '会話をリセットしました。今の日程と条件欄はそのままです。',
     'aria-rec-tabs': 'おすすめの種類',
     'plan-control-copy': '選んだ航空券・宿はそのままに、プランだけ作り直します。',
     'aria-undo': '元に戻す (Ctrl+Z)',

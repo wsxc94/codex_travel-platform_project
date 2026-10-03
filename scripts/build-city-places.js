@@ -18,18 +18,21 @@
  *   demolished buildings) is left out.
  * - A big theme park (fullDay) or a summit of 1,000 m+ (dayTrip) takes the whole day: at most one per
  *   city, on top of the half-day target. A city with an airport name covering two towns gets a second
- *   search circle (CITY_EXTRA_CENTERS, listed as extraCenters). Small islands that stay short also get
- *   less documented sights of the same kinds (a lighthouse, a peak); single items can be excluded
+ *   search circle (CITY_EXTRA_CENTERS, listed as extraCenters). Small islands that stay short (and a city
+ *   that would otherwise have fewer than MIN_SIGHTS) also get less documented sights of the same kinds
+ *   (a lighthouse, a peak); single items can be excluded
  *   after review (EXCLUDE_QIDS).
  * - Duplicates of curated places are dropped: same Wikidata item (assets/place-images.json), "part of"
  *   a curated item, same name (ko/en/ja), or practically the same coordinates.
- * - Every place keeps its Wikidata QID, coordinates and labels: "name" is the Korean label (else the
- *   Korean Wikipedia title, else the Japanese label: nameFrom says which), "en"/"ja" the display names
+ * - Every place keeps its Wikidata QID, coordinates and labels: "name" is the Korean name (a name looked at
+ *   by hand, the Korean Wikipedia title, the Korean label or the reading written by scripts/ja-names.js:
+ *   nameFrom says which; a place with none of these is left out), "en"/"ja" the display names
  *   of the English / Japanese screens (an English screen falls back to the Japanese name when Wikidata
  *   has no English one). "area" is the Korean label of the item's P131 (else the city's Korean name).
  * - Photos: the item's P18 on Wikimedia Commons with a free license only, with credit (artist,
- *   license, file page), the same rules as build-place-images.js. Hot-spring / bath photos are left
- *   out unless their file is listed in REVIEWED_BATH_FILES (looked at: no bathers visible).
+ *   license, file page), the same rules as build-place-images.js. Hot-spring / bath photos (an onsen
+ *   kind, or a bath word in the name or file) are left out unless their file is listed in
+ *   REVIEWED_BATH_FILES (looked at: no bathers visible).
  * - "media": photo/coordinates/labels for curated names that place-images.json does not cover (new
  *   day-trip MUST_ATTRACTIONS, renamed highlights), keyed "<cityKey>|<name>" like place-images.json
  *   places; every entry names its reviewed Wikidata item in MEDIA_ITEMS.
@@ -131,12 +134,16 @@ const KINDS = [
   { id: 'attraction', re: /tourist attraction|tourist destination|landmark/, category: '관광', stayMin: 60, bestTime: '13:00-15:00' }
 ];
 // Classes that are never a single visitable sight: by head noun (the class label ends with it,
-// "railway station", "special ward") or anywhere in the label ("national park of Japan").
-const REJECT_HEAD_RE = /(?:^|[\s-])(?:station|stop|terminal|university|college|school|kindergarten|academy|stadium|arena|ballpark|velodrome|racecourse|gymnasium|ward|city|town|village|municipality|prefecture|human|company|business|enterprise|corporation|hospital|clinic|office|airport|airfield|heliport|highway|expressway|road|street|route|line|ship|vessel|event|festival|organization|organisation|club|team|league|hotel|ryokan|apartment|skyscraper|mall|department store|supermarket|store|shop|restaurant|bar|cafe|café|brewery|distillery|factory|plant|dam|reservoir|river|stream|canal|channel|strait|sea|ocean|constituency|neighborhood|neighbourhood|quarter|chōme|area|region|cemetery|prison|barracks|base|port|harbor|harbour|ferry|peninsula|course|theatre|theater|cinema|library|newspaper|parking|car park|settlement|locality|bus)$/;
+// "railway station", "special ward") or anywhere in the label ("national park of Japan"). Housing too: a "tower block"
+// (The Kitahama, a condominium tower) is no "tower" sight.
+const REJECT_HEAD_RE = /(?:^|[\s-])(?:station|stop|terminal|university|college|school|kindergarten|academy|stadium|arena|ballpark|velodrome|racecourse|gymnasium|ward|city|town|village|municipality|prefecture|human|company|business|enterprise|corporation|hospital|clinic|office|airport|airfield|heliport|highway|expressway|road|street|route|line|ship|vessel|event|festival|organization|organisation|club|team|league|hotel|ryokan|apartment|apartment building|tower block|residential building|condominium|skyscraper|mall|department store|supermarket|store|shop|restaurant|bar|cafe|café|brewery|distillery|factory|plant|dam|reservoir|river|stream|canal|channel|strait|sea|ocean|constituency|neighborhood|neighbourhood|quarter|chōme|area|region|cemetery|prison|barracks|base|port|harbor|harbour|ferry|peninsula|course|theatre|theater|cinema|library|newspaper|parking|car park|settlement|locality|bus)$/;
 const REJECT_ANY_RE = /national park|quasi-national park|natural park|nature park|prefectural park|protected area|nature reserve|geopark|archipelago|island group|group of islands|mountain range|ski resort|ward of|city of|town of|village of|municipality of|prefecture of|district of|electoral|broadcast|television station|railway|rail line|concert hall|city hall|town hall|convention|exhibition cent|conference|wikimedia|family name|given name|surname|disambiguation|\blist\b|military|world heritage site/;
 // ... except these, which are sights ("post town" Ōuchi-juku, "folk village", "hot spring resort").
+// Not lodging, though: an "onsen ryokan" / "hot spring hotel" (千年の湯 古まん, an inn of 30 rooms) is a place to stay,
+// not a hot spring to visit. (A garden that is also a ryokan, 立花氏庭園 "daimyō garden" + "ryokan", stays a garden.)
 const KEEP_LABEL_RE = /post town|castle town|old town|folk village|open-air museum|hot spring|onsen/;
-const isRejectLabel = (l) => !KEEP_LABEL_RE.test(l) && (REJECT_HEAD_RE.test(l) || REJECT_ANY_RE.test(l));
+const LODGING_HEAD_RE = /(?:^|[\s-])(?:hotel|ryokan)$/;
+const isRejectLabel = (l) => (!KEEP_LABEL_RE.test(l) || LODGING_HEAD_RE.test(l)) && (REJECT_HEAD_RE.test(l) || REJECT_ANY_RE.test(l));
 // An item with one of these classes is a group or an area, never one place, whatever else it is
 // ("Gusuku Sites ... of the Kingdom of Ryukyu" is a World Heritage listing of nine castles).
 // Also big water bodies and calderas (Suruga Bay, Aira Caldera: areas, not places to visit) and church
@@ -149,7 +156,9 @@ const HARD_REJECT_RE = /world heritage site|serial|archipelago|island group|\bgr
 const SHOPPING_CLASS_RE = /shopping cent|shopping mall|shopping complex/;
 // Names that are no sightseeing place even when the class is (a sports ground is a "park", a research
 // station has a "botanical garden").
-const NOT_A_SIGHT_NAME_RE = /運動公園|総合運動場|운동\s*공원|sports park|児童会館|研究センター|研究部|研究所|research cent/i;
+// Also lodging (a hotel or resort with a chapel or a garden: OMO7旭川, a resort that only groups the curated theme parks:
+// 東京ディズニーリゾート) and Latter-day Saints temples (末日聖徒イエス・キリスト教会日本福岡神殿: a church temple, like Q7421101).
+const NOT_A_SIGHT_NAME_RE = /運動公園|総合運動場|운동\s*공원|sports park|児童会館|研究センター|研究部|研究所|research cent|OMO\d|ホテル|旅館|リゾート|호텔|리조트|\bhotel\b|\bresort\b|\bryokan\b|末日聖徒|latter[- ]day saints/i;
 // Single items excluded after review (why).
 const EXCLUDE_QIDS = {
   Q11667995: 'Mageshima: uninhabited island used for a military base, no visitor access',
@@ -171,7 +180,14 @@ const EXCLUDE_QIDS = {
   Q63147919: 'Sōyamisaki Shrine: at Cape Sōya (curated), part of that visit',
   Q132917035: 'Mount Tatsunarashi (Wakkanai): an obscure peak (no trail or visitor information)',
   Q139061020: 'Chipushiri (Wakkanai): an obscure peak (no trail or visitor information)',
-  Q139051111: 'Mount Kenashi (Wakkanai): an obscure peak (no trail or visitor information)'
+  Q139051111: 'Mount Kenashi (Wakkanai): an obscure peak (no trail or visitor information)',
+  // reviewed 2026-10-03 (the 30-place build)
+  Q2090752: 'NTT Docomo Yoyogi Building: an office tower, not open to visitors',
+  Q217475: 'Tokyo Stock Exchange: a financial exchange ("market" class), not a market to visit',
+  Q11679328: 'Ryūzengū (Shirahama): a small shrine (one sitelink) named 龍神 + 宮; no reading to check its Korean name against',
+  Q28504101: 'Kinosaki 千年の湯 古まん: an onsen ryokan (an inn), not a sight for a morning slot',
+  // 嵐山公園 (Asahikawa): a small neighbourhood park (one sitelink); "아라시야마 공원" / "Arashiyama Park" in a chat means Kyoto's Arashiyama
+  Q11477252: 'Arashiyama Park (Asahikawa): a neighbourhood park (one sitelink) whose name takes chats about Kyoto Arashiyama'
 };
 // Excluded in one city only: the city's own island ("伊良部島" for shimojishima, which is on Irabu/Shimoji)
 const EXCLUDE_IN_CITY = {
@@ -267,7 +283,68 @@ const NAME_FIXES = {
   // 十山神社 とおやまじんじゃ: "도야마 신사" alone is taken for Toyama city (도야마) — the island's name in front
   Q11405009: { ko: '요나구니 도야마 신사' },
   // the English Wikipedia article of the item is the Iwama dōjō next to the shrine (Wikidata alias Aiki Shrine)
-  Q2827917: { en: 'Aiki Shrine' }
+  Q2827917: { en: 'Aiki Shrine' },
+  // 天満宮 is 텐만구 in the app (curated 다자이후 텐만구); the Korean Wikipedia title writes 덴만구 (kept as an alias: SPELLING_VARIANTS)
+  Q662176: { ko: '기타노 텐만구' },
+  // the 30-place build (looked at 2026-10-03): the generic word of the Japanese name in Korean (滝 폭포, 島 섬, 山 산, 記念館 기념관,
+  // 郷土館 향토관, 植物公園 식물 공원, 遺跡 유적, 神社 신사, 大神宮 대신궁, 大橋 대교, 商店街 상점가, 市場 시장), readings from the Wikidata
+  // English label (Hepburn) or kana; the city name in front is added by the build where the name needs it (眉山 (徳島市) → 도쿠시마 비잔산)
+  Q11296672: { en: 'Kisuke BOX' }, // キスケBOX: no English label (the Japanese name stood on the English screen)
+  Q11453044: { ko: '무로 사이세이 기념관' }, // 室生犀星記念館: person name 室生犀星 (family name first) + 記念館
+  Q11437588: { ko: '오타키 온천' }, // 大滝温泉 (秋田県) おおたき
+  Q30935757: { ko: '시마 유적 공원' }, // 嶋遺跡公園 (Shima-iseki Park)
+  Q34837445: { ko: '겟코 폭포' }, // 月光滝 (Gekkōno Taki): の before the generic word is left out, like 千尋の滝 센피로 폭포
+  Q34678791: { ko: '산가이 폭포' }, // 三重滝 (Sangaino Taki)
+  Q34848567: { ko: '오가세 폭포' }, // 緒ヶ瀬滝 (Ogase Daki)
+  Q34754276: { ko: '구로 폭포' }, // 黒滝 (Kuro Taki)
+  Q11526802: { ko: '히가시카와 향토관' }, // 東川町郷土館: 町 left out like 中標津町郷土館 나카시베츠 향토관
+  Q11465844: { ko: '야마노우에 대신궁' }, // 山上大神宮 (Yamanoue Daijingū)
+  Q11466743: { ko: '야마구치 대신궁' }, // 山口大神宮 (Yamaguchi Daijingū)
+  Q11580390: { ko: '시라노에 식물 공원' }, // 白野江植物公園: like 広島市植物公園 히로시마시 식물 공원
+  Q11669605: { ko: '다카시마섬' }, // 高島 (長崎県長崎市): Korean Wikipedia 다카시마; 島 is 섬 (like 女木島 메기섬)
+  Q11373491: { ko: '이시마섬' }, // 井島: Korean Wikipedia 이시마
+  Q11502710: { ko: '니쓰 기념관' }, // 新津記念館: 新津 にいつ (long vowels not written, like 新潟 니가타)
+  Q18990084: { ko: '아라이산' }, // 荒井山 (Araiyama): 山 read やま is 산, like 旭山 아사히산
+  Q135646238: { ko: '기비노 나카산' }, // 吉備の中山 きびのなかやま
+  Q11397539: { ko: '마에다산' }, // 前田山 (高松市)
+  Q8189109: { ko: '비잔산' }, // 眉山 (徳島市) びざん, Mount Bizan
+  Q104061132: { ko: '가미타니 다치노미야 신사' }, // 神谷太刀宮神社 (Kamitani-tachi-no-Miya)
+  Q1064892: { ko: '고이시카와 식물원' }, // 東京大学大学院理学系研究科附属植物園: the Korean Wikipedia title is the institute's full name
+  Q18339280: { ko: '홋카이도 대학 종합 박물관' }, // 北海道大学総合博物館 (rules: 홋카이도다이가쿠)
+  Q21654597: { ko: '홋카이도 지사 공관' }, // 北海道知事公館
+  Q9187082: { ko: '삿포로 정교회' }, // 札幌ハリストス正教会: like 釧路ハリストス正教会 구시로 정교회
+  Q11506381: { ko: '일본 기독교단 삿포로 교회' }, // 日本基督教団札幌教会
+  Q11534354: { ko: '야나기바시 연합 시장' }, // 柳橋連合市場
+  Q11628309: { ko: '니시진 상점가' }, // 西新商店街
+  Q11647502: { ko: '가나자와 유와쿠 유메지관' }, // 金沢湯涌夢二館: 夢二館 (Takehisa Yumeji's museum), 館 관
+  Q48745893: { ko: '구 호리키리 저택' }, // 旧堀切邸 (Kyū Horikiri tei), like 구 사이토가 별저
+  Q2859467: { ko: '아라코 간논' }, // 荒子観音 ("Arako Kannon Temple": no 절 after the name)
+  Q3193655: { ko: '가사데라 간논' }, // 笠覆寺, called 笠寺観音 ("Kasadera Kannon Temple")
+  Q10926942: { ko: '고쿠세이지' }, // 国清寺 こくせいじ (寺 지, like 세이류지)
+  Q11610041: { ko: '하보야산' }, // 羽保屋山 ("Haboya San"): 山 산 written with the name
+  Q11501301: { ko: '신쿄 다리' }, // 新京橋 しんきょうばし ("Shin-Kyo Bridge")
+  Q11439590: { ko: '오노섬' }, // 大野島 ("Ōno Shima")
+  Q11273947: { ko: '돈돈돈노 모리' }, // どんどんどんの森 ("Don-Don-Don no Mori")
+  Q138778326: { ko: '이시가키 호기호기 신사' }, // 石垣宝来宝来神社 ("Ishigaki Hogi Hogi Shrine")
+  Q122933328: { ko: '구 후쿠다가', en: 'Former Fukuda Residence' }, // 旧福田家 きゅうふくだけ (the kana reading read as "Kyufukudake")
+  Q129675866: { ko: '폰탄관' }, // ぽん・たん館 (Pon Tan Kan): ぽんたん, the citrus
+  Q130282530: { ko: '이노 기념비' }, // 伊能の碑 (Inō no Hi): the monument to Inō Tadataka
+  Q11660084: { ko: '모야 고개' }, // 雲谷峠 (Moya Tōge): 峠 고개
+  // 北条鹿島 ほうじょうかしま: the English label "Kashima" alone is also Kashima city (Ibaraki) in a chat message
+  Q11402215: { ko: '호조 가시마섬', en: 'Hōjō Kashima' },
+  // reviewed 2026-10-03: an n before y + vowel in the Hepburn label is ん ("Raijinyama" 雷神山 らいじんやま, not 라이지냐마;
+  // the rules cannot tell it from にゃ / にょ, which are right in 냐쿠오지 若王子 / 뇨이지 如意寺), an English word read as Japanese
+  // ("Mountain"), a word left out (文学), a person name in English order (千田正: family name first)
+  Q48748474: { ko: '오메구리 고메구리 산성' }, // 大廻小廻山城 ("... Mountain Castle": 山城 산성)
+  Q11660187: { ko: '라이진야마 고분' }, // 雷神山古墳 らいじんやま
+  Q11411419: { ko: '후루쓰 하치만야마 유적' }, // 古津八幡山遺跡 はちまんやま
+  // 布勢天神山城 てんじんやま: the build puts the city in front (a short name with a qualifier on Wikidata) → 돗토리 덴진야마성
+  Q11480764: { ko: '덴진야마성' },
+  Q11420253: { ko: '이나바 만요 역사관' }, // 因幡万葉歴史館 まんよう
+  Q60987962: { ko: '가미엔야 지조야마 고분' }, // 上塩冶地蔵山古墳 かみえんや (like Q55523209 가미엔야 쓰키야마 고분)
+  Q60988648: { ko: '지다 다다시 기념관' }, // 千田正記念館: 千田正 (family name first)
+  Q61886172: { ko: '아키타 문학 자료관' }, // あきた文学資料館 (文学 was left out)
+  Q11432542: { ko: '오우치씨관' } // 大内氏館 (오우치시 reads as a city, 市)
 };
 // The app's own spelling of a city name, in generated names and areas: the city label 나카시베츠 (中標津; the rules and the
 // Wikidata label of 中標津町 write 나카시베쓰). A place name must not spell its city differently from the city shown above it.
@@ -277,11 +354,13 @@ const withCitySpelling = (s) => CITY_LABEL_SPELLINGS.reduce((acc, [re, to]) => a
 const areaSpelling = (s) => withCitySpelling(s).replace(/^([가-힣]+) 구$/, '$1구');
 // Areas looked at by hand: the item has no P131, so the city label stood there (赤間神宮 is in Shimonoseki, not Kitakyushu)
 const AREA_FIXES = {
-  Q712617: { ko: '시모노세키시', en: 'Shimonoseki', ja: '下関市' }
+  Q712617: { ko: '시모노세키시', en: 'Shimonoseki', ja: '下関市' },
+  // 日南海岸: the Wikidata P131 is wrong (宮城県 / 鹿児島県); the coordinates (31.75, 131.47) are on the Miyazaki coast
+  Q49322227: { ko: '미야자키시', en: 'Miyazaki', ja: '宮崎市' }
 };
 // Other spellings the app itself shows for a word, kept as aliases so either is found: 大社 다이샤 (구마노 혼구 다이샤,
-// the rules) / 타이샤 (the curated 이즈모 타이샤).
-const SPELLING_VARIANTS = [[/ 다이샤$/, ' 타이샤']];
+// the rules) / 타이샤 (the curated 이즈모 타이샤); 天満宮 텐만구 (the app) / 덴만구 (the rules, Korean Wikipedia: 기타노 덴만구).
+const SPELLING_VARIANTS = [[/ 다이샤$/, ' 타이샤'], [/ 텐만구$/, ' 덴만구']];
 // Names the app showed before (deployed 38163f0, until the renaming of 2026-10-02): saved plans keep them, so they stay
 // findable as aliases (chat, exclusion, name restoration) — never shown. Not for a name that misleads (도야마 신사 = Toyama city).
 const FORMER_NAMES = {
@@ -612,6 +691,9 @@ async function main() {
         if (kind.id === 'nature' && /island|islet/.test(classLabel) && cityJa && ja.includes(cityJa)) return reject('the-city-island');
         if (ISLAND_CITIES.has(cityKey) && kind.id === 'nature' && /island/.test(classLabel) && dist < 3) return reject('the-city-island');
         const ko = koName(e, ja, labels.en);
+        // no Korean name (no Korean label or Wikipedia title, no reading the rules can write: 秋田大学附属鉱業博物館):
+        // the Korean screen would show Japanese script, so the place is left out (fix a name in NAME_FIXES to take it in)
+        if (ko.from === 'ja') return reject('no-korean-name');
         ko.name = withCitySpelling(ko.name);
         if (!ko.name || ko.name.length > 40 || GENERIC_NAME_RE.test(ko.name) || GENERIC_NAME_RE.test(ja)) return reject('generic-or-long-name');
         if ([ko.name, ja, labels.en].some((n) => n && NOT_A_SIGHT_NAME_RE.test(n))) return reject('not-a-sight-name');
@@ -656,8 +738,12 @@ async function main() {
           page.forEach((r, idx) => consider(r, entities[idx]));
         }
       }
-      // still short (small islands): less documented sights of the accepted kinds (a peak, a lighthouse)
-      if (accepted.length < need) for (const [r, e] of lowDoc) consider(r, e, true);
+      // still short (small islands): less documented sights of the accepted kinds (a peak, a lighthouse). Only on an island,
+      // or where the city would otherwise have fewer than MIN_SIGHTS: with 30 cards most cities are "short", and there the
+      // pass brought in ordinary road bridges and a weir (北旭川大橋, 富山大橋, 新潟大堰; the 30-place build, 2026-10-03)
+      if (accepted.length < need && (ISLAND_CITIES.has(cityKey) || curated.halfDay + accepted.length < MIN_SIGHTS)) {
+        for (const [r, e] of lowDoc) consider(r, e, true);
+      }
       // A whole-day place (big theme park, a summit of 1,000 m+) does not count as a half-day sight.
       for (const a of accepted) {
         a.fullDay = Boolean((a.kind.fullDayMinSitelinks && a.sitelinks >= a.kind.fullDayMinSitelinks)
@@ -707,8 +793,9 @@ async function main() {
   const mediaKeys = Object.keys(MEDIA_ITEMS).filter((k) => !opts.only || opts.only.has(k.split('|')[0]));
   await lib.getEntities(client, entityCache, mediaKeys.flatMap((k) => [MEDIA_ITEMS[k].qid, MEDIA_ITEMS[k].photoFrom].filter(Boolean)));
 
-  const isBath = (name, file) => lib.needsBathReview(name, file) && !REVIEWED_BATH_FILES.has(file);
-  const photoFile = (name, entity) => (entity && entity.image && !NO_PHOTO_QIDS[entity.id] && !isBath(name, entity.image) ? entity.image : '');
+  // a hot-spring kind is a bath place whatever its name says (キスケBOX, a bathhouse), as the test of the no-bathers rule reads it
+  const isBath = (name, file, kind = '') => (kind === 'onsen' || lib.needsBathReview(name, file)) && !REVIEWED_BATH_FILES.has(file);
+  const photoFile = (name, entity, kind = '') => (entity && entity.image && !NO_PHOTO_QIDS[entity.id] && !isBath(name, entity.image, kind) ? entity.image : '');
   const mediaPlan = mediaKeys.map((key) => {
     const item = MEDIA_ITEMS[key];
     const entity = entityCache.get(item.qid) || null;
@@ -752,7 +839,7 @@ async function main() {
   // the city name put in front: [ko, ja, en]
   const cityPrefix = (ck) => CITY_PREFIX[ck] || [cityData[ck].label, (cityNameI18n[cityData[ck].label] || [])[1] || '', (cityNameI18n[cityData[ck].label] || [])[0] || ''];
   const files = [
-    ...allChosen.map(({ c }) => photoFile(`${c.ko.name} ${c.labels.ja || ''}`, c.entity)),
+    ...allChosen.map(({ c }) => photoFile(`${c.ko.name} ${c.labels.ja || ''}`, c.entity, c.kind.id)),
     ...mediaPlan.map((m) => m.file)
   ].filter(Boolean);
   const imageInfos = await lib.checkedImages(client, files, opts.checkImages);
@@ -771,7 +858,7 @@ async function main() {
         const admin = e.admin[0] ? entityCache.get(e.admin[0]) : null;
         const areaKo = admin ? areaSpelling(stripQualifier(admin.labels.ko)) : '';
         const areaFix = AREA_FIXES[e.id] || null;
-        const file = photoFile(`${a.ko.name} ${a.labels.ja || ''}`, e);
+        const file = photoFile(`${a.ko.name} ${a.labels.ja || ''}`, e, a.kind.id);
         const p = photo(file);
         // English: Wikidata, else a name looked at by hand, else the Hepburn reading of the kana name ("Dai Onsen"), else Japanese
         const fix = NAME_FIXES[e.id] || {};
@@ -827,7 +914,7 @@ async function main() {
           license: p ? p.license : null,
           artist: p ? p.artist : ''
         };
-        if (!p && e.image) entry.imageNote = isBath(`${a.ko.name} ${a.labels.ja || ''}`, e.image) ? 'bath photo not reviewed' : 'no free photo';
+        if (!p && e.image) entry.imageNote = isBath(`${a.ko.name} ${a.labels.ja || ''}`, e.image, a.kind.id) ? 'bath photo not reviewed' : 'no free photo';
         reportRows.push(row([cityKey, e.id, 'chosen', a.kind.id, a.sitelinks, roundKm(a.dist), e.labels.ko, e.labels.ja, e.labels.en, entry.name, entry.area, p ? p.license : (entry.imageNote || 'no P18')]));
         return entry;
       })
@@ -876,7 +963,7 @@ async function main() {
       script: 'scripts/build-city-places.js',
       targetHalfDay: TARGET_HALF_DAY,
       minSights: MIN_SIGHTS,
-      notes: 'name = Korean name: nameFrom fix (looked at by hand), kowiki (Korean Wikipedia title), ko (Wikidata label), translit (Japanese reading or Hepburn English label written in Korean by scripts/ja-names.js), or ja (the Japanese label, when none of these exists); en falls back to the Hepburn kana reading, then ja. A name used by another city (or one Wikidata needs a qualifier for) has the area in front. aliases = names to find the place by, never shown: the name without the area in front, another spelling the app uses for a word (다이샤/타이샤), and names shown before a renaming (saved plans keep them). Places lie within radiusKm of center (or of an extraCenters circle). distKm = distance to center. few = fewer than minSights half-day sights exist near the city (the app says so instead of borrowing places from other cities).'
+      notes: 'name = Korean name: nameFrom fix (looked at by hand), kowiki (Korean Wikipedia title), ko (Wikidata label), translit (Japanese reading or Hepburn English label written in Korean by scripts/ja-names.js); a place with none of these is left out; en falls back to the Hepburn kana reading, then ja. A name used by another city (or one Wikidata needs a qualifier for) has the area in front. aliases = names to find the place by, never shown: the name without the area in front, another spelling the app uses for a word (다이샤/타이샤), and names shown before a renaming (saved plans keep them). Places lie within radiusKm of center (or of an extraCenters circle). distKm = distance to center. few = fewer than minSights half-day sights exist near the city (the app says so instead of borrowing places from other cities).'
     },
     ...sections
   };
@@ -893,7 +980,7 @@ async function main() {
     console.log(`[city-places] wrote ${opts.out}${unchanged ? ' (content unchanged)' : ''}`);
   }
   const places = Object.values(out).flatMap((c) => c.places);
-  console.log(`[city-places] places ${places.length} / with photo ${places.filter((p) => p.image).length} / Korean name from Wikidata ${places.filter((p) => p.nameFrom !== 'ja').length}; few: ${Object.entries(out).filter(([, c]) => c.few).map(([k]) => k).join(', ') || 'none'}; media ${Object.keys(mediaOut).length}/${mediaKeys.length}`);
+  console.log(`[city-places] places ${places.length} / with photo ${places.filter((p) => p.image).length} / left out without a Korean name ${reportRows.filter((r) => r.split('\t')[3] === 'no-korean-name').length}; few: ${Object.entries(out).filter(([, c]) => c.few).map(([k]) => k).join(', ') || 'none'}; media ${Object.keys(mediaOut).length}/${mediaKeys.length}`);
   console.log(`[city-places] requests: ${client.stats.network} network, ${client.stats.cached} cached, ${client.stats.retries} retries`);
 }
 
@@ -904,4 +991,5 @@ if (require.main === module) {
   });
 }
 
-module.exports = { KINDS, REJECT_HEAD_RE, REJECT_ANY_RE, CITY_RADIUS_KM, DEFAULT_RADIUS_KM, TARGET_HALF_DAY, MIN_SIGHTS, MEDIA_ITEMS };
+module.exports = { KINDS, REJECT_HEAD_RE, REJECT_ANY_RE, NOT_A_SIGHT_NAME_RE, CITY_RADIUS_KM, DEFAULT_RADIUS_KM, TARGET_HALF_DAY, MIN_SIGHTS, MEDIA_ITEMS,
+  ISLAND_CITIES, KIND_MIN_SITELINKS, isRejectLabel, kindOf };

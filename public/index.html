@@ -69,6 +69,10 @@
             <textarea id="aiRequest" aria-label="AI 여행 조건 입력" data-i18n-aria="aria-ai-request" placeholder="예: 유니버셜 스튜디오랑 도톤보리 꼭 가고 싶고, 3박 4일로 이동 편한 숙소 추천해줘" data-i18n-placeholder="ph-ai-request"></textarea>
             <button id="btnAiAssist" type="button" class="secondary-btn" data-i18n="btn-ai-assist">이 내용으로 만들기</button>
           </div>
+          <!-- 대화 초기화: 채팅 기록과 말로 정한 조건만 지운다(지금 일정·조건 칸·저장 데이터는 그대로, 서버 호출 없음) -->
+          <div class="ai-chat-tools">
+            <button id="btnChatReset" type="button" class="secondary-btn chat-reset-btn" aria-label="대화 초기화: 채팅 기록과 말로 정한 조건만 지워요(지금 일정과 조건 칸은 그대로)" data-i18n-aria="aria-chat-reset" title="대화 초기화: 채팅 기록과 말로 정한 조건만 지워요(지금 일정과 조건 칸은 그대로)" data-i18n-title="aria-chat-reset" data-i18n="btn-chat-reset">대화 초기화</button>
+          </div>
           <div id="aiChatLog" class="ai-chat-log" aria-live="polite"></div>
         </div>
         <div class="fields two">

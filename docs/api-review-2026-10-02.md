@@ -28,7 +28,7 @@
 | 지도 | 국토지리원 淡色地図(골라 쓰는 레이어) / MapTiler Free(예비) | 선택 | 국토지리원은 신청 불필요 / MapTiler 월 5천 세션 | 불필요 | 일본 정부 공식 기본도(일본어) | S | maps.gsi.go.jp/development/ichiran.html |
 | 이동시간 | Gemini 추측과 직선거리×1.3 → **OpenRouteService**(api.heigit.org) 도보·차량 경로 | 채택 | 경로 하루 2,000건, 경유지 50곳, 주소 검색 하루 3,000건 | 불필요 | 실제 걸어서 걸리는 시간과 경로선. 대중교통은 없음 | S~M | ask.openrouteservice.org/t/8068 |
 | 이동시간 | OSRM 공개 데모 서버 | 예비 | 초당 1건, 비상업·적당한 사용만 | 불필요 | 도보·차량 | S | github.com/Project-OSRM/osrm-backend/wiki/Demo-server |
-| 대중교통 | **Google 지도 대중교통 링크**(travelmode=transit), 구간별·하루별 | 채택 | 제한 없음, 키 불필요 | 불필요 | Google 지도 앱이 일본 대중교통 경로를 보여 줌. 다만 앱 안의 교통비 합계에는 못 넣음. 경유지는 모바일 3곳, PC 9곳 | S | developers.google.com/maps/documentation/urls/get-started |
+| 대중교통 | **Google 지도 대중교통 링크**(travelmode=transit), 구간별 | 채택 | 제한 없음, 키 불필요 | 불필요 | Google 지도 앱이 일본 대중교통 경로를 보여 줌. 다만 앱 안의 교통비 합계에는 못 넣음. 경유지는 모바일 3곳·PC 9곳이지만 대중교통(transit) 모드는 경유지를 받지 않음(그래서 구간별 링크만 만듦) | S | developers.google.com/maps/documentation/urls/get-started |
 | 대중교통 | NAVITIME totalnavi(RapidAPI Basic) | 선택, 직접 결정 | 월 500건, 분당 50건. 하루 일정 하나를 한 번 호출로 처리(경유지 10곳) | **필요** | 운임(현금·IC)과 소요시간. 단, RapidAPI 경유로는 응답이 일본어로만 오고, 시각표·첫차·막차를 쓸 수 없어 평균 소요시간 기준 | M | api-sdk.navitime.co.jp/api/specs/api_guide/route_transit.html |
 | 맛집 | 가게 데이터 없음(무료 모드는 '게 요리' 같은 음식 이름만) → **ホットペッパー グルメサーチAPI** | 채택 | 무료. 메일 주소만으로 키 발급. 호출 한도 숫자는 없음. 1회 100건 | 불필요 | 실제 가게 이름·좌표·예산·영업시간·사진. 평점은 없고 일본어만. 이자카야와 예약 사이트 등록 가게 위주 | M | webservice.recruit.co.jp/doc/hotpepper/reference.html · cdn.p.recruit.co.jp/terms/rws-t-1001/ |
 | 맛집 | Yahoo! YOLP ローカルサーチ | 선택 | 하루 5만 건 | 불필요 | 리뷰 수·평점 순 정렬, 가까운 역. Yahoo! JAPAN ID를 만들 때 문자 인증이 필요한데 한국 번호가 되는지는 미확인 | M | developer.yahoo.co.jp/webapi/map/openlocalplatform/v1/localsearch.html |
@@ -127,13 +127,13 @@ qwen3.8-27b는 공식적으로 "평가 전용, 예고 없이 종료될 수 있�
 | 순서 | 상태 |
 |---|---|
 | 0 규정 정비 | 완료·배포(Rakuten 배지, OSM `{s}` 제거, Frankfurter v2 `providers=ecb`) |
-| 1 Groq 연결 | 완료·배포. Groq 키는 `GROQ_API_KEY`(Groq 주소에만 보냄). 같은 요청 5개 비교: 품질은 비슷하나 Groq만 쓰면 분당 토큰 한도로 자주 막혀, 일정은 Gemini 먼저·채팅 해석은 Groq 먼저로 유지 |
-| 2 교통비 AI 제거 | 완료·배포(거리 추정 + 구간별 Google 지도 대중교통 링크) |
+| 1 Groq 연결 | 완료·배포(3절 1~5). Groq 키는 `GROQ_API_KEY`(Groq 주소에만 보냄). 같은 요청 5개 비교: 품질은 비슷하나 Groq만 쓰면 분당 토큰 한도로 자주 막혀, 일정은 Gemini 먼저·채팅 해석은 Groq 먼저로 유지. 3절 7(`GEMINI_TOTAL_BUDGET_MS` 20초)은 아직 적용 안 함(운영 health 40000, 사용자 결정 대기). 3절 8의 gemma-4 생각 끄기는 안 함(선택) |
+| 2 교통비 AI 제거 | 완료·배포(거리 추정 + 구간별 Google 지도 대중교통 링크). Google 지도 대중교통 모드는 경유지를 받지 않아 '하루별' 링크는 만들지 않음(구간별만) |
 | 3 ホットペッパー | 완료·배포(`HOTPEPPER_API_KEY`, 도시 중심 3km 30곳, 장르 섞기, 크레딧) |
-| 여행지 30곳 확장 | 스크립트 목표 30으로 변경. `assets/city-places.json` 재생성·이름 검토가 다음 작업 |
+| 여행지 30곳 확장 | 완료(아직 커밋·배포 전, 2026-10-03). `assets/city-places.json` 재생성(목표 30, 1,378곳, 한국어 이름 1,378곳), 이름 검사 통과, `NAME_FIXES`·`EXCLUDE_QIDS` 검토 반영 |
 | 4 이후 | 아직 |
 
-다음 세션 할 일(우선순위): ① 여행지 데이터 재생성 결과 넣기(이름 검사 통과) ② 대화로 일정 부분 수정 + 대화 초기화 버튼 ③ 남은 여러 도시 문제(영어 'Osaka 3 days then Kyoto 2 days' 일수, 영어 일정의 한국어 이름, 긴 다도시 일정의 후보 부족, 다른 도시 식당) ④ 4번(ORS) 이후
+다음 세션 할 일은 `docs/handoff.md` 7절이 단일 출처다(이 문서는 외부 API 작업의 세부만 둔다).
 
 ## 5) 직접 하셔야 할 일과 구현 순서
 
@@ -141,7 +141,7 @@ qwen3.8-27b는 공식적으로 "평가 전용, 예고 없이 종료될 수 있�
 |---|---|---|---|
 | 0 | 규정 정비: Rakuten 배지(제공된 HTML 그대로), OSM 주소의 `{s}` 제거, Frankfurter 주소 교체 | 없음 | 화면에 'Supported by Rakuten Developers' 배지가 보이고, 환율 요청에 301 리디렉트가 없음 |
 | 1 | Groq 연결(3절 1~5, 7) | console.groq.com 가입 → `gsk_` 키 발급 → Render에 환경변수 입력. 보관 완전 끄기(ZDR)는 선택. 카드 불필요 | 같은 입력 5개로 Gemini와 Groq 비교: JSON 정상률, 한국어가 자연스러운지, 30초 이내 응답. Gemini 한도를 다 쓴 상태에서도 일정 생성 성공 |
-| 2 | 교통비 AI 제거 + Google 지도 대중교통 링크 | 없음 | 교통비 버튼이 Gemini를 한 번도 부르지 않고, 결과에 '추정' 표시, 구간별·하루별 링크가 실제로 열림 |
+| 2 | 교통비 AI 제거 + Google 지도 대중교통 링크 | 없음 | 교통비 버튼이 Gemini를 한 번도 부르지 않고, 결과에 '추정' 표시, 구간별 링크가 실제로 열림(대중교통 모드는 경유지를 받지 않아 하루별 링크는 뺌) |
 | 3 | ホットペッパー 연동 | webservice.recruit.co.jp/register 에 메일 주소로 키 신청 → `HOTPEPPER_API_KEY`(새 이름) 입력 | 요나고·돗토리·메만베쓰에서 실제 가게 3곳 이상, 출처 표시, 원문 그대로, 저장 24시간 이내 |
 | 4 | ORS 도보 시간 + Nominatim 장소 핀 | HeiGIT 가입 → 키 발급 → `ORS_API_KEY`(새 이름) 입력 | 2km 이하 구간에 실제 도보 시간·경로선이 나오고, 좌표 없던 일정 장소 핀이 지도에 표시됨 |
 | 5 | 항공권 손보기 + 링크 추가(항공·숙소·KKday) | 없음 | market 기본값과 지정값의 결과 수 비교 로그, 응답 currency=krw 확인, 링크마다 직접 눌러 확인 |
